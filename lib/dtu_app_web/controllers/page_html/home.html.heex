@@ -1,0 +1,135 @@
+<div class="relative overflow-hidden bg-zinc-950 text-white min-h-screen">
+  <!-- Glowing Background Effects -->
+  <div class="absolute top-0 left-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl" />
+  <div class="absolute bottom-20 right-1/4 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl" />
+
+  <!-- Hero Section -->
+  <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-16 text-center">
+    <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-emerald-500/30 bg-emerald-950/20 text-emerald-400 text-xs font-semibold mb-6">
+      <span class="flex h-2 w-2 relative">
+        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+      </span>
+      Real-Time Solar Telemetry System
+    </div>
+
+    <h1 class="text-4xl sm:text-6xl font-extrabold tracking-tight text-white max-w-3xl mx-auto leading-tight">
+      Visualize and Manage Your <span class="bg-gradient-to-r from-emerald-400 to-amber-300 bg-clip-text text-transparent">Solar Generation</span>
+    </h1>
+    
+    <p class="mt-6 text-lg sm:text-xl text-zinc-400 max-w-2xl mx-auto">
+      An open-source multi-tenant telemetry platform designed for OpenDTU and AhoyDTU converters. Securely publish, track, and analyze your solar yield in real-time.
+    </p>
+
+    <!-- CTAs -->
+    <div class="mt-10 flex flex-wrap justify-center gap-4">
+      <%= if @current_scope && @current_scope.user do %>
+        <.link
+          navigate={~p"/dashboard"}
+          id="cta-dashboard"
+          class="px-8 py-3 rounded-lg font-medium bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-lg shadow-emerald-500/20 transition transform hover:-translate-y-0.5"
+        >
+          Go to Dashboard
+        </.link>
+        <.link
+          navigate={~p"/devices"}
+          id="cta-devices"
+          class="px-8 py-3 rounded-lg font-medium border border-zinc-700 bg-zinc-900/60 hover:bg-zinc-800 text-white transition transform hover:-translate-y-0.5"
+        >
+          Manage DTUs
+        </.link>
+      <% else %>
+        <.link
+          navigate={~p"/users/register"}
+          id="cta-register"
+          class="px-8 py-3 rounded-lg font-medium bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-lg shadow-emerald-500/20 transition transform hover:-translate-y-0.5"
+        >
+          Get Started
+        </.link>
+        <.link
+          navigate={~p"/users/log-in"}
+          id="cta-login"
+          class="px-8 py-3 rounded-lg font-medium border border-zinc-700 bg-zinc-900/60 hover:bg-zinc-800 text-white transition transform hover:-translate-y-0.5"
+        >
+          Sign In
+        </.link>
+      <% end %>
+    </div>
+  </div>
+
+  <!-- Features Grid Section -->
+  <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 border-t border-zinc-900">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <h2 class="text-3xl font-bold tracking-tight text-white">System Core Features</h2>
+      <p class="mt-4 text-zinc-400">Everything you need to capture, secure, and monitor your PV system telemetry.</p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+      <!-- Feature 1: Multi-Tenancy -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-users" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">Isolated Multi-Tenancy</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Create a secure, private account. Manage one or more DTUs in complete isolation. No other user can view or intercept your generation stats.
+        </p>
+      </div>
+
+      <!-- Feature 2: Dual Firmware Support -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-cpu-chip" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">OpenDTU &amp; AhoyDTU</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Full support for both firmware stacks. Ingests nested OpenDTU JSON payloads or buffers AhoyDTU's individual subtopic metrics to write complete database entries.
+        </p>
+      </div>
+
+      <!-- Feature 3: Real-Time Telemetry -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-bolt" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">Real-Time Ingestion</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Telemetry data is published via MQTT directly to our high-performance Elixir broker. Updates are broadcasted instantly to your dashboard LiveView.
+        </p>
+      </div>
+
+      <!-- Feature 4: SVG Power Curve -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-chart-line" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">Dynamic Power Curve</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Analyze generation patterns with a clean, dynamic SVG chart bucketed into 5-minute averages, displaying today's power curves, yield, and peaks.
+        </p>
+      </div>
+
+      <!-- Feature 5: System-Defined Security -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-lock-closed" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">System-Managed Credentials</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Credentials and base topics are defined securely by the system on creation. Read-only tokens are displayed for easy input into your hardware configuration.
+        </p>
+      </div>
+
+      <!-- Feature 6: Database Optimization -->
+      <div class="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-6 hover:border-zinc-700/60 transition group">
+        <div class="p-3 w-fit rounded-lg bg-emerald-500/10 text-emerald-400 mb-4 group-hover:scale-110 transition duration-300">
+          <.icon name="hero-server" class="h-6 w-6" />
+        </div>
+        <h3 class="text-lg font-semibold text-white mb-2">Optimized Persistence</h3>
+        <p class="text-sm text-zinc-400 leading-relaxed">
+          Backed by index-optimized database tables and schema validations, telemetry records are persisted reliably and query speeds are kept constant.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>

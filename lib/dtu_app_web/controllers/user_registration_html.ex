@@ -1,0 +1,5 @@
+defmodule DtuAppWeb.UserRegistrationHTML do
+  use DtuAppWeb, :html
+
+  embed_templates "user_registration_html/*"
+end

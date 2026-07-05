@@ -1,0 +1,12 @@
+{
+  "name": "dtu_app_e2e",
+  "version": "1.0.0",
+  "description": "E2E Acceptance tests for DTU app using Playwright",
+  "main": "index.js",
+  "scripts": {
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}
