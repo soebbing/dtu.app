@@ -11,6 +11,7 @@ defmodule DtuAppWeb.Router do
     plug :protect_from_forgery
     plug :put_secure_browser_headers
     plug :fetch_current_scope_for_user
+    plug DtuAppWeb.Plugs.Locale
   end
 
   pipeline :api do
@@ -62,7 +63,7 @@ defmodule DtuAppWeb.Router do
     get "/users/settings/confirm-email/:token", UserSettingsController, :confirm_email
 
     live_session :current_scope,
-      on_mount: [{DtuAppWeb.UserAuth, :mount_current_scope}] do
+      on_mount: [{DtuAppWeb.UserAuth, :mount_current_scope}, DtuAppWeb.Plugs.Locale] do
       live "/dashboard", DashboardLive, :index
       live "/devices", DeviceLive.Index, :index
       live "/devices/new", DeviceLive.Index, :new

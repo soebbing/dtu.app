@@ -52,12 +52,19 @@ defmodule DtuApp.MqttBroker.Broker do
         # can fan commands out to the device.
         Phoenix.PubSub.subscribe(DtuApp.PubSub, downlink_topic(client_id))
 
-        Phoenix.PubSub.broadcast(DtuApp.PubSub, @presence_topic, {:dtu_connected, client_id, device.id})
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @presence_topic,
+          {:dtu_connected, client_id, device.id}
+        )
 
         {:ok, Map.merge(state, %{client_id: client_id, device: device})}
 
       {:error, _reason} ->
-        Logger.warning("[MQTT] CONNECT AUTH FAILED client_id=#{client_id} username=#{inspect(username)}")
+        Logger.warning(
+          "[MQTT] CONNECT AUTH FAILED client_id=#{client_id} username=#{inspect(username)}"
+        )
+
         {:error, 0x86, state}
     end
   end

@@ -12,9 +12,7 @@ defmodule DtuApp.Application do
         DtuAppWeb.Telemetry,
         DtuApp.Repo,
         {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: DtuApp.PubSub},
-        # Start the MQTT credentials cache
-        DtuApp.MqttBroker.Credentials
+        {Phoenix.PubSub, name: DtuApp.PubSub}
       ] ++
         mqtt_broker_children() ++
         [
@@ -50,6 +48,9 @@ defmodule DtuApp.Application do
       transport_opts = Keyword.get(cfg, :transport_opts, %{})
 
       [
+        # Credentials cache must start before the broker so handle_connect can
+        # verify against it. Gated with the broker (both off in test).
+        DtuApp.MqttBroker.Credentials,
         %{
           id: DtuApp.MqttBroker.Broker,
           start:

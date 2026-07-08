@@ -8,12 +8,9 @@ defmodule DtuAppWeb.CoreComponents do
   with doc strings and declarative assigns. You may customize and style
   them in any way you want, based on your application growth and needs.
 
-  The foundation for styling is Tailwind CSS, a utility-first CSS framework,
-  augmented with daisyUI, a Tailwind CSS plugin that provides UI components
-  and themes. Here are useful references:
-
-    * [daisyUI](https://daisyui.com/docs/intro/) - a good place to get
-      started and see the available components.
+  The foundation for styling is Tailwind CSS, a utility-first CSS framework.
+  Components are hand-rolled with utility classes (no component library).
+  Here are useful references:
 
     * [Tailwind CSS](https://tailwindcss.com) - the foundational framework
       we build on. You will use it for layout, sizing, flexbox, grid, and
@@ -63,17 +60,19 @@ defmodule DtuAppWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="fixed top-4 right-4 z-50"
       {@rest}
     >
       <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
-        @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
+        "flex w-80 sm:w-96 max-w-80 sm:max-w96 items-start gap-3 rounded-xl border p-4 shadow-lg text-wrap",
+        @kind == :info &&
+          "border-sky-200 bg-sky-50 text-sky-900 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-100",
+        @kind == :error &&
+          "border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-100"
       ]}>
         <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
         <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
-        <div>
+        <div class="min-w-0">
           <p :if={@title} class="font-semibold">{@title}</p>
           <p>{msg}</p>
         </div>
@@ -101,11 +100,19 @@ defmodule DtuAppWeb.CoreComponents do
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    variants = %{"primary" => "btn-primary", nil => "btn-primary btn-soft"}
+    variants = %{
+      "primary" =>
+        "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold " <>
+          "bg-emerald-500 text-zinc-950 hover:bg-emerald-400 transition",
+      nil =>
+        "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold " <>
+          "border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 " <>
+          "text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+    }
 
     assigns =
       assign_new(assigns, :class, fn ->
-        ["btn", Map.fetch!(variants, assigns[:variant])]
+        Map.fetch!(variants, assigns[:variant])
       end)
 
     if rest[:href] || rest[:navigate] || rest[:patch] do
@@ -212,8 +219,8 @@ defmodule DtuAppWeb.CoreComponents do
       end)
 
     ~H"""
-    <div class="fieldset mb-2">
-      <label for={@id}>
+    <div class="mb-2">
+      <label for={@id} class="flex items-center gap-2">
         <input
           type="hidden"
           name={@name}
@@ -221,17 +228,18 @@ defmodule DtuAppWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
-          <input
-            type="checkbox"
-            id={@id}
-            name={@name}
-            value="true"
-            checked={@checked}
-            class={@class || "checkbox checkbox-sm"}
-            {@rest}
-          />{@label}
-        </span>
+        <input
+          type="checkbox"
+          id={@id}
+          name={@name}
+          value="true"
+          checked={@checked}
+          class={
+            @class ||
+              "size-4 rounded border-zinc-300 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500"
+          }
+          {@rest}
+        /><span class="text-sm text-zinc-700 dark:text-zinc-200">{@label}</span>
       </label>
       <.error :for={msg <- @errors}>{msg}</.error>
     </div>
@@ -240,13 +248,16 @@ defmodule DtuAppWeb.CoreComponents do
 
   def input(%{type: "select"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-200">{@label}</span>
         <select
           id={@id}
           name={@name}
-          class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
+          class={[
+            @class || input_class(),
+            @errors != [] && (@error_class || input_error_class())
+          ]}
           multiple={@multiple}
           {@rest}
         >
@@ -261,15 +272,15 @@ defmodule DtuAppWeb.CoreComponents do
 
   def input(%{type: "textarea"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-200">{@label}</span>
         <textarea
           id={@id}
           name={@name}
           class={[
-            @class || "w-full textarea",
-            @errors != [] && (@error_class || "textarea-error")
+            @class || input_class(),
+            @errors != [] && (@error_class || input_error_class())
           ]}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
@@ -282,17 +293,17 @@ defmodule DtuAppWeb.CoreComponents do
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="mb-2">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="mb-1 block text-sm font-medium text-zinc-700 dark:text-zinc-200">{@label}</span>
         <input
           type={@type}
           name={@name}
           id={@id}
           value={Phoenix.HTML.Form.normalize_value(@type, @value)}
           class={[
-            @class || "w-full input",
-            @errors != [] && (@error_class || "input-error")
+            @class || input_class(),
+            @errors != [] && (@error_class || input_error_class())
           ]}
           {@rest}
         />
@@ -302,10 +313,20 @@ defmodule DtuAppWeb.CoreComponents do
     """
   end
 
+  defp input_class do
+    "w-full rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 " <>
+      "px-3 py-2 text-sm text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 " <>
+      "focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+  end
+
+  defp input_error_class do
+    "border-rose-400 dark:border-rose-600 focus:border-rose-500 focus:ring-rose-500"
+  end
+
   # Helper used by inputs to generate form errors
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <p class="mt-1.5 flex gap-2 items-center text-sm text-rose-600 dark:text-rose-400">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>
@@ -326,7 +347,7 @@ defmodule DtuAppWeb.CoreComponents do
         <h1 class="text-lg font-semibold leading-8">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="text-sm text-base-content/70">
+        <p :if={@subtitle != []} class="text-sm text-zinc-500 dark:text-zinc-400">
           {render_slot(@subtitle)}
         </p>
       </div>

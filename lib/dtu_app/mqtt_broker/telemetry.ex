@@ -61,6 +61,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
     if device_id do
       update_dtu_status(device_id, true)
     end
+
     {:noreply, state}
   end
 
@@ -69,6 +70,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
     if device_id do
       update_dtu_status(device_id, false)
     end
+
     {:noreply, state}
   end
 
@@ -81,7 +83,9 @@ defmodule DtuApp.MqttBroker.Telemetry do
     try do
       DtuApp.Repo.get(DtuApp.Devices.Dtu, device_id)
       |> case do
-        nil -> :ok
+        nil ->
+          :ok
+
         dtu ->
           dtu
           |> Ecto.Changeset.change(%{online: online, last_seen_at: DateTime.utc_now()})
@@ -100,11 +104,20 @@ defmodule DtuApp.MqttBroker.Telemetry do
         case DtuApp.Devices.create_reading(reading_attrs) do
           {:ok, db_reading} ->
             Logger.debug("[Telemetry] Saved OpenDTU reading for DTU #{device_info.id}")
-            Phoenix.PubSub.broadcast(DtuApp.PubSub, @reading_topic, {:reading, client_id, db_reading})
+
+            Phoenix.PubSub.broadcast(
+              DtuApp.PubSub,
+              @reading_topic,
+              {:reading, client_id, db_reading}
+            )
+
             {:noreply, state}
 
           {:error, changeset} ->
-            Logger.warning("[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}")
+            Logger.warning(
+              "[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}"
+            )
+
             {:noreply, state}
         end
 
@@ -116,37 +129,56 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   defp handle_ahoydtu(client_id, device_info, topic_str, payload, state) do
     case parse_ahoydtu(topic_str, device_info.base_topic, payload) do
-      {:ok, name, metric_atom, value} ->
+      {:ok, name, pairs} when pairs != [] ->
         device_buffers = Map.get(state.ahoy_buffers, device_info.id, %{})
-        inverter_buffer = Map.get(device_buffers, name, %{
-          inverter_serial: name,
-          ac_power: nil,
-          dc_power: nil,
-          yield_day: nil,
-          yield_total: nil,
-          frequency: nil,
-          temperature: nil,
-          producing: nil,
-          reachable: nil
-        })
 
-        updated_inverter = Map.put(inverter_buffer, metric_atom, value)
+        inverter_buffer =
+          Map.get(device_buffers, name, %{
+            inverter_serial: name,
+            ac_power: nil,
+            dc_power: nil,
+            yield_day: nil,
+            yield_total: nil,
+            frequency: nil,
+            temperature: nil,
+            producing: nil,
+            reachable: nil
+          })
+
+        updated_inverter =
+          Enum.reduce(pairs, inverter_buffer, fn {metric_atom, value}, buf ->
+            if metric_atom == :other, do: buf, else: Map.put(buf, metric_atom, value)
+          end)
+
         updated_device_buffers = Map.put(device_buffers, name, updated_inverter)
         new_ahoy_buffers = Map.put(state.ahoy_buffers, device_info.id, updated_device_buffers)
         new_state = %{state | ahoy_buffers: new_ahoy_buffers}
 
-        # trigger DB write on ac_power update
-        if metric_atom == :ac_power and not is_nil(value) do
+        # Trigger a DB write whenever an AC power reading arrives in this uplink
+        # (the numeric layout sends one metric per topic; the JSON layout sends
+        # several at once — either way, ac_power is the flush signal).
+        has_ac_power = Enum.any?(pairs, fn {m, v} -> m == :ac_power and not is_nil(v) end)
+
+        if has_ac_power do
           reading_attrs = Map.put(updated_inverter, :dtu_id, device_info.id)
 
           case DtuApp.Devices.create_reading(reading_attrs) do
             {:ok, db_reading} ->
               Logger.debug("[Telemetry] Saved AhoyDTU reading for DTU #{device_info.id}")
-              Phoenix.PubSub.broadcast(DtuApp.PubSub, @reading_topic, {:reading, client_id, db_reading})
+
+              Phoenix.PubSub.broadcast(
+                DtuApp.PubSub,
+                @reading_topic,
+                {:reading, client_id, db_reading}
+              )
+
               {:noreply, new_state}
 
             {:error, changeset} ->
-              Logger.warning("[Telemetry] Failed to save AhoyDTU reading: #{inspect(changeset.errors)}")
+              Logger.warning(
+                "[Telemetry] Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
+              )
+
               {:noreply, new_state}
           end
         else
@@ -174,6 +206,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
               producing: truthy?(get_in(json, ["status", "producing"])),
               reachable: truthy?(get_in(json, ["status", "reachable"]))
             }
+
             {:ok, reading_attrs}
 
           _ ->
@@ -187,13 +220,67 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   defp parse_ahoydtu(topic_str, base_topic, payload) do
     case String.split(topic_str, "/") do
-      [binary_base, name, "ch0", metric] when binary_base == base_topic ->
-        metric_atom = parse_ahoy_metric(metric)
-        value = parse_ahoy_value(metric_atom, payload)
-        {:ok, name, metric_atom, value}
+      # Numeric layout: {base}/{name}/ch{0..6}/{Metric} -> one scalar.
+      [binary_base, name, <<"ch", _::binary>> = channel, metric]
+      when binary_base == base_topic and channel != "total" ->
+        # If the payload is itself JSON, defer to the JSON-layout clause below;
+        # otherwise treat it as a single numeric scalar.
+        if json_object?(payload) do
+          {:error, :ignored_topic}
+        else
+          metric_atom = parse_ahoy_metric(metric)
+          value = parse_ahoy_value(metric_atom, payload)
+          {:ok, name, [{metric_atom, value}]}
+        end
 
+      # JSON layout: {base}/{name}/ch{0..6} -> a JSON object of many metrics.
+      [binary_base, name, <<"ch", _::binary>> = channel]
+      when binary_base == base_topic and channel != "total" ->
+        case Jason.decode(payload) do
+          {:ok, json_map} when is_map(json_map) ->
+            pairs = ahoy_json_to_pairs(json_map, channel)
+            {:ok, name, pairs}
+
+          _ ->
+            {:error, :ignored_topic}
+        end
+
+      # AhoyDTU fleet totals {base}/total/... — recomputed across the user's
+      # devices by the dashboard, so ignore here.
       _ ->
         {:error, :ignored_topic}
+    end
+  end
+
+  # Map an AhoyDTU per-channel JSON object into normalized {metric, value} pairs.
+  # ch0 carries AC-side values (incl. calculated P_DC); ch1..6 carry DC inputs.
+  # Only DC-specific fields are taken from ch1..6 to avoid clobbering ch0's P_DC.
+  defp ahoy_json_to_pairs(json, "ch0") do
+    [
+      {:ac_power, cast_float(json["P_AC"])},
+      {:dc_power, cast_float(json["P_DC"])},
+      {:yield_day, cast_float(json["YieldDay"])},
+      {:yield_total, cast_float(json["YieldTotal"])},
+      {:frequency, cast_float(json["F_AC"])},
+      {:temperature, cast_float(json["Temp"])},
+      {:producing, parse_ahoy_value(:producing, json["producing"])}
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp ahoy_json_to_pairs(json, _dc_channel) do
+    [
+      {:dc_power, cast_float(json["P_DC"])},
+      {:yield_day, cast_float(json["YieldDay"])},
+      {:yield_total, cast_float(json["YieldTotal"])}
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+  end
+
+  defp json_object?(payload) when is_binary(payload) do
+    case Jason.decode(payload) do
+      {:ok, value} when is_map(value) -> true
+      _ -> false
     end
   end
 
@@ -224,12 +311,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
   defp cast_float(nil), do: nil
   defp cast_float(val) when is_integer(val), do: val * 1.0
   defp cast_float(val) when is_float(val), do: val
+
   defp cast_float(val) when is_binary(val) do
     case Float.parse(val) do
       {f, _} -> f
       :error -> nil
     end
   end
+
   defp cast_float(_), do: nil
 
   defp truthy?(1), do: true

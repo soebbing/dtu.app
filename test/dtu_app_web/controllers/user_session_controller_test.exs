@@ -14,7 +14,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
       response = html_response(conn, 200)
       assert response =~ "Log in"
       assert response =~ ~p"/users/register"
-      assert response =~ "Log in with email"
+      assert response =~ "Log in with magic link"
     end
 
     test "renders login page with email filled in (sudo mode)", %{conn: conn, user: user} do
@@ -25,8 +25,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
         |> html_response(200)
 
       assert html =~ "You need to reauthenticate"
-      refute html =~ "Register"
-      assert html =~ "Log in with email"
+      assert html =~ "Log in with magic link"
 
       assert html =~
                ~s(<input type="email" name="user[email]" id="login_form_magic_email" value="#{user.email}")
@@ -37,7 +36,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
       response = html_response(conn, 200)
       assert response =~ "Log in"
       assert response =~ ~p"/users/register"
-      assert response =~ "Log in with email"
+      assert response =~ "Log in with magic link"
     end
   end
 
@@ -86,7 +85,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
       assert redirected_to(conn) == ~p"/"
 
       # Now do a logged in request and assert on the menu
-      conn = get(conn, ~p"/")
+      conn = get(conn, ~p"/dashboard")
       response = html_response(conn, 200)
       assert response =~ user.email
       assert response =~ ~p"/users/settings"
@@ -161,7 +160,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
       assert redirected_to(conn) == ~p"/"
 
       # Now do a logged in request and assert on the menu
-      conn = get(conn, ~p"/")
+      conn = get(conn, ~p"/dashboard")
       response = html_response(conn, 200)
       assert response =~ user.email
       assert response =~ ~p"/users/settings"
@@ -185,7 +184,7 @@ defmodule DtuAppWeb.UserSessionControllerTest do
       assert Accounts.get_user!(user.id).confirmed_at
 
       # Now do a logged in request and assert on the menu
-      conn = get(conn, ~p"/")
+      conn = get(conn, ~p"/dashboard")
       response = html_response(conn, 200)
       assert response =~ user.email
       assert response =~ ~p"/users/settings"

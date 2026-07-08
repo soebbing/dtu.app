@@ -17,20 +17,75 @@ defmodule DtuAppWeb.DashboardLive do
     socket =
       socket
       |> assign(:devices, Devices.list_devices(user))
-      |> assign(:stats, Devices.get_daily_stats(user))
-      |> assign_chart_data(user)
+      |> assign(:selected_dtu_id, nil)
+      |> assign(:time_range, "today")
+      |> assign(:selected_period, nil)
+      |> assign_selectable_periods(user, nil)
+      |> assign_dashboard_data(user, nil, "today", nil)
 
     {:ok, socket}
   end
 
   @impl true
-  def handle_info({:reading, _client_id, _reading}, socket) do
+  def handle_event("select_dtu", %{"id" => id_str}, socket) do
+    selected_id = if id_str == "total", do: nil, else: String.to_integer(id_str)
     user = socket.assigns.current_scope.user
+    time_range = socket.assigns.time_range
+
+    socket = assign_selectable_periods(socket, user, selected_id)
 
     {:noreply,
      socket
-     |> assign(:stats, Devices.get_daily_stats(user))
-     |> assign_chart_data(user)}
+     |> assign(:selected_dtu_id, selected_id)
+     |> assign_dashboard_data(user, selected_id, time_range, nil)}
+  end
+
+  @impl true
+  def handle_event("select_range", %{"range" => range}, socket) do
+    user = socket.assigns.current_scope.user
+    dtu_id = socket.assigns.selected_dtu_id
+
+    {:noreply,
+     socket
+     |> assign(:time_range, range)
+     |> assign_dashboard_data(user, dtu_id, range, nil)}
+  end
+
+  @impl true
+  def handle_event("select_period", %{"period" => period_str}, socket) do
+    user = socket.assigns.current_scope.user
+    dtu_id = socket.assigns.selected_dtu_id
+    time_range = socket.assigns.time_range
+
+    parsed_period =
+      if time_range == "year" do
+        String.to_integer(period_str)
+      else
+        Date.from_iso8601!(period_str)
+      end
+
+    {:noreply,
+     socket
+     |> assign_dashboard_data(user, dtu_id, time_range, parsed_period)}
+  end
+
+  @impl true
+  def handle_info({:reading, _client_id, _reading}, socket) do
+    user = socket.assigns.current_scope.user
+    selected_id = socket.assigns.selected_dtu_id
+    time_range = socket.assigns.time_range
+    selected_period = socket.assigns.selected_period
+
+    socket = assign_selectable_periods(socket, user, selected_id)
+
+    socket =
+      if time_range == "today" do
+        assign_dashboard_data(socket, user, selected_id, "today", nil)
+      else
+        assign_dashboard_data(socket, user, selected_id, time_range, selected_period)
+      end
+
+    {:noreply, socket}
   end
 
   @impl true
@@ -45,9 +100,9 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
-  # Helper to construct SVG chart coordinates and range
-  defp assign_chart_data(socket, user) do
-    chart_points = Devices.list_today_chart_data(user)
+  # Helper to construct SVG line chart coordinates and range
+  defp assign_line_chart_data(socket, user, date, dtu_id) do
+    chart_points = Devices.list_day_chart_data(user, date, dtu_id)
 
     max_power =
       chart_points
@@ -66,23 +121,28 @@ defmodule DtuAppWeb.DashboardLive do
       chart_points
       |> Enum.map(fn {time, power} ->
         seconds = time.hour * 3600 + time.minute * 60 + time.second
-        x = (seconds / 86400.0) * 800.0
-        y = 250.0 - (power / y_max) * 230.0 # leave 20px padding at top
+        x = seconds / 86400.0 * 800.0
+        # leave 20px padding at top
+        y = 250.0 - power / y_max * 230.0
         {Float.round(x, 1), Float.round(y, 1)}
       end)
 
     path_data =
       case points do
-        [] -> ""
+        [] ->
+          ""
+
         [{first_x, first_y} | rest] ->
-          "M #{first_x} #{first_y} " <> (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end))
+          "M #{first_x} #{first_y} " <>
+            (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end))
       end
 
     area_path_data =
       case points do
-        [] -> ""
+        [] ->
+          ""
+
         [{first_x, first_y} | rest] ->
-          # Start at bottom left, line to first point, trace points, line to bottom right, close path
           "M #{first_x} 250 L #{first_x} #{first_y} " <>
             (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end)) <>
             " L #{elem(List.last(points), 0)} 250 Z"
@@ -95,6 +155,315 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:area_path_data, area_path_data)
   end
 
+  # Helper to construct SVG bar chart coordinates and range
+  defp assign_bar_chart_data(socket, bar_data) do
+    max_val =
+      bar_data
+      |> Enum.map(& &1.value)
+      |> Enum.max(fn -> 1.0 end)
+      |> max(1.0)
+
+    y_max =
+      cond do
+        max_val <= 5.0 -> 5.0
+        max_val <= 10.0 -> 10.0
+        true -> Float.ceil(max_val)
+      end
+
+    count = length(bar_data)
+    col_width = 800.0 / count
+    bar_width = col_width * 0.65
+
+    bars =
+      bar_data
+      |> Enum.with_index()
+      |> Enum.map(fn {item, idx} ->
+        height = item.value / y_max * 200.0
+        x = idx * col_width + (col_width - bar_width) / 2.0
+        y = 220.0 - height
+
+        %{
+          x: Float.round(x / 1.0, 1),
+          y: Float.round(y / 1.0, 1),
+          w: Float.round(bar_width / 1.0, 1),
+          h: Float.round(max(height, 1.0) / 1.0, 1),
+          label: item.label,
+          value: Float.round(item.value / 1.0, 3)
+        }
+      end)
+
+    socket
+    |> assign(:y_max, y_max)
+    |> assign(:bars, bars)
+  end
+
+  defp assign_selectable_periods(socket, user, dtu_id) do
+    dates = Devices.list_selectable_dates(user, dtu_id)
+
+    socket
+    |> assign(:selectable_dates, dates)
+    |> assign(:selectable_days, build_selectable_days(dates))
+    |> assign(:selectable_weeks, build_selectable_weeks(dates))
+    |> assign(:selectable_months, build_selectable_months(dates))
+    |> assign(:selectable_years, build_selectable_years(dates))
+  end
+
+  defp build_selectable_days(dates) do
+    dates
+    |> Enum.map(fn date ->
+      label = Calendar.strftime(date, "%Y-%m-%d")
+      {label, Date.to_string(date)}
+    end)
+  end
+
+  defp build_selectable_weeks(dates) do
+    dates
+    |> Enum.group_by(fn d ->
+      :calendar.iso_week_number({d.year, d.month, d.day})
+    end)
+    |> Enum.map(fn {{year, week}, week_dates} ->
+      representative_date = hd(week_dates)
+      monday = Date.add(representative_date, -(Date.day_of_week(representative_date) - 1))
+
+      label =
+        gettext("Year %{year}, Week %{week} (starting %{monday})",
+          year: year,
+          week: week,
+          monday: monday
+        )
+
+      {label, Date.to_string(monday)}
+    end)
+    |> Enum.sort_by(fn {_, val} -> val end, :desc)
+  end
+
+  defp build_selectable_months(dates) do
+    dates
+    |> Enum.map(fn d -> {d.year, d.month} end)
+    |> Enum.uniq()
+    |> Enum.map(fn {year, month} ->
+      first_day = Date.new!(year, month, 1)
+      translated_month = Gettext.gettext(DtuAppWeb.Gettext, Calendar.strftime(first_day, "%B"))
+      label = "#{translated_month} #{first_day.year}"
+      {label, Date.to_string(first_day)}
+    end)
+    |> Enum.sort_by(fn {_, val} -> val end, :desc)
+  end
+
+  defp build_selectable_years(dates) do
+    dates
+    |> Enum.map(& &1.year)
+    |> Enum.uniq()
+    |> Enum.map(fn year ->
+      {to_string(year), to_string(year)}
+    end)
+    |> Enum.sort(:desc)
+  end
+
+  defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
+    case time_range do
+      "today" ->
+        stats = Devices.get_daily_stats(user, dtu_id)
+
+        socket
+        |> assign(:stats, stats)
+        |> assign(:chart_type, :line)
+        |> assign_line_chart_data(user, Date.utc_today(), dtu_id)
+
+      "day" ->
+        date =
+          case selected_period do
+            %Date{} = d ->
+              d
+
+            _ ->
+              selectable = socket.assigns.selectable_dates
+              List.first(selectable) || Date.utc_today()
+          end
+
+        points = Devices.list_day_chart_data(user, date, dtu_id)
+        yields = Devices.list_range_yield_data(user, date, date, dtu_id)
+
+        total_yield =
+          case yields do
+            [{^date, y}] -> y
+            _ -> 0.0
+          end
+
+        peak_power =
+          case points do
+            [] -> 0.0
+            pts -> pts |> Enum.map(fn {_, p} -> p end) |> Enum.max(fn -> 0.0 end)
+          end
+
+        avg_power =
+          case points do
+            [] -> 0.0
+            pts -> Enum.sum(pts |> Enum.map(fn {_, p} -> p end)) / length(pts)
+          end
+
+        stats = %{
+          total_yield: Float.round(total_yield * 1.0, 3),
+          peak_power: Float.round(peak_power * 1.0, 1),
+          avg_power: Float.round(avg_power * 1.0, 1)
+        }
+
+        socket
+        |> assign(:selected_period, date)
+        |> assign(:stats, stats)
+        |> assign(:chart_type, :line)
+        |> assign_line_chart_data(user, date, dtu_id)
+
+      "week" ->
+        monday =
+          case selected_period do
+            %Date{} = d ->
+              d
+
+            _ ->
+              selectable = socket.assigns.selectable_dates
+              latest_date = List.first(selectable) || Date.utc_today()
+              Date.add(latest_date, -(Date.day_of_week(latest_date) - 1))
+          end
+
+        sunday = Date.add(monday, 6)
+        yields = Devices.list_range_yield_data(user, monday, sunday, dtu_id)
+        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
+        avg_yield = total_yield / 7.0
+
+        {peak_date, peak_val} =
+          case yields do
+            [] -> {nil, 0.0}
+            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
+          end
+
+        stats = %{
+          total_yield: Float.round(total_yield * 1.0, 3),
+          avg_yield: Float.round(avg_yield * 1.0, 3),
+          peak_date: peak_date,
+          peak_val: Float.round(peak_val * 1.0, 3)
+        }
+
+        yield_map = Map.new(yields)
+
+        bar_data =
+          for day_offset <- 0..6 do
+            d = Date.add(monday, day_offset)
+            label = Calendar.strftime(d, "%a")
+            value = Map.get(yield_map, d, 0.0)
+            %{label: label, value: value}
+          end
+
+        socket
+        |> assign(:selected_period, monday)
+        |> assign(:stats, stats)
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
+
+      "month" ->
+        first_day =
+          case selected_period do
+            %Date{} = d ->
+              d
+
+            _ ->
+              selectable = socket.assigns.selectable_dates
+              latest_date = List.first(selectable) || Date.utc_today()
+              Date.new!(latest_date.year, latest_date.month, 1)
+          end
+
+        last_day = Date.end_of_month(first_day)
+        yields = Devices.list_range_yield_data(user, first_day, last_day, dtu_id)
+        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
+        total_days = Date.diff(last_day, first_day) + 1
+        avg_yield = total_yield / total_days
+
+        {peak_date, peak_val} =
+          case yields do
+            [] -> {nil, 0.0}
+            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
+          end
+
+        stats = %{
+          total_yield: Float.round(total_yield * 1.0, 3),
+          avg_yield: Float.round(avg_yield * 1.0, 3),
+          peak_date: peak_date,
+          peak_val: Float.round(peak_val * 1.0, 3)
+        }
+
+        yield_map = Map.new(yields)
+
+        bar_data =
+          for day_offset <- 0..(total_days - 1) do
+            d = Date.add(first_day, day_offset)
+            label = to_string(d.day)
+            value = Map.get(yield_map, d, 0.0)
+            %{label: label, value: value}
+          end
+
+        socket
+        |> assign(:selected_period, first_day)
+        |> assign(:stats, stats)
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
+
+      "year" ->
+        year =
+          case selected_period do
+            %Date{} = d ->
+              d.year
+
+            y when is_integer(y) ->
+              y
+
+            _ ->
+              selectable = socket.assigns.selectable_dates
+              latest_date = List.first(selectable) || Date.utc_today()
+              latest_date.year
+          end
+
+        start_date = Date.new!(year, 1, 1)
+        end_date = Date.new!(year, 12, 31)
+        yields = Devices.list_range_yield_data(user, start_date, end_date, dtu_id)
+        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
+        avg_yield = total_yield / 12.0
+
+        {peak_date, peak_val} =
+          case yields do
+            [] -> {nil, 0.0}
+            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
+          end
+
+        stats = %{
+          total_yield: Float.round(total_yield * 1.0, 3),
+          avg_yield: Float.round(avg_yield * 1.0, 3),
+          peak_date: peak_date,
+          peak_val: Float.round(peak_val * 1.0, 3)
+        }
+
+        yield_map = Map.new(yields)
+
+        bar_data =
+          for month <- 1..12 do
+            month_yield =
+              yield_map
+              |> Enum.filter(fn {date, _} -> date.month == month end)
+              |> Enum.map(fn {_, y} -> y end)
+              |> Enum.sum()
+
+            first_day_of_month = Date.new!(year, month, 1)
+            label = Calendar.strftime(first_day_of_month, "%b")
+            %{label: label, value: month_yield}
+          end
+
+        socket
+        |> assign(:selected_period, Date.new!(year, 1, 1))
+        |> assign(:stats, stats)
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
+    end
+  end
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -104,10 +473,10 @@ defmodule DtuAppWeb.DashboardLive do
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
           <div>
             <h1 class="text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">
-              PV Power Dashboard
+              {gettext("PV Power Dashboard")}
             </h1>
             <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-              Real-time generation stats for your solar converter system.
+              {gettext("Real-time and historic generation stats for your solar converter system.")}
             </p>
           </div>
           <div>
@@ -121,166 +490,726 @@ defmodule DtuAppWeb.DashboardLive do
               ]}
             >
               <.icon name="hero-cog-6-tooth" class="-ml-1 mr-2 h-5 w-5 text-zinc-400" />
-              Manage Devices
+              {gettext("Manage Devices")}
             </.link>
           </div>
         </div>
 
+        <!-- Toolbar: Switcher & Time Ranges -->
+        <div class="flex flex-col gap-4">
+          <!-- DTU Switcher -->
+          <%= if length(@devices) > 1 do %>
+            <div
+              class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
+              id="dtu-switcher"
+            >
+              <button
+                phx-click="select_dtu"
+                phx-value-id="total"
+                id="btn-select-total"
+                class={[
+                  "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                  is_nil(@selected_dtu_id) &&
+                    "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                  !is_nil(@selected_dtu_id) &&
+                    "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+                ]}
+              >
+                {gettext("Total (All DTUs)")}
+              </button>
+              <%= for device <- @devices do %>
+                <button
+                  phx-click="select_dtu"
+                  phx-value-id={device.id}
+                  id={"btn-select-dtu-#{device.id}"}
+                  class={[
+                    "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                    @selected_dtu_id == device.id &&
+                      "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                    @selected_dtu_id != device.id &&
+                      "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+                  ]}
+                >
+                  {device.name}
+                </button>
+              <% end %>
+            </div>
+          <% end %>
+
+          <!-- Time Range Tab Selector -->
+          <div
+            class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
+            id="range-switcher"
+          >
+            <button
+              phx-click="select_range"
+              phx-value-range="today"
+              id="btn-range-today"
+              class={[
+                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                @time_range == "today" &&
+                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                @time_range != "today" &&
+                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+              ]}
+            >
+              {gettext("Today")}
+            </button>
+            <button
+              phx-click="select_range"
+              phx-value-range="day"
+              id="btn-range-day"
+              class={[
+                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                @time_range == "day" &&
+                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                @time_range != "day" &&
+                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+              ]}
+            >
+              {gettext("Historical Day")}
+            </button>
+            <button
+              phx-click="select_range"
+              phx-value-range="week"
+              id="btn-range-week"
+              class={[
+                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                @time_range == "week" &&
+                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                @time_range != "week" &&
+                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+              ]}
+            >
+              {gettext("Historical Week")}
+            </button>
+            <button
+              phx-click="select_range"
+              phx-value-range="month"
+              id="btn-range-month"
+              class={[
+                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                @time_range == "month" &&
+                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                @time_range != "month" &&
+                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+              ]}
+            >
+              {gettext("Historical Month")}
+            </button>
+            <button
+              phx-click="select_range"
+              phx-value-range="year"
+              id="btn-range-year"
+              class={[
+                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+                @time_range == "year" &&
+                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+                @time_range != "year" &&
+                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+              ]}
+            >
+              {gettext("Historical Year")}
+            </button>
+          </div>
+
+          <!-- Dynamic Period Selector Form -->
+          <%= if @time_range != "today" do %>
+            <div
+              class="flex flex-col sm:flex-row sm:items-center gap-3 bg-zinc-150/40 dark:bg-zinc-800/30 p-4 rounded-xl border border-zinc-200 dark:border-zinc-700/70"
+              id="period-selector-panel"
+            >
+              <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{gettext(
+                "Select period:"
+              )}</span>
+
+              <%= cond do %>
+                <% @time_range == "day" -> %>
+                  <%= if @selectable_days == [] do %>
+                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
+                      "No historical days available."
+                    )}</span>
+                  <% else %>
+                    <form phx-change="select_period" id="form-select-day">
+                      <select
+                        name="period"
+                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        id="select-day"
+                      >
+                        <%= for {label, value} <- @selectable_days do %>
+                          <option value={value} selected={value == Date.to_string(@selected_period)}>
+                            {label}
+                          </option>
+                        <% end %>
+                      </select>
+                    </form>
+                  <% end %>
+                <% @time_range == "week" -> %>
+                  <%= if @selectable_weeks == [] do %>
+                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
+                      "No historical weeks available."
+                    )}</span>
+                  <% else %>
+                    <form phx-change="select_period" id="form-select-week">
+                      <select
+                        name="period"
+                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        id="select-week"
+                      >
+                        <%= for {label, value} <- @selectable_weeks do %>
+                          <option value={value} selected={value == Date.to_string(@selected_period)}>
+                            {label}
+                          </option>
+                        <% end %>
+                      </select>
+                    </form>
+                  <% end %>
+                <% @time_range == "month" -> %>
+                  <%= if @selectable_months == [] do %>
+                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
+                      "No historical months available."
+                    )}</span>
+                  <% else %>
+                    <form phx-change="select_period" id="form-select-month">
+                      <select
+                        name="period"
+                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        id="select-month"
+                      >
+                        <%= for {label, value} <- @selectable_months do %>
+                          <option value={value} selected={value == Date.to_string(@selected_period)}>
+                            {label}
+                          </option>
+                        <% end %>
+                      </select>
+                    </form>
+                  <% end %>
+                <% @time_range == "year" -> %>
+                  <%= if @selectable_years == [] do %>
+                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
+                      "No historical years available."
+                    )}</span>
+                  <% else %>
+                    <form phx-change="select_period" id="form-select-year">
+                      <select
+                        name="period"
+                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
+                        id="select-year"
+                      >
+                        <%= for {label, value} <- @selectable_years do %>
+                          <option value={value} selected={value == to_string(@selected_period.year)}>
+                            {label}
+                          </option>
+                        <% end %>
+                      </select>
+                    </form>
+                  <% end %>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+
         <!-- Stats Grid -->
         <div class="grid grid-cols-1 gap-5 sm:grid-cols-3">
-          <!-- Current Power -->
-          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-center">
-                <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                  <.icon name="hero-bolt" class="h-6 w-6" />
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                      Current Generation
-                    </dt>
-                    <dd class="flex items-baseline space-x-2">
-                      <div class="text-3xl font-semibold text-zinc-900 dark:text-white" id="stat-current-power">
-                        {@stats.current_power} W
-                      </div>
-                      <%= if @stats.current_power > 0 do %>
-                        <span class="flex h-2 w-2 relative" id="pulse-current-power">
-                          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                          <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                        </span>
-                      <% end %>
-                    </dd>
-                  </dl>
+          <%= if @time_range == "today" do %>
+            <!-- Current Power (Today only) -->
+            <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+              <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center">
+                  <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                    <.icon name="hero-bolt" class="h-6 w-6" />
+                  </div>
+                  <div class="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                        {gettext("Current Generation")}
+                      </dt>
+                      <dd class="flex items-baseline space-x-2">
+                        <div
+                          class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                          id="stat-current-power"
+                        >
+                          {@stats.current_power} W
+                        </div>
+                        <%= if @stats.current_power > 0 do %>
+                          <span class="flex h-2 w-2 relative" id="pulse-current-power">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                          </span>
+                        <% end %>
+                      </dd>
+                    </dl>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          <% else %>
+            <!-- Total Yield (Historical views) -->
+            <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+              <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center">
+                  <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                    <.icon name="hero-bolt" class="h-6 w-6" />
+                  </div>
+                  <div class="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                        {gettext("Total Yield")}
+                      </dt>
+                      <dd class="flex items-baseline">
+                        <div
+                          class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                          id="stat-total-yield"
+                        >
+                          {@stats.total_yield} kWh
+                        </div>
+                      </dd>
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% end %>
 
-          <!-- Today's Yield -->
-          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-center">
-                <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                  <.icon name="hero-sun" class="h-6 w-6" />
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                      Today's Total Yield
-                    </dt>
-                    <dd class="flex items-baseline">
-                      <div class="text-3xl font-semibold text-zinc-900 dark:text-white" id="stat-today-yield">
-                        {@stats.today_yield} kWh
-                      </div>
-                    </dd>
-                  </dl>
+          <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
+          <%= cond do %>
+            <% @time_range == "today" -> %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                      <.icon name="hero-sun" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Today's Total Yield")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-today-yield"
+                          >
+                            {@stats.today_yield} kWh
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
+            <% @time_range == "day" -> %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                      <.icon name="hero-bolt" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Average Power")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-avg-power"
+                          >
+                            {@stats.avg_power} W
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            <% true -> %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                      <.icon name="hero-calculator" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Daily Average Yield")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-avg-yield"
+                          >
+                            {@stats.avg_yield} kWh
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+          <% end %>
 
-          <!-- Peak Power Today -->
-          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-center">
-                <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                  <.icon name="hero-chart-bar" class="h-6 w-6" />
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                      Peak Power Today
-                    </dt>
-                    <dd class="flex items-baseline">
-                      <div class="text-3xl font-semibold text-zinc-900 dark:text-white" id="stat-peak-power">
-                        {@stats.peak_power} W
-                      </div>
-                    </dd>
-                  </dl>
+          <!-- Right Card: Peak Power (Today/Day) vs Peak Yield Day (Week/Month/Year) -->
+          <%= cond do %>
+            <% @time_range in ["today", "day"] -> %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                      <.icon name="hero-chart-bar" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Peak Power")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-peak-power"
+                          >
+                            {@stats.peak_power} W
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-          </div>
+            <% true -> %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                      <.icon name="hero-fire" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Peak Yield Day")}
+                        </dt>
+                        <dd class="flex flex-col">
+                          <div
+                            class="text-2xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-peak-yield"
+                          >
+                            {@stats.peak_val} kWh
+                          </div>
+                          <%= if @stats.peak_date do %>
+                            <div
+                              class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5"
+                              id="stat-peak-yield-date"
+                            >
+                              {gettext("on %{date}", date: @stats.peak_date)}
+                            </div>
+                          <% end %>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+          <% end %>
         </div>
 
         <!-- Chart Panel -->
         <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
-          <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4">
-            Today's Production Curve
+          <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4" id="chart-title">
+            <%= cond do %>
+              <% @time_range == "today" -> %>
+                {gettext("Today's Production Curve (Watts)")}
+              <% @time_range == "day" -> %>
+                {gettext("Production Curve for %{period} (Watts)", period: @selected_period)}
+              <% @time_range == "week" -> %>
+                {gettext("Daily Yields for Week starting %{period} (kWh)", period: @selected_period)}
+              <% @time_range == "month" -> %>
+                {gettext("Daily Yields for month of %{month_year} (kWh)",
+                  month_year:
+                    "#{Gettext.gettext(DtuAppWeb.Gettext, Calendar.strftime(@selected_period, "%B"))} #{@selected_period.year}"
+                )}
+              <% @time_range == "year" -> %>
+                {gettext("Monthly Yields for %{year} (kWh)", year: @selected_period.year)}
+            <% end %>
           </h2>
-          
-          <%= if @path_data == "" do %>
-            <div class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg" id="empty-chart">
-              <.icon name="hero-presentation-chart-line" class="h-12 w-12 text-zinc-400 mb-2" />
-              <p class="text-sm text-zinc-500 dark:text-zinc-400">No power readings logged today yet.</p>
-              <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1">Connect your DTU and publish data to start tracking.</p>
-            </div>
+
+          <%= if @chart_type == :line do %>
+            <%= if @path_data == "" do %>
+              <div
+                class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg"
+                id="empty-chart"
+              >
+                <.icon name="hero-presentation-chart-line" class="h-12 w-12 text-zinc-400 mb-2" />
+                <p class="text-sm text-zinc-500 dark:text-zinc-400">
+                  {gettext("No power readings logged for this day.")}
+                </p>
+              </div>
+            <% else %>
+              <div class="relative w-full overflow-hidden" id="solar-chart-container">
+                <!-- Chart SVG -->
+                <svg viewBox="0 0 800 280" class="w-full h-auto overflow-visible" id="solar-chart-svg">
+                  <defs>
+                    <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#10b981" stop-opacity="0.25" />
+                      <stop offset="100%" stop-color="#10b981" stop-opacity="0.00" />
+                    </linearGradient>
+                  </defs>
+
+                  <!-- Grid Lines -->
+                  <line
+                    x1="0"
+                    y1="20"
+                    x2="800"
+                    y2="20"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                  />
+                  <line
+                    x1="0"
+                    y1="77.5"
+                    x2="800"
+                    y2="77.5"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                  />
+                  <line
+                    x1="0"
+                    y1="135"
+                    x2="800"
+                    y2="135"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                    stroke-dasharray="4"
+                  />
+                  <line
+                    x1="0"
+                    y1="192.5"
+                    x2="800"
+                    y2="192.5"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                  />
+                  <line
+                    x1="0"
+                    y1="250"
+                    x2="800"
+                    y2="250"
+                    stroke="#e4e4e7"
+                    class="dark:stroke-zinc-600"
+                    stroke-width="1.5"
+                  />
+
+                  <!-- Y-Axis Labels -->
+                  <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">{@y_max} W</text>
+                  <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">
+                    {div(round(@y_max), 2)} W
+                  </text>
+                  <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
+
+                  <!-- X-Axis Labels (Time slots) -->
+                  <text
+                    x="0"
+                    y="270"
+                    class="text-[10px] font-medium fill-zinc-400"
+                    text-anchor="start"
+                  >
+                    00:00
+                  </text>
+                  <text
+                    x="200"
+                    y="270"
+                    class="text-[10px] font-medium fill-zinc-400"
+                    text-anchor="middle"
+                  >
+                    06:00
+                  </text>
+                  <text
+                    x="400"
+                    y="270"
+                    class="text-[10px] font-medium fill-zinc-400"
+                    text-anchor="middle"
+                  >
+                    12:00
+                  </text>
+                  <text
+                    x="600"
+                    y="270"
+                    class="text-[10px] font-medium fill-zinc-400"
+                    text-anchor="middle"
+                  >
+                    18:00
+                  </text>
+                  <text
+                    x="800"
+                    y="270"
+                    class="text-[10px] font-medium fill-zinc-400"
+                    text-anchor="end"
+                  >
+                    24:00
+                  </text>
+
+                  <!-- Line paths -->
+                  <path d={@area_path_data} fill="url(#chartGrad)" />
+                  <path
+                    d={@path_data}
+                    fill="none"
+                    stroke="#10b981"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </div>
+            <% end %>
           <% else %>
-            <div class="relative w-full overflow-hidden" id="solar-chart-container">
-              <!-- Chart SVG -->
-              <svg viewBox="0 0 800 280" class="w-full h-auto overflow-visible" id="solar-chart-svg">
-                <defs>
-                  <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="#10b981" stop-opacity="0.25"/>
-                    <stop offset="100%" stop-color="#10b981" stop-opacity="0.00"/>
-                  </linearGradient>
-                </defs>
+            <!-- Bar Chart -->
+            <%= if Enum.all?(@bars, &(&1.value == 0.0)) do %>
+              <div
+                class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg"
+                id="empty-chart"
+              >
+                <.icon name="hero-presentation-chart-bar" class="h-12 w-12 text-zinc-400 mb-2" />
+                <p class="text-sm text-zinc-500 dark:text-zinc-400">
+                  {gettext("No yield records logged for this period.")}
+                </p>
+              </div>
+            <% else %>
+              <div class="relative w-full overflow-hidden" id="solar-chart-container">
+                <svg viewBox="0 0 800 250" class="w-full h-auto overflow-visible" id="solar-chart-svg">
+                  <defs>
+                    <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#10b981" stop-opacity="0.85" />
+                      <stop offset="100%" stop-color="#047857" stop-opacity="0.95" />
+                    </linearGradient>
+                  </defs>
 
-                <!-- Grid Lines -->
-                <line x1="0" y1="20" x2="800" y2="20" stroke="#f4f4f5" class="dark:stroke-zinc-700" stroke-width="1" />
-                <line x1="0" y1="77.5" x2="800" y2="77.5" stroke="#f4f4f5" class="dark:stroke-zinc-700" stroke-width="1" />
-                <line x1="0" y1="135" x2="800" y2="135" stroke="#f4f4f5" class="dark:stroke-zinc-700" stroke-width="1" stroke-dasharray="4" />
-                <line x1="0" y1="192.5" x2="800" y2="192.5" stroke="#f4f4f5" class="dark:stroke-zinc-700" stroke-width="1" />
-                <line x1="0" y1="250" x2="800" y2="250" stroke="#e4e4e7" class="dark:stroke-zinc-600" stroke-width="1.5" />
+                  <!-- Grid Lines -->
+                  <line
+                    x1="0"
+                    y1="20"
+                    x2="800"
+                    y2="20"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                  />
+                  <line
+                    x1="0"
+                    y1="120"
+                    x2="800"
+                    y2="120"
+                    stroke="#f4f4f5"
+                    class="dark:stroke-zinc-700"
+                    stroke-width="1"
+                    stroke-dasharray="4"
+                  />
+                  <line
+                    x1="0"
+                    y1="220"
+                    x2="800"
+                    y2="220"
+                    stroke="#e4e4e7"
+                    class="dark:stroke-zinc-600"
+                    stroke-width="1.5"
+                  />
 
-                <!-- Y-Axis Labels -->
-                <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">{@y_max} W</text>
-                <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">{div(round(@y_max), 2)} W</text>
-                <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
+                  <!-- Y-Axis Labels -->
+                  <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">{@y_max} kWh</text>
+                  <text x="5" y="128" class="text-[10px] font-medium fill-zinc-400">
+                    {Float.round(@y_max / 2, 2)} kWh
+                  </text>
+                  <text x="5" y="215" class="text-[10px] font-medium fill-zinc-400">0 kWh</text>
 
-                <!-- X-Axis Labels (Time slots) -->
-                <text x="0" y="270" class="text-[10px] font-medium fill-zinc-400" text-anchor="start">00:00</text>
-                <text x="200" y="270" class="text-[10px] font-medium fill-zinc-400" text-anchor="middle">06:00</text>
-                <text x="400" y="270" class="text-[10px] font-medium fill-zinc-400" text-anchor="middle">12:00</text>
-                <text x="600" y="270" class="text-[10px] font-medium fill-zinc-400" text-anchor="middle">18:00</text>
-                <text x="800" y="270" class="text-[10px] font-medium fill-zinc-400" text-anchor="end">24:00</text>
-
-                <!-- Line paths -->
-                <path d={@area_path_data} fill="url(#chartGrad)" />
-                <path d={@path_data} fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </div>
+                  <!-- Draw Bars -->
+                  <%= for bar <- @bars do %>
+                    <g class="group">
+                      <rect
+                        x={bar.x}
+                        y={bar.y}
+                        width={bar.w}
+                        height={bar.h}
+                        fill="url(#barGrad)"
+                        rx="4"
+                        class="transition-all duration-200 hover:fill-emerald-400 cursor-pointer"
+                      />
+                      <!-- Hover tooltip showing value -->
+                      <text
+                        x={bar.x + bar.w / 2}
+                        y={max(bar.y - 6.0, 15.0)}
+                        text-anchor="middle"
+                        class="text-[9px] font-bold fill-zinc-800 dark:fill-white opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none"
+                      >
+                        {bar.value}
+                      </text>
+                      <!-- X label -->
+                      <text
+                        x={bar.x + bar.w / 2}
+                        y="238"
+                        text-anchor="middle"
+                        class="text-[9px] font-semibold fill-zinc-550 dark:fill-zinc-400"
+                      >
+                        {bar.label}
+                      </text>
+                    </g>
+                  <% end %>
+                </svg>
+              </div>
+            <% end %>
           <% end %>
         </div>
 
         <!-- Devices / Inverters status -->
         <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
           <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4">
-            Device Connection Status
+            {gettext("Device Connection Status")}
           </h2>
-          
+
           <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
             <%= for device <- @devices do %>
-              <div class="border border-zinc-200 dark:border-zinc-700 rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition" id={"device-card-#{device.id}"}>
+              <div
+                class="border border-zinc-200 dark:border-zinc-700 rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition"
+                id={"device-card-#{device.id}"}
+              >
                 <div>
                   <div class="flex items-center justify-between">
                     <h3 class="text-md font-semibold text-zinc-900 dark:text-white">{device.name}</h3>
                     <span class={[
                       "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-                      if(device.online, do: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400", else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400")
+                      if(device.online,
+                        do:
+                          "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
+                        else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
+                      )
                     ]}>
-                      {if device.online, do: "online", else: "offline"}
+                      {if device.online, do: gettext("online"), else: gettext("offline")}
                     </span>
                   </div>
                   <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
-                    <p><span class="font-medium text-zinc-700 dark:text-zinc-300">Firmware:</span> {device.kind |> Atom.to_string() |> String.upcase()}</p>
-                    <p><span class="font-medium text-zinc-700 dark:text-zinc-300">Base Topic:</span> {device.base_topic}</p>
-                    <p><span class="font-medium text-zinc-700 dark:text-zinc-300">Last seen:</span> {if device.last_seen_at, do: Calendar.strftime(device.last_seen_at, "%Y-%m-%d %H:%M:%S UTC"), else: "never"}</p>
+                    <p>
+                      <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext("Firmware:")}</span> {device.kind
+                      |> Atom.to_string()
+                      |> String.upcase()}
+                    </p>
+                    <p>
+                      <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
+                        "Base Topic:"
+                      )}</span> {device.base_topic}
+                    </p>
+                    <p>
+                      <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
+                        "Last seen:"
+                      )}</span> {if device.last_seen_at,
+                        do: Calendar.strftime(device.last_seen_at, "%Y-%m-%d %H:%M:%S UTC"),
+                        else: gettext("never")}
+                    </p>
                   </div>
                 </div>
                 <div class="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-700/60 flex items-center justify-between text-xs text-zinc-400">
-                  <span>MQTT Username: {device.mqtt_username}</span>
+                  <span>{gettext("MQTT Username:")} {device.mqtt_username}</span>
                 </div>
               </div>
             <% end %>

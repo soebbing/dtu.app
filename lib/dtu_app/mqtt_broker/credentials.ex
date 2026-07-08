@@ -36,20 +36,28 @@ defmodule DtuApp.MqttBroker.Credentials do
   """
   @spec verify(String.t() | nil, String.t() | nil) :: {:ok, map()} | {:error, :unauthorized}
   def verify(username, password) when is_binary(username) and is_binary(password) do
-    case :ets.lookup(:mqtt_credentials, username) do
-      [{^username, hash}] ->
-        if Argon2.verify_pass(password, hash) do
-          case :ets.lookup(:mqtt_devices, username) do
-            [{^username, device}] -> {:ok, device}
-            [] -> {:error, :unauthorized}
+    # The ETS tables are owned by this module's GenServer. If the broker is
+    # disabled (e.g. test env), the tables don't exist — treat that as
+    # "no credentials known" rather than crashing the caller.
+    if table_exists?(:mqtt_credentials) do
+      case :ets.lookup(:mqtt_credentials, username) do
+        [{^username, hash}] ->
+          if Argon2.verify_pass(password, hash) do
+            case :ets.lookup(:mqtt_devices, username) do
+              [{^username, device}] -> {:ok, device}
+              [] -> {:error, :unauthorized}
+            end
+          else
+            {:error, :unauthorized}
           end
-        else
-          {:error, :unauthorized}
-        end
 
-      [] ->
-        Argon2.no_user_verify()
-        {:error, :unauthorized}
+        [] ->
+          Argon2.no_user_verify()
+          {:error, :unauthorized}
+      end
+    else
+      Argon2.no_user_verify()
+      {:error, :unauthorized}
     end
   end
 
@@ -116,10 +124,13 @@ defmodule DtuApp.MqttBroker.Credentials do
     try do
       Repo.all(Dtu)
       |> Enum.each(&insert_device/1)
+
       Logger.info("[CredentialsCache] loaded devices into ETS")
     rescue
       _ ->
-        Logger.warning("[CredentialsCache] Could not seed cache, table 'dtus' might not exist yet")
+        Logger.warning(
+          "[CredentialsCache] Could not seed cache, table 'dtus' might not exist yet"
+        )
     end
   end
 
@@ -135,5 +146,9 @@ defmodule DtuApp.MqttBroker.Credentials do
     }
 
     :ets.insert(:mqtt_devices, {device.mqtt_username, device_info})
+  end
+
+  defp table_exists?(name) do
+    Enum.member?(:ets.all(), name)
   end
 end

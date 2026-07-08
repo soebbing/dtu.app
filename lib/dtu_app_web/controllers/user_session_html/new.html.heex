@@ -15,7 +15,10 @@
       </p>
     </div>
 
-    <div :if={local_mail_adapter?()} class="alert alert-info py-2 px-3 text-xs rounded-lg">
+    <div
+      :if={local_mail_adapter?()}
+      class="flex items-start gap-2 rounded-lg border border-sky-200 dark:border-sky-900 bg-sky-50 dark:bg-sky-950/30 px-3 py-2 text-xs text-sky-800 dark:text-sky-200"
+    >
       <.icon name="hero-information-circle" class="size-4 shrink-0" />
       <div>
         <p class="font-medium">You are running the local mail adapter.</p>
@@ -26,7 +29,14 @@
     </div>
 
     <!-- Password form is default -->
-    <.form :let={f} for={@form} as={:user} id="login_form_password" action={~p"/users/log-in"} class="space-y-4">
+    <.form
+      :let={f}
+      for={@form}
+      as={:user}
+      id="login_form_password"
+      action={~p"/users/log-in"}
+      class="space-y-4"
+    >
       <.input
         readonly={!!@current_scope}
         field={f[:email]}
@@ -43,9 +53,13 @@
         autocomplete="current-password"
         spellcheck="false"
       />
-      
+
       <div class="pt-2">
-        <.button class="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2 rounded-lg transition" name={@form[:remember_me].name} value="true">
+        <.button
+          class="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2 rounded-lg transition"
+          name={@form[:remember_me].name}
+          value="true"
+        >
           Log in and stay logged in <span aria-hidden="true">→</span>
         </.button>
       </div>
@@ -57,7 +71,14 @@
       <div class="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
     </div>
 
-    <.form :let={f} for={@form} as={:user} id="login_form_magic" action={~p"/users/log-in"} class="space-y-4">
+    <.form
+      :let={f}
+      for={@form}
+      as={:user}
+      id="login_form_magic"
+      action={~p"/users/log-in"}
+      class="space-y-4"
+    >
       <.input
         readonly={!!@current_scope}
         field={f[:email]}

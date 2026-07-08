@@ -1,15 +1,14 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
   <div class="flex items-center justify-between">
     <h1 class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-      DTUs
+      {gettext("DTUs")}
     </h1>
     <.link
       :if={@live_action == :index}
       patch={~p"/devices/new"}
       class="inline-flex items-center gap-1.5 rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
     >
-      <.icon name="hero-plus-mini" class="size-4" />
-      Add DTU
+      <.icon name="hero-plus-mini" class="size-4" /> {gettext("Add DTU")}
     </.link>
   </div>
 
@@ -18,8 +17,8 @@
     phx-update="stream"
     class="divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800"
   >
-    <div class="hidden only:block px-4 py-8 text-center text-sm text-zinc-500">
-      No DTUs yet. Add one to start receiving telemetry.
+    <div id="no-devices-empty-state" class="hidden only:block px-4 py-8 text-center text-sm text-zinc-500">
+      {gettext("No DTUs yet. Add one to start receiving telemetry.")}
     </div>
     <div
       :for={{dom_id, device} <- @streams.devices}
@@ -36,7 +35,7 @@
                 else: "bg-zinc-300 dark:bg-zinc-600"
               )
             ]}
-            title={if(device.online, do: "online", else: "offline")}
+            title={if(device.online, do: gettext("online"), else: gettext("offline"))}
           />
           <p class="truncate font-medium text-zinc-900 dark:text-zinc-100">
             {device.name}
@@ -51,7 +50,7 @@
           patch={~p"/devices/#{device}/edit"}
           class="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
         >
-          Edit
+          {gettext("Edit")}
         </.link>
         <button
           phx-click="confirm_delete"
@@ -59,15 +58,18 @@
           id={"btn-delete-#{device.id}"}
           class="font-medium text-rose-600 hover:text-rose-500 transition"
         >
-          Remove
+          {gettext("Remove")}
         </button>
       </div>
     </div>
   </div>
 
-  <div :if={@live_action in [:new, :edit]} class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5">
+  <div
+    :if={@live_action in [:new, :edit]}
+    class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5"
+  >
     <h2 class="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{@page_title}</h2>
-    <p class="mt-1 text-sm text-zinc-500">Configure how this DTU connects over MQTT.</p>
+    <p class="mt-1 text-sm text-zinc-500">{gettext("Configure how this DTU connects over MQTT.")}</p>
 
     <.form
       for={@form}
@@ -76,57 +78,71 @@
       phx-change="validate"
       phx-submit="save"
     >
-      <.input field={@form[:name]} type="text" label="Name" placeholder="Roof inverter" />
+      <.input field={@form[:name]} type="text" label={gettext("Name")} placeholder="Roof inverter" />
 
       <.input
         field={@form[:kind]}
         type="select"
-        label="Firmware"
-        prompt="Select firmware"
+        label={gettext("Firmware")}
+        prompt={gettext("Select firmware")}
         options={[{"OpenDTU", "opendtu"}, {"AhoyDTU", "ahoydtu"}]}
       />
 
       <%= if @live_action == :edit do %>
         <div class="space-y-3 bg-zinc-50 dark:bg-zinc-800/40 p-4 rounded-lg border border-zinc-200/60 dark:border-zinc-700/60 text-sm">
-          <p class="font-medium text-zinc-900 dark:text-zinc-100">MQTT Connection Details</p>
-          <p class="text-xs text-zinc-500">Configure your physical DTU hardware using these system-generated settings.</p>
-          
+          <p class="font-medium text-zinc-900 dark:text-zinc-100">{gettext("MQTT Connection Details")}</p>
+          <p class="text-xs text-zinc-500">
+            {gettext("Configure your physical DTU hardware using these system-generated settings.")}
+          </p>
+
           <div class="grid grid-cols-3 gap-2 pt-2">
-            <span class="text-zinc-500 font-medium">MQTT Username:</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold" id="copy-mqtt-username">{@device.mqtt_username}</span>
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Username:")}</span>
+            <span
+              class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold"
+              id="copy-mqtt-username"
+            >{@device.mqtt_username}</span>
 
-            <span class="text-zinc-500 font-medium">MQTT Password:</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold" id="copy-mqtt-password">{@device.mqtt_password}</span>
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Password:")}</span>
+            <span
+              class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold"
+              id="copy-mqtt-password"
+            >{@device.mqtt_password}</span>
 
-            <span class="text-zinc-500 font-medium">Base Topic:</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold" id="copy-base-topic">{@device.base_topic}</span>
+            <span class="text-zinc-500 font-medium">{gettext("Base Topic:")}</span>
+            <span
+              class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold"
+              id="copy-base-topic"
+            >{@device.base_topic}</span>
           </div>
         </div>
       <% end %>
 
       <div class="flex items-center gap-4 pt-2">
-        <.button phx-disable-with="Saving..." variant="primary">Save</.button>
+        <.button phx-disable-with={gettext("Saving...")} variant="primary">{gettext("Save")}</.button>
         <.link
           patch={~p"/devices"}
           class="text-sm font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400"
         >
-          Cancel
+          {gettext("Cancel")}
         </.link>
       </div>
     </.form>
   </div>
 
   <%= if @deleting_device do %>
-    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/60 backdrop-blur-sm" id="confirm-delete-modal">
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/60 backdrop-blur-sm"
+      id="confirm-delete-modal"
+    >
       <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-xl space-y-4">
         <div class="flex items-start gap-3">
           <div class="p-2 bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-450 rounded-lg">
             <.icon name="hero-exclamation-triangle" class="h-6 w-6" />
           </div>
           <div>
-            <h3 class="text-lg font-bold text-zinc-900 dark:text-white">Delete DTU</h3>
+            <h3 class="text-lg font-bold text-zinc-900 dark:text-white">{gettext("Delete DTU")}</h3>
             <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-              Are you sure you want to delete <span class="font-semibold text-zinc-800 dark:text-zinc-200">{@deleting_device.name}</span>? This action cannot be undone and all logged telemetry readings will be permanently removed.
+              {gettext("Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed.", name: @deleting_device.name)}
             </p>
           </div>
         </div>
@@ -137,7 +153,7 @@
             id="btn-cancel-delete"
             class="px-4 py-2 border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 hover:bg-zinc-50 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 text-sm font-semibold rounded-lg transition"
           >
-            Cancel
+            {gettext("Cancel")}
           </button>
           <button
             phx-click="delete"
@@ -145,10 +161,92 @@
             id="btn-confirm-delete"
             class="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-sm font-semibold rounded-lg transition shadow-sm shadow-rose-500/10"
           >
-            Confirm Delete
+            {gettext("Confirm Delete")}
           </button>
         </div>
       </div>
     </div>
   <% end %>
-</Layouts.app>
+
+  <%= if @created_device do %>
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/60 backdrop-blur-sm"
+      id="created-device-modal"
+    >
+      <div class="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-xl space-y-4">
+        <div class="flex items-start gap-3">
+          <div class="p-2 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-450 rounded-lg">
+            <.icon name="hero-check-circle" class="h-6 w-6" />
+          </div>
+          <div class="flex-1 min-w-0">
+            <h3 class="text-lg font-bold text-zinc-900 dark:text-white" id="created-device-modal-title">
+              {gettext("DTU Configured Successfully!")}
+            </h3>
+            <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
+              {gettext("To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:", kind: @created_device.kind |> Atom.to_string() |> String.capitalize())}
+            </p>
+          </div>
+        </div>
+
+        <div class="space-y-3 bg-zinc-50 dark:bg-zinc-800/40 p-4 rounded-xl border border-zinc-200/60 dark:border-zinc-700/60 text-sm">
+          <div class="grid grid-cols-3 gap-2">
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Broker / Server:")}</span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
+              localhost <span class="text-zinc-400 font-normal">({gettext("or your server's domain/IP")})</span>
+            </span>
+
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Port:")}</span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
+              1883
+            </span>
+
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Username:")}</span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
+              {@created_device.mqtt_username}
+            </span>
+
+            <span class="text-zinc-500 font-medium">{gettext("MQTT Password:")}</span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
+              {@created_device.mqtt_password}
+            </span>
+
+            <span class="text-zinc-500 font-medium">{gettext("Base Topic:")}</span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
+              {@created_device.base_topic}
+            </span>
+          </div>
+        </div>
+
+        <div class="border-t border-zinc-200 dark:border-zinc-800 pt-3">
+          <h4 class="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+            {gettext("Hardware setup instructions:")}
+          </h4>
+          <ul class="mt-2 space-y-1 text-xs text-zinc-500 list-disc list-inside">
+            <li>
+              {gettext("Open your DTU's web interface in a browser.")}
+            </li>
+            <li>
+              {gettext("Navigate to Settings -> MQTT.")}
+            </li>
+            <li>
+              {gettext("Fill in the server details, username, password, and base topic as shown above.")}
+            </li>
+            <li>
+              {gettext("Ensure MQTT is enabled, save and reboot the DTU.")}
+            </li>
+          </ul>
+        </div>
+
+        <div class="flex justify-end pt-2">
+          <button
+            phx-click="close_created_modal"
+            id="btn-close-created-modal"
+            class="px-4 py-2 bg-zinc-900 hover:bg-zinc-700 dark:bg-zinc-100 dark:hover:bg-zinc-300 text-white dark:text-zinc-900 text-sm font-semibold rounded-lg transition shadow-sm"
+          >
+            {gettext("Dismiss")}
+          </button>
+        </div>
+      </div>
+    </div>
+  <% end %>
+</Layouts.app>>

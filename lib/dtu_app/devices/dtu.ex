@@ -60,9 +60,13 @@ defmodule DtuApp.Devices.Dtu do
     username = Map.get(attrs, :mqtt_username) || Map.get(attrs, "mqtt_username")
     password = Map.get(attrs, :mqtt_password) || Map.get(attrs, "mqtt_password")
 
-    username = username || ("dtu_" <> Base.hex_encode32(:crypto.strong_rand_bytes(8), case: :lower, padding: false))
-    password = password || Base.hex_encode32(:crypto.strong_rand_bytes(12), case: :lower, padding: false)
-    
+    username =
+      username ||
+        "dtu_" <> Base.hex_encode32(:crypto.strong_rand_bytes(8), case: :lower, padding: false)
+
+    password =
+      password || Base.hex_encode32(:crypto.strong_rand_bytes(12), case: :lower, padding: false)
+
     changeset
     |> put_change(:mqtt_username, username)
     |> put_change(:mqtt_password, password)

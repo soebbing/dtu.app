@@ -11,6 +11,7 @@ defmodule DtuAppWeb.DeviceLive.Index do
      socket
      |> stream(:devices, Devices.list_devices(socket.assigns.current_scope.user))
      |> assign(:deleting_device, nil)
+     |> assign(:created_device, nil)
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
   end
 
@@ -23,7 +24,7 @@ defmodule DtuAppWeb.DeviceLive.Index do
 
   defp apply_action(socket, :new, _params) do
     socket
-    |> assign(:page_title, "Add DTU")
+    |> assign(:page_title, gettext("Add DTU"))
     |> assign_form(Devices.change_device(socket.assigns.current_scope.user))
   end
 
@@ -31,7 +32,7 @@ defmodule DtuAppWeb.DeviceLive.Index do
     device = Devices.get_device!(socket.assigns.current_scope.user, id)
 
     socket
-    |> assign(:page_title, "Edit DTU")
+    |> assign(:page_title, gettext("Edit DTU"))
     |> assign(:device, device)
     |> assign_form(Devices.change_device(socket.assigns.current_scope.user, device))
   end
@@ -39,7 +40,11 @@ defmodule DtuAppWeb.DeviceLive.Index do
   @impl true
   def handle_event("validate", %{"dtu" => dtu_params}, socket) do
     changeset =
-      Devices.change_device(socket.assigns.current_scope.user, dtu_changeset_target(socket), dtu_params)
+      Devices.change_device(
+        socket.assigns.current_scope.user,
+        dtu_changeset_target(socket),
+        dtu_params
+      )
 
     {:noreply, assign_form(socket, changeset)}
   end
@@ -57,6 +62,10 @@ defmodule DtuAppWeb.DeviceLive.Index do
     {:noreply, assign(socket, :deleting_device, nil)}
   end
 
+  def handle_event("close_created_modal", _params, socket) do
+    {:noreply, assign(socket, :created_device, nil)}
+  end
+
   def handle_event("delete", %{"id" => id}, socket) do
     device = Devices.get_device!(socket.assigns.current_scope.user, id)
     {:ok, _} = Devices.delete_device(device)
@@ -65,7 +74,7 @@ defmodule DtuAppWeb.DeviceLive.Index do
      socket
      |> stream_delete(:devices, device)
      |> assign(:deleting_device, nil)
-     |> put_flash(:info, "DTU removed")}
+     |> put_flash(:info, gettext("DTU removed"))}
   end
 
   defp save_device(%{assigns: %{live_action: :new}} = socket, _action, dtu_params) do
@@ -74,7 +83,8 @@ defmodule DtuAppWeb.DeviceLive.Index do
         {:noreply,
          socket
          |> stream_insert(:devices, device, at: 0)
-         |> put_flash(:info, "DTU added")
+         |> put_flash(:info, gettext("DTU added"))
+         |> assign(:created_device, device)
          |> push_patch(to: ~p"/devices")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
@@ -82,13 +92,17 @@ defmodule DtuAppWeb.DeviceLive.Index do
     end
   end
 
-  defp save_device(%{assigns: %{live_action: :edit, device: device}} = socket, _action, dtu_params) do
+  defp save_device(
+         %{assigns: %{live_action: :edit, device: device}} = socket,
+         _action,
+         dtu_params
+       ) do
     case Devices.update_device(device, dtu_params) do
       {:ok, updated} ->
         {:noreply,
          socket
          |> stream_insert(:devices, updated)
-         |> put_flash(:info, "DTU updated")
+         |> put_flash(:info, gettext("DTU updated"))
          |> push_patch(to: ~p"/devices")}
 
       {:error, %Ecto.Changeset{} = changeset} ->

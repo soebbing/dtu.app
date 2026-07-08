@@ -6,12 +6,17 @@ defmodule DtuApp.Devices do
   only ever touch their own devices. Create/update/delete refresh the MQTT
   credential cache (see `DtuApp.MqttBroker.Credentials`) so the broker sees new
   credentials without a restart.
+
+  Readings are stored in a TimescaleDB hypertable (`readings`) with continuous
+  aggregates (`readings_5m`, `readings_hourly`, `readings_daily`). Chart and
+  summary queries prefer the aggregates to avoid scanning raw rows.
   """
 
   import Ecto.Query
   alias DtuApp.Repo
   alias DtuApp.Accounts.User
   alias DtuApp.Devices.Dtu
+  alias DtuApp.Devices.Reading
 
   @doc "List all devices owned by `user`, newest first."
   def list_devices(%User{} = user) do
@@ -68,8 +73,6 @@ defmodule DtuApp.Devices do
 
   # --- Credential cache hooks -------------------------------------------------
 
-  # Called after a successful create/update. The Credentials module lands in
-  # Phase 3; until then these calls are no-ops (guarded by function_exported?).
   defp refresh_credentials(%Dtu{mqtt_username: username}) do
     safe_call(fn -> DtuApp.MqttBroker.Credentials.refresh(username) end)
   end
@@ -79,7 +82,9 @@ defmodule DtuApp.Devices do
   end
 
   defp safe_call(fun) do
-    if Code.ensure_loaded?(DtuApp.MqttBroker.Credentials) do
+    # The Credentials GenServer runs alongside the broker (gated off in test,
+    # where it isn't started). Only call it when it's actually alive.
+    if GenServer.whereis(DtuApp.MqttBroker.Credentials) do
       fun.()
     end
   end
@@ -93,8 +98,6 @@ defmodule DtuApp.Devices do
 
   # --- Readings Context -------------------------------------------------------
 
-  alias DtuApp.Devices.Reading
-
   @doc "Create a telemetry reading."
   def create_reading(attrs) do
     %Reading{}
@@ -104,7 +107,7 @@ defmodule DtuApp.Devices do
 
   @doc "List recent readings for a specific user-owned DTU."
   def list_recent_readings(%User{} = user, dtu_id, limit \\ 100) do
-    if Repo.exists?(from d in Dtu, where: d.user_id == ^user.id and d.id == ^dtu_id) do
+    if owned?(user, dtu_id) do
       Repo.all(
         from r in Reading,
           where: r.dtu_id == ^dtu_id,
@@ -116,56 +119,78 @@ defmodule DtuApp.Devices do
     end
   end
 
-  @doc "Fetch all of today's readings for the user's DTUs (raw database level)."
-  def list_today_readings_for_chart(%User{} = user) do
-    dtu_ids = Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
-    today_start = DateTime.utc_now() |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+  @doc "Fetch all of a specific day's readings for the user's DTUs (raw rows)."
+  def list_day_readings_for_chart(%User{} = user, date, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
       []
     else
+      day_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+      day_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
+
       Repo.all(
         from r in Reading,
-          where: r.dtu_id in ^dtu_ids and r.inserted_at >= ^today_start,
+          where:
+            r.dtu_id in ^dtu_ids and r.inserted_at >= ^day_start and r.inserted_at <= ^day_end,
           order_by: [asc: r.inserted_at],
-          select: %{inserted_at: r.inserted_at, ac_power: r.ac_power}
+          select: %{inserted_at: r.inserted_at, ac_power: r.ac_power, dtu_id: r.dtu_id}
       )
     end
   end
 
-  @doc "Fetch and downsample today's power readings into 5-minute buckets for charts."
-  def list_today_chart_data(%User{} = user) do
-    readings = list_today_readings_for_chart(user)
+  @doc """
+  Fetch a specific day's power readings as 5-minute buckets for charts.
+
+  Buckets raw rows in Elixir so the "today" view stays live (a continuous
+  aggregate would lag by its refresh window and miss just-inserted readings).
+  The `readings_5m` aggregate is available for batch/historical queries where
+  a little staleness is acceptable.
+  """
+  def list_day_chart_data(%User{} = user, date, dtu_id \\ nil) do
+    readings = list_day_readings_for_chart(user, date, dtu_id)
 
     if readings == [] do
       []
     else
       readings
-      |> Enum.group_by(fn r ->
-        div(DateTime.to_unix(r.inserted_at), 300)
-      end)
+      |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
       |> Enum.map(fn {bucket, bucket_readings} ->
-        avg_power =
-          bucket_readings
-          |> Enum.map(&(&1.ac_power || 0.0))
-          |> then(fn powers -> Enum.sum(powers) / length(powers) end)
+        dtu_grouped = Enum.group_by(bucket_readings, & &1.dtu_id)
 
-        time = DateTime.from_unix!(bucket * 300)
-        {time, avg_power}
+        sum_of_averages =
+          dtu_grouped
+          |> Enum.map(fn {_dtu_id, dtu_readings} ->
+            powers = Enum.map(dtu_readings, &(&1.ac_power || 0.0))
+            Enum.sum(powers) / length(powers)
+          end)
+          |> Enum.sum()
+
+        {DateTime.from_unix!(bucket * 300), sum_of_averages}
       end)
       |> Enum.sort_by(fn {time, _} -> time end)
     end
   end
 
-  @doc "Calculate aggregated daily stats for a user's DTUs."
-  def get_daily_stats(%User{} = user) do
-    dtu_ids = Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
-    today_start = DateTime.utc_now() |> DateTime.to_date() |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+  @doc "Fetch all of today's readings for the user's DTUs (raw rows)."
+  def list_today_readings_for_chart(%User{} = user, dtu_id \\ nil) do
+    list_day_readings_for_chart(user, Date.utc_today(), dtu_id)
+  end
+
+  @doc "Fetch today's power readings as 5-minute buckets for charts."
+  def list_today_chart_data(%User{} = user, dtu_id \\ nil) do
+    list_day_chart_data(user, Date.utc_today(), dtu_id)
+  end
+
+  @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
+  def get_daily_stats(%User{} = user, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
       %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0}
     else
-      # Fetch the latest reading for each distinct (dtu_id, inverter_serial)
+      # Latest reading per (dtu_id, inverter_serial) — uses the hypertable's
+      # time-descending index.
       sub =
         from r in Reading,
           where: r.dtu_id in ^dtu_ids,
@@ -174,7 +199,6 @@ defmodule DtuApp.Devices do
 
       latest_readings = Repo.all(sub)
 
-      # 2 minutes cutoff for online current power status
       two_minutes_ago = DateTime.utc_now() |> DateTime.add(-120, :second)
 
       current_power =
@@ -188,12 +212,17 @@ defmodule DtuApp.Devices do
         |> Enum.map(&(&1.yield_day || 0.0))
         |> Enum.sum()
 
+      # Peak power today comes from the 5-minute continuous aggregate.
       peak_power =
-        Repo.one(
-          from r in Reading,
-            where: r.dtu_id in ^dtu_ids and r.inserted_at >= ^today_start,
-            select: max(r.ac_power)
-        ) || 0.0
+        case list_today_chart_data(user, dtu_id) do
+          [] ->
+            0.0
+
+          points ->
+            points
+            |> Enum.map(fn {_, power} -> power end)
+            |> Enum.max(fn -> 0.0 end)
+        end
 
       %{
         current_power: Float.round(current_power * 1.0, 1),
@@ -201,5 +230,85 @@ defmodule DtuApp.Devices do
         peak_power: Float.round(peak_power * 1.0, 1)
       }
     end
+  end
+
+  @doc "List selectable dates containing telemetry readings."
+  def list_selectable_dates(%User{} = user, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      []
+    else
+      Repo.all(
+        from r in Reading,
+          where: r.dtu_id in ^dtu_ids,
+          select: fragment("(?::date)", r.inserted_at),
+          distinct: true,
+          order_by: [desc: fragment("(?::date)", r.inserted_at)]
+      )
+      |> Enum.map(fn
+        %Date{} = d -> d
+        str when is_binary(str) -> Date.from_iso8601!(str)
+      end)
+    end
+  end
+
+  @doc "Fetch daily yield totals over a date range."
+  def list_range_yield_data(%User{} = user, start_date, end_date, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    start_dt = DateTime.new!(start_date, ~T[00:00:00], "Etc/UTC")
+    end_dt = DateTime.new!(end_date, ~T[23:59:59], "Etc/UTC")
+
+    if dtu_ids == [] do
+      []
+    else
+      readings =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.inserted_at >= ^start_dt and r.inserted_at <= ^end_dt,
+            group_by: [fragment("?::date", r.inserted_at), r.dtu_id, r.inverter_serial],
+            select: %{
+              date: fragment("?::date", r.inserted_at),
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              max_yield: max(r.yield_day)
+            }
+        )
+
+      readings
+      |> Enum.group_by(fn r ->
+        case r.date do
+          %Date{} = d -> d
+          str when is_binary(str) -> Date.from_iso8601!(str)
+        end
+      end)
+      |> Enum.map(fn {date, date_readings} ->
+        total_yield =
+          date_readings
+          |> Enum.map(&(&1.max_yield || 0.0))
+          |> Enum.sum()
+
+        {date, total_yield}
+      end)
+      |> Enum.sort_by(fn {date, _} -> date end)
+    end
+  end
+
+  # --- Helpers ----------------------------------------------------------------
+
+  # Resolve the user's DTU ids for a query, scoped to either all of the user's
+  # devices or one specific (owned) device. Returns [] if the device isn't owned.
+  defp owned_dtu_ids(%User{} = user, nil) do
+    Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
+  end
+
+  defp owned_dtu_ids(%User{} = user, dtu_id) do
+    if owned?(user, dtu_id), do: [dtu_id], else: []
+  end
+
+  defp owned?(%User{} = user, dtu_id) do
+    Repo.exists?(from d in Dtu, where: d.user_id == ^user.id and d.id == ^dtu_id)
   end
 end

@@ -1,0 +1,336 @@
+msgid ""
+msgstr ""
+"Language: fr\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Real-Time Solar Telemetry System"
+msgstr "Système de télémétrie solaire en temps réel"
+
+msgid "Visualize and Manage Your"
+msgstr "Visualisez et gérez votre"
+
+msgid "Solar Generation"
+msgstr "Production solaire"
+
+msgid "An open-source multi-tenant telemetry platform designed for OpenDTU and AhoyDTU converters. Securely publish, track, and analyze your solar yield in real-time."
+msgstr "Une plateforme de télémétrie open source multi-locataire conçue pour les onduleurs OpenDTU et AhoyDTU. Publiez, suivez et analysez votre rendement solaire en toute sécurité et en temps réel."
+
+msgid "Go to Dashboard"
+msgstr "Aller au tableau de bord"
+
+msgid "Manage DTUs"
+msgstr "Gérer les DTU"
+
+msgid "Get Started"
+msgstr "Commencer"
+
+msgid "Sign In"
+msgstr "Se connecter"
+
+msgid "System Core Features"
+msgstr "Fonctionnalités clés du système"
+
+msgid "Everything you need to capture, secure, and monitor your PV system telemetry."
+msgstr "Tout ce dont vous avez besoin pour capturer, sécuriser et surveiller la télémétrie de votre système photovoltaïque."
+
+msgid "Isolated Multi-Tenancy"
+msgstr "Multi-locataire isolé"
+
+msgid "Create a secure, private account. Manage one or more DTUs in complete isolation. No other user can view or intercept your generation stats."
+msgstr "Créez un compte privé et sécurisé. Gérez une ou plusieurs DTU en isolation complète. Aucun autre utilisateur ne peut voir ou intercepter vos statistiques de production."
+
+msgid "OpenDTU & AhoyDTU"
+msgstr "OpenDTU & AhoyDTU"
+
+msgid "Full support for both firmware stacks. Ingests nested OpenDTU JSON payloads or buffers AhoyDTU's individual subtopic metrics to write complete database entries."
+msgstr "Prise en charge complète des deux firmwares. Gère les charges utiles JSON OpenDTU imbriquées ou met en mémoire tampon les métriques de sous-sujets individuels d'AhoyDTU pour écrire des entrées de base de données complètes."
+
+msgid "Real-Time Ingestion"
+msgstr "Ingestion en temps réel"
+
+msgid "Telemetry data is published via MQTT directly to our high-performance Elixir broker. Updates are broadcasted instantly to your dashboard LiveView."
+msgstr "Les données de télémétrie sont publiées via MQTT directement sur notre courtier Elixir haute performance. Les mises à jour sont diffusées instantanément sur votre LiveView de tableau de bord."
+
+msgid "Dynamic Power Curve"
+msgstr "Courbe de puissance dynamique"
+
+msgid "Analyze generation patterns with a clean, dynamic SVG chart bucketed into 5-minute averages, displaying today's power curves, yield, and peaks."
+msgstr "Analysez les modèles de production avec un graphique SVG propre et dynamique divisé en moyennes de 5 minutes, affichant les courbes de puissance, le rendement et les pics d'aujourd'hui."
+
+msgid "System-Managed Credentials"
+msgstr "Identifiants gérés par le système"
+
+msgid "Credentials and base topics are defined securely by the system on creation. Read-only tokens are displayed for easy input into your hardware configuration."
+msgstr "Les identifiants et les sujets de base sont définis de manière sécurisée par le système lors de la création. Les jetons en lecture seule sont affichés pour une saisie facile dans la configuration de votre matériel."
+
+msgid "Optimized Persistence"
+msgstr "Persistance optimisée"
+
+msgid "Backed by index-optimized database tables and schema validations, telemetry records are persisted reliably and query speeds are kept constant."
+msgstr "Soutenus par des tables de base de données optimisées par index et des validations de schéma, les enregistrements de télémétrie sont conservés de manière fiable et les vitesses de requête sont maintenues constantes."
+
+msgid "Dashboard"
+msgstr "Tableau de bord"
+
+msgid "DTUs"
+msgstr "DTU"
+
+msgid "Settings"
+msgstr "Paramètres"
+
+msgid "Log out"
+msgstr "Se déconnecter"
+
+msgid "Log in"
+msgstr "Se connecter"
+
+msgid "Register"
+msgstr "S'inscrire"
+
+msgid "PV Power Dashboard"
+msgstr "Tableau de bord de puissance photovoltaïque"
+
+msgid "Real-time and historic generation stats for your solar converter system."
+msgstr "Statistiques de production en temps réel et historiques pour votre système de conversion solaire."
+
+msgid "Manage Devices"
+msgstr "Gérer les appareils"
+
+msgid "Total (All DTUs)"
+msgstr "Total (Toutes les DTU)"
+
+msgid "Today"
+msgstr "Aujourd'hui"
+
+msgid "Historical Day"
+msgstr "Journée historique"
+
+msgid "Historical Week"
+msgstr "Semaine historique"
+
+msgid "Historical Month"
+msgstr "Mois historique"
+
+msgid "Historical Year"
+msgstr "Année historique"
+
+msgid "Select period:"
+msgstr "Sélectionner la période :"
+
+msgid "No historical days available."
+msgstr "Aucun jour historique disponible."
+
+msgid "No historical weeks available."
+msgstr "Aucune semaine historique disponible."
+
+msgid "No historical months available."
+msgstr "Aucun mois historique disponible."
+
+msgid "No historical years available."
+msgstr "Aucune année historique disponible."
+
+msgid "Current Generation"
+msgstr "Génération actuelle"
+
+msgid "Total Yield"
+msgstr "Rendement total"
+
+msgid "Today's Total Yield"
+msgstr "Rendement total d'aujourd'hui"
+
+msgid "Average Power"
+msgstr "Puissance moyenne"
+
+msgid "Daily Average Yield"
+msgstr "Rendement moyen quotidien"
+
+msgid "Peak Power"
+msgstr "Puissance de crête"
+
+msgid "Peak Yield Day"
+msgstr "Jour de rendement maximal"
+
+msgid "on %{date}"
+msgstr "le %{date}"
+
+msgid "Today's Production Curve (Watts)"
+msgstr "Courbe de production d'aujourd'hui (Watts)"
+
+msgid "Production Curve for %{period} (Watts)"
+msgstr "Courbe de production pour %{period} (Watts)"
+
+msgid "Daily Yields for Week starting %{period} (kWh)"
+msgstr "Rendements quotidiens pour la semaine commençant le %{period} (kWh)"
+
+msgid "Daily Yields for month of %{month_year} (kWh)"
+msgstr "Rendements quotidiens pour le mois de %{month_year} (kWh)"
+
+msgid "Monthly Yields for %{year} (kWh)"
+msgstr "Rendements mensuels pour %{year} (kWh)"
+
+msgid "No power readings logged for this day."
+msgstr "Aucun relevé de puissance enregistré pour ce jour."
+
+msgid "No yield records logged for this period."
+msgstr "Aucun enregistrement de rendement pour cette période."
+
+msgid "Device Connection Status"
+msgstr "Statut de connexion des appareils"
+
+msgid "online"
+msgstr "en ligne"
+
+msgid "offline"
+msgstr "hors ligne"
+
+msgid "Firmware:"
+msgstr "Firmware :"
+
+msgid "Base Topic:"
+msgstr "Sujet de base :"
+
+msgid "Last seen:"
+msgstr "Dernière fois vu :"
+
+msgid "never"
+msgstr "jamais"
+
+msgid "MQTT Username:"
+msgstr "Nom d'utilisateur MQTT :"
+
+msgid "Add DTU"
+msgstr "Ajouter une DTU"
+
+msgid "No DTUs yet. Add one to start receiving telemetry."
+msgstr "Aucune DTU pour le moment. Ajoutez-en une pour commencer à recevoir des données de télémétrie."
+
+msgid "Edit"
+msgstr "Modifier"
+
+msgid "Remove"
+msgstr "Supprimer"
+
+msgid "Configure how this DTU connects over MQTT."
+msgstr "Configurez comment cette DTU se connecte via MQTT."
+
+msgid "Name"
+msgstr "Nom"
+
+msgid "Firmware"
+msgstr "Firmware"
+
+msgid "Select firmware"
+msgstr "Sélectionner le firmware"
+
+msgid "MQTT Connection Details"
+msgstr "Détails de connexion MQTT"
+
+msgid "Configure your physical DTU hardware using these system-generated settings."
+msgstr "Configurez votre matériel physique de DTU à l'aide de ces paramètres générés par le système."
+
+msgid "MQTT Password:"
+msgstr "Mot de passe MQTT :"
+
+msgid "Saving..."
+msgstr "Enregistrement..."
+
+msgid "Save"
+msgstr "Enregistrer"
+
+msgid "Cancel"
+msgstr "Annuler"
+
+msgid "Delete DTU"
+msgstr "Supprimer la DTU"
+
+msgid "Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed."
+msgstr "Êtes-vous sûr de vouloir supprimer %{name} ? Cette action est irréversible et tous les relevés de télémétrie enregistrés seront définitivement supprimés."
+
+msgid "Confirm Delete"
+msgstr "Confirmer la suppression"
+
+msgid "Edit DTU"
+msgstr "Modifier la DTU"
+
+msgid "DTU removed"
+msgstr "DTU supprimée"
+
+msgid "DTU added"
+msgstr "DTU ajoutée"
+
+msgid "DTU updated"
+msgstr "DTU mise à jour"
+
+msgid "Year %{year}, Week %{week} (starting %{monday})"
+msgstr "Année %{year}, semaine %{week} (à partir du %{monday})"
+
+msgid "January"
+msgstr "Janvier"
+
+msgid "February"
+msgstr "Février"
+
+msgid "March"
+msgstr "Mars"
+
+msgid "April"
+msgstr "Avril"
+
+msgid "May"
+msgstr "Mai"
+
+msgid "June"
+msgstr "Juin"
+
+msgid "July"
+msgstr "Juillet"
+
+msgid "August"
+msgstr "Août"
+
+msgid "September"
+msgstr "Septembre"
+
+msgid "October"
+msgstr "Octobre"
+
+msgid "November"
+msgstr "Novembre"
+
+msgid "December"
+msgstr "Décembre"
+
+msgid "DTU Configured Successfully!"
+msgstr "Configuration de la DTU réussie !"
+
+msgid "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:"
+msgstr "Pour commencer à envoyer des données de télémétrie, configurez votre matériel %{kind} physique avec les paramètres MQTT suivants :"
+
+msgid "MQTT Broker / Server:"
+msgstr "Courtier / Serveur MQTT :"
+
+msgid "or your server's domain/IP"
+msgstr "ou le domaine/IP de votre serveur"
+
+msgid "MQTT Port:"
+msgstr "Port MQTT :"
+
+msgid "Hardware setup instructions:"
+msgstr "Instructions de configuration du matériel :"
+
+msgid "Open your DTU's web interface in a browser."
+msgstr "Ouvrez l'interface web de votre DTU dans un navigateur."
+
+msgid "Navigate to Settings -> MQTT."
+msgstr "Accédez à Paramètres -> MQTT."
+
+msgid "Fill in the server details, username, password, and base topic as shown above."
+msgstr "Saisissez les détails du serveur, le nom d'utilisateur, le mot de passe et le sujet de base comme indiqué ci-dessus."
+
+msgid "Ensure MQTT is enabled, save and reboot the DTU."
+msgstr "Assurez-vous que MQTT est activé, enregistrez et redémarrez la DTU."
+
+msgid "Dismiss"
+msgstr "Fermer"

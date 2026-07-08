@@ -9,6 +9,9 @@ defmodule DtuApp.MqttBrokerTest do
   alias DtuApp.Devices
 
   setup do
+    # The broker and its Credentials cache are gated off in the test env, so
+    # start the cache here for the auth/parser tests that need it.
+    start_supervised!(DtuApp.MqttBroker.Credentials)
     user = user_fixture()
     {:ok, user: user}
   end
@@ -40,7 +43,9 @@ defmodule DtuApp.MqttBrokerTest do
 
   describe "Telemetry Ingestion & DB Storage" do
     test "parses OpenDTU payload and saves a reading", %{user: user} do
-      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "opendtu-1", base_topic: "solar"})
+      dtu =
+        device_fixture(user, %{kind: "opendtu", mqtt_username: "opendtu-1", base_topic: "solar"})
+
       Credentials.refresh(dtu.mqtt_username)
 
       # Build simulated authenticated device info
@@ -94,7 +99,13 @@ defmodule DtuApp.MqttBrokerTest do
     end
 
     test "parses AhoyDTU payload, buffers, and saves a reading on ac_power trigger", %{user: user} do
-      dtu = device_fixture(user, %{kind: "ahoydtu", mqtt_username: "ahoydtu-1", base_topic: "inverter"})
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-1",
+          base_topic: "inverter"
+        })
+
       Credentials.refresh(dtu.mqtt_username)
 
       device_info = %{
@@ -128,6 +139,43 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.ac_power == 150.0
       assert reading.temperature == 34.5
       assert reading.yield_day == 1.23
+    end
+
+    test "parses AhoyDTU JSON-layout per-channel payload in one uplink", %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-json",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # AhoyDTU "JSON" setting: one JSON object per channel. ch0 carries the
+      # AC-side values plus the calculated DC power total.
+      payload =
+        ~s({"U_AC": 233.3, "P_AC": 320.0, "F_AC": 50.01, "Temp": 41.2,
+            "YieldDay": 2.5, "YieldTotal": 980.0, "P_DC": 330.0})
+
+      msg = {:uplink, "client_json", device_info, "inverter/balcony-inv/ch0", payload}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{ahoy_buffers: %{}})
+
+      assert [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "balcony-inv"
+      assert reading.ac_power == 320.0
+      assert reading.dc_power == 330.0
+      assert reading.frequency == 50.01
+      assert reading.temperature == 41.2
+      assert reading.yield_day == 2.5
+      assert reading.yield_total == 980.0
     end
   end
 end

@@ -50,6 +50,16 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
       page.click('button:has-text("Save")')
     ]);
 
+    // Confirm the success dialog and MQTT configuration instructions are shown
+    await expect(page.locator('#created-device-modal')).toBeVisible();
+    await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!');
+    await expect(page.locator('#created-device-modal')).toContainText('localhost');
+    await expect(page.locator('#created-device-modal')).toContainText('1883');
+
+    // Dismiss the modal
+    await page.click('#btn-close-created-modal');
+    await expect(page.locator('#created-device-modal')).toHaveCount(0);
+
     // Confirm it is listed
     await expect(page.locator('#devices')).toContainText('Garden Inverter');
 
