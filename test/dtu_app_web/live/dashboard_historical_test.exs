@@ -9,27 +9,24 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
   setup :register_and_log_in_user
 
   describe "Historical Dashboard" do
-    test "renders empty states when no data is available", %{conn: conn} do
+    test "shows an empty-state hint when the selected granularity has no data", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # Click Historical Day
-      html = view |> element("#btn-range-day") |> render_click()
-      assert html =~ "No historical days available"
+      # The dashboard boots in live mode; switch granularity to enter history.
+      view |> element("#form-granularity") |> render_change(%{granularity: "day"})
+      assert render(view) =~ "No historical data for this period."
 
-      # Click Historical Week
-      html = view |> element("#btn-range-week") |> render_click()
-      assert html =~ "No historical weeks available"
+      view |> element("#form-granularity") |> render_change(%{granularity: "week"})
+      assert render(view) =~ "No historical data for this period."
 
-      # Click Historical Month
-      html = view |> element("#btn-range-month") |> render_click()
-      assert html =~ "No historical months available"
+      view |> element("#form-granularity") |> render_change(%{granularity: "month"})
+      assert render(view) =~ "No historical data for this period."
 
-      # Click Historical Year
-      html = view |> element("#btn-range-year") |> render_click()
-      assert html =~ "No historical years available"
+      view |> element("#form-granularity") |> render_change(%{granularity: "year"})
+      assert render(view) =~ "No historical data for this period."
     end
 
-    test "renders selectable dropdown options when data is present", %{conn: conn, user: user} do
+    test "renders the seeded day in the stepper when data is present", %{conn: conn, user: user} do
       dtu =
         device_fixture(user, %{
           name: "Historical Inverter",
@@ -53,27 +50,29 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # Select Historical Day range
-      view |> element("#btn-range-day") |> render_click()
-
-      # Select dropdown should contain the option for the seeded day
-      assert has_element?(view, "#select-day")
+      # Switch to Day granularity — the stepper should land on the seeded day.
+      view |> element("#form-granularity") |> render_change(%{granularity: "day"})
+      assert has_element?(view, "#history-picker")
       assert render(view) =~ date_str
 
-      # Select Historical Week range
-      view |> element("#btn-range-week") |> render_click()
-      assert has_element?(view, "#select-week")
+      # The calendar is bounded to the data range: the seeded day is both the
+      # earliest and latest date with data, so min and max both equal it.
+      html = render(view)
+      assert html =~ ~s(min="#{date_str}")
+      assert html =~ ~s(max="#{date_str}")
 
-      # Select Historical Month range
-      view |> element("#btn-range-month") |> render_click()
-      assert has_element?(view, "#select-month")
+      # The other granularities also render without error.
+      view |> element("#form-granularity") |> render_change(%{granularity: "week"})
+      assert has_element?(view, "#history-picker")
 
-      # Select Historical Year range
-      view |> element("#btn-range-year") |> render_click()
-      assert has_element?(view, "#select-year")
+      view |> element("#form-granularity") |> render_change(%{granularity: "month"})
+      assert has_element?(view, "#history-picker")
+
+      view |> element("#form-granularity") |> render_change(%{granularity: "year"})
+      assert has_element?(view, "#history-picker")
     end
 
-    test "filters data when specific period is chosen", %{conn: conn, user: user} do
+    test "stepper + date picker filter data to the chosen day", %{conn: conn, user: user} do
       dtu =
         device_fixture(user, %{
           name: "Historical Inverter",
@@ -107,20 +106,21 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # Go to historical day
-      view |> element("#btn-range-day") |> render_click()
+      # Enter Day granularity, then pick d1 via the calendar input.
+      view |> element("#form-granularity") |> render_change(%{granularity: "day"})
 
-      # Change dropdown to select d1
-      html = view |> element("#form-select-day") |> render_change(%{period: d1_str})
-      # Should show 1.0 kWh yield and peak 100 W
+      html = view |> element("#history-date-input") |> render_change(%{date: d1_str})
       assert html =~ "1.0 kWh"
       assert html =~ "100.0 W"
 
-      # Change dropdown to select d2
-      html = view |> element("#form-select-day") |> render_change(%{period: d2_str})
-      # Should show 5.0 kWh yield and peak 500 W
+      # Pick d2 via the calendar input.
+      html = view |> element("#history-date-input") |> render_change(%{date: d2_str})
       assert html =~ "5.0 kWh"
       assert html =~ "500.0 W"
+
+      # The prev/next stepper moves one day at a time (d2 -> d1).
+      html = view |> element("#btn-history-prev") |> render_click()
+      assert html =~ "1.0 kWh"
     end
   end
 end

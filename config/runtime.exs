@@ -68,6 +68,13 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
+  # Embedded MQTT broker: let compose / production override the listening port
+  # (e.g. to remap 1883) and disable it entirely when MQTT_BROKER_ENABLED=false.
+  # The transport_opts defaults from config/config.exs still apply.
+  config :dtu_app, :mqtt_broker,
+    enabled: System.get_env("MQTT_BROKER_ENABLED", "true") in ~w(true 1),
+    port: String.to_integer(System.get_env("MQTT_BROKER_PORT", "1883"))
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key
@@ -100,21 +107,23 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # ## Configuring the mailer
+  # ## Mailer (Resend)
   #
-  # In production you need to configure the mailer to use a different adapter.
-  # Here is an example configuration for Mailgun:
+  # When RESEND_API_KEY is set, transactional email (magic-link login, email
+  # change confirmation) is sent through the Resend API. Without it the mailer
+  # falls back to Swoosh's in-memory Local adapter, so email is swallowed —
+  # fine for smoke-testing but magic links never arrive.
   #
-  #     config :dtu_app, DtuApp.Mailer,
-  #       adapter: Swoosh.Adapters.Mailgun,
-  #       api_key: System.get_env("MAILGUN_API_KEY"),
-  #       domain: System.get_env("MAILGUN_DOMAIN")
-  #
-  # Most non-SMTP adapters require an API client. Swoosh supports Req, Hackney,
-  # and Finch out-of-the-box. This configuration is typically done at
-  # compile-time in your config/prod.exs:
-  #
-  #     config :swoosh, :api_client, Swoosh.ApiClient.Req
-  #
-  # See https://swoosh.hexdocs.pm/Swoosh.html#module-installation for details.
+  # MAIL_FROM must be an address on a domain verified in your Resend account.
+  # It is read by DtuApp.Accounts.UserNotifier via Application.get_env/2.
+  # Treat a missing or empty RESEND_API_KEY as "not configured" (an empty
+  # string is truthy in Elixir, so we can't rely on `if System.get_env/1`).
+  if System.get_env("RESEND_API_KEY", "") != "" do
+    config :dtu_app, DtuApp.Mailer,
+      adapter: Swoosh.Adapters.Resend,
+      api_key: System.fetch_env!("RESEND_API_KEY")
+  end
+
+  config :dtu_app, :mail_from,
+    System.get_env("MAIL_FROM", "DtuApp <noreply@localhost>")
 end

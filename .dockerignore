@@ -1,0 +1,20 @@
+# Git
+.git
+.gitignore
+
+# Elixir / Phoenix build artifacts
+_build
+deps
+.elixir_ls
+priv/static/assets
+assets/node_modules
+
+# Tests and other development files
+test
+playwright.config.js
+docker-compose.yml
+.env
+.env.example
+Dockerfile
+README.md
+AGENTS.md

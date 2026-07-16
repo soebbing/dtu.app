@@ -1,22 +1,63 @@
-# Local development only.
-# In production the app container joins the existing Traefik network and
-# TimescaleDB runs as its own container/managed instance. See the project plan.
+# Production-style, "docker compose up" deployment.
+#
+# - TimescaleDB runs as its own container (the only DB the app supports).
+# - The app image is the Elixir release from ./Dockerfile. Its entrypoint runs
+#   Ecto migrations on every start, then boots the release serving HTTP on 4000
+#   and the embedded MQTT broker on 1883.
+#
+# Copy .env.example to .env and fill in SECRET_KEY_BASE before bringing this up
+# in anything resembling production:
+#
+#     cp .env.example .env
+#     docker compose up -d --build
+#
+# In a real deployment the app container would additionally join an existing
+# Traefik network (TLS termination) — see the project plan. Locally, HTTP is
+# served directly because prod.exs force_ssl excludes the "localhost" host.
 services:
   db:
     image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: dtu_app_dev
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-dtu_app_prod}
     ports:
       - "5432:5432"
     volumes:
       - dtu_app_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d dtu_app_dev"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-dtu_app_prod}"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "4000:4000"   # Phoenix HTTP / LiveView
+      - "1883:1883"   # embedded MQTT broker (plain TCP; DTUs connect here)
+    environment:
+      PHX_SERVER: "true"
+      PHX_HOST: ${PHX_HOST:-localhost}
+      PORT: "4000"
+      DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-dtu_app_prod}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE must be set — copy .env.example to .env}
+      POOL_SIZE: ${POOL_SIZE:-15}
+      # MQTT broker listens on 1883 inside the container; remap the host side
+      # via the ports mapping above. Set MQTT_BROKER_ENABLED=false to disable.
+      MQTT_BROKER_ENABLED: ${MQTT_BROKER_ENABLED:-true}
+      MQTT_BROKER_PORT: "1883"
+      # Transactional email via Resend. Empty RESEND_API_KEY falls back to the
+      # in-memory mailer (no mail is actually sent).
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
 
 volumes:
   dtu_app_pgdata:

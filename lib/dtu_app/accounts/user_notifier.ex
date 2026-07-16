@@ -9,13 +9,20 @@ defmodule DtuApp.Accounts.UserNotifier do
     email =
       new()
       |> to(recipient)
-      |> from({"DtuApp", "contact@example.com"})
+      |> from(mail_from())
       |> subject(subject)
       |> text_body(body)
 
     with {:ok, _metadata} <- Mailer.deliver(email) do
       {:ok, email}
     end
+  end
+
+  # Sender address, configured via MAIL_FROM (see config/runtime.exs). Must be
+  # on a domain verified by the transactional provider (Resend). Accepts a
+  # plain address ("a@b.com") or a named form ("Name <a@b.com>").
+  defp mail_from do
+    Application.get_env(:dtu_app, :mail_from, "DtuApp <noreply@localhost>")
   end
 
   @doc """

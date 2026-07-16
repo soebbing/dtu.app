@@ -10,6 +10,11 @@ module.exports = defineConfig({
   use: {
     baseURL: 'http://localhost:4000',
     trace: 'on-first-retry',
+    // When PLAYWRIGHT_CHROME is set (e.g. on NixOS, where the Playwright-
+    // bundled chromium can't run), drive that system Chrome for every project.
+    launchOptions: {
+      executablePath: process.env.PLAYWRIGHT_CHROME || undefined,
+    },
   },
   projects: [
     {

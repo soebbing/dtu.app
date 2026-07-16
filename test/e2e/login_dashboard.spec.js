@@ -13,10 +13,12 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
     await page.fill('input[type="email"]', 'test@example.com');
     await page.fill('input[type="password"]', 'password123456');
 
-    // 4. Click submit and wait for navigation
+    // 4. Click submit and wait for navigation.
+    //    The login submit <button> has no explicit type attribute (a bare
+    //    <button> defaults to submit), so match it by its label instead.
     await Promise.all([
       page.waitForNavigation(),
-      page.click('button[type="submit"]')
+      page.click('button:has-text("Log in")')
     ]);
 
     // 5. Should be redirected to the dashboard

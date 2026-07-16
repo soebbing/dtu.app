@@ -18,6 +18,10 @@ defmodule DtuAppWeb.DashboardLive do
       socket
       |> assign(:devices, Devices.list_devices(user))
       |> assign(:selected_dtu_id, nil)
+      # `live` is true for the auto-refreshing Today view.
+      # `granularity` drives the historical stepper (day/week/month/year).
+      |> assign(:live, true)
+      |> assign(:granularity, "day")
       |> assign(:time_range, "today")
       |> assign(:selected_period, nil)
       |> assign_selectable_periods(user, nil)
@@ -30,59 +34,101 @@ defmodule DtuAppWeb.DashboardLive do
   def handle_event("select_dtu", %{"id" => id_str}, socket) do
     selected_id = if id_str == "total", do: nil, else: String.to_integer(id_str)
     user = socket.assigns.current_scope.user
-    time_range = socket.assigns.time_range
 
     socket = assign_selectable_periods(socket, user, selected_id)
 
-    {:noreply,
-     socket
-     |> assign(:selected_dtu_id, selected_id)
-     |> assign_dashboard_data(user, selected_id, time_range, nil)}
+    socket =
+      socket
+      |> assign(:selected_dtu_id, selected_id)
+      |> reapply_current_view(user, selected_id)
+
+    {:noreply, socket}
   end
 
+  # The Today quick-range: switch to the live, auto-refreshing view.
   @impl true
-  def handle_event("select_range", %{"range" => range}, socket) do
+  def handle_event("select_quick_range", %{"range" => "today"}, socket) do
     user = socket.assigns.current_scope.user
     dtu_id = socket.assigns.selected_dtu_id
 
     {:noreply,
      socket
-     |> assign(:time_range, range)
-     |> assign_dashboard_data(user, dtu_id, range, nil)}
+     |> assign(:live, true)
+     |> assign(:time_range, "today")
+     |> assign(:selected_period, nil)
+     |> assign_dashboard_data(user, dtu_id, "today", nil)}
   end
 
+  # Granularity dropdown in the historical stepper (day/week/month/year).
   @impl true
-  def handle_event("select_period", %{"period" => period_str}, socket) do
+  def handle_event("set_granularity", %{"granularity" => granularity}, socket) do
     user = socket.assigns.current_scope.user
     dtu_id = socket.assigns.selected_dtu_id
-    time_range = socket.assigns.time_range
 
-    parsed_period =
-      if time_range == "year" do
-        String.to_integer(period_str)
-      else
-        Date.from_iso8601!(period_str)
-      end
+    # Start the new granularity on the most recent period with data (or today).
+    selectable = selectable_periods_for(socket.assigns, granularity)
+    period = first_period(selectable, granularity)
 
     {:noreply,
      socket
-     |> assign_dashboard_data(user, dtu_id, time_range, parsed_period)}
+     |> assign(:live, false)
+     |> assign(:granularity, granularity)
+     |> assign(:time_range, granularity)
+     |> assign_dashboard_data(user, dtu_id, granularity, period)}
+  end
+
+  # Stepper: move one granularity step backward/forward.
+  @impl true
+  def handle_event("navigate_period", %{"dir" => dir}, socket) do
+    user = socket.assigns.current_scope.user
+    dtu_id = socket.assigns.selected_dtu_id
+    granularity = socket.assigns.granularity
+    current = socket.assigns.selected_period || Date.utc_today()
+
+    period = shift_period(current, granularity, dir)
+
+    {:noreply,
+     socket
+     |> assign(:live, false)
+     |> assign(:time_range, granularity)
+     |> assign_dashboard_data(user, dtu_id, granularity, period)}
+  end
+
+  # Calendar: native <input type=date> picks the anchor date for the granularity.
+  @impl true
+  def handle_event("set_date", %{"date" => date_str}, socket) do
+    user = socket.assigns.current_scope.user
+    dtu_id = socket.assigns.selected_dtu_id
+    granularity = socket.assigns.granularity
+
+    case Date.from_iso8601(date_str) do
+      {:ok, date} ->
+        period = anchor_period(date, granularity)
+
+        {:noreply,
+         socket
+         |> assign(:live, false)
+         |> assign(:time_range, granularity)
+         |> assign_dashboard_data(user, dtu_id, granularity, period)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_info({:reading, _client_id, _reading}, socket) do
     user = socket.assigns.current_scope.user
     selected_id = socket.assigns.selected_dtu_id
-    time_range = socket.assigns.time_range
-    selected_period = socket.assigns.selected_period
 
     socket = assign_selectable_periods(socket, user, selected_id)
 
+    # Only live views refresh on every reading; historical views are static.
     socket =
-      if time_range == "today" do
-        assign_dashboard_data(socket, user, selected_id, "today", nil)
+      if socket.assigns.live do
+        assign_dashboard_data(socket, user, selected_id, socket.assigns.time_range, nil)
       else
-        assign_dashboard_data(socket, user, selected_id, time_range, selected_period)
+        socket
       end
 
     {:noreply, socket}
@@ -206,6 +252,125 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:selectable_weeks, build_selectable_weeks(dates))
     |> assign(:selectable_months, build_selectable_months(dates))
     |> assign(:selectable_years, build_selectable_years(dates))
+  end
+
+  # --- Time-picker helpers ----------------------------------------------------
+
+  # Re-run the dashboard for whichever view is active after a DTU switch.
+  defp reapply_current_view(socket, user, dtu_id) do
+    if socket.assigns.live do
+      assign_dashboard_data(socket, user, dtu_id, socket.assigns.time_range, nil)
+    else
+      assign_dashboard_data(
+        socket,
+        user,
+        dtu_id,
+        socket.assigns.granularity,
+        socket.assigns.selected_period
+      )
+    end
+  end
+
+  # Map a granularity to the prebuilt selectable-period list from assigns.
+  defp selectable_periods_for(assigns, "day"), do: assigns.selectable_days
+  defp selectable_periods_for(assigns, "week"), do: assigns.selectable_weeks
+  defp selectable_periods_for(assigns, "month"), do: assigns.selectable_months
+  defp selectable_periods_for(assigns, "year"), do: assigns.selectable_years
+  defp selectable_periods_for(_assigns, _), do: []
+
+  # First selectable period for a granularity (most recent with data), else today.
+  defp first_period([], "year"), do: Date.utc_today().year
+  defp first_period([], _), do: Date.utc_today()
+  defp first_period([{_label, value} | _], "year"), do: String.to_integer(value)
+  defp first_period([{_label, value} | _], _), do: Date.from_iso8601!(value)
+
+  # Shift a period by one granularity step. "prev"/"next" move backward/forward.
+  defp shift_period(%Date{} = date, "day", dir),
+    do: Date.add(date, if(dir == "next", do: 1, else: -1))
+
+  defp shift_period(%Date{} = date, "week", dir),
+    do: Date.add(date, if(dir == "next", do: 7, else: -7))
+
+  defp shift_period(%Date{} = date, "month", dir) do
+    months = if(dir == "next", do: 1, else: -1)
+    add_months(date, months)
+  end
+
+  defp shift_period(%Date{} = date, "year", dir),
+    do: Date.add(date, if(dir == "next", do: 365, else: -365))
+
+  defp shift_period(year, "year", dir) when is_integer(year),
+    do: year + if(dir == "next", do: 1, else: -1)
+
+  defp shift_period(period, _granularity, _dir), do: period
+
+  defp add_months(date, months) do
+    total = date.year * 12 + (date.month - 1) + months
+    year = div(total, 12)
+    month = rem(total, 12) + 1
+    last_day = Date.new!(year, month, 1) |> Date.end_of_month() |> Map.get(:day)
+    Date.new!(year, month, min(date.day, last_day))
+  end
+
+  # Normalize an arbitrary picked date to the start of the current granularity
+  # (week→Monday, month/year→first day).
+  defp anchor_period(date, "week"),
+    do: Date.add(date, -(Date.day_of_week(date) - 1))
+
+  defp anchor_period(date, "month"), do: Date.new!(date.year, date.month, 1)
+  defp anchor_period(date, "year"), do: Date.new!(date.year, 1, 1)
+  defp anchor_period(date, _), do: date
+
+  # Human-readable label for the stepper's current position.
+  defp stepper_label(%Date{} = date, "day"), do: Calendar.strftime(date, "%a %b %-d, %Y")
+
+  defp stepper_label(%Date{} = date, "week"),
+    do: gettext("Week of %{date}", date: Calendar.strftime(date, "%b %-d, %Y"))
+
+  defp stepper_label(%Date{} = date, "month"), do: Calendar.strftime(date, "%B %Y")
+  defp stepper_label(%Date{} = date, "year"), do: to_string(date.year)
+  defp stepper_label(year, _), do: to_string(year)
+
+  # Value for the native date input (yyyy-mm-dd).
+  defp date_input_value(%Date{} = date), do: Date.to_iso8601(date)
+
+  defp date_input_value(year) when is_integer(year),
+    do: Date.new!(year, 1, 1) |> Date.to_iso8601()
+
+  defp date_input_value(_), do: Date.utc_today() |> Date.to_iso8601()
+
+  # Earliest date with data, for the calendar's `min` bound (yyyy-mm-dd, or nil).
+  defp date_min_bound([]), do: nil
+  defp date_min_bound(dates), do: dates |> Enum.min(Date) |> Date.to_iso8601()
+
+  # Latest date with data, for the calendar's `max` bound.
+  defp date_max_bound([]), do: nil
+  defp date_max_bound(dates), do: dates |> Enum.max(Date) |> Date.to_iso8601()
+
+  # True when the current historical granularity has no data to show.
+  defp historical_empty?("day", days, _, _, _), do: days == []
+  defp historical_empty?("week", _, weeks, _, _), do: weeks == []
+  defp historical_empty?("month", _, _, months, _), do: months == []
+  defp historical_empty?("year", _, _, _, years), do: years == []
+  defp historical_empty?(_, _, _, _, _), do: false
+
+  defp quick_range_btn(assigns) do
+    ~H"""
+    <button
+      phx-click="select_quick_range"
+      phx-value-range={@range}
+      id={@id}
+      class={[
+        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+        @active &&
+          "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
+        !@active &&
+          "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
+      ]}
+    >
+      {render_slot(@inner_block)}
+    </button>
+    """
   end
 
   defp build_selectable_days(dates) do
@@ -537,181 +702,89 @@ defmodule DtuAppWeb.DashboardLive do
           <% end %>
 
           <!-- Time Range Tab Selector -->
+          <!-- Quick ranges: live, auto-refreshing views -->
           <div
             class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
-            id="range-switcher"
+            id="quick-range-switcher"
           >
-            <button
-              phx-click="select_range"
-              phx-value-range="today"
-              id="btn-range-today"
-              class={[
-                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                @time_range == "today" &&
-                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                @time_range != "today" &&
-                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-              ]}
-            >
+            <.quick_range_btn id="btn-range-today" range="today" active={@live}>
               {gettext("Today")}
-            </button>
-            <button
-              phx-click="select_range"
-              phx-value-range="day"
-              id="btn-range-day"
-              class={[
-                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                @time_range == "day" &&
-                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                @time_range != "day" &&
-                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-              ]}
-            >
-              {gettext("Historical Day")}
-            </button>
-            <button
-              phx-click="select_range"
-              phx-value-range="week"
-              id="btn-range-week"
-              class={[
-                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                @time_range == "week" &&
-                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                @time_range != "week" &&
-                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-              ]}
-            >
-              {gettext("Historical Week")}
-            </button>
-            <button
-              phx-click="select_range"
-              phx-value-range="month"
-              id="btn-range-month"
-              class={[
-                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                @time_range == "month" &&
-                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                @time_range != "month" &&
-                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-              ]}
-            >
-              {gettext("Historical Month")}
-            </button>
-            <button
-              phx-click="select_range"
-              phx-value-range="year"
-              id="btn-range-year"
-              class={[
-                "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                @time_range == "year" &&
-                  "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                @time_range != "year" &&
-                  "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-              ]}
-            >
-              {gettext("Historical Year")}
-            </button>
+            </.quick_range_btn>
           </div>
 
-          <!-- Dynamic Period Selector Form -->
-          <%= if @time_range != "today" do %>
-            <div
-              class="flex flex-col sm:flex-row sm:items-center gap-3 bg-zinc-150/40 dark:bg-zinc-800/30 p-4 rounded-xl border border-zinc-200 dark:border-zinc-700/70"
-              id="period-selector-panel"
+          <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › -->
+          <div
+            class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
+            id="history-picker"
+          >
+            <button
+              phx-click="navigate_period"
+              phx-value-dir="prev"
+              id="btn-history-prev"
+              aria-label={gettext("Previous period")}
+              class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
             >
-              <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{gettext(
-                "Select period:"
-              )}</span>
+              <.icon name="hero-chevron-left" class="size-4" />
+            </button>
 
-              <%= cond do %>
-                <% @time_range == "day" -> %>
-                  <%= if @selectable_days == [] do %>
-                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
-                      "No historical days available."
-                    )}</span>
-                  <% else %>
-                    <form phx-change="select_period" id="form-select-day">
-                      <select
-                        name="period"
-                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
-                        id="select-day"
-                      >
-                        <%= for {label, value} <- @selectable_days do %>
-                          <option value={value} selected={value == Date.to_string(@selected_period)}>
-                            {label}
-                          </option>
-                        <% end %>
-                      </select>
-                    </form>
-                  <% end %>
-                <% @time_range == "week" -> %>
-                  <%= if @selectable_weeks == [] do %>
-                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
-                      "No historical weeks available."
-                    )}</span>
-                  <% else %>
-                    <form phx-change="select_period" id="form-select-week">
-                      <select
-                        name="period"
-                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
-                        id="select-week"
-                      >
-                        <%= for {label, value} <- @selectable_weeks do %>
-                          <option value={value} selected={value == Date.to_string(@selected_period)}>
-                            {label}
-                          </option>
-                        <% end %>
-                      </select>
-                    </form>
-                  <% end %>
-                <% @time_range == "month" -> %>
-                  <%= if @selectable_months == [] do %>
-                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
-                      "No historical months available."
-                    )}</span>
-                  <% else %>
-                    <form phx-change="select_period" id="form-select-month">
-                      <select
-                        name="period"
-                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
-                        id="select-month"
-                      >
-                        <%= for {label, value} <- @selectable_months do %>
-                          <option value={value} selected={value == Date.to_string(@selected_period)}>
-                            {label}
-                          </option>
-                        <% end %>
-                      </select>
-                    </form>
-                  <% end %>
-                <% @time_range == "year" -> %>
-                  <%= if @selectable_years == [] do %>
-                    <span class="text-sm text-zinc-450 dark:text-zinc-500 italic">{gettext(
-                      "No historical years available."
-                    )}</span>
-                  <% else %>
-                    <form phx-change="select_period" id="form-select-year">
-                      <select
-                        name="period"
-                        class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-3 py-2 focus:ring-emerald-500 focus:border-emerald-500"
-                        id="select-year"
-                      >
-                        <%= for {label, value} <- @selectable_years do %>
-                          <option value={value} selected={value == to_string(@selected_period.year)}>
-                            {label}
-                          </option>
-                        <% end %>
-                      </select>
-                    </form>
-                  <% end %>
-              <% end %>
-            </div>
-          <% end %>
+            <form phx-change="set_granularity" id="form-granularity" class="inline-block">
+              <select
+                name="granularity"
+                id="select-granularity"
+                class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <%= for {label, value} <- [
+                      {gettext("Day"), "day"},
+                      {gettext("Week"), "week"},
+                      {gettext("Month"), "month"},
+                      {gettext("Year"), "year"}
+                    ] do %>
+                  <option value={value} selected={value == @granularity}>
+                    {label}
+                  </option>
+                <% end %>
+              </select>
+            </form>
+
+            <!-- Date label: clicking reveals the native calendar -->
+            <label
+              class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+              title={gettext("Choose date")}
+            >
+              <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
+              <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
+              <input
+                type="date"
+                phx-change="set_date"
+                id="history-date-input"
+                value={date_input_value(@selected_period)}
+                min={date_min_bound(@selectable_dates)}
+                max={date_max_bound(@selectable_dates)}
+                class="absolute inset-0 opacity-0 cursor-pointer"
+              />
+            </label>
+
+            <button
+              phx-click="navigate_period"
+              phx-value-dir="next"
+              id="btn-history-next"
+              aria-label={gettext("Next period")}
+              class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
+            >
+              <.icon name="hero-chevron-right" class="size-4" />
+            </button>
+
+            <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
+              <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
+                {gettext("No historical data for this period.")}
+              </span>
+            <% end %>
+          </div>
         </div>
 
         <!-- Stats Grid -->
         <div class="grid grid-cols-1 gap-5 sm:grid-cols-3">
-          <%= if @time_range == "today" do %>
+          <%= if @live do %>
             <!-- Current Power (Today only) -->
             <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
               <div class="px-4 py-5 sm:p-6">
@@ -773,7 +846,7 @@ defmodule DtuAppWeb.DashboardLive do
 
           <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
           <%= cond do %>
-            <% @time_range == "today" -> %>
+            <% @live -> %>
               <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                 <div class="px-4 py-5 sm:p-6">
                   <div class="flex items-center">
@@ -852,7 +925,7 @@ defmodule DtuAppWeb.DashboardLive do
 
           <!-- Right Card: Peak Power (Today/Day) vs Peak Yield Day (Week/Month/Year) -->
           <%= cond do %>
-            <% @time_range in ["today", "day"] -> %>
+            <% @live or @time_range == "day" -> %>
               <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                 <div class="px-4 py-5 sm:p-6">
                   <div class="flex items-center">
@@ -917,7 +990,7 @@ defmodule DtuAppWeb.DashboardLive do
         <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
           <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4" id="chart-title">
             <%= cond do %>
-              <% @time_range == "today" -> %>
+              <% @live -> %>
                 {gettext("Today's Production Curve (Watts)")}
               <% @time_range == "day" -> %>
                 {gettext("Production Curve for %{period} (Watts)", period: @selected_period)}

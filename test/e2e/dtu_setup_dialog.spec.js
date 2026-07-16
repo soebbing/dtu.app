@@ -11,7 +11,7 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.fill('input[type="password"]', 'password123456');
       await Promise.all([
         page.waitForNavigation(),
-        page.click('button[type="submit"]')
+        page.click('button:has-text("Log in")')
       ]);
 
       // 2. Navigate to Device management
@@ -59,7 +59,7 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.fill('input[type="password"]', 'password123456');
       await Promise.all([
         page.waitForNavigation(),
-        page.click('button[type="submit"]')
+        page.click('button:has-text("Log in")')
       ]);
 
       // 2. Navigate to Device management
@@ -106,7 +106,7 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.fill('input[type="password"]', 'password123456');
       await Promise.all([
         page.waitForNavigation(),
-        page.click('button[type="submit"]')
+        page.click('button:has-text("Log in")')
       ]);
 
       // 2. Navigate to Device management

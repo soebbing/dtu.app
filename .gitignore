@@ -43,3 +43,6 @@ npm-debug.log
 # Elixir Language Server
 /.elixir_ls/
 
+# Local secrets for docker compose (copy .env.example to .env).
+.env
+
