@@ -47,6 +47,11 @@ services:
       PHX_SERVER: "true"
       PHX_HOST: ${PHX_HOST:-localhost}
       PORT: "4000"
+      # How the site is reached publicly — drives URL generation in emails.
+      # This compose stack serves plain HTTP on :4000 (no TLS); set
+      # PHX_SCHEME=https + PHX_PORT=443 when fronted by a TLS terminator.
+      PHX_SCHEME: ${PHX_SCHEME:-http}
+      PHX_PORT: ${PHX_PORT:-4000}
       DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-dtu_app_prod}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE must be set — copy .env.example to .env}
       POOL_SIZE: ${POOL_SIZE:-15}

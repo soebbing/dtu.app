@@ -57,8 +57,16 @@ if config_env() == :prod do
 
   config :dtu_app, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # The public scheme/port the app is served at. Drives URL generation for
+  # things like magic-link emails: PHX_SCHEME/PHX_PORT must match how users
+  # actually reach the site. A non-default port (anything but 80 for http or
+  # 443 for https) is included in generated URLs; default ports are omitted.
+  # Use http/4000 for local dev, https/443 behind TLS in production.
+  url_scheme = System.get_env("PHX_SCHEME", "https")
+  url_port = String.to_integer(System.get_env("PHX_PORT", "443"))
+
   config :dtu_app, DtuAppWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: host, port: url_port, scheme: url_scheme],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
