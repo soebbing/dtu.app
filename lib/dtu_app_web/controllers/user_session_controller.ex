@@ -65,18 +65,20 @@ defmodule DtuAppWeb.UserSessionController do
     |> redirect(to: ~p"/users/log-in")
   end
 
+  # Magic link clicked in the email: log the user in directly and redirect to
+  # the page they were trying to reach (or the dashboard). No interstitial —
+  # the token is consumed and the session is created in a single step.
   def confirm(conn, %{"token" => token}) do
-    if user = Accounts.get_user_by_magic_link_token(token) do
-      form = Phoenix.Component.to_form(%{"token" => token}, as: "user")
+    case Accounts.login_user_by_magic_link(token) do
+      {:ok, {user, _expired_tokens}} ->
+        conn
+        |> put_flash(:info, "Welcome back!")
+        |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
 
-      conn
-      |> assign(:user, user)
-      |> assign(:form, form)
-      |> render(:confirm)
-    else
-      conn
-      |> put_flash(:error, "Magic link is invalid or it has expired.")
-      |> redirect(to: ~p"/users/log-in")
+      {:error, :not_found} ->
+        conn
+        |> put_flash(:error, "Magic link is invalid or it has expired.")
+        |> redirect(to: ~p"/users/log-in")
     end
   end
 
