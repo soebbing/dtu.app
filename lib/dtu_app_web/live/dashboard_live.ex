@@ -660,6 +660,37 @@ defmodule DtuAppWeb.DashboardLive do
           </div>
         </div>
 
+        <%= if @devices == [] do %>
+          <!-- Onboarding: no DTUs yet. The whole stats/chart grid is meaningless
+               without a device, so guide the user to create their first one. -->
+          <div
+            class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-8 text-center"
+            id="onboarding-empty"
+          >
+            <div class="mx-auto w-fit p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+              <.icon name="hero-bolt" class="h-8 w-8" />
+            </div>
+            <h2 class="mt-4 text-xl font-bold tracking-tight text-zinc-900 dark:text-white">
+              {gettext("Welcome! Let's connect your first DTU")}
+            </h2>
+            <p class="mt-2 text-sm text-zinc-500 dark:text-zinc-400 max-w-md mx-auto">
+              {gettext(
+                "A DTU (Data Transfer Unit) reads your solar inverter and publishes live telemetry here over MQTT. Add yours to start seeing real-time generation — works with OpenDTU and AhoyDTU firmware."
+              )}
+            </p>
+            <div class="mt-6">
+              <.link
+                navigate={~p"/devices/new"}
+                id="btn-add-first-dtu"
+                class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-5 py-2.5 text-sm font-semibold text-zinc-950 shadow-sm transition"
+              >
+                <.icon name="hero-plus-mini" class="size-4" />
+                {gettext("Add your first DTU")}
+              </.link>
+            </div>
+          </div>
+        <% else %>
+
         <!-- Toolbar: Switcher & Time Ranges -->
         <div class="flex flex-col gap-4">
           <!-- DTU Switcher -->
@@ -1288,6 +1319,7 @@ defmodule DtuAppWeb.DashboardLive do
             <% end %>
           </div>
         </div>
+        <% end %>
       </div>
     </Layouts.app>
     """

@@ -192,7 +192,7 @@
           <div class="grid grid-cols-3 gap-2">
             <span class="text-zinc-500 font-medium">{gettext("MQTT Broker / Server:")}</span>
             <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              localhost <span class="text-zinc-400 font-normal">({gettext("or your server's domain/IP")})</span>
+              {@mqtt_host}
             </span>
 
             <span class="text-zinc-500 font-medium">{gettext("MQTT Port:")}</span>
@@ -235,6 +235,20 @@
               {gettext("Ensure MQTT is enabled, save and reboot the DTU.")}
             </li>
           </ul>
+        </div>
+
+        <div class="border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
+          <p class="font-medium text-zinc-700 dark:text-zinc-300">{gettext("What happens next")}</p>
+          <p>
+            {gettext(
+              "After your DTU reboots, it will appear as online on your dashboard within about a minute, and live power data starts flowing within seconds."
+            )}
+          </p>
+          <p>
+            {gettext(
+              "If it stays offline, double-check the username, password, and broker address above match exactly what's in your DTU's MQTT settings."
+            )}
+          </p>
         </div>
 
         <div class="flex justify-end pt-2">

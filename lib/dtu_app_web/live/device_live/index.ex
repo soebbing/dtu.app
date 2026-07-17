@@ -12,7 +12,16 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> stream(:devices, Devices.list_devices(socket.assigns.current_scope.user))
      |> assign(:deleting_device, nil)
      |> assign(:created_device, nil)
+     |> assign(:mqtt_host, mqtt_host())
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
+  end
+
+  # Public host the app is served at (from PHX_HOST / endpoint :url config), so
+  # the created-device modal can show a copy-paste-ready MQTT broker address
+  # instead of a placeholder "localhost".
+  defp mqtt_host do
+    [host: host] = Keyword.take(DtuAppWeb.Endpoint.config(:url) || [], [:host])
+    host || "localhost"
   end
 
   @impl true
