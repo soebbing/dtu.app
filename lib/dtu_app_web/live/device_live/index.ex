@@ -16,10 +16,17 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
   end
 
-  # Public host the app is served at (from PHX_HOST / endpoint :url config), so
-  # the created-device modal can show a copy-paste-ready MQTT broker address
-  # instead of a placeholder "localhost".
+  # Host shown to users as the MQTT broker address in the created-device modal.
+  # Prefers an explicit MQTT_HOST override (when the broker runs on a different
+  # domain than the web app), falling back to the web app's host (PHX_HOST).
   defp mqtt_host do
+    case Application.get_env(:dtu_app, :mqtt_host) do
+      host when is_binary(host) and host != "" -> host
+      _ -> endpoint_host()
+    end
+  end
+
+  defp endpoint_host do
     [host: host] = Keyword.take(DtuAppWeb.Endpoint.config(:url) || [], [:host])
     host || "localhost"
   end

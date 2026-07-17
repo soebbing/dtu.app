@@ -83,6 +83,14 @@ if config_env() == :prod do
     enabled: System.get_env("MQTT_BROKER_ENABLED", "true") in ~w(true 1),
     port: String.to_integer(System.get_env("MQTT_BROKER_PORT", "1883"))
 
+  # DNS alias for the MQTT endpoint, shown to users as the broker host in the
+  # device setup modal. Useful when MQTT runs on a different domain than the web
+  # app (e.g. mqtt.example.com). When unset (or empty), the web app's host
+  # (PHX_HOST) is used as the broker host.
+  if System.get_env("MQTT_HOST", "") != "" do
+    config :dtu_app, :mqtt_host, System.fetch_env!("MQTT_HOST")
+  end
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key

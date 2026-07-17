@@ -59,6 +59,9 @@ services:
       # via the ports mapping above. Set MQTT_BROKER_ENABLED=false to disable.
       MQTT_BROKER_ENABLED: ${MQTT_BROKER_ENABLED:-true}
       MQTT_BROKER_PORT: "1883"
+      # DNS alias for the MQTT endpoint, shown as the broker host in the device
+      # setup modal. Empty = use PHX_HOST (broker and web app on the same host).
+      MQTT_HOST: ${MQTT_HOST:-}
       # Transactional email via Resend. Empty RESEND_API_KEY falls back to the
       # in-memory mailer (no mail is actually sent).
       RESEND_API_KEY: ${RESEND_API_KEY:-}
