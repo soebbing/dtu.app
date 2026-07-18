@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="dtu.app maskable icon">
+  <!-- Full-bleed emerald background for maskable safe-zone cropping. -->
+  <rect x="0" y="0" width="48" height="48" fill="#10b981" />
+  <!-- Logo mark scaled to ~70% and centered so any OS mask keeps it intact. -->
+  <g transform="translate(48 48) scale(0.7) translate(-48 -48)">
+    <rect x="1.5" y="1.5" width="45" height="45" rx="12" fill="#09090b" />
+    <g stroke="#fcd34d" stroke-width="2.4" stroke-linecap="round">
+      <circle cx="17" cy="17" r="6.2" fill="#fcd34d" stroke="none" />
+      <line x1="17" y1="5.4" x2="17" y2="8.2" />
+      <line x1="5.4" y1="17" x2="8.2" y2="17" />
+      <line x1="8.9" y1="8.9" x2="10.9" y2="10.9" />
+      <line x1="25.1" y1="8.9" x2="23.1" y2="10.9" />
+      <line x1="8.9" y1="25.1" x2="10.9" y2="23.1" />
+    </g>
+    <path d="M6 38 Q12 24 19 23 T31 22 Q37 21 42 14"
+          fill="none" stroke="#fafafa" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>

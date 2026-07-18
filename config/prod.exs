@@ -19,6 +19,10 @@ config :dtu_app, DtuAppWeb.Endpoint,
     ]
   ]
 
+# Configure LiveView for production
+config :phoenix_live_view,
+  signing_salt: "sO3caV+W"
+
 # Configure Swoosh API Client
 config :swoosh, api_client: Swoosh.ApiClient.Req
 

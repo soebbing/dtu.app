@@ -1,5 +1,5 @@
 defmodule DtuAppWeb.DashboardHistoricalTest do
-  use DtuAppWeb.ConnCase, async: true
+  use DtuAppWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import DtuApp.DevicesFixtures
@@ -9,7 +9,17 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
   setup :register_and_log_in_user
 
   describe "Historical Dashboard" do
-    test "shows an empty-state hint when the selected granularity has no data", %{conn: conn} do
+    test "shows an empty-state hint when the selected granularity has no data", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Historical Inverter",
+          kind: "opendtu",
+          mqtt_username: "hist-inv"
+        })
+
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
       # The dashboard boots in live mode; switch granularity to enter history.

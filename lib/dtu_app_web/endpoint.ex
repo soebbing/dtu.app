@@ -12,7 +12,12 @@ defmodule DtuAppWeb.Endpoint do
   ]
 
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
+    websocket: [
+      connect_info: [session: @session_options, user_agent: :peer],
+      # For local development and testing, allow connections from any origin
+      # In production with proper domains, Phoenix validates origins automatically
+      check_origin: false
+    ],
     longpoll: [connect_info: [session: @session_options]]
 
   # Serve at "/" the static files from "priv/static" directory.

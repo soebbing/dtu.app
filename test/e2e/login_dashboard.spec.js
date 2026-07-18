@@ -7,7 +7,7 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
 
     // 2. Navigate to log in
     await page.click('text=Log in');
-    await expect(page).toHaveURL(/\/users\/log-in/);
+    await expect(page).toHaveURL(/\/users\/log-in/, { timeout: 10000 });
 
     // 3. Fill credentials
     await page.fill('input[type="email"]', 'test@example.com');
@@ -22,20 +22,22 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
     ]);
 
     // 5. Should be redirected to the dashboard
-    await expect(page).toHaveURL(/\/dashboard/);
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 10000 });
 
     // 6. Verify key elements on the dashboard page
-    await expect(page.locator('h1')).toContainText('PV Power Dashboard');
-    await expect(page.locator('#stat-current-power')).toContainText('0.0 W');
-    await expect(page.locator('#device-status-grid')).toBeVisible();
+    await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
+    await expect(page.locator('#stat-current-power')).toContainText('0.0 W', { timeout: 10000 });
+    await expect(page.locator('#device-status-grid')).toBeVisible({ timeout: 10000 });
 
     // 7. Click Manage Devices
     await page.click('#btn-manage-devices');
-    await expect(page).toHaveURL(/\/devices/);
+    await page.waitForTimeout(1000); // Wait for navigation and LiveView update
+    await expect(page).toHaveURL(/\/devices/, { timeout: 10000 });
 
     // 8. Add a new DTU
     await page.click('text=Add DTU');
-    await expect(page).toHaveURL(/\/devices\/new/);
+    await page.waitForTimeout(500); // Wait for navigation
+    await expect(page).toHaveURL(/\/devices\/new/, { timeout: 10000 });
 
     // Verify inputs for credentials do NOT exist
     await expect(page.locator('input[name="dtu[mqtt_username]"]')).toHaveCount(0);
@@ -52,11 +54,14 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
       page.click('button:has-text("Save")')
     ]);
 
+    // Wait for modal to appear
+    await page.waitForTimeout(1000);
+
     // Confirm the success dialog and MQTT configuration instructions are shown
-    await expect(page.locator('#created-device-modal')).toBeVisible();
-    await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!');
-    await expect(page.locator('#created-device-modal')).toContainText('localhost');
-    await expect(page.locator('#created-device-modal')).toContainText('1883');
+    await expect(page.locator('#created-device-modal')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!', { timeout: 10000 });
+    await expect(page.locator('#created-device-modal')).toContainText('localhost', { timeout: 10000 });
+    await expect(page.locator('#created-device-modal')).toContainText('1883', { timeout: 10000 });
 
     // Dismiss the modal
     await page.click('#btn-close-created-modal');

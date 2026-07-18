@@ -1,0 +1,118 @@
+<svg width="390" height="844" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background gradient matching app theme -->
+  <defs>
+    <linearGradient id="bgGradientMobile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#09090b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1a1a1a;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="emeraldGradientMobile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="amberGradientMobile" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#d97706;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Main background -->
+  <rect width="390" height="844" fill="url(#bgGradientMobile)"/>
+
+  <!-- Header/Navbar simulation -->
+  <rect x="0" y="0" width="390" height="60" fill="#ffffff" opacity="0.1"/>
+
+  <!-- Logo placeholder -->
+  <circle cx="30" cy="30" r="12" fill="url(#emeraldGradientMobile)"/>
+  <text x="50" y="35" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#10b981">dtu.app</text>
+
+  <!-- Menu icon -->
+  <circle cx="360" cy="30" r="8" fill="#374151"/>
+
+  <!-- Main content area -->
+  <g transform="translate(20, 80)">
+    <!-- Page title -->
+    <text x="0" y="0" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="#ffffff">PV Power Dashboard</text>
+    <text x="0" y="25" font-family="Arial, sans-serif" font-size="12" fill="#9ca3af">Real-time solar generation</text>
+
+    <!-- Stat cards column -->
+    <g transform="translate(0, 50)">
+      <!-- Card 1: Current Power -->
+      <rect x="0" y="0" width="350" height="80" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+      <text x="20" y="25" font-family="Arial, sans-serif" font-size="12" fill="#9ca3af">Current Generation</text>
+      <text x="20" y="55" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#10b981">2,847 W</text>
+      <text x="280" y="55" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">↑ 12%</text>
+
+      <!-- Card 2: Today's Yield -->
+      <rect x="0" y="90" width="350" height="80" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+      <text x="20" y="115" font-family="Arial, sans-serif" font-size="12" fill="#9ca3af">Today's Yield</text>
+      <text x="20" y="145" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#10b981">18.4 kWh</text>
+      <text x="280" y="145" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">Target: 25 kWh</text>
+
+      <!-- Card 3: Peak Power -->
+      <rect x="0" y="180" width="350" height="80" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+      <text x="20" y="205" font-family="Arial, sans-serif" font-size="12" fill="#9ca3af">Peak Power Today</text>
+      <text x="20" y="235" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#f59e0b">3,420 W</text>
+      <text x="280" y="235" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">at 1:45 PM</text>
+
+      <!-- Card 4: Efficiency -->
+      <rect x="0" y="270" width="350" height="80" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+      <text x="20" y="295" font-family="Arial, sans-serif" font-size="12" fill="#9ca3af">Efficiency Today</text>
+      <text x="20" y="325" font-family="Arial, sans-serif" font-size="28" font-weight="bold" fill="#10b981">94.2%</text>
+      <text x="280" y="325" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">+2.1% vs yesterday</text>
+    </g>
+
+    <!-- Chart area -->
+    <g transform="translate(0, 420)">
+      <rect x="0" y="0" width="350" height="200" rx="12" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+
+      <!-- Chart title -->
+      <text x="20" y="25" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#ffffff">Today's Production Curve</text>
+      <text x="20" y="45" font-family="Arial, sans-serif" font-size="11" fill="#9ca3af">Hourly power generation</text>
+
+      <!-- Chart area visualization -->
+      <g transform="translate(20, 80)">
+        <!-- Grid lines -->
+        <line x1="0" y1="0" x2="310" y2="0" stroke="#374151" stroke-width="1"/>
+        <line x1="0" y1="40" x2="310" y2="40" stroke="#374151" stroke-width="1" stroke-dasharray="3,3"/>
+        <line x1="0" y1="80" x2="310" y2="80" stroke="#374151" stroke-width="1" stroke-dasharray="3,3"/>
+
+        <!-- Production curve -->
+        <path d="M 0,80 Q 20,70 40,60 T 80,40 T 120,25 T 160,15 T 200,20 T 240,35 T 280,60 T 310,80"
+              fill="none" stroke="url(#emeraldGradientMobile)" stroke-width="2" stroke-linecap="round"/>
+
+        <!-- Area under curve -->
+        <path d="M 0,80 Q 20,70 40,60 T 80,40 T 120,25 T 160,15 T 200,20 T 240,35 T 280,60 T 310,80 L 310,80 L 0,80 Z"
+              fill="url(#emeraldGradientMobile)" opacity="0.2"/>
+
+        <!-- Peak indicator -->
+        <circle cx="160" cy="15" r="4" fill="#f59e0b"/>
+        <text x="160" y="5" font-family="Arial, sans-serif" font-size="10" fill="#f59e0b" text-anchor="middle">Peak</text>
+
+        <!-- Time labels -->
+        <text x="0" y="95" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">6:00</text>
+        <text x="80" y="95" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">12:00</text>
+        <text x="155" y="95" font-family="Arial, sans-serif" font-size="10" fill="#6b7280">18:00</text>
+        <text x="310" y="95" font-family="Arial, sans-serif" font-size="10" fill="#6b7280" text-anchor="end">Now</text>
+      </g>
+    </g>
+
+    <!-- Quick actions -->
+    <g transform="translate(0, 640)">
+      <rect x="0" y="0" width="165" height="50" rx="8" fill="#10b981" opacity="0.8"/>
+      <text x="82" y="30" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#ffffff" text-anchor="middle">View Historical</text>
+
+      <rect x="185" y="0" width="165" height="50" rx="8" fill="#1f2937" stroke="#374151" stroke-width="1"/>
+      <text x="267" y="30" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#9ca3af" text-anchor="middle">Device Settings</text>
+    </g>
+  </g>
+
+  <!-- Bottom navigation bar -->
+  <rect x="0" y="780" width="390" height="64" fill="#ffffff" opacity="0.05"/>
+  <circle cx="60" cy="812" r="16" fill="#10b981" opacity="0.8"/>
+  <circle cx="195" cy="812" r="16" fill="#374151"/>
+  <circle cx="330" cy="812" r="16" fill="#374151"/>
+
+  <!-- Bottom status indicator -->
+  <rect x="0" y="828" width="390" height="16" fill="#10b981" opacity="0.2"/>
+  <text x="195" y="840" font-family="Arial, sans-serif" font-size="10" fill="#10b981" text-anchor="middle">● Live • Updated 2s ago</text>
+</svg>

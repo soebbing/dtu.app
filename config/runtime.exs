@@ -53,7 +53,8 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
+  # For production, allow PHX_HOST env var or default to localhost for local testing
+  host = System.get_env("PHX_HOST", "localhost")
 
   config :dtu_app, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
@@ -62,8 +63,8 @@ if config_env() == :prod do
   # actually reach the site. A non-default port (anything but 80 for http or
   # 443 for https) is included in generated URLs; default ports are omitted.
   # Use http/4000 for local dev, https/443 behind TLS in production.
-  url_scheme = System.get_env("PHX_SCHEME", "https")
-  url_port = String.to_integer(System.get_env("PHX_PORT", "443"))
+  url_scheme = System.get_env("PHX_SCHEME", "http")
+  url_port = String.to_integer(System.get_env("PHX_PORT", "4000"))
 
   config :dtu_app, DtuAppWeb.Endpoint,
     url: [host: host, port: url_port, scheme: url_scheme],
@@ -140,6 +141,5 @@ if config_env() == :prod do
       api_key: System.fetch_env!("RESEND_API_KEY")
   end
 
-  config :dtu_app, :mail_from,
-    System.get_env("MAIL_FROM", "DtuApp <noreply@localhost>")
+  config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end

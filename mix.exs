@@ -88,6 +88,7 @@ defmodule DtuApp.MixProject do
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind dtu_app", "esbuild dtu_app"],
       "assets.deploy": [
+        "compile",
         "tailwind dtu_app --minify",
         "esbuild dtu_app --minify",
         "phx.digest"
