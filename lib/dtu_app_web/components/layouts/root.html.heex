@@ -2,9 +2,21 @@
 <html lang={assigns[:locale] || "en"}>
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="csrf-token" content={get_csrf_token()} />
-    <.live_title default="DtuApp" suffix=" · Phoenix Framework" phx-no-format>{assigns[:page_title]}</.live_title>
+
+    <%!-- PWA: installable app metadata --%>
+    <link rel="manifest" href={~p"/manifest.webmanifest"} />
+    <meta name="theme-color" content="#10b981" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="dtu.app" />
+    <link rel="apple-touch-icon" href={~p"/images/icon-192.png"} />
+    <link rel="icon" type="image/svg+xml" href={~p"/images/logo.svg"} />
+
+    <.live_title default="dtu.app" suffix=" · solar telemetry" phx-no-format>{assigns[:page_title]}</.live_title>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
@@ -50,7 +62,7 @@
                 width="28"
                 class="group-hover:scale-105 transition duration-300"
               />
-              <span class="font-bold text-base tracking-tight bg-gradient-to-r from-emerald-500 to-amber-500 bg-clip-text text-transparent">PV Monitor</span>
+              <span class="font-bold text-base tracking-tight bg-gradient-to-r from-emerald-500 to-amber-500 bg-clip-text text-transparent">dtu.app</span>
             </a>
             <nav class="hidden md:flex items-center gap-6">
               <%= if @current_scope && @current_scope.user do %>

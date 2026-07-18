@@ -86,7 +86,7 @@ defmodule DtuApp.Accounts.UserNotifier do
   # plain address ("a@b.com") or a named form ("Name <a@b.com>"); the latter is
   # parsed into the {"Name", "a@b.com"} tuple Swoosh's from/1 expects.
   defp mail_from do
-    mail_from = Application.get_env(:dtu_app, :mail_from, "DtuApp <noreply@localhost>")
+    mail_from = Application.get_env(:dtu_app, :mail_from, "dtu.app <noreply@localhost>")
 
     case Regex.run(~r/^\s*(.*?)\s*<([^>]+)>\s*$/, mail_from, capture: :all_but_first) do
       [name, address] -> {name, address}

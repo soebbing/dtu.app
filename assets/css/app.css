@@ -28,4 +28,12 @@
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
 
+/* PWA standalone mode: keep content clear of the notch / status bar. The
+   viewport uses `viewport-fit=cover`; the sticky header picks up the top inset. */
+@media (display-mode: standalone), (display-mode: window-controls-overlay) {
+  header.sticky {
+    padding-top: env(safe-area-inset-top);
+  }
+}
+
 /* This file is for your main application CSS */
