@@ -46,7 +46,8 @@ defmodule DtuApp.Accounts.UserNotifier do
         "If the button doesn't work, copy and paste this link into your browser:"
       ],
       button: %{label: "Log in", url: url},
-      note: "If you didn't try to log in, you can safely ignore this email — no one else can access your account without this link."
+      note:
+        "If you didn't try to log in, you can safely ignore this email — no one else can access your account without this link."
     )
   end
 

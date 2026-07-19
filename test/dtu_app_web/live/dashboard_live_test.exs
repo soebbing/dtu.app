@@ -1,5 +1,5 @@
 defmodule DtuAppWeb.DashboardLiveTest do
-  use DtuAppWeb.ConnCase, async: true
+  use DtuAppWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import DtuApp.DevicesFixtures
@@ -10,7 +10,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
   setup :register_and_log_in_user
 
   describe "Dashboard Index" do
-    test "renders empty dashboard stats and empty state message", %{conn: conn} do
+    test "renders empty dashboard stats and empty state message", %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{name: "Test Inverter", kind: "opendtu", mqtt_username: "test-inv"})
+
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "PV Power Dashboard"
@@ -20,7 +23,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "No power readings logged for this day."
     end
 
-    test "renders dashboard in German when accept-language is German", %{conn: conn} do
+    test "renders dashboard in German when accept-language is German", %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{name: "Test Inverter", kind: "opendtu", mqtt_username: "test-inv"})
+
       conn = Plug.Conn.put_req_header(conn, "accept-language", "de-DE,de;q=0.9")
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
@@ -28,7 +34,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "Aktuelle Erzeugung"
     end
 
-    test "renders dashboard in French when accept-language is French", %{conn: conn} do
+    test "renders dashboard in French when accept-language is French", %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{name: "Test Inverter", kind: "opendtu", mqtt_username: "test-inv"})
+
       conn = Plug.Conn.put_req_header(conn, "accept-language", "fr-FR,fr;q=0.9")
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
