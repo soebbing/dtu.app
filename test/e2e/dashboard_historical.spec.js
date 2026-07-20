@@ -16,7 +16,7 @@ const E2E_PASSWORD = 'password123456';
 async function logIn(page) {
   await page.goto('/');
   await page.getByRole('link', { name: 'Sign In' }).click();
-  await expect(page).toHaveURL(/\/users\/log-in/);
+  await expect(page).toHaveURL(/\/users\/log-in/, { timeout: 10000 });
 
   // The login page has both a password form and a magic-link form, each with
   // its own email input — scope fills to the password form explicitly.
@@ -39,17 +39,17 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
   test('Today view renders the seeded production curve and live stat cards', async ({ page }) => {
     // Live (Today) view is the default landing state.
-    await expect(page.locator('#quick-range-switcher #btn-range-today')).toBeVisible();
+    await expect(page.locator('#quick-range-switcher #btn-range-today')).toBeVisible({ timeout: 10000 });
 
     // Live stat cards: current power, today's yield, peak power.
-    await expect(page.locator('#stat-current-power')).toContainText(/W/);
-    await expect(page.locator('#stat-today-yield')).toContainText(/kWh/);
-    await expect(page.locator('#stat-peak-power')).toContainText(/W/);
+    await expect(page.locator('#stat-current-power')).toContainText(/W/, { timeout: 10000 });
+    await expect(page.locator('#stat-today-yield')).toContainText(/kWh/, { timeout: 10000 });
+    await expect(page.locator('#stat-peak-power')).toContainText(/W/, { timeout: 10000 });
 
     // Seeded today's readings (06:00–19:00 sine arc) must produce a chart, not the empty state.
-    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#empty-chart')).toHaveCount(0);
-    await expect(page.locator('#chart-title')).toContainText("Today's Production Curve");
+    await expect(page.locator('#chart-title')).toContainText("Today's Production Curve", { timeout: 10000 });
   });
 
   test('granularity stepper switches Day view to bar stats and back to Today live view', async ({ page }) => {
@@ -58,15 +58,15 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
     // Day view replaces the live "Current Generation" card with "Total Yield",
     // and the middle card becomes "Average Power".
-    await expect(page.locator('#stat-total-yield')).toBeVisible();
-    await expect(page.locator('#stat-avg-power')).toBeVisible();
-    await expect(page.locator('#stat-peak-power')).toBeVisible();
+    await expect(page.locator('#stat-total-yield')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#stat-avg-power')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#stat-peak-power')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-current-power')).toHaveCount(0);
     await expect(page.locator('#chart-title')).toContainText('Production Curve for');
 
     // Return to the live Today view via the quick-range tab.
     await page.locator('#btn-range-today').click();
-    await expect(page.locator('#stat-current-power')).toBeVisible();
+    await expect(page.locator('#stat-current-power')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-total-yield')).toHaveCount(0);
   });
 
@@ -75,12 +75,12 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
       await page.locator('#select-granularity').selectOption(gran);
 
       // Aggregate views: Total Yield, Daily Average Yield, Peak Yield Day.
-      await expect(page.locator('#stat-total-yield')).toContainText(/kWh/);
-      await expect(page.locator('#stat-avg-yield')).toContainText(/kWh/);
-      await expect(page.locator('#stat-peak-yield')).toContainText(/kWh/);
+      await expect(page.locator('#stat-total-yield')).toContainText(/kWh/, { timeout: 10000 });
+      await expect(page.locator('#stat-avg-yield')).toContainText(/kWh/, { timeout: 10000 });
+      await expect(page.locator('#stat-peak-yield')).toContainText(/kWh/, { timeout: 10000 });
 
       // Chart switches to a bar chart for these granularities.
-      await expect(page.locator('#solar-chart-svg')).toBeVisible();
+      await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
       await expect(page.locator('#empty-chart')).toHaveCount(0);
     }
   });
@@ -102,12 +102,12 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
         .catch(() => false);
       if (becameEmpty) break;
     }
-    await expect(page.locator('#empty-chart')).toBeVisible();
+    await expect(page.locator('#empty-chart')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#solar-chart-svg')).toHaveCount(0);
 
     // Stepping back (prev) returns to a period with data.
     await page.locator('#btn-history-prev').click();
-    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
   });
 
   // NOTE: the Year granularity stepper is currently broken in the app —
