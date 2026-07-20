@@ -17,7 +17,9 @@ defmodule DtuAppWeb do
   those modules here.
   """
 
-  def static_paths, do: ~w(assets fonts images favicon.ico robots.txt manifest.webmanifest)
+  def static_paths,
+    do:
+      ~w(assets fonts images favicon.ico robots.txt manifest.webmanifest service-worker.js offline.html)
 
   def router do
     quote do

@@ -116,6 +116,20 @@ defmodule DtuAppWeb.DashboardLive do
     end
   end
 
+  # Network status event handler from the NetworkStatus hook
+  @impl true
+  def handle_event("network_status_changed", payload, socket) do
+    # Handle network status changes
+    # You can update UI elements, show notifications, or adjust data fetching
+    socket =
+      socket
+      |> assign(:network_online, payload["online"])
+      |> assign(:network_connection_type, payload["connection_type"])
+      |> assign(:network_last_update, payload["timestamp"])
+
+    {:noreply, socket}
+  end
+
   @impl true
   def handle_info({:reading, _client_id, _reading}, socket) do
     user = socket.assigns.current_scope.user
@@ -144,6 +158,12 @@ defmodule DtuAppWeb.DashboardLive do
   def handle_info({:dtu_disconnected, _client_id, _device_id}, socket) do
     user = socket.assigns.current_scope.user
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
+  end
+
+  # Catch-all for other messages
+  @impl true
+  def handle_info(_msg, socket) do
+    {:noreply, socket}
   end
 
   # Helper to construct SVG line chart coordinates and range

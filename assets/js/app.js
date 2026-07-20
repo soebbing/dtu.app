@@ -24,12 +24,16 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/dtu_app"
 import topbar from "../vendor/topbar"
+import NetworkStatusHook from "./hooks/network_status"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {
+    ...colocatedHooks,
+    NetworkStatus: NetworkStatusHook
+  },
 })
 
 // Show progress bar on live navigation and form submits
@@ -45,6 +49,19 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
+
+// PWA: Register Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js')
+      .then((registration) => {
+        console.log('Service Worker registered with scope:', registration.scope)
+      })
+      .catch((error) => {
+        console.error('Service Worker registration failed:', error)
+      })
+  })
+}
 
 // The lines below enable quality of life phoenix_live_reload
 // development features:
