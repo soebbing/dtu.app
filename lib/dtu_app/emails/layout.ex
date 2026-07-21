@@ -11,14 +11,22 @@ defmodule DtuApp.Emails.Layout do
   """
 
   # Brand palette (kept in sync with the Tailwind classes on the site).
-  @canvas "#09090b"      # zinc-950
-  @card "#18181b"        # zinc-900
-  @card_border "#27272a" # zinc-800
-  @muted "#a1a1aa"       # zinc-400
-  @text "#fafafa"        # zinc-50
-  @primary "#10b981"     # emerald-500
-  @primary_dark "#059669" # emerald-600 (button bottom gradient / border)
-  @amber "#fcd34d"       # amber-300
+  # zinc-950
+  @canvas "#09090b"
+  # zinc-900
+  @card "#18181b"
+  # zinc-800
+  @card_border "#27272a"
+  # zinc-400
+  @muted "#a1a1aa"
+  # zinc-50
+  @text "#fafafa"
+  # emerald-500
+  @primary "#10b981"
+  # emerald-600 (button bottom gradient / border)
+  @primary_dark "#059669"
+  # amber-300
+  @amber "#fcd34d"
 
   @doc """
   Render a transactional email.

@@ -1,5 +1,5 @@
 defmodule DtuAppWeb.DeviceLiveTest do
-  use DtuAppWeb.ConnCase, async: true
+  use DtuAppWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import DtuApp.DevicesFixtures

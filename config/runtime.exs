@@ -140,6 +140,5 @@ if config_env() == :prod do
       api_key: System.fetch_env!("RESEND_API_KEY")
   end
 
-  config :dtu_app, :mail_from,
-    System.get_env("MAIL_FROM", "DtuApp <noreply@localhost>")
+  config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end
