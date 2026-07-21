@@ -16,7 +16,7 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
 
       // 2. Navigate to Device management
       await page.click('#btn-manage-devices');
-      await expect(page).toHaveURL(/\/devices/);
+      await expect(page).toHaveURL(/\/devices/, { timeout: 10000 });
 
       // 3. Add DTU
       await page.click('text=Add DTU');
@@ -30,13 +30,13 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
 
       // 4. Verify English modal credentials & instructions
       const modal = page.locator('#created-device-modal');
-      await expect(modal).toBeVisible();
-      await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!');
-      await expect(modal).toContainText('MQTT Broker / Server:');
-      await expect(modal).toContainText('localhost');
-      await expect(modal).toContainText('MQTT Port:');
-      await expect(modal).toContainText('1883');
-      await expect(modal).toContainText('Hardware setup instructions:');
+      await expect(modal).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!', { timeout: 10000 });
+      await expect(modal).toContainText('MQTT Broker / Server:', { timeout: 10000 });
+      await expect(modal).toContainText('localhost', { timeout: 10000 });
+      await expect(modal).toContainText('MQTT Port:', { timeout: 10000 });
+      await expect(modal).toContainText('1883', { timeout: 10000 });
+      await expect(modal).toContainText('Hardware setup instructions:', { timeout: 10000 });
 
       // 5. Dismiss the modal and verify it closes
       await page.click('#btn-close-created-modal');

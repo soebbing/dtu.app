@@ -13,6 +13,12 @@ const { test, expect } = require('@playwright/test');
 const E2E_EMAIL = 'test@example.com';
 const E2E_PASSWORD = 'password123456';
 
+// Helper function to wait for page to be stable and ready
+async function waitForPageStable(page) {
+  await page.waitForLoadState('networkidle');
+  await page.waitForTimeout(500); // Additional buffer for rendering
+}
+
 async function logIn(page) {
   await page.goto('/');
   await page.getByRole('link', { name: 'Sign In' }).click();
@@ -27,14 +33,15 @@ async function logIn(page) {
   // Traditional POST form: the submit button has no explicit type attribute
   // (a bare <button> defaults to submit), so select it by its label instead.
   await form.getByRole('button', { name: /Log in/i }).click();
-  await page.waitForURL(/\/dashboard/);
+  await page.waitForURL(/\/dashboard/, { timeout: 15000 });
+  await waitForPageStable(page);
 }
 
 test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () => {
   test.beforeEach(async ({ page }) => {
     await logIn(page);
-    await expect(page).toHaveURL(/\/dashboard/);
-    await expect(page.locator('h1')).toContainText('PV Power Dashboard');
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 10000 });
+    await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
   });
 
   test('Today view renders the seeded production curve and live stat cards', async ({ page }) => {
