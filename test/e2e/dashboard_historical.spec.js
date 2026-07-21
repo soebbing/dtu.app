@@ -63,16 +63,20 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Switch to historical Day granularity.
     await page.locator('#select-granularity').selectOption('day');
 
+    // Wait for LiveView to process the change and update the UI
+    await page.waitForTimeout(1000);
+
     // Day view replaces the live "Current Generation" card with "Total Yield",
     // and the middle card becomes "Average Power".
     await expect(page.locator('#stat-total-yield')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-avg-power')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-peak-power')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-current-power')).toHaveCount(0);
-    await expect(page.locator('#chart-title')).toContainText('Production Curve for');
+    await expect(page.locator('#chart-title')).toContainText('Production Curve for', { timeout: 10000 });
 
     // Return to the live Today view via the quick-range tab.
     await page.locator('#btn-range-today').click();
+    await page.waitForTimeout(1000); // Wait for LiveView update
     await expect(page.locator('#stat-current-power')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#stat-total-yield')).toHaveCount(0);
   });
@@ -80,6 +84,9 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
   test('Week / Month / Year granularities show Daily/Monthly aggregate stats', async ({ page }) => {
     for (const gran of ['week', 'month', 'year']) {
       await page.locator('#select-granularity').selectOption(gran);
+
+      // Wait for LiveView to process the granularity change
+      await page.waitForTimeout(1000);
 
       // Aggregate views: Total Yield, Daily Average Yield, Peak Yield Day.
       await expect(page.locator('#stat-total-yield')).toContainText(/kWh/, { timeout: 10000 });
@@ -96,12 +103,14 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Day granularity. Today has seeded readings (06:00–19:00), so the chart
     // shows; stepping forward past the seeded days lands on a day with none.
     await page.locator('#select-granularity').selectOption('day');
-    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await page.waitForTimeout(1000); // Wait for LiveView update
+    await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
 
     // Step forward until we reach a future day with no readings. The
     // line chart is replaced by the #empty-chart placeholder.
     for (let i = 0; i < 10; i++) {
       await page.locator('#btn-history-next').click();
+      await page.waitForTimeout(500); // Wait for LiveView update after each click
       const becameEmpty = await page
         .locator('#empty-chart')
         .waitFor({ state: 'attached', timeout: 1500 })
@@ -114,6 +123,7 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
     // Stepping back (prev) returns to a period with data.
     await page.locator('#btn-history-prev').click();
+    await page.waitForTimeout(500); // Wait for LiveView update
     await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
   });
 
@@ -123,19 +133,21 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
   test('DTU switcher filters between an individual device and the Total aggregate', async ({ page }) => {
     // The switcher only renders when more than one device exists (the seed creates two).
-    await expect(page.locator('#dtu-switcher')).toBeVisible();
-    await expect(page.locator('#btn-select-total')).toBeVisible();
+    await expect(page.locator('#dtu-switcher')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#btn-select-total')).toBeVisible({ timeout: 10000 });
 
     // Select the first individual device.
     const roofBtn = page.locator('#dtu-switcher button', { hasText: 'Roof Inverter' });
     await expect(roofBtn).toHaveCount(1);
     await roofBtn.click();
+    await page.waitForTimeout(1000); // Wait for LiveView update
 
     // Switch back to the Total (all DTUs) aggregate.
     await page.locator('#btn-select-total').click();
+    await page.waitForTimeout(1000); // Wait for LiveView update
 
     // Both selections keep the Today chart populated (seeded data exists for both).
-    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#empty-chart')).toHaveCount(0);
   });
 });

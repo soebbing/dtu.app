@@ -31,10 +31,12 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
 
     // 7. Click Manage Devices
     await page.click('#btn-manage-devices');
+    await page.waitForTimeout(1000); // Wait for navigation and LiveView update
     await expect(page).toHaveURL(/\/devices/, { timeout: 10000 });
 
     // 8. Add a new DTU
     await page.click('text=Add DTU');
+    await page.waitForTimeout(500); // Wait for navigation
     await expect(page).toHaveURL(/\/devices\/new/, { timeout: 10000 });
 
     // Verify inputs for credentials do NOT exist
@@ -51,6 +53,9 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
       page.waitForNavigation(),
       page.click('button:has-text("Save")')
     ]);
+
+    // Wait for modal to appear
+    await page.waitForTimeout(1000);
 
     // Confirm the success dialog and MQTT configuration instructions are shown
     await expect(page.locator('#created-device-modal')).toBeVisible({ timeout: 10000 });
