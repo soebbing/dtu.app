@@ -4,7 +4,7 @@ defmodule DtuApp.MixProject do
   def project do
     [
       app: :dtu_app,
-      version: "0.1.0",
+      version: "2026-07-26-0",
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
