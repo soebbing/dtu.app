@@ -1,0 +1,98 @@
+{
+  "name": "dtu.app — solar telemetry",
+  "short_name": "dtu.app",
+  "description": "Self-hosted, real-time and historic solar generation telemetry for OpenDTU and AhoyDTU inverters.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#10b981",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "/images/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/images/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/images/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "View real-time and historical solar production data",
+      "url": "/dashboard",
+      "icons": [
+        {
+          "src": "/images/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "My DTUs",
+      "short_name": "DTUs",
+      "description": "Manage your solar inverters and devices",
+      "url": "/devices",
+      "icons": [
+        {
+          "src": "/images/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Today's Production",
+      "short_name": "Today",
+      "description": "See today's solar generation curve and statistics",
+      "url": "/dashboard?range=today",
+      "icons": [
+        {
+          "src": "/images/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Historical Data",
+      "short_name": "History",
+      "description": "Browse historical solar production data",
+      "url": "/dashboard?range=historical",
+      "icons": [
+        {
+          "src": "/images/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/images/screenshot-wide.svg",
+      "sizes": "1280x720",
+      "type": "image/svg+xml",
+      "form_factor": "wide",
+      "label": "dtu.app dashboard showing real-time solar production data on desktop"
+    },
+    {
+      "src": "/images/screenshot-mobile.svg",
+      "sizes": "390x844",
+      "type": "image/svg+xml",
+      "form_factor": "narrow",
+      "label": "dtu.app mobile view with solar production stats and charts"
+    }
+  ]
+}
