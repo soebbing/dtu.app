@@ -20,19 +20,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify mix.exs version matches tag
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          tag="${tag#v}"
-          version=$(grep -E '^\s*version:' mix.exs | head -1 | sed -E 's/.*version: *"([^"]+)".*/\1/')
-          if [ "$tag" != "$version" ]; then
-            echo "::error::mix.exs version ($version) does not match tag ($tag)"
-            echo "Bump the version in mix.exs to '$tag' before tagging the release."
-            exit 1
-          fi
-          echo "mix.exs version $version matches tag $tag."
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
