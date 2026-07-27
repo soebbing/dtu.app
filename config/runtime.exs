@@ -100,8 +100,7 @@ if config_env() == :prod do
   # plain TCP on MQTT_BROKER_PORT inside the container.
   if System.get_env("MQTTS_HOST", "") != "" do
     config :dtu_app, :mqtts_host, System.fetch_env!("MQTTS_HOST")
-    config :dtu_app, :mqtts_port,
-           String.to_integer(System.get_env("MQTTS_PORT", "8883"))
+    config :dtu_app, :mqtts_port, String.to_integer(System.get_env("MQTTS_PORT", "8883"))
   end
 
   # ## SSL Support
