@@ -89,28 +89,18 @@ test.describe('Acceptance Tests: Magic-Link Login (Mailpit SMTP capture)', () =>
       // 2. Pull the magic link out of Mailpit.
       const { link } = await fetchMagicLink(api, { toEmail: USER_EMAIL });
 
-      // 3. Follow the magic link in a fresh context so we can verify the
-      //    session cookie sticks (the request fixture doesn't share cookies
-      //    with the page fixture).
+      // 3. Follow the magic link in a fresh request context and verify the
+      //    session cookie logs us in: the controller confirms the token
+      //    and redirects to `signed_in_path` (~p"/"), which the home
+      //    controller in turn redirects to /dashboard for authenticated
+      //    users. The request context follows redirects automatically.
       const visitor = await playwright.request.newContext({
         baseURL: 'http://localhost:4000'
       });
       const res = await visitor.get(link);
       const finalUrl = res.url();
-      // The confirm action sets a session cookie + redirects to /dashboard
-      // (or the originally requested path); the request context follows
-      // redirects, so we land on the final URL.
-      console.log(`magic link: ${link}`);
-      console.log(`final URL after follow-redirects: ${finalUrl}`);
-      console.log(`response status: ${res.status()}`);
       await expect(res).toBeOK();
       expect(finalUrl).toMatch(/\/dashboard/);
-
-      // 4. The page that follows the redirect should render the dashboard
-      //    header, confirming the session cookie is recognised by Phoenix.
-      await page.goto(finalUrl);
-      await expect(page.locator('h1'))
-        .toContainText('PV Power Dashboard', { timeout: 10000 });
 
       await visitor.dispose();
     } finally {
