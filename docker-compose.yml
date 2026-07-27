@@ -4,6 +4,8 @@
 # - The app image is the Elixir release from ./Dockerfile. Its entrypoint runs
 #   Ecto migrations on every start, then boots the release serving HTTP on 4000
 #   and the embedded MQTT broker on 1883.
+# - Mailpit is a local SMTP capture server: when MAIL_DELIVERY=mailpit in .env,
+#   transactional emails land at http://localhost:8025 instead of being sent.
 #
 # Copy .env.example to .env and fill in SECRET_KEY_BASE before bringing this up
 # in anything resembling production:
@@ -31,6 +33,18 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  mailpit:
+    # Local SMTP capture server. Set MAIL_DELIVERY=mailpit in .env and the app
+    # will route transactional email here instead of through Resend. Open
+    # http://localhost:8025 to inspect the magic-link / confirmation emails.
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI
+    volumes:
+      - dtu_app_mailpit_data:/data
 
   app:
     build:
@@ -62,10 +76,17 @@ services:
       # DNS alias for the MQTT endpoint, shown as the broker host in the device
       # setup modal. Empty = use PHX_HOST (broker and web app on the same host).
       MQTT_HOST: ${MQTT_HOST:-}
-      # Transactional email via Resend. Empty RESEND_API_KEY falls back to the
-      # in-memory mailer (no mail is actually sent).
+      # Transactional email via Resend when RESEND_API_KEY is set. Empty key +
+      # MAIL_DELIVERY=mailpit routes through the local Mailpit SMTP server.
+      # With both unset, the in-memory mailer swallows email and the magic-link
+      # URL appears in the server logs.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_DELIVERY: ${MAIL_DELIVERY:-}
+      SMTP_RELAY: ${SMTP_RELAY:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_DOMAIN: ${SMTP_DOMAIN:-localhost}
       MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
 
 volumes:
   dtu_app_pgdata:
+  dtu_app_mailpit_data:
