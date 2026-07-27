@@ -88,11 +88,14 @@ test.describe('Acceptance Tests: Magic-Link Login (Mailpit SMTP capture)', () =>
         baseURL: 'http://localhost:4000'
       });
       const res = await visitor.get(link);
+      const finalUrl = res.url();
       // The confirm action sets a session cookie + redirects to /dashboard
       // (or the originally requested path); the request context follows
       // redirects, so we land on the final URL.
+      console.log(`magic link: ${link}`);
+      console.log(`final URL after follow-redirects: ${finalUrl}`);
+      console.log(`response status: ${res.status()}`);
       await expect(res).toBeOK();
-      const finalUrl = res.url();
       expect(finalUrl).toMatch(/\/dashboard/);
 
       // 4. The page that follows the redirect should render the dashboard
