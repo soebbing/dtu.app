@@ -68,15 +68,15 @@ test.describe('Acceptance Tests: Magic-Link Login (Mailpit SMTP capture)', () =>
       await expect(page).toHaveURL(/\/users\/log-in/, { timeout: 10000 });
 
       // The "Log in with magic link" form is form#login_form_magic in the
-      // session template (see user_session_html/new.html.heex).
+      // session template (see user_session_html/new.html.heex). Fill the email
+      // and submit, then wait for the redirect back to /users/log-in (the
+      // controller returns a flash + redirect regardless of whether the email
+      // is registered, to avoid user enumeration).
       await page.fill('#login_form_magic input[type="email"]', USER_EMAIL);
-      await page.click('#login_form_magic button');
-
-      // The controller always returns the same flash + redirect regardless of
-      // whether the email is registered (anti-enumeration), so a 200 +
-      // flash is sufficient signal that the request was accepted.
-      await expect(page.locator('[role="alert"]').first())
-        .toContainText(/shortly/i, { timeout: 10000 });
+      await Promise.all([
+        page.waitForURL(/\/users\/log-in/, { timeout: 10000 }),
+        page.click('#login_form_magic button')
+      ]);
 
       // 2. Pull the magic link out of Mailpit.
       const { link } = await fetchMagicLink(api, { toEmail: USER_EMAIL });
