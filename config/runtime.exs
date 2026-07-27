@@ -92,6 +92,18 @@ if config_env() == :prod do
     config :dtu_app, :mqtt_host, System.fetch_env!("MQTT_HOST")
   end
 
+  # Public-facing MQTTS endpoint (Traefik / reverse proxy terminates TLS in
+  # front of the broker on these). When MQTTS_HOST is set, the device setup
+  # modal shows BOTH the MQTTS endpoint (recommended) and the plain MQTT
+  # fallback on MQTT_HOST:1883, so DTUs whose firmware doesn't support TLS
+  # (e.g. older AhoyDTU builds) can still connect. The broker itself stays
+  # plain TCP on MQTT_BROKER_PORT inside the container.
+  if System.get_env("MQTTS_HOST", "") != "" do
+    config :dtu_app, :mqtts_host, System.fetch_env!("MQTTS_HOST")
+    config :dtu_app, :mqtts_port,
+           String.to_integer(System.get_env("MQTTS_PORT", "8883"))
+  end
+
   # ## SSL Support
   #
   # To get SSL working, you will need to add the `https` key

@@ -72,6 +72,77 @@ defmodule DtuAppWeb.DeviceLiveTest do
       refute render(index_live) =~ "DTU Configured Successfully!"
     end
 
+    test "shows both TLS and plain broker endpoints when MQTTS_HOST is set",
+         %{conn: conn} do
+      original_mqtts_host = Application.get_env(:dtu_app, :mqtts_host)
+      original_mqtts_port = Application.get_env(:dtu_app, :mqtts_port)
+      original_mqtt_host = Application.get_env(:dtu_app, :mqtt_host)
+
+      try do
+        Application.put_env(:dtu_app, :mqtts_host, "mqtt.example.com")
+        Application.put_env(:dtu_app, :mqtts_port, 8883)
+        # Match the TLS host so the fallback appears at the same address.
+        Application.put_env(:dtu_app, :mqtt_host, "mqtt.example.com")
+
+        {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+        index_live
+        |> element("a[href=\"/devices/new\"]")
+        |> render_click()
+
+        assert_patch(index_live, ~p"/devices/new")
+
+        html =
+          index_live
+          |> form("#device-form", dtu: %{name: "TLS Inverter", kind: "opendtu"})
+          |> render_submit()
+
+        # TLS endpoint shown first as the recommended option
+        assert html =~ "mqtts://mqtt.example.com:8883"
+        assert html =~ "TLS (recommended)"
+
+        # Plain fallback still shown so DTUs without TLS support can connect
+        assert html =~ "mqtt://mqtt.example.com:1883"
+        assert html =~ "plain (fallback)"
+      after
+        if original_mqtts_host,
+          do: Application.put_env(:dtu_app, :mqtts_host, original_mqtts_host),
+          else: Application.delete_env(:dtu_app, :mqtts_host)
+
+        if original_mqtts_port,
+          do: Application.put_env(:dtu_app, :mqtts_port, original_mqtts_port),
+          else: Application.delete_env(:dtu_app, :mqtts_port)
+
+        if original_mqtt_host,
+          do: Application.put_env(:dtu_app, :mqtt_host, original_mqtt_host),
+          else: Application.delete_env(:dtu_app, :mqtt_host)
+      end
+    end
+
+    test "shows only the plain broker endpoint when MQTTS_HOST is unset", %{conn: conn} do
+      # Sanity-check the negative case so the two-endpoint behavior above
+      # doesn't leak into the default config.
+      Application.delete_env(:dtu_app, :mqtts_host)
+      Application.delete_env(:dtu_app, :mqtts_port)
+
+      {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+      index_live
+      |> element("a[href=\"/devices/new\"]")
+      |> render_click()
+
+      assert_patch(index_live, ~p"/devices/new")
+
+      html =
+        index_live
+        |> form("#device-form", dtu: %{name: "Plain Inverter", kind: "opendtu"})
+        |> render_submit()
+
+      assert html =~ "mqtt://localhost:1883"
+      refute html =~ "mqtts://"
+      refute html =~ "TLS (recommended)"
+    end
+
     test "updates device in listing and shows read-only credentials", %{conn: conn, user: user} do
       device = device_fixture(user, %{name: "Kitchen Inverter"})
 

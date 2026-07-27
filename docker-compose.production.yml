@@ -7,6 +7,34 @@
 # app container on the internal network. If your DTUs connect directly to
 # this host, also uncomment the ports block on the `app` service to expose
 # the MQTT broker (1883).
+#
+# MQTTS: the app container also has Traefik labels below that route a TCP
+# MQTT entrypoint on :8883 into the broker's plain :1883. Configure a
+# matching entrypoint + TLS router + service in your Traefik static config
+# (let's-encrypt, a static cert, or whatever you already use for HTTPS):
+#
+#     entryPoints:
+#       mqtts:
+#         address: ":8883"
+#
+#     tcp:
+#       routers:
+#         mqtt-tls:
+#           entrypoints: [mqtts]
+#           rule: "HostSNI(`*`)"   # tighten to e.g. `mqtt.example.com` for per-host cert
+#           tls: {}
+#           service: mqtt
+#       services:
+#         mqtt:
+#           loadbalancer:
+#             servers:
+#               - address: "app:1883"
+#
+# The `traefik` network below must exist (create it with `docker network
+# create traefik` or let your Traefik compose file create it). When
+# MQTTS_HOST is set in .env, the device setup modal shows BOTH the TLS
+# endpoint (recommended) and the plain MQTT fallback so DTUs that don't
+# support TLS can still connect.
 services:
   app:
     image: ghcr.io/soebbing/dtu-app:${IMAGE_TAG:-latest}
@@ -31,14 +59,36 @@ services:
       # Shown to users as the broker host in the device setup modal. Empty
       # = use PHX_HOST (broker and web app share the same hostname).
       MQTT_HOST: ${MQTT_HOST:-}
+      # Set MQTTS_HOST to the DNS name DTUs connect to over TLS (e.g.
+      # mqtt.example.com). When set, the device setup modal shows both
+      # mqtts://MQTTS_HOST:MQTTS_PORT (recommended) and the plain
+      # mqtt://MQTT_HOST:1883 fallback. The broker itself stays plain TCP
+      # on 1883 inside the container; Traefik terminates TLS.
+      MQTTS_HOST: ${MQTTS_HOST:-}
+      MQTTS_PORT: ${MQTTS_PORT:-8883}
       # Empty RESEND_API_KEY falls back to the in-memory mailer — magic-link
       # login then doesn't work.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
     # ports:
     #   - "1883:1883"   # uncomment for direct host access to the MQTT broker
+    labels:
+      - "traefik.enable=true"
+      # Plain HTTP / HTTPS is terminated by Traefik too; these routers are
+      # for completeness — drop them if your Traefik routes the web app
+      # from a different stack.
+      - "traefik.http.routers.dtu-app.rule=Host(`${PHX_HOST}`)"
+      - "traefik.http.routers.dtu-app.entrypoints=websecure"
+      - "traefik.http.routers.dtu-app.tls=true"
+      - "traefik.http.services.dtu-app.loadbalancer.server.port=4000"
+      # MQTTS TCP router (port 8883, terminated by Traefik).
+      - "traefik.tcp.routers.dtu-mqtt.rule=HostSNI(`*`)"
+      - "traefik.tcp.routers.dtu-mqtt.entrypoints=mqtts"
+      - "traefik.tcp.routers.dtu-mqtt.tls=true"
+      - "traefik.tcp.services.dtu-mqtt.loadbalancer.server.port=1883"
     networks:
       - internal
+      - traefik
 
   db:
     image: timescale/timescaledb:latest-pg16
@@ -61,6 +111,11 @@ services:
 networks:
   internal:
     driver: bridge
+  traefik:
+    # Must already exist — `docker network create traefik` (or have your
+    # Traefik compose file create it). External so the same network can be
+    # shared between this stack and the Traefik container.
+    external: true
 
 volumes:
   dtu_app_pgdata:

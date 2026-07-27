@@ -12,12 +12,37 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> stream(:devices, Devices.list_devices(socket.assigns.current_scope.user))
      |> assign(:deleting_device, nil)
      |> assign(:created_device, nil)
-     |> assign(:mqtt_host, mqtt_host())
+     |> assign(:mqtt_endpoints, mqtt_endpoints())
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
   end
 
-  # Host shown to users as the MQTT broker address in the created-device modal.
-  # Prefers an explicit MQTT_HOST override (when the broker runs on a different
+  # Endpoints shown in the device setup modal. The plain MQTT endpoint is
+  # always present. When MQTTS_HOST is configured — broker fronted by a TLS
+  # terminator such as Traefik — an MQTTS endpoint is prepended so devices
+  # that support TLS use it by default, while DTUs whose firmware doesn't
+  # support TLS (e.g. older AhoyDTU builds) can still fall back to the plain
+  # endpoint on the internal network.
+  defp mqtt_endpoints do
+    plain = %{scheme: "mqtt", host: mqtt_host(), port: 1883, label: nil}
+
+    case Application.get_env(:dtu_app, :mqtts_host) do
+      host when is_binary(host) and host != "" ->
+        [
+          %{
+            scheme: "mqtts",
+            host: host,
+            port: Application.get_env(:dtu_app, :mqtts_port, 8883),
+            label: "TLS (recommended)"
+          },
+          Map.put(plain, :label, "plain (fallback)")
+        ]
+
+      _ ->
+        [plain]
+    end
+  end
+
+  # Host for the plain-MQTT endpoint. Prefers MQTT_HOST (broker on a different
   # domain than the web app), falling back to the web app's host (PHX_HOST).
   defp mqtt_host do
     case Application.get_env(:dtu_app, :mqtt_host) do
