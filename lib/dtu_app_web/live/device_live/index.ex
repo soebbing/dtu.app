@@ -13,17 +13,33 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> assign(:deleting_device, nil)
      |> assign(:created_device, nil)
      |> assign(:mqtt_host, mqtt_host())
+     |> assign(:mqtt_port, mqtt_port())
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
   end
 
   # Host shown to users as the MQTT broker address in the created-device modal.
-  # Prefers an explicit MQTT_HOST override (when the broker runs on a different
-  # domain than the web app), falling back to the web app's host (PHX_HOST).
+  # Prefers MQTTS_HOST when set (broker is fronted by a TLS terminator),
+  # then MQTT_HOST (broker on a different domain than the web app), falling
+  # back to the web app's host (PHX_HOST).
   defp mqtt_host do
-    case Application.get_env(:dtu_app, :mqtt_host) do
-      host when is_binary(host) and host != "" -> host
-      _ -> endpoint_host()
+    case Application.get_env(:dtu_app, :mqtts_host) do
+      host when is_binary(host) and host != "" ->
+        host
+
+      _ ->
+        case Application.get_env(:dtu_app, :mqtt_host) do
+          host when is_binary(host) and host != "" -> host
+          _ -> endpoint_host()
+        end
     end
+  end
+
+  # Port shown to users in the created-device modal. MQTTS_PORT when MQTTS_HOST
+  # is set (default 8883); otherwise the unencrypted MQTT port 1883.
+  defp mqtt_port do
+    if Application.get_env(:dtu_app, :mqtts_host),
+      do: Application.get_env(:dtu_app, :mqtts_port, 8883),
+      else: 1883
   end
 
   defp endpoint_host do

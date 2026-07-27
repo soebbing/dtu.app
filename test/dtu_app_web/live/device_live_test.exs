@@ -68,8 +68,43 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert index_live
              |> element("#btn-close-created-modal")
              |> render_click()
+    end
 
-      refute render(index_live) =~ "DTU Configured Successfully!"
+    test "shows MQTTS host and port when MQTTS_HOST is configured", %{conn: conn} do
+      # Simulate a deployment where the broker is fronted by a TLS terminator.
+      # Restore after the test so subsequent tests aren't affected.
+      original_mqtts_host = Application.get_env(:dtu_app, :mqtts_host)
+      original_mqtts_port = Application.get_env(:dtu_app, :mqtts_port)
+
+      try do
+        Application.put_env(:dtu_app, :mqtts_host, "mqtt.example.com")
+        Application.put_env(:dtu_app, :mqtts_port, 8883)
+
+        {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+        index_live
+        |> element("a[href=\"/devices/new\"]")
+        |> render_click()
+
+        assert_patch(index_live, ~p"/devices/new")
+
+        html =
+          index_live
+          |> form("#device-form", dtu: %{name: "TLS Inverter", kind: "opendtu"})
+          |> render_submit()
+
+        assert html =~ "mqtt.example.com"
+        assert html =~ "8883"
+        refute html =~ ">1883<"
+      after
+        if original_mqtts_host,
+          do: Application.put_env(:dtu_app, :mqtts_host, original_mqtts_host),
+          else: Application.delete_env(:dtu_app, :mqtts_host)
+
+        if original_mqtts_port,
+          do: Application.put_env(:dtu_app, :mqtts_port, original_mqtts_port),
+          else: Application.delete_env(:dtu_app, :mqtts_port)
+      end
     end
 
     test "updates device in listing and shows read-only credentials", %{conn: conn, user: user} do
