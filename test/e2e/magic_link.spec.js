@@ -39,17 +39,17 @@ async function fetchMagicLink(api, {
 
     if (match) {
       // Use the parsed JSON API rather than the raw RFC822 source: Mailpit
-      // returns Body.HTML / Body.Text already decoded from quoted-printable,
-      // so we don't have to undo the long-URL soft-line-wrapping that
-      // quoted-printable encoding applies around column 76.
+      // returns the body already decoded from quoted-printable, so we don't
+      // have to undo the long-URL soft-line-wrapping that QP encoding
+      // applies around column 76 (a magic-link URL hits that limit and
+      // gets split as `…=\n<continuation>`).
       const detail = await api.get(`${MAILPIT_URL}/api/v1/message/${match.ID}`);
       const body = await detail.json();
-      const html = body?.Body?.HTML ?? '';
-      const text = body?.Body?.Text ?? '';
-      // The HTML <a href="…"> is the source of truth — the plain-text
-      // fallback is intentionally stripped to a shorter URL by Swoosh, but
-      // both should work for our purposes. Prefer HTML.
-      const haystack = html || text;
+      // Mailpit names the two parts Body.HTML and Body.Plain (newer builds)
+      // or just HTML / Text on older ones — try both.
+      const html = body?.Body?.HTML ?? body?.HTML ?? '';
+      const plain = body?.Body?.Plain ?? body?.Body?.Text ?? body?.Text ?? '';
+      const haystack = html || plain;
       const link = haystack.match(/https?:\/\/[^\s"'<>]*\/users\/log-in\/[A-Za-z0-9_=-]+/);
       if (link) return { message: match, link: link[0] };
     }
