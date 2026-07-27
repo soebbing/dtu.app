@@ -1,89 +1,44 @@
-# Production deployment example using the published GHCR image.
+# Production example. Pulls the release image from GHCR; everything else
+# (build, deploy, update) is the same as docker-compose.yml — see that file
+# for the dev workflow.
 #
-# Unlike docker-compose.yml (which builds from source for local hacking), this
-# file pulls the prebuilt release image produced by .github/workflows/release.yml:
-# every push of a calver tag (e.g. v2026-07-26-1) publishes a fresh image.
-#
-# Layout assumption:
-#   - HTTP(S) is terminated by an external reverse proxy (Traefik, Caddy,
-#     nginx, a cloud LB, ...). This file does not bind the Phoenix port to the
-#     host; both the web app and the MQTT broker are reachable only on an
-#     internal Docker network.
-#   - The DB stays on the same Docker host (TimescaleDB container).
-#   - The MQTT broker must be reachable by your DTUs. There are two patterns:
-#
-#       (a) Same host / same network as the web app — publish the MQTT port
-#           externally (uncomment the `ports` block below) and set MQTT_HOST
-#           to a DNS name that resolves to this host.
-#
-#       (b) MQTT on a different host / domain (e.g. mqtt.example.com) — do
-#           NOT publish ports here; let a reverse proxy / load balancer
-#           forward MQTT (plain TCP) to mqtt:1883. Set MQTT_HOST accordingly.
-#
-# This file is an example — copy it to a location of your choice and edit.
-# Suggested deployment steps:
-#
-#     mkdir -p /opt/dtu-app && cd /opt/dtu-app
-#     cp /path/to/dtu.app/docker-compose.production.yml compose.yml
-#     cp /path/to/dtu.app/.env.example .env          # then edit
-#     # In .env, set IMAGE_TAG=v2026-07-26-1 (or leave unset / =latest to track moving latest)
-#     docker compose pull
-#     docker compose up -d
-#
-# Updating to a new release:
-#
-#     # Edit .env: IMAGE_TAG=v2026-07-26-2   (or remove to track `latest` again)
-#     docker compose pull
-#     docker compose up -d          # restarts only containers whose image changed
+# Behind a TLS terminator (Traefik, Caddy, nginx, cloud LB). This file does
+# NOT bind the Phoenix port to the host; the reverse proxy reaches the
+# app container on the internal network. If your DTUs connect directly to
+# this host, also uncomment the ports block on the `app` service to expose
+# the MQTT broker (1883).
 services:
   app:
     image: ghcr.io/soebbing/dtu-app:${IMAGE_TAG:-latest}
     restart: unless-stopped
     init: true
-    # No `build:` — the image is prebuilt. The release workflow pushes both
-    # the calver tag (e.g. v2026-07-26-1) and the moving `latest` alias.
-    # Set IMAGE_TAG=v2026-07-26-1 in .env to pin a specific release; omit it
-    # (or set it to `latest`) to track the most recent release.
+    # IMAGE_TAG defaults to the moving :latest. Set it to a calver tag in
+    # .env (e.g. v2026-07-26-1) to pin a specific release.
     depends_on:
       db:
         condition: service_healthy
     environment:
       PHX_SERVER: "true"
-      PHX_HOST: ${PHX_HOST:?PHX_HOST must be set — public hostname of the web app}
+      PHX_HOST: ${PHX_HOST:?PHX_HOST must be set}
       PORT: "4000"
-      # Set PHX_SCHEME=https + PHX_PORT=443 when fronted by a TLS terminator
-      # (Traefik, Caddy, nginx, cloud LB).
       PHX_SCHEME: ${PHX_SCHEME:-https}
       PHX_PORT: ${PHX_PORT:-443}
       DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/${POSTGRES_DB:-dtu_app_prod}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE must be set — copy .env.example to .env}
       POOL_SIZE: ${POOL_SIZE:-15}
-      # Embedded MQTT broker. Set MQTT_BROKER_ENABLED=false if you run a
-      # broker outside the app container.
       MQTT_BROKER_ENABLED: ${MQTT_BROKER_ENABLED:-true}
       MQTT_BROKER_PORT: "1883"
-      # DNS alias shown to users as the broker host in the device setup modal.
-      # Empty = use PHX_HOST (broker and web app on the same domain).
+      # Shown to users as the broker host in the device setup modal. Empty
+      # = use PHX_HOST (broker and web app share the same hostname).
       MQTT_HOST: ${MQTT_HOST:-}
-      # Transactional email via Resend. Empty RESEND_API_KEY falls back to
-      # the in-memory mailer (emails are swallowed — magic-link login breaks).
+      # Empty RESEND_API_KEY falls back to the in-memory mailer — magic-link
+      # login then doesn't work.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
-    # No `ports:` — let an external reverse proxy reach the container on the
-    # internal Docker network. The container exposes 4000 (HTTP) and 1883
-    # (MQTT, plain TCP); either or both can be published if your deployment
-    # needs direct host access.
-    #
-    # Example: publish MQTT on the host's :1883 (DTUs connect directly).
-    #   ports:
-    #     - "1883:1883"
-    #
-    # No app-level healthcheck: the release image is alpine-minimal (no curl
-    # or wget). The reverse proxy in front of the app can probe /. If you
-    # need an in-cluster probe, mount a tiny image with curl or wire one up
-    # from the proxy side.
+    # ports:
+    #   - "1883:1883"   # uncomment for direct host access to the MQTT broker
     networks:
-      - appnet
+      - internal
 
   db:
     image: timescale/timescaledb:latest-pg16
@@ -93,7 +48,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-dtu_app_prod}
-    # DB is reachable only on the internal network — only the app talks to it.
     volumes:
       - dtu_app_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -102,10 +56,10 @@ services:
       timeout: 5s
       retries: 10
     networks:
-      - appnet
+      - internal
 
 networks:
-  appnet:
+  internal:
     driver: bridge
 
 volumes:
