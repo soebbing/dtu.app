@@ -35,10 +35,10 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       const modal = page.locator('#created-device-modal');
       await expect(modal).toBeVisible({ timeout: 10000 });
       await expect(page.locator('#created-device-modal-title')).toContainText('DTU Configured Successfully!', { timeout: 10000 });
-      await expect(modal).toContainText('MQTT Broker / Server:', { timeout: 10000 });
-      await expect(modal).toContainText('localhost', { timeout: 10000 });
-      await expect(modal).toContainText('MQTT Port:', { timeout: 10000 });
-      await expect(modal).toContainText('1883', { timeout: 10000 });
+      // Broker is shown as a full URL (scheme://host:port) so users can
+      // copy it straight into their DTU's MQTT settings.
+      await expect(modal).toContainText('MQTT Broker:', { timeout: 10000 });
+      await expect(modal).toContainText('mqtt://localhost:1883', { timeout: 10000 });
       await expect(modal).toContainText('Hardware setup instructions:', { timeout: 10000 });
 
       // 5. Dismiss the modal and verify it closes
@@ -84,10 +84,8 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       const modal = page.locator('#created-device-modal');
       await expect(modal).toBeVisible({ timeout: 10000 });
       await expect(page.locator('#created-device-modal-title')).toContainText('DTU erfolgreich konfiguriert!', { timeout: 10000 });
-      await expect(modal).toContainText('MQTT Broker / Server:', { timeout: 10000 });
-      await expect(modal).toContainText('localhost', { timeout: 10000 });
-      await expect(modal).toContainText('MQTT-Port:', { timeout: 10000 });
-      await expect(modal).toContainText('1883', { timeout: 10000 });
+      await expect(modal).toContainText('MQTT-Broker:', { timeout: 10000 });
+      await expect(modal).toContainText('mqtt://localhost:1883', { timeout: 10000 });
       await expect(modal).toContainText('Anweisungen zur Hardware-Einrichtung:', { timeout: 10000 });
 
       // 5. Dismiss the modal
@@ -133,10 +131,8 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       const modal = page.locator('#created-device-modal');
       await expect(modal).toBeVisible({ timeout: 10000 });
       await expect(page.locator('#created-device-modal-title')).toContainText('Configuration de la DTU réussie !', { timeout: 10000 });
-      await expect(modal).toContainText('Courtier / Serveur MQTT :', { timeout: 10000 });
-      await expect(modal).toContainText('localhost');
-      await expect(modal).toContainText('Port MQTT :');
-      await expect(modal).toContainText('1883');
+      await expect(modal).toContainText('Courtier MQTT :', { timeout: 10000 });
+      await expect(modal).toContainText('mqtt://localhost:1883');
       await expect(modal).toContainText('Instructions de configuration du matériel :');
 
       // 5. Dismiss the modal
