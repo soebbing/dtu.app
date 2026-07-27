@@ -44,7 +44,7 @@ async function fetchMagicLink(api, {
       const text = await raw.text();
       // Debug: dump the first ~600 chars of the raw message so we can see
       // what Mailpit actually stored (line wrapping, encoding, etc.).
-      console.log(`mailpit msg ${match.ID} raw:\n${text.slice(0, 600)}\n---`);
+      console.log(`mailpit msg ${match.ID} raw:\n${text.slice(0, 4000)}\n---`);
       const link = text.match(/https?:\/\/[^\s"<>]*\/users\/log-in\/[A-Za-z0-9_=-]+/);
       if (link) return { message: match, link: link[0] };
     }
