@@ -64,6 +64,12 @@ defmodule DtuApp.MqttBrokerTest do
           },
           "Frequency": {
             "v": 50.1
+          },
+          "YieldDay": {
+            "v": 4320.0
+          },
+          "YieldTotal": {
+            "v": 125000.0
           }
         },
         "DC": {
@@ -71,8 +77,6 @@ defmodule DtuApp.MqttBrokerTest do
             "v": 250.0
           }
         },
-        "yield_day": 4320.0,
-        "yield_total": 125000.0,
         "INV": {
           "Temperature": {
             "v": 35.5
