@@ -33,6 +33,12 @@ RUN mix assets.deploy
 # Changes to config/runtime.exs don't require recompiling the code
 COPY config/runtime.exs config/
 
+# Bake the release version into the image so the in-app footer can show
+# it at runtime. The release workflow passes the exact git tag (e.g.
+# v2026-07-26-1); CI builds / local docker builds default to the short SHA.
+ARG RELEASE_VERSION="dev"
+ENV RELEASE_VERSION=${RELEASE_VERSION}
+
 RUN mix release
 
 # start a new build stage so that the final image will only contain
@@ -53,5 +59,10 @@ COPY --chmod=0755 rel/docker-entrypoint.sh /app/docker-entrypoint.sh
 USER nobody
 
 ENV HOME=/app
+
+# Carry the release version into the running container so the runtime
+# config can read it. Configured at build time (see ARG above).
+ARG RELEASE_VERSION
+ENV RELEASE_VERSION=${RELEASE_VERSION}
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

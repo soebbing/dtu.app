@@ -10,6 +10,9 @@ defmodule DtuAppWeb.Plugs.Locale do
     conn
     |> put_session("locale", locale)
     |> assign(:locale, locale)
+    # Expose the configured release/branch identifier (see config/runtime.exs)
+    # to every rendered template — the unobtrusive site footer reads this.
+    |> assign(:version, Application.get_env(:dtu_app, :version, "dev"))
   end
 
   def on_mount(:default, _params, session, socket) do

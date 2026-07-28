@@ -22,6 +22,10 @@ defmodule DtuAppWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+
+    # Legal / informational pages — no auth required, multilingual.
+    get "/imprint", PageController, :imprint
+    get "/privacy", PageController, :privacy
   end
 
   # Other scopes may use custom stacks.

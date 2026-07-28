@@ -1,0 +1,53 @@
+<Layouts.app flash={@flash} current_scope={@current_scope} class="max-w-3xl">
+  <article class="prose prose-zinc dark:prose-invert max-w-none">
+    <h1>{gettext("Imprint")}</h1>
+
+    <p class="text-sm text-zinc-500 dark:text-zinc-400">
+      {gettext(
+        "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
+      )}
+    </p>
+
+    <h2>{gettext("Service provider")}</h2>
+    <p>
+      dtu.app<br />
+      {gettext("c/o The maintainer listed in the project repository")}<br />
+      {gettext("Contact via the project repository's issue tracker")}
+    </p>
+
+    <h2>{gettext("Contact")}</h2>
+    <p>
+      {gettext(
+        "Please reach out through the issue tracker of the public source-code repository. No postal address, phone line, or separate support inbox is operated."
+      )}
+    </p>
+
+    <h2>{gettext("Responsible for content")}</h2>
+    <p>
+      {gettext(
+        "Responsible according to § 18 (2) MStV (Germany): the maintainer named in the repository's CODEOWNERS file."
+      )}
+    </p>
+
+    <h2>{gettext("Liability for content")}</h2>
+    <p>
+      {gettext(
+        "All content on this site is generated automatically from data your DTU publishes over MQTT and from the account information you provided at sign-up. We assume no liability for the accuracy, completeness, or timeliness of automatically aggregated telemetry — power values, energy counters, and the like — because they originate from hardware we do not control. Where editorial content appears, the person responsible is named above."
+      )}
+    </p>
+
+    <h2>{gettext("Liability for links")}</h2>
+    <p>
+      {gettext(
+        "Our site contains links to external third-party websites whose contents we do not control. The respective providers are responsible for the content of linked pages. Linked pages were checked for legality at the time of linking; ongoing monitoring is performed where there is concrete evidence of rights infringements."
+      )}
+    </p>
+
+    <h2>{gettext("Copyright")}</h2>
+    <p>
+      {gettext(
+        "Source code, branding, and the contents of this site are released under the project's open-source license — see the LICENSE file in the repository for details. Telemetry data and account data you submit remain your property."
+      )}
+    </p>
+  </article>
+</Layouts.app>
