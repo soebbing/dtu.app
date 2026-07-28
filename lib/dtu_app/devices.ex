@@ -189,8 +189,8 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0}
     else
-      # Latest reading per (dtu_id, inverter_serial) — uses the hypertable's
-      # time-descending index.
+      # Latest reading per (dtu_id, inverter_serial) — used for current_power.
+      # Uses the hypertable's time-descending index.
       sub =
         from r in Reading,
           where: r.dtu_id in ^dtu_ids,
@@ -207,9 +207,38 @@ defmodule DtuApp.Devices do
         |> Enum.map(&(&1.ac_power || 0.0))
         |> Enum.sum()
 
+      # Today's total yield: MAX(yield_day) per (dtu_id, inverter_serial)
+      # within today's UTC window, summed across inverters. yield_day is the
+      # inverter's cumulative daily counter (resets at the inverter's local
+      # midnight), so MAX guarantees we use the freshest reading for each
+      # inverter even when the latest raw row is stale. Summing the latest
+      # reading's yield_day (the old behaviour) breaks when an inverter went
+      # offline mid-day and came back online — its freshest reading could be
+      # the start-of-day counter, giving a near-zero total.
+      today = Date.utc_today()
+      today_start = DateTime.new!(today, ~T[00:00:00], "Etc/UTC")
+      today_end = DateTime.new!(today, ~T[23:59:59], "Etc/UTC")
+
+      today_yield_per_inverter =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
+            group_by: [r.dtu_id, r.inverter_serial],
+            select: %{dtu_id: r.dtu_id, inverter_serial: r.inverter_serial, max_yield: max(r.yield_day)}
+        )
+
       today_yield =
-        latest_readings
-        |> Enum.map(&(&1.yield_day || 0.0))
+        today_yield_per_inverter
+        |> Enum.map(fn row ->
+          # nil can leak in if every reading for an inverter has yield_day: nil
+          # (e.g. an inverter that has never reported a daily total).
+          case row.max_yield do
+            nil -> 0.0
+            v -> v
+          end
+        end)
         |> Enum.sum()
 
       # Peak power today comes from the 5-minute continuous aggregate.
