@@ -31,7 +31,7 @@ defmodule DtuApp.DevicesFixtures do
   """
   def reading_fixture(device, attrs \\ %{}) do
     {raw_inserted_at, attrs} = Map.pop(attrs, :inserted_at, DateTime.utc_now())
-    inserted_at = DateTime.truncate(raw_inserted_at, :second)
+    inserted_at = DateTime.truncate(raw_inserted_at, :microsecond)
 
     {inverter_serial, attrs} = Map.pop(attrs, :inverter_serial, unique_inverter_serial())
     {ac_power, attrs} = Map.pop(attrs, :ac_power, 0.0)

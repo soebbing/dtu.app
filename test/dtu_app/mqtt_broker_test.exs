@@ -98,7 +98,8 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.producing == true
     end
 
-    test "parses AhoyDTU payload, buffers, and saves a reading on ac_power trigger", %{user: user} do
+    test "parses AhoyDTU payload, buffers, and flushes a reading whenever a meaningful metric arrives",
+         %{user: user} do
       dtu =
         device_fixture(user, %{
           kind: "ahoydtu",
@@ -118,27 +119,70 @@ defmodule DtuApp.MqttBrokerTest do
 
       state = %{ahoy_buffers: %{}}
 
-      # Send temperature
+      # Send temperature — flushes immediately, even without AC power.
       msg1 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/Temp", "34.5"}
       {:noreply, state} = Telemetry.handle_info(msg1, state)
 
-      # Send yield_day
+      assert [temp_reading] = Devices.list_recent_readings(user, dtu.id)
+      assert temp_reading.inverter_serial == "balcony-inv"
+      assert temp_reading.temperature == 34.5
+      assert temp_reading.ac_power == nil
+      assert temp_reading.yield_day == nil
+
+      # Send yield_day — flushes again, carrying the previously-buffered
+      # temperature through. This used to be silently dropped until P_AC.
       msg2 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/YieldDay", "1.23"}
       {:noreply, state} = Telemetry.handle_info(msg2, state)
 
-      # Assert no reading in DB yet
-      assert [] == Devices.list_recent_readings(user, dtu.id)
+      readings = Devices.list_recent_readings(user, dtu.id)
+      assert [latest | _] = readings
+      assert latest.temperature == 34.5
+      assert latest.yield_day == 1.23
+      assert latest.ac_power == nil
 
-      # Send active power (the trigger)
+      # Send active power — flushes once more with the full picture.
       msg3 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/P_AC", "150.0"}
       {:noreply, _state} = Telemetry.handle_info(msg3, state)
 
-      # Assert reading in DB now with all buffered values!
+      readings = Devices.list_recent_readings(user, dtu.id)
+      assert [latest | _] = readings
+      assert latest.ac_power == 150.0
+      assert latest.temperature == 34.5
+      assert latest.yield_day == 1.23
+    end
+
+    test "AhoyDTU yield-only uplink is persisted even when AC power is absent",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-yield-only",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # Regression: AhoyDTU users reporting "Today's Total Yield" stuck at 0
+      # because the firmware only publishes yield/temperature while the
+      # inverter is producing is no longer true — each meaningful uplink
+      # writes through, even with no P_AC in this batch.
+      msg =
+        {:uplink, "client_3", device_info, "inverter/balcony-inv/ch0/YieldDay", "4.32"}
+
+      {:noreply, _state} = Telemetry.handle_info(msg, %{ahoy_buffers: %{}})
+
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.inverter_serial == "balcony-inv"
-      assert reading.ac_power == 150.0
-      assert reading.temperature == 34.5
-      assert reading.yield_day == 1.23
+      assert reading.yield_day == 4.32
+      assert reading.ac_power == nil
     end
 
     test "parses AhoyDTU JSON-layout per-channel payload in one uplink", %{user: user} do
