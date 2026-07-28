@@ -47,6 +47,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Bake the git ref into the image so the in-app footer renders
+          # the exact tag the user is running (e.g. v2026-07-26-1). When
+          # the workflow runs from a tag push, github.ref_name is the tag;
+          # for branch pushes it's the branch name.
+          build-args: |
+            "RELEASE_VERSION=${{ github.ref_name }}"
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

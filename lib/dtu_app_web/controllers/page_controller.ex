@@ -8,4 +8,8 @@ defmodule DtuAppWeb.PageController do
       render(conn, :home)
     end
   end
+
+  def imprint(conn, _params), do: render(conn, :imprint)
+
+  def privacy(conn, _params), do: render(conn, :privacy)
 end

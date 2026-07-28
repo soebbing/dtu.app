@@ -5,332 +5,799 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-msgid "Real-Time Solar Telemetry System"
-msgstr "Echtzeit-Solar-Telemetriesystem"
-
-msgid "Visualize and Manage Your"
-msgstr "Visualisieren und verwalten Sie Ihre"
-
-msgid "Solar Generation"
-msgstr "Solarerzeugung"
-
-msgid "An open-source multi-tenant telemetry platform designed for OpenDTU and AhoyDTU converters. Securely publish, track, and analyze your solar yield in real-time."
-msgstr "Eine quelloffene Mandanten-fähige Telemetrieplattform für OpenDTU- und AhoyDTU-Wechselrichter. Sicheres Übertragen, Verfolgen und Analysieren Ihres Solalertrags in Echtzeit."
-
-msgid "Go to Dashboard"
-msgstr "Zum Dashboard"
-
-msgid "Manage DTUs"
-msgstr "DTUs verwalten"
-
-msgid "Get Started"
-msgstr "Loslegen"
-
-msgid "Sign In"
-msgstr "Einloggen"
-
-msgid "System Core Features"
-msgstr "Kernfunktionen des Systems"
-
-msgid "Everything you need to capture, secure, and monitor your PV system telemetry."
-msgstr "Alles, was Sie zum Erfassen, Sichern und Überwachen der Telemetriedaten Ihrer PV-Anlage benötigen."
-
-msgid "Isolated Multi-Tenancy"
-msgstr "Isolierte Mandantenfähigkeit"
-
-msgid "Create a secure, private account. Manage one or more DTUs in complete isolation. No other user can view or intercept your generation stats."
-msgstr "Erstellen Sie ein sicheres, privates Konto. Verwalten Sie eine oder mehrere DTUs in vollständiger Isolation. Kein anderer Benutzer kann Ihre Erzeugungsdaten einsehen oder abfangen."
-
-msgid "OpenDTU & AhoyDTU"
-msgstr "OpenDTU & AhoyDTU"
-
-msgid "Full support for both firmware stacks. Ingests nested OpenDTU JSON payloads or buffers AhoyDTU's individual subtopic metrics to write complete database entries."
-msgstr "Volle Unterstützung für beide Firmware-Stacks. Verarbeitet verschachtelte OpenDTU-JSON-Nutzdaten oder puffert die Metriken einzelner AhoyDTU-Unterthemen, um vollständige Datenbankeinträge zu schreiben."
-
-msgid "Real-Time Ingestion"
-msgstr "Echtzeit-Erfassung"
-
-msgid "Telemetry data is published via MQTT directly to our high-performance Elixir broker. Updates are broadcasted instantly to your dashboard LiveView."
-msgstr "Telemetriedaten werden via MQTT direkt an unseren leistungsstarken Elixir-Broker gesendet. Aktualisierungen werden sofort an Ihr Dashboard-LiveView übertragen."
-
-msgid "Dynamic Power Curve"
-msgstr "Dynamische Leistungskurve"
-
-msgid "Analyze generation patterns with a clean, dynamic SVG chart bucketed into 5-minute averages, displaying today's power curves, yield, and peaks."
-msgstr "Analysieren Sie Erzeugungsmuster mit einem übersichtlichen, dynamischen SVG-Diagramm, das in 5-Minuten-Durchschnitte unterteilt ist und die heutigen Leistungskurven, Erträge und Spitzenwerte anzeigt."
-
-msgid "System-Managed Credentials"
-msgstr "Vom System verwaltete Zugangsdaten"
-
-msgid "Credentials and base topics are defined securely by the system on creation. Read-only tokens are displayed for easy input into your hardware configuration."
-msgstr "Zugangsdaten und Basis-Themen werden bei der Erstellung vom System sicher definiert. Schreibgeschützte Tokens werden zur einfachen Eingabe in Ihre Hardware-Konfiguration angezeigt."
-
-msgid "Optimized Persistence"
-msgstr "Optimierte Speicherung"
-
-msgid "Backed by index-optimized database tables and schema validations, telemetry records are persisted reliably and query speeds are kept constant."
-msgstr "Unterstützt durch indexoptimierte Datenbanktabellen und Schemavalidierungen werden Telemetriedaten zuverlässig gespeichert und die Abfragegeschwindigkeiten konstant gehalten."
-
-msgid "Dashboard"
-msgstr "Dashboard"
-
-msgid "DTUs"
-msgstr "DTUs"
-
-msgid "Settings"
-msgstr "Einstellungen"
-
-msgid "Log out"
-msgstr "Abmelden"
-
-msgid "Log in"
-msgstr "Anmelden"
-
-msgid "Register"
-msgstr "Registrieren"
-
-msgid "PV Power Dashboard"
-msgstr "PV-Power-Dashboard"
-
-msgid "Real-time and historic generation stats for your solar converter system."
-msgstr "Echtzeit- und historische Erzeugungsdaten für Ihr Solarkonvertersystem."
-
-msgid "Manage Devices"
-msgstr "Geräte verwalten"
-
-msgid "Total (All DTUs)"
-msgstr "Gesamt (Alle DTUs)"
-
-msgid "Today"
-msgstr "Heute"
-
-msgid "Historical Day"
-msgstr "Historischer Tag"
-
-msgid "Historical Week"
-msgstr "Historische Woche"
-
-msgid "Historical Month"
-msgstr "Historischer Monat"
-
-msgid "Historical Year"
-msgstr "Historisches Jahr"
-
-msgid "Select period:"
-msgstr "Zeitraum auswählen:"
-
-msgid "No historical days available."
-msgstr "Keine historischen Tage verfügbar."
-
-msgid "No historical weeks available."
-msgstr "Keine historischen Wochen verfügbar."
-
-msgid "No historical months available."
-msgstr "Keine historischen Monate verfügbar."
-
-msgid "No historical years available."
-msgstr "Keine historischen Jahre verfügbar."
-
-msgid "Current Generation"
-msgstr "Aktuelle Erzeugung"
-
-msgid "Total Yield"
-msgstr "Gesamtertrag"
-
-msgid "Today's Total Yield"
-msgstr "Heutiger Gesamtertrag"
-
-msgid "Average Power"
-msgstr "Durchschnittliche Leistung"
-
-msgid "Daily Average Yield"
-msgstr "Täglicher Durchschnittsertrag"
-
-msgid "Peak Power"
-msgstr "Spitzenleistung"
-
-msgid "Peak Yield Day"
-msgstr "Spitzenertragstag"
-
-msgid "on %{date}"
-msgstr "am %{date}"
-
-msgid "Today's Production Curve (Watts)"
-msgstr "Heutige Erzeugungskurve (Watt)"
-
-msgid "Production Curve for %{period} (Watts)"
-msgstr "Erzeugungskurve für %{period} (Watt)"
-
-msgid "Daily Yields for Week starting %{period} (kWh)"
-msgstr "Tägliche Erträge für Woche ab %{period} (kWh)"
-
-msgid "Daily Yields for month of %{month_year} (kWh)"
-msgstr "Tägliche Erträge für den Monat %{month_year} (kWh)"
-
-msgid "Monthly Yields for %{year} (kWh)"
-msgstr "Monatliche Erträge für %{year} (kWh)"
-
-msgid "No power readings logged for this day."
-msgstr "Keine Leistungsmesswerte für diesen Tag protokolliert."
-
-msgid "No yield records logged for this period."
-msgstr "Keine Ertragsdatensätze für diesen Zeitraum protokolliert."
-
-msgid "Device Connection Status"
-msgstr "Geräteverbindungsstatus"
-
-msgid "online"
-msgstr "online"
-
-msgid "offline"
-msgstr "offline"
-
-msgid "Firmware:"
-msgstr "Firmware:"
-
-msgid "Base Topic:"
-msgstr "Basis-Thema:"
-
-msgid "Last seen:"
-msgstr "Zuletzt gesehen:"
-
-msgid "never"
-msgstr "nie"
-
-msgid "MQTT Username:"
-msgstr "MQTT-Benutzername:"
-
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:12
+#, elixir-autogen, elixir-format
+msgid "1. Overview"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:19
+#, elixir-autogen, elixir-format
+msgid "2. Data controller"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:26
+#, elixir-autogen, elixir-format
+msgid "3. What data we collect"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:28
+#, elixir-autogen, elixir-format
+msgid "3.1 Account data"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:35
+#, elixir-autogen, elixir-format
+msgid "3.2 Telemetry data"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:42
+#, elixir-autogen, elixir-format
+msgid "3.3 Session and security data"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:49
+#, elixir-autogen, elixir-format
+msgid "4. How we use your data"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:65
+#, elixir-autogen, elixir-format
+msgid "5. Third-party services"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:72
+#, elixir-autogen, elixir-format
+msgid "6. Data retention"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:87
+#, elixir-autogen, elixir-format
+msgid "7. Your rights (GDPR)"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:94
+#, elixir-autogen, elixir-format
+msgid "8. Security"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:101
+#, elixir-autogen, elixir-format
+msgid "9. Changes to this policy"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:697
+#, elixir-autogen, elixir-format
+msgid "A DTU (Data Transfer Unit) reads your solar inverter and publishes live telemetry here over MQTT. Add yours to start seeing real-time generation — works with OpenDTU and AhoyDTU firmware."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:74
+#, elixir-autogen, elixir-format
+msgid "Account data is stored until you delete your account."
+msgstr ""
+
+#: lib/dtu_app_web/components/core_components.ex:396
+#, elixir-autogen, elixir-format
+msgid "Actions"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.ex:43
+#: lib/dtu_app_web/live/device_live/index.html.heex:11
+#, elixir-autogen, elixir-format
 msgid "Add DTU"
 msgstr "DTU hinzufügen"
 
-msgid "No DTUs yet. Add one to start receiving telemetry."
-msgstr "Noch keine DTUs vorhanden. Fügen Sie eine hinzu, um Telemetriedaten zu empfangen."
+#: lib/dtu_app_web/live/dashboard_live.ex:708
+#, elixir-autogen, elixir-format
+msgid "Add your first DTU"
+msgstr ""
 
-msgid "Edit"
-msgstr "Bearbeiten"
+#: lib/dtu_app_web/live/device_live/index.html.heex:243
+#, elixir-autogen, elixir-format
+msgid "After your DTU reboots, it will appear as online on your dashboard within about a minute, and live power data starts flowing within seconds."
+msgstr ""
 
-msgid "Remove"
-msgstr "Entfernen"
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:34
+#, elixir-autogen, elixir-format
+msgid "All content on this site is generated automatically from data your DTU publishes over MQTT and from the account information you provided at sign-up. We assume no liability for the accuracy, completeness, or timeliness of automatically aggregated telemetry — power values, energy counters, and the like — because they originate from hardware we do not control. Where editorial content appears, the person responsible is named above."
+msgstr ""
 
-msgid "Configure how this DTU connects over MQTT."
-msgstr "Konfigurieren Sie, wie sich diese DTU über MQTT verbindet."
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:24
+#, elixir-autogen, elixir-format
+msgid "An open-source multi-tenant telemetry platform designed for OpenDTU and AhoyDTU converters. Securely publish, track, and analyze your solar yield in real-time."
+msgstr "Eine quelloffene Mandanten-fähige Telemetrieplattform für OpenDTU- und AhoyDTU-Wechselrichter. Sicheres Übertragen, Verfolgen und Analysieren Ihres Solalertrags in Echtzeit."
 
-msgid "Name"
-msgstr "Name"
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:123
+#, elixir-autogen, elixir-format
+msgid "Analyze generation patterns with a clean, dynamic SVG chart bucketed into 5-minute averages, displaying today's power curves, yield, and peaks."
+msgstr "Analysieren Sie Erzeugungsmuster mit einem übersichtlichen, dynamischen SVG-Diagramm, das in 5-Minuten-Durchschnitte unterteilt ist und die heutigen Leistungskurven, Erträge und Spitzenwerte anzeigt."
 
-msgid "Firmware"
-msgstr "Firmware"
-
-msgid "Select firmware"
-msgstr "Firmware auswählen"
-
-msgid "MQTT Connection Details"
-msgstr "MQTT-Verbindungsdetails"
-
-msgid "Configure your physical DTU hardware using these system-generated settings."
-msgstr "Konfigurieren Sie Ihre physische DTU-Hardware mit diesen systemgenerierten Einstellungen."
-
-msgid "MQTT Password:"
-msgstr "MQTT-Passwort:"
-
-msgid "Saving..."
-msgstr "Wird gespeichert..."
-
-msgid "Save"
-msgstr "Speichern"
-
-msgid "Cancel"
-msgstr "Abbrechen"
-
-msgid "Delete DTU"
-msgstr "DTU löschen"
-
+#: lib/dtu_app_web/live/device_live/index.html.heex:145
+#, elixir-autogen, elixir-format
 msgid "Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed."
 msgstr "Sind Sie sicher, dass Sie %{name} löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden und alle protokollierten Telemetriedaten werden dauerhaft entfernt."
 
+#: lib/dtu_app_web/components/layouts.ex:79
+#: lib/dtu_app_web/components/layouts.ex:94
+#, elixir-autogen, elixir-format
+msgid "Attempting to reconnect"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:934
+#, elixir-autogen, elixir-format
+msgid "Average Power"
+msgstr "Durchschnittliche Leistung"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:151
+#, elixir-autogen, elixir-format
+msgid "Backed by index-optimized database tables and schema validations, telemetry records are persisted reliably and query speeds are kept constant."
+msgstr "Unterstützt durch indexoptimierte Datenbanktabellen und Schemavalidierungen werden Telemetriedaten zuverlässig gespeichert und die Abfragegeschwindigkeiten konstant gehalten."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1335
+#: lib/dtu_app_web/live/device_live/index.html.heex:111
+#: lib/dtu_app_web/live/device_live/index.html.heex:213
+#, elixir-autogen, elixir-format
+msgid "Base Topic:"
+msgstr "Basis-Thema:"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:126
+#: lib/dtu_app_web/live/device_live/index.html.heex:156
+#, elixir-autogen, elixir-format
+msgid "Cancel"
+msgstr "Abbrechen"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:802
+#, elixir-autogen, elixir-format
+msgid "Choose date"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:72
+#, elixir-autogen, elixir-format
+msgid "Configure how this DTU connects over MQTT."
+msgstr "Konfigurieren Sie, wie sich diese DTU über MQTT verbindet."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:95
+#, elixir-autogen, elixir-format
+msgid "Configure your physical DTU hardware using these system-generated settings."
+msgstr "Konfigurieren Sie Ihre physische DTU-Hardware mit diesen systemgenerierten Einstellungen."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:164
+#, elixir-autogen, elixir-format
 msgid "Confirm Delete"
 msgstr "Löschen bestätigen"
 
-msgid "Edit DTU"
-msgstr "DTU bearbeiten"
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:18
+#, elixir-autogen, elixir-format
+msgid "Contact"
+msgstr ""
 
-msgid "DTU removed"
-msgstr "DTU entfernt"
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:15
+#, elixir-autogen, elixir-format
+msgid "Contact via the project repository's issue tracker"
+msgstr ""
 
-msgid "DTU added"
-msgstr "DTU hinzugefügt"
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:46
+#, elixir-autogen, elixir-format
+msgid "Copyright"
+msgstr ""
 
-msgid "DTU updated"
-msgstr "DTU aktualisiert"
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:84
+#, elixir-autogen, elixir-format
+msgid "Create a secure, private account. Manage one or more DTUs in complete isolation. No other user can view or intercept your generation stats."
+msgstr "Erstellen Sie ein sicheres, privates Konto. Verwalten Sie eine oder mehrere DTUs in vollständiger Isolation. Kein anderer Benutzer kann Ihre Erzeugungsdaten einsehen oder abfangen."
 
-msgid "Year %{year}, Week %{week} (starting %{monday})"
-msgstr "Jahr %{year}, Woche %{week} (ab %{monday})"
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:138
+#, elixir-autogen, elixir-format
+msgid "Credentials and base topics are defined securely by the system on creation. Read-only tokens are displayed for easy input into your hardware configuration."
+msgstr "Zugangsdaten und Basis-Themen werden bei der Erstellung vom System sicher definiert. Schreibgeschützte Tokens werden zur einfachen Eingabe in Ihre Hardware-Konfiguration angezeigt."
 
-msgid "January"
-msgstr "Januar"
+#: lib/dtu_app_web/live/dashboard_live.ex:848
+#, elixir-autogen, elixir-format
+msgid "Current Generation"
+msgstr "Aktuelle Erzeugung"
 
-msgid "February"
-msgstr "Februar"
+#: lib/dtu_app_web/components/layouts/root.html.heex:148
+#, elixir-autogen, elixir-format
+msgid "Currently-running release"
+msgstr ""
 
-msgid "March"
-msgstr "März"
-
-msgid "April"
-msgstr "April"
-
-msgid "May"
-msgstr "Mai"
-
-msgid "June"
-msgstr "Juni"
-
-msgid "July"
-msgstr "Juli"
-
-msgid "August"
-msgstr "August"
-
-msgid "September"
-msgstr "September"
-
-msgid "October"
-msgstr "Oktober"
-
-msgid "November"
-msgstr "November"
-
-msgid "December"
-msgstr "Dezember"
-
+#: lib/dtu_app_web/live/device_live/index.html.heex:183
+#, elixir-autogen, elixir-format
 msgid "DTU Configured Successfully!"
 msgstr "DTU erfolgreich konfiguriert!"
 
-msgid "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:"
-msgstr "Um mit dem Senden von Telemetriedaten zu beginnen, konfigurieren Sie Ihre physische %{kind}-Hardware mit den folgenden MQTT-Einstellungen:"
+#: lib/dtu_app_web/live/device_live/index.ex:102
+#, elixir-autogen, elixir-format
+msgid "DTU added"
+msgstr "DTU hinzugefügt"
 
-msgid "MQTT Broker / Server:"
-msgstr "MQTT Broker / Server:"
+#: lib/dtu_app_web/live/device_live/index.ex:93
+#, elixir-autogen, elixir-format
+msgid "DTU removed"
+msgstr "DTU entfernt"
 
-msgid "or your server's domain/IP"
-msgstr "oder Domain/IP Ihres Servers"
+#: lib/dtu_app_web/live/device_live/index.ex:121
+#, elixir-autogen, elixir-format
+msgid "DTU updated"
+msgstr "DTU aktualisiert"
 
-msgid "MQTT Port:"
-msgstr "MQTT-Port:"
+#: lib/dtu_app_web/components/layouts/root.html.heex:76
+#: lib/dtu_app_web/live/device_live/index.html.heex:4
+#, elixir-autogen, elixir-format
+msgid "DTUs"
+msgstr "DTUs"
 
-msgid "Hardware setup instructions:"
-msgstr "Anweisungen zur Hardware-Einrichtung:"
+#: lib/dtu_app_web/live/dashboard_live.ex:959
+#, elixir-autogen, elixir-format
+msgid "Daily Average Yield"
+msgstr "Täglicher Durchschnittsertrag"
 
-msgid "Open your DTU's web interface in a browser."
-msgstr "Öffnen Sie die Weboberfläche Ihrer DTU in einem Browser."
+#: lib/dtu_app_web/live/dashboard_live.ex:1048
+#, elixir-autogen, elixir-format
+msgid "Daily Yields for Week starting %{period} (kWh)"
+msgstr "Tägliche Erträge für Woche ab %{period} (kWh)"
 
-msgid "Navigate to Settings -> MQTT."
-msgstr "Navigieren Sie zu Einstellungen -> MQTT."
+#: lib/dtu_app_web/live/dashboard_live.ex:1050
+#, elixir-autogen, elixir-format
+msgid "Daily Yields for month of %{month_year} (kWh)"
+msgstr "Tägliche Erträge für den Monat %{month_year} (kWh)"
 
-msgid "Fill in the server details, username, password, and base topic as shown above."
-msgstr "Tragen Sie die Serverdetails, den Benutzernamen, das Passwort und das Basis-Thema wie oben gezeigt ein."
+#: lib/dtu_app_web/components/layouts/root.html.heex:72
+#, elixir-autogen, elixir-format
+msgid "Dashboard"
+msgstr "Dashboard"
 
+#: lib/dtu_app_web/live/dashboard_live.ex:787
+#, elixir-autogen, elixir-format
+msgid "Day"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:143
+#, elixir-autogen, elixir-format
+msgid "Delete DTU"
+msgstr "DTU löschen"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1301
+#, elixir-autogen, elixir-format
+msgid "Device Connection Status"
+msgstr "Geräteverbindungsstatus"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:260
+#, elixir-autogen, elixir-format
+msgid "Dismiss"
+msgstr "Verwerfen"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:121
+#, elixir-autogen, elixir-format
+msgid "Dynamic Power Curve"
+msgstr "Dynamische Leistungskurve"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:53
+#, elixir-autogen, elixir-format
+msgid "Edit"
+msgstr "Bearbeiten"
+
+#: lib/dtu_app_web/live/device_live/index.ex:51
+#, elixir-autogen, elixir-format
+msgid "Edit DTU"
+msgstr "DTU bearbeiten"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:235
+#, elixir-autogen, elixir-format
 msgid "Ensure MQTT is enabled, save and reboot the DTU."
 msgstr "Stellen Sie sicher, dass MQTT aktiviert ist, speichern Sie und starten Sie die DTU neu."
 
-msgid "Dismiss"
-msgstr "Verwerfen"
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:72
+#, elixir-autogen, elixir-format
+msgid "Everything you need to capture, secure, and monitor your PV system telemetry."
+msgstr "Alles, was Sie zum Erfassen, Sichern und Überwachen der Telemetriedaten Ihrer PV-Anlage benötigen."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:232
+#, elixir-autogen, elixir-format
+msgid "Fill in the server details, username, password, and base topic as shown above."
+msgstr "Tragen Sie die Serverdetails, den Benutzernamen, das Passwort und das Basis-Thema wie oben gezeigt ein."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:86
+#, elixir-autogen, elixir-format
+msgid "Firmware"
+msgstr "Firmware"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1328
+#, elixir-autogen, elixir-format
+msgid "Firmware:"
+msgstr "Firmware:"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:97
+#, elixir-autogen, elixir-format
+msgid "Full support for both firmware stacks. Ingests nested OpenDTU JSON payloads or buffers AhoyDTU's individual subtopic metrics to write complete database entries."
+msgstr "Volle Unterstützung für beide Firmware-Stacks. Verarbeitet verschachtelte OpenDTU-JSON-Nutzdaten oder puffert die Metriken einzelner AhoyDTU-Unterthemen, um vollständige Datenbankeinträge zu schreiben."
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:52
+#, elixir-autogen, elixir-format
+msgid "Get Started"
+msgstr "Loslegen"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:37
+#, elixir-autogen, elixir-format
+msgid "Go to Dashboard"
+msgstr "Zum Dashboard"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:222
+#, elixir-autogen, elixir-format
+msgid "Hardware setup instructions:"
+msgstr "Anweisungen zur Hardware-Einrichtung:"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:248
+#, elixir-autogen, elixir-format
+msgid "If it stays offline, double-check the username, password, and broker address above match exactly what's in your DTU's MQTT settings."
+msgstr ""
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:143
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:3
+#, elixir-autogen, elixir-format
+msgid "Imprint"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:6
+#, elixir-autogen, elixir-format
+msgid "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:82
+#, elixir-autogen, elixir-format
+msgid "Isolated Multi-Tenancy"
+msgstr "Isolierte Mandantenfähigkeit"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1340
+#, elixir-autogen, elixir-format
+msgid "Last seen:"
+msgstr "Zuletzt gesehen:"
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:6
+#, elixir-autogen, elixir-format
+msgid "Last updated: %{date}"
+msgstr ""
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:132
+#, elixir-autogen, elixir-format
+msgid "Legal"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:32
+#, elixir-autogen, elixir-format
+msgid "Liability for content"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:39
+#, elixir-autogen, elixir-format
+msgid "Liability for links"
+msgstr ""
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:111
+#, elixir-autogen, elixir-format
+msgid "Log in"
+msgstr "Anmelden"
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:104
+#, elixir-autogen, elixir-format
+msgid "Log out"
+msgstr "Abmelden"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:193
+#, elixir-autogen, elixir-format
+msgid "MQTT Broker / Server:"
+msgstr "MQTT Broker / Server:"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:93
+#, elixir-autogen, elixir-format
+msgid "MQTT Connection Details"
+msgstr "MQTT-Verbindungsdetails"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:105
+#: lib/dtu_app_web/live/device_live/index.html.heex:208
+#, elixir-autogen, elixir-format
+msgid "MQTT Password:"
+msgstr "MQTT-Passwort:"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:198
+#, elixir-autogen, elixir-format
+msgid "MQTT Port:"
+msgstr "MQTT-Port:"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1349
+#: lib/dtu_app_web/live/device_live/index.html.heex:99
+#: lib/dtu_app_web/live/device_live/index.html.heex:203
+#, elixir-autogen, elixir-format
+msgid "MQTT Username:"
+msgstr "MQTT-Benutzername:"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:44
+#, elixir-autogen, elixir-format
+msgid "Manage DTUs"
+msgstr "DTUs verwalten"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:678
+#, elixir-autogen, elixir-format
+msgid "Manage Devices"
+msgstr "Geräte verwalten"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:789
+#, elixir-autogen, elixir-format
+msgid "Month"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1055
+#, elixir-autogen, elixir-format
+msgid "Monthly Yields for %{year} (kWh)"
+msgstr "Monatliche Erträge für %{year} (kWh)"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:81
+#, elixir-autogen, elixir-format
+msgid "Name"
+msgstr "Name"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:229
+#, elixir-autogen, elixir-format
+msgid "Navigate to Settings -> MQTT."
+msgstr "Navigieren Sie zu Einstellungen -> MQTT."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:821
+#, elixir-autogen, elixir-format
+msgid "Next period"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:21
+#, elixir-autogen, elixir-format
+msgid "No DTUs yet. Add one to start receiving telemetry."
+msgstr "Noch keine DTUs vorhanden. Fügen Sie eine hinzu, um Telemetriedaten zu empfangen."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:829
+#, elixir-autogen, elixir-format
+msgid "No historical data for this period."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1067
+#, elixir-autogen, elixir-format
+msgid "No power readings logged for this day."
+msgstr "Keine Leistungsmesswerte für diesen Tag protokolliert."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1204
+#, elixir-autogen, elixir-format
+msgid "No yield records logged for this period."
+msgstr "Keine Ertragsdatensätze für diesen Zeitraum protokolliert."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:226
+#, elixir-autogen, elixir-format
+msgid "Open your DTU's web interface in a browser."
+msgstr "Öffnen Sie die Weboberfläche Ihrer DTU in einem Browser."
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:95
+#, elixir-autogen, elixir-format
+msgid "OpenDTU & AhoyDTU"
+msgstr "OpenDTU & AhoyDTU"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:149
+#, elixir-autogen, elixir-format
+msgid "Optimized Persistence"
+msgstr "Optimierte Speicherung"
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:41
+#, elixir-autogen, elixir-format
+msgid "Our site contains links to external third-party websites whose contents we do not control. The respective providers are responsible for the content of linked pages. Linked pages were checked for legality at the time of linking; ongoing monitoring is performed where there is concrete evidence of rights infringements."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:661
+#, elixir-autogen, elixir-format
+msgid "PV Power Dashboard"
+msgstr "PV-Power-Dashboard"
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:96
+#, elixir-autogen, elixir-format
+msgid "Passwords are stored using Argon2id. Sessions are signed with a server-side secret and transmitted only over secure cookies. Telemetry connections use per-device usernames and passwords with the option to add TLS via a reverse proxy (e.g. Traefik) in front of the broker."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:988
+#, elixir-autogen, elixir-format
+msgid "Peak Power"
+msgstr "Spitzenleistung"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1013
+#, elixir-autogen, elixir-format
+msgid "Peak Yield Day"
+msgstr "Spitzenertragstag"
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:20
+#, elixir-autogen, elixir-format
+msgid "Please reach out through the issue tracker of the public source-code repository. No postal address, phone line, or separate support inbox is operated."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:774
+#, elixir-autogen, elixir-format
+msgid "Previous period"
+msgstr ""
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:137
+#, elixir-autogen, elixir-format
+msgid "Privacy"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:3
+#, elixir-autogen, elixir-format
+msgid "Privacy Policy"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1046
+#, elixir-autogen, elixir-format
+msgid "Production Curve for %{period} (Watts)"
+msgstr "Erzeugungskurve für %{period} (Watt)"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:108
+#, elixir-autogen, elixir-format
+msgid "Real-Time Ingestion"
+msgstr "Echtzeit-Erfassung"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:13
+#, elixir-autogen, elixir-format
+msgid "Real-Time Solar Telemetry System"
+msgstr "Echtzeit-Solar-Telemetriesystem"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:664
+#, elixir-autogen, elixir-format
+msgid "Real-time and historic generation stats for your solar converter system."
+msgstr "Echtzeit- und historische Erzeugungsdaten für Ihr Solarkonvertersystem."
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:117
+#, elixir-autogen, elixir-format
+msgid "Register"
+msgstr "Registrieren"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:61
+#, elixir-autogen, elixir-format
+msgid "Remove"
+msgstr "Entfernen"
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:27
+#, elixir-autogen, elixir-format
+msgid "Responsible according to § 18 (2) MStV (Germany): the maintainer named in the repository's CODEOWNERS file."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:25
+#, elixir-autogen, elixir-format
+msgid "Responsible for content"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:121
+#, elixir-autogen, elixir-format
+msgid "Save"
+msgstr "Speichern"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:121
+#, elixir-autogen, elixir-format
+msgid "Saving..."
+msgstr "Wird gespeichert..."
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:87
+#, elixir-autogen, elixir-format
+msgid "Select firmware"
+msgstr "Firmware auswählen"
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:81
+#, elixir-autogen, elixir-format
+msgid "Server logs are retained for at most 30 days unless required to investigate a security incident."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:11
+#, elixir-autogen, elixir-format
+msgid "Service provider"
+msgstr ""
+
+#: lib/dtu_app_web/components/layouts/root.html.heex:97
+#, elixir-autogen, elixir-format
+msgid "Settings"
+msgstr "Einstellungen"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:59
+#, elixir-autogen, elixir-format
+msgid "Sign In"
+msgstr "Einloggen"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:18
+#, elixir-autogen, elixir-format
+msgid "Solar Generation"
+msgstr "Solarerzeugung"
+
+#: lib/dtu_app_web/components/layouts.ex:86
+#, elixir-autogen, elixir-format
+msgid "Something went wrong!"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:48
+#, elixir-autogen, elixir-format
+msgid "Source code, branding, and the contents of this site are released under the project's open-source license — see the LICENSE file in the repository for details. Telemetry data and account data you submit remain your property."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:69
+#, elixir-autogen, elixir-format
+msgid "System Core Features"
+msgstr "Kernfunktionen des Systems"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:135
+#, elixir-autogen, elixir-format
+msgid "System-Managed Credentials"
+msgstr "Vom System verwaltete Zugangsdaten"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:110
+#, elixir-autogen, elixir-format
+msgid "Telemetry data is published via MQTT directly to our high-performance Elixir broker. Updates are broadcasted instantly to your dashboard LiveView."
+msgstr "Telemetriedaten werden via MQTT direkt an unseren leistungsstarken Elixir-Broker gesendet. Aktualisierungen werden sofort an Ihr Dashboard-LiveView übertragen."
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:76
+#, elixir-autogen, elixir-format
+msgid "Telemetry readings are stored indefinitely so your historical charts keep working; you may delete them individually from each DTU's settings page."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:21
+#, elixir-autogen, elixir-format
+msgid "The data controller is the operator of the dtu.app instance you are using. For the official hosted instance, see the project's issue tracker for contact details. For self-hosted deployments, the controller is whoever operates the server on which this instance runs."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:52
+#, elixir-autogen, elixir-format
+msgid "To authenticate you and protect your account."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:44
+#, elixir-autogen, elixir-format
+msgid "To keep you signed in, we store a session token in an HTTP-only cookie. We log basic request metadata (timestamp, status, route) for security and debugging."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:51
+#, elixir-autogen, elixir-format
+msgid "To render the dashboard, charts, and statistics you request."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:54
+#, elixir-autogen, elixir-format
+msgid "To send transactional emails you have triggered (magic-link login, email-change confirmation)."
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:186
+#, elixir-autogen, elixir-format
+msgid "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:"
+msgstr "Um mit dem Senden von Telemetriedaten zu beginnen, konfigurieren Sie Ihre physische %{kind}-Hardware mit den folgenden MQTT-Einstellungen:"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:761
+#, elixir-autogen, elixir-format
+msgid "Today"
+msgstr "Heute"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1044
+#, elixir-autogen, elixir-format
+msgid "Today's Production Curve (Watts)"
+msgstr "Heutige Erzeugungskurve (Watt)"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:909
+#, elixir-autogen, elixir-format
+msgid "Today's Total Yield"
+msgstr "Heutiger Gesamtertrag"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:733
+#, elixir-autogen, elixir-format
+msgid "Total (All DTUs)"
+msgstr "Gesamt (Alle DTUs)"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:880
+#, elixir-autogen, elixir-format
+msgid "Total Yield"
+msgstr "Gesamtertrag"
+
+#: lib/dtu_app_web/controllers/page_html/home.html.heex:17
+#, elixir-autogen, elixir-format
+msgid "Visualize and Manage Your"
+msgstr "Visualisieren und verwalten Sie Ihre"
+
+#: lib/dtu_app_web/components/layouts.ex:71
+#, elixir-autogen, elixir-format
+msgid "We can't find the internet"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:60
+#, elixir-autogen, elixir-format
+msgid "We do not sell or rent your data to third parties. We do not use your data for advertising or profiling."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:103
+#, elixir-autogen, elixir-format
+msgid "We may update this policy to reflect changes in our practices or applicable law. The current version is always available at this URL; material changes will be announced via the project repository."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/user_registration_html/new.html.heex:6
+#, elixir-autogen, elixir-format
+msgid "We'll email you a secure link to sign in — no password needed."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:788
+#, elixir-autogen, elixir-format
+msgid "Week"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:348
+#, elixir-autogen, elixir-format
+msgid "Week of %{date}"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:694
+#, elixir-autogen, elixir-format
+msgid "Welcome! Let's connect your first DTU"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:241
+#, elixir-autogen, elixir-format
+msgid "What happens next"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:67
+#, elixir-autogen, elixir-format
+msgid "When email delivery is enabled, the app calls a third-party transactional email provider to send magic-link emails. That provider sees your email address, the email subject, and the message body — typically only the magic-link URL. The current default in this open-source project is Resend; you may self-host with a different provider or disable email delivery entirely."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:37
+#, elixir-autogen, elixir-format
+msgid "When you add a DTU, the system generates a unique username and password for the device's MQTT connection. As your DTU publishes readings (power output, energy counters, status flags), the system stores them in the database to render your dashboard charts and statistics."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:30
+#, elixir-autogen, elixir-format
+msgid "When you register, we store your email address and a hashed version of your password. The email address is used to log you in and (if enabled) to send transactional emails such as magic-link sign-in or account-change confirmations."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:790
+#, elixir-autogen, elixir-format
+msgid "Year"
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:414
+#, elixir-autogen, elixir-format
+msgid "Year %{year}, Week %{week} (starting %{monday})"
+msgstr "Jahr %{year}, Woche %{week} (ab %{monday})"
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:89
+#, elixir-autogen, elixir-format
+msgid "You have the right to access, rectify, erase, restrict the processing of, object to the processing of, and port your personal data. You may exercise these rights directly from the user-settings page or by contacting the data controller. You also have the right to lodge a complaint with your local data-protection authority."
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/imprint.html.heex:14
+#, elixir-autogen, elixir-format
+msgid "c/o The maintainer listed in the project repository"
+msgstr ""
+
+#: lib/dtu_app_web/components/core_components.ex:80
+#, elixir-autogen, elixir-format
+msgid "close"
+msgstr ""
+
+#: lib/dtu_app_web/controllers/page_html/privacy.html.heex:14
+#, elixir-autogen, elixir-format
+msgid "dtu.app is a self-hosted telemetry dashboard for solar inverters that publish over MQTT. This policy explains what data we collect, how we use it, and what rights you have. We process personal data in accordance with the EU General Data Protection Regulation (GDPR)."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1344
+#, elixir-autogen, elixir-format
+msgid "never"
+msgstr "nie"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1323
+#: lib/dtu_app_web/live/device_live/index.html.heex:38
+#, elixir-autogen, elixir-format
+msgid "offline"
+msgstr "offline"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1027
+#, elixir-autogen, elixir-format
+msgid "on %{date}"
+msgstr "am %{date}"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1323
+#: lib/dtu_app_web/live/device_live/index.html.heex:38
+#, elixir-autogen, elixir-format
+msgid "online"
+msgstr "online"

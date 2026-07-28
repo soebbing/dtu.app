@@ -143,3 +143,41 @@ if config_env() == :prod do
 
   config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end
+
+# ── Release / git version ──────────────────────────────────────────────────
+# The unobtrusive site footer shows the currently-running release. The
+# release workflow passes RELEASE_VERSION (the git tag, e.g. v2026-07-26-1)
+# at build time, so production images render a stable identifier.
+#
+# In development (`mix phx.server`) no env var is set, so we fall back to
+# the current git branch via the local repo, then finally to the
+# Mix.Project version from mix.exs.
+version =
+  cond do
+    v = System.get_env("RELEASE_VERSION", "") ->
+      if v != "", do: v, else: nil
+
+    true ->
+      nil
+  end
+
+version =
+  case version do
+    nil ->
+      app_root = Application.app_dir(:dtu_app, "..")
+
+      with {out, 0} <- System.cmd("git", ["-C", app_root, "rev-parse", "--abbrev-ref", "HEAD"]),
+           branch <- String.trim(out),
+           false <- branch == "HEAD" do
+        branch
+      else
+        _ -> nil
+      end
+
+    v ->
+      v
+  end
+
+version = version || to_string(Mix.Project.config()[:version])
+
+config :dtu_app, :version, version
