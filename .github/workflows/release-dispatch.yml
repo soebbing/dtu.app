@@ -41,6 +41,11 @@ jobs:
           # Tag creation must happen on the default branch; this protects
           # against accidentally tagging from a feature branch.
           ref: main
+          # Use a PAT / GitHub App token (not the default GITHUB_TOKEN) so the
+          # downstream `push: tags` event can trigger release.yml. Events
+          # triggered by the workflow's own GITHUB_TOKEN are intentionally
+          # suppressed by GitHub to prevent runaway recursion.
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Validate version format
         env:
@@ -74,6 +79,7 @@ jobs:
       - name: Create and push tag
         env:
           VERSION: ${{ inputs.version }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           TAG="$VERSION"
@@ -84,6 +90,13 @@ jobs:
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Rewrite the origin URL to authenticate with the PAT so the
+          # resulting push is NOT attributed to GITHUB_TOKEN. Only non-
+          # GITHUB_TOKEN pushes are allowed to trigger downstream
+          # workflows (i.e. release.yml).
+          git remote set-url origin \
+            "https://x-access-token:${RELEASE_TOKEN}@github.com/${{ github.repository }}.git"
 
           git tag "$TAG"
           git push origin "$TAG"
