@@ -226,7 +226,11 @@ defmodule DtuApp.Devices do
               r.dtu_id in ^dtu_ids and
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
             group_by: [r.dtu_id, r.inverter_serial],
-            select: %{dtu_id: r.dtu_id, inverter_serial: r.inverter_serial, max_yield: max(r.yield_day)}
+            select: %{
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              max_yield: max(r.yield_day)
+            }
         )
 
       today_yield =

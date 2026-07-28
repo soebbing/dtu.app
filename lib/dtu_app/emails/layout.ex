@@ -22,32 +22,54 @@ defmodule DtuApp.Emails.Layout do
   """
 
   # ── Light theme (default — what Gmail / Outlook render) ──────────────────
-  @canvas_light "#f4f4f5"          # zinc-100 outer background
-  @card_light "#ffffff"            # card surface
-  @card_border_light "#e4e4e7"      # zinc-200 border
-  @text_light "#18181b"             # zinc-900 primary text
-  @muted_light "#52525b"            # zinc-600 secondary text
-  @note_bg_light "#fafafa"          # zinc-50 inner note card
-  @note_border_light "#e4e4e7"      # zinc-200 note border
-  @note_text_light "#71717a"        # zinc-500 note text
-  @footer_text_light "#a1a1aa"      # zinc-400 footer text
+  # zinc-100 outer background
+  @canvas_light "#f4f4f5"
+  # card surface
+  @card_light "#ffffff"
+  # zinc-200 border
+  @card_border_light "#e4e4e7"
+  # zinc-900 primary text
+  @text_light "#18181b"
+  # zinc-600 secondary text
+  @muted_light "#52525b"
+  # zinc-50 inner note card
+  @note_bg_light "#fafafa"
+  # zinc-200 note border
+  @note_border_light "#e4e4e7"
+  # zinc-500 note text
+  @note_text_light "#71717a"
+  # zinc-400 footer text
+  @footer_text_light "#a1a1aa"
 
   # ── Dark theme (active when prefers-color-scheme: dark) ──────────────────
-  @canvas_dark "#09090b"            # zinc-950 outer background
-  @card_dark "#18181b"              # zinc-900 card surface
-  @card_border_dark "#27272a"       # zinc-800 border
-  @text_dark "#fafafa"               # zinc-50 primary text
-  @muted_dark "#a1a1aa"             # zinc-400 secondary text
-  @note_bg_dark "#101012"            # near-black inner note card
-  @note_border_dark "#27272a"        # zinc-800 note border
-  @note_text_dark "#71717a"          # zinc-500 note text
-  @footer_text_dark "#71717a"        # zinc-500 footer text
+  # zinc-950 outer background
+  @canvas_dark "#09090b"
+  # zinc-900 card surface
+  @card_dark "#18181b"
+  # zinc-800 border
+  @card_border_dark "#27272a"
+  # zinc-50 primary text
+  @text_dark "#fafafa"
+  # zinc-400 secondary text
+  @muted_dark "#a1a1aa"
+  # near-black inner note card
+  @note_bg_dark "#101012"
+  # zinc-800 note border
+  @note_border_dark "#27272a"
+  # zinc-500 note text
+  @note_text_dark "#71717a"
+  # zinc-500 footer text
+  @footer_text_dark "#71717a"
 
   # ── Brand (same in both themes) ─────────────────────────────────────────
-  @primary "#10b981"               # emerald-500
-  @primary_dark "#059669"          # emerald-600 (button bottom gradient)
-  @primary_text_on_color "#09090b" # zinc-950 — readable on emerald
-  @amber "#fcd34d"                  # amber-300 (gradient end)
+  # emerald-500
+  @primary "#10b981"
+  # emerald-600 (button bottom gradient)
+  @primary_dark "#059669"
+  # zinc-950 — readable on emerald
+  @primary_text_on_color "#09090b"
+  # amber-300 (gradient end)
+  @amber "#fcd34d"
 
   @doc """
   Render a transactional email.
