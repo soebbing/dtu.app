@@ -322,10 +322,14 @@ defmodule DtuApp.Devices do
         end
       end)
       |> Enum.map(fn {date, date_readings} ->
+        # `readings.yield_day` is in Wh (see comment in `get_daily_stats/2`).
+        # The historical chart and `total_yield` for the `stats` map both
+        # render with a kWh label, so convert here.
         total_yield =
           date_readings
           |> Enum.map(&(&1.max_yield || 0.0))
           |> Enum.sum()
+          |> Kernel./(1000)
 
         {date, total_yield}
       end)

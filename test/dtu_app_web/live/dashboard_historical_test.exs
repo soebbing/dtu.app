@@ -54,7 +54,8 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
           dtu_id: dtu.id,
           inverter_serial: "123456",
           ac_power: 450.0,
-          yield_day: 3.5,
+          # Wh; rendered as 3.5 kWh after list_range_yield_data/4's /1000.
+          yield_day: 3_500.0,
           inserted_at: dt
         })
 
@@ -96,12 +97,13 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
       d1_str = Date.to_iso8601(d1)
       d2_str = Date.to_iso8601(d2)
 
+      # Wh fixtures; the dashboard renders the converted kWh value.
       {:ok, _r1} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
           inverter_serial: "123",
           ac_power: 100.0,
-          yield_day: 1.0,
+          yield_day: 1_000.0,
           inserted_at: DateTime.new!(d1, ~T[12:00:00], "Etc/UTC")
         })
 
@@ -110,7 +112,7 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
           dtu_id: dtu.id,
           inverter_serial: "123",
           ac_power: 500.0,
-          yield_day: 5.0,
+          yield_day: 5_000.0,
           inserted_at: DateTime.new!(d2, ~T[12:00:00], "Etc/UTC")
         })
 
