@@ -359,6 +359,31 @@ defmodule DtuAppWeb.DashboardLive do
 
   defp date_input_value(_), do: Date.utc_today() |> Date.to_iso8601()
 
+  # Human-readable "X ago" label for a past `DateTime`. Falls back to an
+  # absolute YYYY-MM-DD HH:MM string for points in time more than a week
+  # back, since minute/hour counts get unwieldy beyond that. Clamps future
+  # timestamps to "just now" rather than rendering negative values.
+  defp relative_time_label(%DateTime{} = dt, now \\ DateTime.utc_now()) do
+    diff = DateTime.diff(now, dt, :second) |> max(0)
+
+    cond do
+      diff < 60 ->
+        gettext("just now")
+
+      diff < 3_600 ->
+        gettext("%{n} minutes ago", n: div(diff, 60))
+
+      diff < 86_400 ->
+        gettext("%{n} hours ago", n: div(diff, 3_600))
+
+      diff < 604_800 ->
+        gettext("%{n} days ago", n: div(diff, 86_400))
+
+      true ->
+        Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
+    end
+  end
+
   # Earliest date with data, for the calendar's `min` bound (yyyy-mm-dd, or nil).
   defp date_min_bound([]), do: nil
   defp date_min_bound(dates), do: dates |> Enum.min(Date) |> Date.to_iso8601()
@@ -1326,27 +1351,19 @@ defmodule DtuAppWeb.DashboardLive do
                     <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
                       <p>
                         <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
-                          "Firmware:"
-                        )}</span> {device.kind
-                        |> Atom.to_string()
-                        |> String.upcase()}
-                      </p>
-                      <p>
-                        <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
-                          "Base Topic:"
-                        )}</span> {device.base_topic}
-                      </p>
-                      <p>
-                        <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
                           "Last seen:"
-                        )}</span> {if device.last_seen_at,
-                          do: Calendar.strftime(device.last_seen_at, "%Y-%m-%d %H:%M:%S UTC"),
-                          else: gettext("never")}
+                        )}</span>
+                        <span title={
+                          case device.last_seen_at do
+                            nil -> nil
+                            dt -> Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S UTC")
+                          end
+                        }>{case device.last_seen_at do
+                          nil -> gettext("never")
+                          dt -> relative_time_label(dt)
+                        end}</span>
                       </p>
                     </div>
-                  </div>
-                  <div class="mt-4 pt-4 border-t border-zinc-100 dark:border-zinc-700/60 flex items-center justify-between text-xs text-zinc-400">
-                    <span>{gettext("MQTT Username:")} {device.mqtt_username}</span>
                   </div>
                 </div>
               <% end %>
