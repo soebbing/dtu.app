@@ -186,12 +186,21 @@ version =
     nil ->
       app_root = Application.app_dir(:dtu_app, "..")
 
-      with {out, 0} <- System.cmd("git", ["-C", app_root, "rev-parse", "--abbrev-ref", "HEAD"]),
-           branch <- String.trim(out),
-           false <- branch == "HEAD" do
-        branch
-      else
-        _ -> nil
+      # `System.cmd/3` raises `ErlangError{:enoent, …}` when the binary
+      # is missing (the release image doesn't ship git — `.git` is in
+      # .dockerignore) and propagates the rejection of detached HEADs via
+      # the `with`. Rescue both so a missing git / no current branch just
+      # means we fall back to Mix.Project's :version.
+      try do
+        with {out, 0} <- System.cmd("git", ["-C", app_root, "rev-parse", "--abbrev-ref", "HEAD"]),
+             branch <- String.trim(out),
+             false <- branch == "HEAD" do
+          branch
+        end
+      rescue
+        ErlangError -> nil
+      catch
+        _, _ -> nil
       end
 
     v ->

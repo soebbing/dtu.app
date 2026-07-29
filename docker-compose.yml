@@ -45,6 +45,11 @@ services:
       - "8025:8025"   # web UI
     volumes:
       - dtu_app_mailpit_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1025 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   app:
     build:
@@ -53,6 +58,8 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     ports:
       - "4000:4000"   # Phoenix HTTP / LiveView
@@ -69,6 +76,11 @@ services:
       DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-dtu_app_prod}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE must be set — copy .env.example to .env}
       POOL_SIZE: ${POOL_SIZE:-15}
+      # The release image doesn't ship git (see .dockerignore), so the runtime
+      # git branch lookup is unavailable. Stamp a friendly identifier here so
+      # the version footer renders "dev" in local compose instead of falling
+      # back to the package version.
+      RELEASE_VERSION: ${RELEASE_VERSION:-dev}
       # MQTT broker listens on 1883 inside the container; remap the host side
       # via the ports mapping above. Set MQTT_BROKER_ENABLED=false to disable.
       MQTT_BROKER_ENABLED: ${MQTT_BROKER_ENABLED:-true}
