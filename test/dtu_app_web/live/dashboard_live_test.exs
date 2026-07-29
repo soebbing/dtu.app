@@ -45,6 +45,41 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "Génération actuelle"
     end
 
+    test "device card shows 'time ago' last seen and hides verbose fields", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Tiny Inverter",
+          kind: :ahoydtu,
+          mqtt_username: "tiny-inv",
+          base_topic: "balcony"
+        })
+
+      # Simulate the broker reporting the device online a couple of seconds ago.
+      # Uses the same `Ecto.Changeset.change/2` path as `update_dtu_status/2`
+      # in `lib/dtu_app/mqtt_broker/telemetry.ex` — `update_changeset/2` only
+      # allows user-editable fields.
+      dtu
+      |> Ecto.Changeset.change(%{
+        online: true,
+        last_seen_at: DateTime.utc_now()
+      })
+      |> DtuApp.Repo.update()
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard?range=today")
+
+      # Time-ago label is rendered, with the absolute timestamp as a hover hint.
+      assert html =~ "just now"
+      assert Regex.match?(~r/title="[^"]*UTC"/, html)
+
+      # Verbose fields are no longer in the card body.
+      refute html =~ "Base Topic"
+      refute html =~ "Firmware"
+      refute html =~ "MQTT Username"
+    end
+
     test "renders connected devices and dynamically updates power stats", %{
       conn: conn,
       user: user
