@@ -4,6 +4,8 @@ defmodule DtuAppWeb.DeviceLiveTest do
   import Phoenix.LiveViewTest
   import DtuApp.DevicesFixtures
 
+  alias DtuApp.Repo
+
   setup :register_and_log_in_user
 
   describe "Index" do
@@ -34,7 +36,7 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert html =~ "Supprimer"
     end
 
-    test "saves new device with system-generated credentials", %{conn: conn} do
+    test "saves new device with system-generated credentials", %{conn: conn, user: user} do
       {:ok, index_live, _html} = live(conn, ~p"/devices")
 
       assert index_live
@@ -63,6 +65,36 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert html =~ "localhost"
       assert html =~ "1883"
       assert html =~ "solar"
+
+      # Each `<span class="...select-all...">VALUE</span>` in the
+      # "Configured Successfully" modal must contain exactly the value —
+      # no surrounding whitespace. Chromium's double-click
+      # word-selection algorithm extends to whitespace inside the inline
+      # element, so a span rendered as "  mqtt_user  " would be copied
+      # as " mqtt_user " when the user just wanted "mqtt_user".
+      dtu_created =
+        Repo.get_by!(DtuApp.Devices.Dtu, name: "Garage Inverter", user_id: user.id)
+
+      for expected <- [
+            # In the test env the endpoint URL has host: "localhost"
+            # (DtuAppWeb.Endpoint.config(:url)); the device_live falls back to
+            # that and there's no override configured.
+            "localhost",
+            "1883",
+            dtu_created.mqtt_username,
+            dtu_created.mqtt_password,
+            dtu_created.base_topic
+          ] do
+        # The value must appear tightly bound to its surrounding tag —
+        # i.e. the rendered HTML contains `>VALUE</span>` literally, with no
+        # whitespace between `>` and `VALUE` and no whitespace between
+        # `VALUE` and `</span>`. Anything else (eg. `> VALUE </span>`) means
+        # Chromium's double-click word-selection algorithm copies the
+        # surrounding whitespace along with the value.
+        assert html =~ ">#{expected}</span>",
+               "value #{inspect(expected)} is rendered with surrounding whitespace " <>
+                 "in the modal — double-click would copy it along with the value"
+      end
 
       # Close the modal
       assert index_live

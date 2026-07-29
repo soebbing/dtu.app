@@ -189,31 +189,25 @@
         </div>
 
         <div class="space-y-3 bg-zinc-50 dark:bg-zinc-800/40 p-4 rounded-xl border border-zinc-200/60 dark:border-zinc-700/60 text-sm">
+          <%!-- Interpolation flush against tag: anything beyond the tags
+              becomes part of the rendered text node, and Chromium's
+              double-click word-selection algorithm then includes the
+              surrounding whitespace when copying the value. --%>
           <div class="grid grid-cols-3 gap-2">
             <span class="text-zinc-500 font-medium">{gettext("MQTT Broker / Server:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              {@mqtt_host}
-            </span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@mqtt_host}</span>
 
             <span class="text-zinc-500 font-medium">{gettext("MQTT Port:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              1883
-            </span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">1883</span>
 
             <span class="text-zinc-500 font-medium">{gettext("MQTT Username:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              {@created_device.mqtt_username}
-            </span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.mqtt_username}</span>
 
             <span class="text-zinc-500 font-medium">{gettext("MQTT Password:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              {@created_device.mqtt_password}
-            </span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.mqtt_password}</span>
 
             <span class="text-zinc-500 font-medium">{gettext("Base Topic:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">
-              {@created_device.base_topic}
-            </span>
+            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.base_topic}</span>
           </div>
         </div>
 
