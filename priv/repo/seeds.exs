@@ -77,6 +77,11 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
   # `list_range_yield_data/4` divide by 1000 before displaying.
   new_yield = acc_yield + ac_power * (interval / 60.0)
 
+  # Force the microsecond field's precision to 6 — `DateTime.new!/2`
+  # inherits `Time.new!(...){microsecond: {0, 0}}` precision 0, which
+  # Ecto's `:utc_datetime_usec` cast rejects with "expects microsecond
+  # precision, got: ~U[...00Z]" (truncate-without-rebuild preserves the
+  # 0 precision).
   inserted_at =
     DateTime.new!(today, Time.new!(hour, minute, 0))
     |> DateTime.truncate(:microsecond)
@@ -127,6 +132,7 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
     # in the today-curve generator above.
     new_yield = acc_yield + ac_power * (interval / 60.0)
 
+    # Force microsecond-precision to 6 — see first reading block for why.
     inserted_at =
       DateTime.new!(date, Time.new!(hour, minute, 0))
       |> DateTime.truncate(:microsecond)
