@@ -83,8 +83,7 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
   # precision, got: ~U[...00Z]" (truncate-without-rebuild preserves the
   # 0 precision).
   inserted_at =
-    DateTime.new!(today, Time.new!(hour, minute, 0))
-    |> DateTime.truncate(:microsecond)
+    %{DateTime.new!(today, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
 
   Repo.insert!(%Reading{
     dtu_id: dtu1.id,
@@ -134,8 +133,7 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
 
     # Force microsecond-precision to 6 — see first reading block for why.
     inserted_at =
-      DateTime.new!(date, Time.new!(hour, minute, 0))
-      |> DateTime.truncate(:microsecond)
+      %{DateTime.new!(date, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
 
     Repo.insert!(%Reading{
       dtu_id: dtu_id,
