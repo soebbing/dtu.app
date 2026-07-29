@@ -74,12 +74,12 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
   # Accumulate today's yield in kWh (power * hours)
   new_yield = acc_yield + ac_power * (interval / 60.0) / 1000.0
 
+  # Force the microsecond field's precision to 6 — `DateTime.new!/2`
+  # inherits `Time.new!(...){microsecond: {0, 0}}` precision 0, which
+  # Ecto's `:utc_datetime_usec` cast rejects with "expects microsecond
+  # precision, got: ~U[...00Z]" (truncate-without-rebuild preserves the
+  # 0 precision).
   inserted_at =
-    # Force the microsecond field's precision to 6 — `DateTime.new!/2`
-    # inherits `Time.new!(...){microsecond: {0, 0}}` precision 0, which
-    # Ecto's `:utc_datetime_usec` cast rejects with "expects microsecond
-    # precision, got: ~U[...00Z]" (truncate-without-rebuild preserves the
-    # 0 precision).
     %{DateTime.new!(today, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
 
   Repo.insert!(%Reading{
@@ -126,8 +126,8 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
 
     new_yield = acc_yield + ac_power * (interval / 60.0) / 1000.0
 
+    # Force microsecond-precision to 6 — see first reading block for why.
     inserted_at =
-      # Force microsecond-precision to 6 — see first reading block for why.
       %{DateTime.new!(date, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
 
     Repo.insert!(%Reading{
