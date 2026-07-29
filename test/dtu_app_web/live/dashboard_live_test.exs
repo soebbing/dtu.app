@@ -62,13 +62,15 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "0.0 W"
       assert html =~ "Dashboard Inverter"
 
-      # Simulate reading ingestion
+      # Simulate reading ingestion. yield_day is in Wh (per OpenDTU/
+      # AhoyDTU firmware); get_daily_stats/2 converts to kWh before the
+      # dashboard renders it.
       {:ok, _reading} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
           inverter_serial: "123456",
           ac_power: 350.0,
-          yield_day: 1.25,
+          yield_day: 1_250.0,
           inserted_at: DateTime.utc_now()
         })
 
@@ -96,13 +98,13 @@ defmodule DtuAppWeb.DashboardLiveTest do
       dtu2 =
         device_fixture(user, %{name: "DTU Two", kind: "ahoydtu", mqtt_username: "dtu-two-user"})
 
-      # Seed readings for DTU 1 and DTU 2
+      # Seed readings for DTU 1 and DTU 2 (yield_day in Wh).
       {:ok, _r1} =
         Devices.create_reading(%{
           dtu_id: dtu1.id,
           inverter_serial: "123",
           ac_power: 100.0,
-          yield_day: 1.0,
+          yield_day: 1_000.0,
           inserted_at: DateTime.utc_now()
         })
 
@@ -111,7 +113,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
           dtu_id: dtu2.id,
           inverter_serial: "456",
           ac_power: 200.0,
-          yield_day: 2.0,
+          yield_day: 2_000.0,
           inserted_at: DateTime.utc_now()
         })
 

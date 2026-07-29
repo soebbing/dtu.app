@@ -259,7 +259,11 @@ defmodule DtuApp.Devices do
 
       %{
         current_power: Float.round(current_power * 1.0, 1),
-        today_yield: Float.round(today_yield * 1.0, 3),
+        # `readings.yield_day` is published by OpenDTU/AhoyDTU in Wh (per the
+        # firmware's `YieldDay` field). The dashboard renders this stat with
+        # a kWh label, so divide by 1000 before returning so the displayed
+        # number matches the unit.
+        today_yield: Float.round(today_yield / 1000, 3),
         peak_power: Float.round(peak_power * 1.0, 1)
       }
     end

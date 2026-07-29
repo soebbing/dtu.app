@@ -19,26 +19,30 @@ defmodule DtuApp.DevicesTest do
       now = DateTime.utc_now()
 
       # Two inverters with multiple readings each; the most recent reading
-      # should win (yield_day is monotonic within a day).
+      # should win (yield_day is monotonic within a day). The fixture values
+      # are in Wh — OpenDTU/AhoyDTU firmware publish yield_day in Wh, and
+      # `get_daily_stats/2` converts to kWh before returning it for the
+      # dashboard label.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 1.0,
+        yield_day: 1_000.0,
         inserted_at: DateTime.add(now, -120, :second)
       })
 
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 5.0,
+        yield_day: 5_000.0,
         inserted_at: now
       })
 
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-B",
-        yield_day: 3.5,
+        yield_day: 3_500.0,
         inserted_at: DateTime.add(now, -60, :second)
       })
 
-      # Earlier (smaller) reading on INV-A — must NOT win.
+      # Earlier (smaller) reading on INV-A — must NOT win. 5_000 + 3_500 Wh
+      # = 8_500 Wh = 8.5 kWh.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 8.5, 0.001
     end
@@ -48,17 +52,17 @@ defmodule DtuApp.DevicesTest do
       device = DevicesFixtures.device_fixture(user)
       today = DateTime.utc_now()
 
-      # Yesterday: 99 kWh — must not count.
+      # Yesterday: 99 kWh (99_000 Wh) — must not count.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 99.0,
+        yield_day: 99_000.0,
         inserted_at: DateTime.add(today, -1, :day)
       })
 
-      # Today: 4.2 kWh — wins.
+      # Today: 4.2 kWh (4_200 Wh) — wins.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 4.2,
+        yield_day: 4_200.0,
         inserted_at: today
       })
 
@@ -77,7 +81,7 @@ defmodule DtuApp.DevicesTest do
 
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 12.0,
+        yield_day: 12_000.0,
         inserted_at: DateTime.add(now, -360, :second)
       })
 
@@ -85,7 +89,7 @@ defmodule DtuApp.DevicesTest do
       # because the inverter's counter stopped accumulating.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 0.5,
+        yield_day: 500.0,
         inserted_at: now
       })
 
@@ -116,8 +120,9 @@ defmodule DtuApp.DevicesTest do
       dtu2 = DevicesFixtures.device_fixture(user)
       now = DateTime.utc_now()
 
-      DevicesFixtures.reading_fixture(dtu1, %{yield_day: 2.0, inserted_at: now})
-      DevicesFixtures.reading_fixture(dtu2, %{yield_day: 7.0, inserted_at: now})
+      # Wh values; converted to kWh by get_daily_stats/2.
+      DevicesFixtures.reading_fixture(dtu1, %{yield_day: 2_000.0, inserted_at: now})
+      DevicesFixtures.reading_fixture(dtu2, %{yield_day: 7_000.0, inserted_at: now})
 
       assert_in_delta Devices.get_daily_stats(user, dtu1.id).today_yield, 2.0, 0.001
       assert_in_delta Devices.get_daily_stats(user, dtu2.id).today_yield, 7.0, 0.001
