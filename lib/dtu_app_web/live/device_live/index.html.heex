@@ -194,22 +194,128 @@
               double-click word-selection algorithm then includes the
               surrounding whitespace when copying the value. --%>
           <div class="grid grid-cols-3 gap-2">
-            <span class="text-zinc-500 font-medium">{gettext("MQTT Broker / Server:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@mqtt_host}</span>
+            <span class="text-zinc-500 font-medium self-center">{gettext("MQTT Broker / Server:")}</span>
+            <div class="col-span-2 flex items-center gap-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold min-w-0">
+              <span class="flex-1 truncate">{@mqtt_host}</span>
+              <button
+                type="button"
+                id="btn-copy-mqtt-host"
+                phx-hook="CopyToClipboard"
+                data-value={@mqtt_host}
+                class="shrink-0 inline-flex items-center justify-center rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                title={gettext("Copy to clipboard")}
+                aria-label={gettext("Copy to clipboard")}
+              >
+                <.icon name="hero-clipboard-document" class="h-4 w-4" />
+              </button>
+            </div>
 
-            <span class="text-zinc-500 font-medium">{gettext("MQTT Port:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">1883</span>
+            <span class="text-zinc-500 font-medium self-center">{gettext("MQTT Port:")}</span>
+            <div class="col-span-2 flex items-center gap-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold min-w-0">
+              <span class="flex-1 truncate">1883</span>
+              <button
+                type="button"
+                id="btn-copy-mqtt-port"
+                phx-hook="CopyToClipboard"
+                data-value="1883"
+                class="shrink-0 inline-flex items-center justify-center rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                title={gettext("Copy to clipboard")}
+                aria-label={gettext("Copy to clipboard")}
+              >
+                <.icon name="hero-clipboard-document" class="h-4 w-4" />
+              </button>
+            </div>
 
-            <span class="text-zinc-500 font-medium">{gettext("MQTT Username:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.mqtt_username}</span>
+            <span class="text-zinc-500 font-medium self-center">{gettext("MQTT Username:")}</span>
+            <div class="col-span-2 flex items-center gap-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold min-w-0">
+              <span class="flex-1 truncate">{@created_device.mqtt_username}</span>
+              <button
+                type="button"
+                id="btn-copy-mqtt-username"
+                phx-hook="CopyToClipboard"
+                data-value={@created_device.mqtt_username}
+                class="shrink-0 inline-flex items-center justify-center rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                title={gettext("Copy to clipboard")}
+                aria-label={gettext("Copy to clipboard")}
+              >
+                <.icon name="hero-clipboard-document" class="h-4 w-4" />
+              </button>
+            </div>
 
-            <span class="text-zinc-500 font-medium">{gettext("MQTT Password:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.mqtt_password}</span>
+            <span class="text-zinc-500 font-medium self-center">{gettext("MQTT Password:")}</span>
+            <div class="col-span-2 flex items-center gap-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold min-w-0">
+              <span class="flex-1 truncate">{@created_device.mqtt_password}</span>
+              <button
+                type="button"
+                id="btn-copy-mqtt-password"
+                phx-hook="CopyToClipboard"
+                data-value={@created_device.mqtt_password}
+                class="shrink-0 inline-flex items-center justify-center rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                title={gettext("Copy to clipboard")}
+                aria-label={gettext("Copy to clipboard")}
+              >
+                <.icon name="hero-clipboard-document" class="h-4 w-4" />
+              </button>
+            </div>
 
-            <span class="text-zinc-500 font-medium">{gettext("Base Topic:")}</span>
-            <span class="col-span-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold">{@created_device.base_topic}</span>
+            <span class="text-zinc-500 font-medium self-center">{gettext("Base Topic:")}</span>
+            <div class="col-span-2 flex items-center gap-2 font-mono text-zinc-800 dark:text-zinc-200 select-all font-semibold min-w-0">
+              <span class="flex-1 truncate">{@created_device.base_topic}</span>
+              <button
+                type="button"
+                id="btn-copy-base-topic"
+                phx-hook="CopyToClipboard"
+                data-value={@created_device.base_topic}
+                class="shrink-0 inline-flex items-center justify-center rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-1.5 text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+                title={gettext("Copy to clipboard")}
+                aria-label={gettext("Copy to clipboard")}
+              >
+                <.icon name="hero-clipboard-document" class="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </div>
+
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyToClipboard">
+          export default {
+            mounted() {
+              this.handler = (event) => {
+                event.preventDefault()
+                const text = this.el.dataset.value || ""
+                navigator.clipboard.writeText(text).then(() => {
+                  this.el.classList.add("copied")
+                  const svg = this.el.querySelector("svg")
+
+                  if (svg) {
+                    svg.dataset.originalClass = svg.getAttribute("class") || ""
+                    svg.setAttribute("class", "h-4 w-4 text-emerald-500")
+                  }
+
+                  clearTimeout(this._resetTimer)
+                  this._resetTimer = setTimeout(() => {
+                    this.el.classList.remove("copied")
+
+                    if (svg) {
+                      svg.setAttribute("class", svg.dataset.originalClass || "")
+                    }
+                  }, 1500)
+                }).catch((err) => {
+                  console.error("CopyToClipboard hook: copy failed", err)
+                })
+              }
+
+              this.el.addEventListener("click", this.handler)
+            },
+
+            destroyed() {
+              if (this.el && this.handler) {
+                this.el.removeEventListener("click", this.handler)
+              }
+
+              clearTimeout(this._resetTimer)
+            }
+          }
+        </script>
 
         <div class="border-t border-zinc-200 dark:border-zinc-800 pt-3">
           <h4 class="text-xs font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">

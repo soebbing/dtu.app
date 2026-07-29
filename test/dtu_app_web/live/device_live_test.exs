@@ -96,6 +96,33 @@ defmodule DtuAppWeb.DeviceLiveTest do
                  "in the modal — double-click would copy it along with the value"
       end
 
+      # A "Copy to clipboard" button sits to the right of each value,
+      # wired to the colocated CopyToClipboard hook and carrying the same
+      # value as `data-value="..."` so the JS can call
+      # `navigator.clipboard.writeText(data-value)`.
+      for {field_value, button_id} <- [
+            {"localhost", "btn-copy-mqtt-host"},
+            {"1883", "btn-copy-mqtt-port"},
+            {dtu_created.mqtt_username, "btn-copy-mqtt-username"},
+            {dtu_created.mqtt_password, "btn-copy-mqtt-password"},
+            {dtu_created.base_topic, "btn-copy-base-topic"}
+          ] do
+        button_html =
+          case Regex.run(
+                 ~r/<button[^>]*id="?#{Regex.escape(button_id)}"?[^>]*>.*?<\/button>/s,
+                 html
+               ) do
+            [block] -> block
+            _ -> flunk("no copy button rendered for #{button_id}; expected #{field_value}")
+          end
+
+        assert button_html =~ ~r/phx-hook="[^"]*CopyToClipboard/,
+               "copy button #{button_id} is missing the CopyToClipboard hook"
+
+        assert button_html =~ ~r/data-value="#{Regex.escape(field_value)}"/,
+               "copy button #{button_id} should carry data-value=#{inspect(field_value)}"
+      end
+
       # Close the modal
       assert index_live
              |> element("#btn-close-created-modal")
