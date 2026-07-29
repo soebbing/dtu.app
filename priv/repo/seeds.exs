@@ -76,7 +76,7 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
 
   inserted_at =
     DateTime.new!(today, Time.new!(hour, minute, 0))
-    |> DateTime.truncate(:second)
+    |> DateTime.truncate(:microsecond)
 
   Repo.insert!(%Reading{
     dtu_id: dtu1.id,
@@ -124,7 +124,7 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
 
     inserted_at =
       DateTime.new!(date, Time.new!(hour, minute, 0))
-      |> DateTime.truncate(:second)
+      |> DateTime.truncate(:microsecond)
 
     Repo.insert!(%Reading{
       dtu_id: dtu_id,
