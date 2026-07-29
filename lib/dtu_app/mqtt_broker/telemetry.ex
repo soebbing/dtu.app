@@ -154,12 +154,18 @@ defmodule DtuApp.MqttBroker.Telemetry do
         new_ahoy_buffers = Map.put(state.ahoy_buffers, device_info.id, updated_device_buffers)
         new_state = %{state | ahoy_buffers: new_ahoy_buffers}
 
-        # Trigger a DB write whenever an AC power reading arrives in this uplink
-        # (the numeric layout sends one metric per topic; the JSON layout sends
-        # several at once — either way, ac_power is the flush signal).
-        has_ac_power = Enum.any?(pairs, fn {m, v} -> m == :ac_power and not is_nil(v) end)
+        # Bugfix: the buffer was previously only flushed to the DB when an
+        # AC power reading arrived in the same uplink. AC power is only
+        # published while the inverter is actively producing, so any
+        # yield-only or temperature-only uplink would silently sit in RAM
+        # and never reach the DB — leaving "Today's Total Yield" stuck at 0
+        # for AhoyDTU users. Flush whenever *any* recognised metric arrives
+        # so the buffer is always written through. Unrecognised metrics
+        # (`:other`) alone are ignored, which would only produce a no-op row.
+        flush? =
+          Enum.any?(pairs, fn {metric_atom, _value} -> metric_atom != :other end)
 
-        if has_ac_power do
+        if flush? do
           reading_attrs = Map.put(updated_inverter, :dtu_id, device_info.id)
 
           case DtuApp.Devices.create_reading(reading_attrs) do

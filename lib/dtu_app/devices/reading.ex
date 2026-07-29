@@ -16,7 +16,7 @@ defmodule DtuApp.Devices.Reading do
     field :producing, :boolean
     field :reachable, :boolean
 
-    field :inserted_at, :utc_datetime, primary_key: true
+    field :inserted_at, :utc_datetime_usec, primary_key: true
 
     belongs_to :dtu, DtuApp.Devices.Dtu, define_field: false
     field :dtu_id, :id, primary_key: true
@@ -46,8 +46,11 @@ defmodule DtuApp.Devices.Reading do
 
   defp maybe_default_inserted_at(changeset) do
     case get_field(changeset, :inserted_at) do
-      nil -> put_change(changeset, :inserted_at, DateTime.utc_now() |> DateTime.truncate(:second))
-      _ -> changeset
+      nil ->
+        put_change(changeset, :inserted_at, DateTime.utc_now() |> DateTime.truncate(:microsecond))
+
+      _ ->
+        changeset
     end
   end
 end
