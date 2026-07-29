@@ -27,10 +27,37 @@ defmodule DtuApp.Repo.Migrations.WidenReadingsTimestampPrecisionToMicroseconds d
 
   def up do
     # 1. Drop the continuous aggregate views. CASCADE also removes their
-    #    refresh policies and the TimescaleDB internal helpers.
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_5m CASCADE"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_hourly CASCADE"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_daily CASCADE"
+    #    refresh policies and the TimescaleDB internal helpers. Wrapped in a
+    #    retry loop because the previous migration's
+    #    `add_continuous_aggregate_policy` registered background workers
+    #    that occasionally fire and acquire a lock on the same
+    #    `_timescaledb_catalog.continuous_agg` tuple our DROP wants — the
+    #    concurrent transaction then aborts with
+    #    "tuple concurrently updated".
+    execute """
+    DO $$
+    DECLARE
+      attempts int := 0;
+      ok boolean := false;
+    BEGIN
+      WHILE attempts < 60 AND NOT ok LOOP
+        BEGIN
+          DROP MATERIALIZED VIEW IF EXISTS readings_5m     CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_hourly CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_daily  CASCADE;
+          ok := true;
+        EXCEPTION WHEN OTHERS THEN
+          attempts := attempts + 1;
+          RAISE NOTICE 'retrying continuous-aggregate drop (attempt %): %',
+            attempts, SQLERRM;
+          PERFORM pg_sleep(1);
+        END;
+      END LOOP;
+      IF NOT ok THEN
+        RAISE EXCEPTION 'failed to drop continuous aggregates after 60 attempts';
+      END IF;
+    END $$;
+    """
 
     # 2. The composite PK includes `inserted_at`, so drop it before altering.
     execute "ALTER TABLE readings DROP CONSTRAINT readings_pkey"
@@ -122,9 +149,34 @@ defmodule DtuApp.Repo.Migrations.WidenReadingsTimestampPrecisionToMicroseconds d
   end
 
   def down do
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_5m CASCADE"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_hourly CASCADE"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_daily CASCADE"
+    # Same retry-on-DROP strategy as `up/0` — the views+policy recreation
+    # below re-attaches workers, and any concurrent DROP of the same views
+    # races with their lock on the `_timescaledb_catalog.continuous_agg`
+    # tuple.
+    execute """
+    DO $$
+    DECLARE
+      attempts int := 0;
+      ok boolean := false;
+    BEGIN
+      WHILE attempts < 60 AND NOT ok LOOP
+        BEGIN
+          DROP MATERIALIZED VIEW IF EXISTS readings_5m     CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_hourly CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_daily  CASCADE;
+          ok := true;
+        EXCEPTION WHEN OTHERS THEN
+          attempts := attempts + 1;
+          RAISE NOTICE 'retrying continuous-aggregate drop (attempt %): %',
+            attempts, SQLERRM;
+          PERFORM pg_sleep(1);
+        END;
+      END LOOP;
+      IF NOT ok THEN
+        RAISE EXCEPTION 'failed to drop continuous aggregates after 60 attempts';
+      END IF;
+    END $$;
+    """
 
     execute "ALTER TABLE readings DROP CONSTRAINT readings_pkey"
 
