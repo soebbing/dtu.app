@@ -4,6 +4,8 @@
 # - The app image is the Elixir release from ./Dockerfile. Its entrypoint runs
 #   Ecto migrations on every start, then boots the release serving HTTP on 4000
 #   and the embedded MQTT broker on 1883.
+# - Mailpit is a local SMTP capture server: when MAIL_DELIVERY=mailpit in .env,
+#   transactional emails land at http://localhost:8025 instead of being sent.
 #
 # Copy .env.example to .env and fill in SECRET_KEY_BASE before bringing this up
 # in anything resembling production:
@@ -32,6 +34,23 @@ services:
       timeout: 5s
       retries: 10
 
+  mailpit:
+    # Local SMTP capture server. Set MAIL_DELIVERY=mailpit in .env and the app
+    # will route transactional email here instead of through Resend. Open
+    # http://localhost:8025 to inspect the magic-link / confirmation emails.
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # web UI
+    volumes:
+      - dtu_app_mailpit_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1025 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   app:
     build:
       context: .
@@ -39,6 +58,8 @@ services:
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
     ports:
       - "4000:4000"   # Phoenix HTTP / LiveView
@@ -55,6 +76,11 @@ services:
       DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-dtu_app_prod}
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?SECRET_KEY_BASE must be set — copy .env.example to .env}
       POOL_SIZE: ${POOL_SIZE:-15}
+      # The release image doesn't ship git (see .dockerignore), so the runtime
+      # git branch lookup is unavailable. Stamp a friendly identifier here so
+      # the version footer renders "dev" in local compose instead of falling
+      # back to the package version.
+      RELEASE_VERSION: ${RELEASE_VERSION:-dev}
       # MQTT broker listens on 1883 inside the container; remap the host side
       # via the ports mapping above. Set MQTT_BROKER_ENABLED=false to disable.
       MQTT_BROKER_ENABLED: ${MQTT_BROKER_ENABLED:-true}
@@ -62,10 +88,17 @@ services:
       # DNS alias for the MQTT endpoint, shown as the broker host in the device
       # setup modal. Empty = use PHX_HOST (broker and web app on the same host).
       MQTT_HOST: ${MQTT_HOST:-}
-      # Transactional email via Resend. Empty RESEND_API_KEY falls back to the
-      # in-memory mailer (no mail is actually sent).
+      # Transactional email via Resend when RESEND_API_KEY is set. Empty key +
+      # MAIL_DELIVERY=mailpit routes through the local Mailpit SMTP server.
+      # With both unset, the in-memory mailer swallows email and the magic-link
+      # URL appears in the server logs.
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      MAIL_DELIVERY: ${MAIL_DELIVERY:-}
+      SMTP_RELAY: ${SMTP_RELAY:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_DOMAIN: ${SMTP_DOMAIN:-localhost}
       MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
 
 volumes:
   dtu_app_pgdata:
+  dtu_app_mailpit_data:

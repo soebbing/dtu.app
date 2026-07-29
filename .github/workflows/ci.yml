@@ -32,6 +32,21 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      mailpit:
+        # Local SMTP capture for the E2E magic-link test. Phoenix connects
+        # to SMTP_RELAY=localhost:1025 (port published to host), the E2E
+        # test hits Mailpit's JSON API at http://localhost:8025 to pull the
+        # magic-link URL out of the captured message.
+        image: axllent/mailpit:latest
+        ports:
+          - 1025:1025
+          - 8025:8025
+        options: >-
+          --health-cmd "wget -q --spider http://localhost:8025 || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -99,6 +114,11 @@ jobs:
           PHX_HOST: localhost
           PHX_SCHEME: http
           PHX_PORT: "4000"
+          # Use the Mailpit sidecar so the magic-link E2E test can read the
+          # captured email from Mailpit's JSON API at :8025.
+          MAIL_DELIVERY: mailpit
+          SMTP_RELAY: localhost
+          SMTP_PORT: "1025"
 
       - name: Setup & Seed E2E Database
         run: |
@@ -113,6 +133,9 @@ jobs:
           PHX_HOST: localhost
           PHX_SCHEME: http
           PHX_PORT: "4000"
+          MAIL_DELIVERY: mailpit
+          SMTP_RELAY: localhost
+          SMTP_PORT: "1025"
 
       - name: Start Phoenix Server
         run: |
@@ -126,6 +149,9 @@ jobs:
           PHX_HOST: localhost
           PHX_SCHEME: http
           PHX_PORT: "4000"
+          MAIL_DELIVERY: mailpit
+          SMTP_RELAY: localhost
+          SMTP_PORT: "1025"
 
       - name: Wait for Phoenix Server
         run: |

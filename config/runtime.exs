@@ -124,21 +124,41 @@ if config_env() == :prod do
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
 
-  # ## Mailer (Resend)
+  # ## Mailer
   #
-  # When RESEND_API_KEY is set, transactional email (magic-link login, email
-  # change confirmation) is sent through the Resend API. Without it the mailer
-  # falls back to Swoosh's in-memory Local adapter, so email is swallowed —
-  # fine for smoke-testing but magic links never arrive.
+  # Three delivery modes, picked in order of precedence:
   #
-  # MAIL_FROM must be an address on a domain verified in your Resend account.
-  # It is read by DtuApp.Accounts.UserNotifier via Application.get_env/2.
-  # Treat a missing or empty RESEND_API_KEY as "not configured" (an empty
-  # string is truthy in Elixir, so we can't rely on `if System.get_env/1`).
-  if System.get_env("RESEND_API_KEY", "") != "" do
-    config :dtu_app, DtuApp.Mailer,
-      adapter: Swoosh.Adapters.Resend,
-      api_key: System.fetch_env!("RESEND_API_KEY")
+  #   1. RESEND_API_KEY set  -> Swoosh.Adapters.Resend (production email via
+  #                              the Resend transactional API)
+  #   2. MAIL_DELIVERY=mailpit -> Swoosh.Adapters.SMTP pointed at a local
+  #                              Mailpit server (see docker-compose.yml) so
+  #                              magic-link emails can be inspected in a web
+  #                              UI at http://localhost:8025 without an
+  #                              external account
+  #   3. fallback            -> Swoosh.Adapters.Local (in-memory; emails are
+  #                              swallowed, the magic-link URL appears in the
+  #                              server logs / IEx session)
+  #
+  # MAIL_FROM must be an address on a domain verified in your Resend account
+  # for Resend, and a domain Mailpit will accept for the SMTP fallback
+  # (anything works locally).
+  cond do
+    System.get_env("RESEND_API_KEY", "") != "" ->
+      config :dtu_app, DtuApp.Mailer,
+        adapter: Swoosh.Adapters.Resend,
+        api_key: System.fetch_env!("RESEND_API_KEY")
+
+    System.get_env("MAIL_DELIVERY", "") == "mailpit" ->
+      config :dtu_app, DtuApp.Mailer,
+        adapter: Swoosh.Adapters.SMTP,
+        relay: System.get_env("SMTP_RELAY", "mailpit"),
+        port: String.to_integer(System.get_env("SMTP_PORT", "1025")),
+        domain: System.get_env("SMTP_DOMAIN", "localhost"),
+        authentication: :none,
+        tls: :never
+
+    true ->
+      :ok
   end
 
   config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
@@ -166,12 +186,21 @@ version =
     nil ->
       app_root = Application.app_dir(:dtu_app, "..")
 
-      with {out, 0} <- System.cmd("git", ["-C", app_root, "rev-parse", "--abbrev-ref", "HEAD"]),
-           branch <- String.trim(out),
-           false <- branch == "HEAD" do
-        branch
-      else
-        _ -> nil
+      # `System.cmd/3` raises `ErlangError{:enoent, …}` when the binary
+      # is missing (the release image doesn't ship git — `.git` is in
+      # .dockerignore) and propagates the rejection of detached HEADs via
+      # the `with`. Rescue both so a missing git / no current branch just
+      # means we fall back to Mix.Project's :version.
+      try do
+        with {out, 0} <- System.cmd("git", ["-C", app_root, "rev-parse", "--abbrev-ref", "HEAD"]),
+             branch <- String.trim(out),
+             false <- branch == "HEAD" do
+          branch
+        end
+      rescue
+        ErlangError -> nil
+      catch
+        _, _ -> nil
       end
 
     v ->

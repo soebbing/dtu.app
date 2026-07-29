@@ -60,6 +60,10 @@ defmodule DtuApp.MixProject do
        compile: false,
        depth: 1},
       {:swoosh, "~> 1.16"},
+      # Required by Swoosh.Adapters.SMTP (the local Mailpit dev path in
+      # config/runtime.exs). Swoosh lists gen_smtp as optional so it has to
+      # be declared explicitly here.
+      {:gen_smtp, "~> 1.0"},
       {:req, "~> 0.5"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},

@@ -120,7 +120,8 @@ See [`.env.example`](./.env.example) for every knob. The important ones:
 | `PHX_PORT`          | `443`            | Public port; included in links only when non-standard.        |
 | `MQTT_HOST`         | _(= `PHX_HOST`)_ | Host shown as the MQTT broker. Set when MQTT is on its own domain. |
 | `MQTT_BROKER_PORT`  | `1883`           | Port the embedded broker listens on.                          |
-| `RESEND_API_KEY`    | _(empty)_        | Transactional email via Resend. Empty = in-memory (no mail sent). |
+| `RESEND_API_KEY`    | _(empty)_        | Transactional email via Resend when set.                     |
+| `MAIL_DELIVERY`     | _(empty)_        | `mailpit` routes email to the local SMTP capture server (see below). |
 | `MAIL_FROM`         | _…localhost_     | Sender address (must be a Resend-verified domain).            |
 
 ## Local development
@@ -133,6 +134,20 @@ mix phx.server    # http://localhost:4000
 You'll need PostgreSQL reachable per `config/dev.exs` (TimescaleDB for the
 hypertable/cagg migrations — the `timescale/timescaledb` image works for dev
 too). The embedded broker binds `:1883`; the broker is disabled in the test env.
+
+### Capturing email locally with Mailpit
+
+For local development you'd usually want to see the magic-link / confirmation
+emails instead of having them swallowed by the in-memory adapter. The Docker
+compose file ships a [Mailpit](https://github.com/axllent/mailpit) sidecar:
+
+```sh
+docker compose up -d mailpit
+MAIL_DELIVERY=mailpit mix phx.server
+```
+
+Sign in at <http://localhost:8025> to inspect the emails. `MAIL_FROM` can be any
+address — Mailpit accepts everything.
 
 **Tests**
 
