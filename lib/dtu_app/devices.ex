@@ -245,8 +245,13 @@ defmodule DtuApp.Devices do
         end)
         |> Enum.sum()
 
-      # Peak power today comes from the 5-minute continuous aggregate.
-      peak_power =
+      # Peak power today comes from the 5-minute continuous aggregate. The
+      # bucket stays closed until its window fills, so a fast-rising
+      # morning ramp can leave `bucket_max` several minutes behind the
+      # live `current_power`. Lift the peak to the live reading whenever
+      # it exceeds the bucket max so the displayed number reflects what
+      # the inverter is producing *now*.
+      bucket_max =
         case list_today_chart_data(user, dtu_id) do
           [] ->
             0.0
@@ -256,6 +261,8 @@ defmodule DtuApp.Devices do
             |> Enum.map(fn {_, power} -> power end)
             |> Enum.max(fn -> 0.0 end)
         end
+
+      peak_power = max(current_power, bucket_max)
 
       %{
         current_power: Float.round(current_power * 1.0, 1),
