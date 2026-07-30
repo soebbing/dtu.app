@@ -210,4 +210,196 @@ defmodule DtuApp.DevicesTest do
                       "peak_power should be the day's high, not the live low"
     end
   end
+
+  describe "get_daily_stats/2 — per_series breakdown" do
+    test "emits one entry per (inverter_serial, mppt_index) with the day's yield and peak" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Single inverter with AC + 2 DC MPPTs. Each (inverter, mppt) pair
+      # contributes one row to `per_series`.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        inverter_name: "Roof Array",
+        mppt_index: 0,
+        ac_power: 500.0,
+        yield_day: 5_000.0
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        inverter_name: "Roof Array",
+        mppt_index: 1,
+        dc_power: 250.0,
+        yield_day: 2_500.0
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        inverter_name: "Roof Array",
+        mppt_index: 2,
+        dc_power: 250.0,
+        yield_day: 2_500.0
+      })
+
+      stats = Devices.get_daily_stats(user)
+
+      assert length(stats.per_series) == 3
+
+      by_mppt = Map.new(stats.per_series, &{&1.mppt_index, &1})
+
+      # The friendly name is preserved on every entry so the legend can
+      # label each line without a separate join.
+      assert by_mppt[0].inverter_name == "Roof Array"
+      assert by_mppt[1].inverter_name == "Roof Array"
+      assert by_mppt[2].inverter_name == "Roof Array"
+
+      # Yields are converted to kWh (OpenDTU/AhoyDTU publish Wh).
+      assert_in_delta by_mppt[0].today_yield, 5.0, 0.001
+      assert_in_delta by_mppt[1].today_yield, 2.5, 0.001
+      assert_in_delta by_mppt[2].today_yield, 2.5, 0.001
+    end
+
+    test "per_series sums to today_yield even when MPPTs report partial data" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Two inverters × two MPPTs each. yield_day is in Wh; get_daily_stats
+      # converts to kWh before returning.
+      for {serial, mppts} <- [{"INV-1", [1, 2]}, {"INV-2", [1]}] do
+        for mppt <- mppts do
+          DevicesFixtures.reading_fixture(device, %{
+            inverter_serial: serial,
+            mppt_index: mppt,
+            yield_day: 1_000.0
+          })
+        end
+      end
+
+      stats = Devices.get_daily_stats(user)
+
+      # 3 series × 1 kWh each = 3.0 kWh total
+      assert_in_delta stats.today_yield, 3.0, 0.001
+      assert length(stats.per_series) == 3
+    end
+
+    test "per_series is empty when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      stats = Devices.get_daily_stats(user)
+      assert stats.per_series == []
+    end
+  end
+
+  describe "list_day_chart_data/3 — per-series bucketing" do
+    test "returns one series per (dtu_id, inverter_serial, mppt_index)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Two inverters, second one with two MPPTs. The chart should expose
+      # four series, not one combined total.
+      for {serial, mppt, power} <- [
+            {"INV-1", 0, 400.0},
+            {"INV-2", 1, 150.0},
+            {"INV-2", 2, 100.0}
+          ] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: serial,
+          mppt_index: mppt,
+          inverter_name: serial,
+          ac_power: power,
+          inserted_at: now
+        })
+      end
+
+      points = Devices.list_day_chart_data(user, Date.utc_today())
+
+      series_set =
+        points
+        |> Enum.map(& &1.series)
+        |> Enum.uniq()
+
+      assert length(series_set) == 3
+    end
+  end
+
+  describe "update_inverter_name/3" do
+    test "backfills inverter_name on every row for the given (dtu_id, inverter_serial)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "S1",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 100.0
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "S1",
+          mppt_index: 1,
+          inverter_name: nil,
+          dc_power: 80.0
+        })
+
+      # A reading for a different serial — must not be touched.
+      {:ok, _other} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "S2",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 50.0
+        })
+
+      assert {:ok, 2} = Devices.update_inverter_name(device.id, "S1", "Friendly Name")
+
+      import Ecto.Query
+      alias DtuApp.Devices.Reading
+
+      s1_rows =
+        Reading
+        |> where([r], r.dtu_id == ^device.id and r.inverter_serial == "S1")
+        |> DtuApp.Repo.all()
+
+      assert Enum.all?(s1_rows, &(&1.inverter_name == "Friendly Name"))
+
+      s2_rows =
+        Reading
+        |> where([r], r.dtu_id == ^device.id and r.inverter_serial == "S2")
+        |> DtuApp.Repo.all()
+
+      assert Enum.all?(s2_rows, &(&1.inverter_name == nil))
+    end
+
+    test "returns {:ok, 0} for an empty / whitespace-only name without touching existing rows" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "S1",
+          mppt_index: 0,
+          inverter_name: "Existing Name",
+          ac_power: 100.0
+        })
+
+      assert {:ok, 0} = Devices.update_inverter_name(device.id, "S1", "   ")
+
+      import Ecto.Query
+      alias DtuApp.Devices.Reading
+
+      [reading] =
+        Reading
+        |> where([r], r.dtu_id == ^device.id and r.inverter_serial == "S1")
+        |> DtuApp.Repo.all()
+
+      assert reading.inverter_name == "Existing Name"
+    end
+  end
 end

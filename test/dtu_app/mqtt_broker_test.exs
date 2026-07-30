@@ -91,7 +91,7 @@ defmodule DtuApp.MqttBrokerTest do
       topic = "solar/123456789/realtime/data"
 
       msg = {:uplink, "client_1", device_info, topic, payload}
-      {:noreply, _new_state} = Telemetry.handle_info(msg, %{ahoy_buffers: %{}})
+      {:noreply, _new_state} = Telemetry.handle_info(msg, %{buffers: %{}})
 
       # Assert reading is inserted
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
@@ -121,7 +121,7 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      state = %{ahoy_buffers: %{}}
+      state = %{buffers: %{}}
 
       # Send temperature — flushes immediately, even without AC power.
       msg1 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/Temp", "34.5"}
@@ -181,7 +181,7 @@ defmodule DtuApp.MqttBrokerTest do
       msg =
         {:uplink, "client_3", device_info, "inverter/balcony-inv/ch0/YieldDay", "4.32"}
 
-      {:noreply, _state} = Telemetry.handle_info(msg, %{ahoy_buffers: %{}})
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
 
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.inverter_serial == "balcony-inv"
@@ -214,7 +214,7 @@ defmodule DtuApp.MqttBrokerTest do
             "YieldDay": 2.5, "YieldTotal": 980.0, "P_DC": 330.0})
 
       msg = {:uplink, "client_json", device_info, "inverter/balcony-inv/ch0", payload}
-      {:noreply, _state} = Telemetry.handle_info(msg, %{ahoy_buffers: %{}})
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
 
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.inverter_serial == "balcony-inv"
@@ -224,6 +224,388 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.temperature == 41.2
       assert reading.yield_day == 2.5
       assert reading.yield_total == 980.0
+    end
+
+    test "OpenDTU realtime/data is persisted as the AC aggregate row (mppt_index=0)",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-ac-row",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      payload = ~s({
+        "AC": {
+          "Power": {"v": 245.5},
+          "YieldDay": {"v": 4320.0},
+          "YieldTotal": {"v": 125000.0}
+        },
+        "DC": {"Power": {"v": 250.0}},
+        "INV": {"Temperature": {"v": 35.5}},
+        "status": {"producing": 1, "reachable": 1}
+      })
+
+      msg = {:uplink, "client_ac", device_info, "solar/123456789/realtime/data", payload}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "123456789"
+      assert reading.mppt_index == 0
+      assert reading.ac_power == 245.5
+      assert reading.dc_power == 250.0
+      assert reading.yield_day == 4320.0
+      # `inverter_name` is null until OpenDTU's `{serial}/name` uplink
+      # arrives — the realtime JSON doesn't carry it.
+      assert reading.inverter_name == nil
+    end
+
+    test "OpenDTU per-MPPT DC channels buffer independently and emit a row per channel",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-per-mppt",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      # Two DC MPPT inputs (channels 1 & 2) each publishing power, yieldday
+      # and yieldtotal on staggered intervals. Both should end up in the
+      # database as separate rows keyed by (inverter_serial, mppt_index).
+      state = %{buffers: %{}}
+
+      {:noreply, state} =
+        Telemetry.handle_info(
+          {:uplink, "client_mppt", device_info, "solar/INV-1/1/power", "120.0"},
+          state
+        )
+
+      # First MPPT's yieldday arrives in its own uplink — must merge into
+      # the same row (not start a second one for channel 1).
+      {:noreply, state} =
+        Telemetry.handle_info(
+          {:uplink, "client_mppt", device_info, "solar/INV-1/1/yieldday", "800.0"},
+          state
+        )
+
+      # Second MPPT publishes its own power — must create a new row with
+      # mppt_index = 2, not bleed into channel 1's row.
+      {:noreply, _state} =
+        Telemetry.handle_info(
+          {:uplink, "client_mppt", device_info, "solar/INV-1/2/power", "95.0"},
+          state
+        )
+
+      readings = Devices.list_recent_readings(user, dtu.id)
+
+      # Three rows total: each `flush?` uplink creates a row with the latest
+      # accumulated buffer for that channel.
+      #   1. channel 1 power-only uplink  → ch1 row, dc_power=120, yield_day=nil
+      #   2. channel 1 yieldday uplink    → ch1 row, dc_power=120, yield_day=800
+      #   3. channel 2 power uplink       → ch2 row, dc_power=95,  yield_day=nil
+      # Channel 1's two rows carry the same (inverter, mppt_index) so the
+      # chart's `MAX(yield_day)` aggregation is unchanged — the second row
+      # just has both fields populated.
+      assert length(readings) == 3
+
+      by_mppt = Enum.group_by(readings, & &1.mppt_index)
+
+      assert [ch1_old, ch1_new] = Enum.sort_by(by_mppt[1], & &1.inserted_at)
+      assert ch1_old.dc_power == 120.0
+      assert ch1_old.yield_day == nil
+      assert ch1_new.dc_power == 120.0
+      assert ch1_new.yield_day == 800.0
+
+      assert [ch2] = by_mppt[2]
+      assert ch2.inverter_serial == "INV-1"
+      assert ch2.dc_power == 95.0
+      assert ch2.yield_day == nil
+    end
+
+    test "OpenDTU per-MPPT AC-channel (channel 0) per-field uplinks are ignored to avoid double-counting",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-ac-ignore",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      # `0/power` carries the same value as realtime/data's AC.Power — we
+      # ignore it so a device that publishes both forms doesn't double its
+      # AC row count.
+      msg = {:uplink, "client_dup", device_info, "solar/INV-1/0/power", "200.0"}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      assert [] = Devices.list_recent_readings(user, dtu.id)
+    end
+
+    test "OpenDTU {serial}/name retroactively updates inverter_name on every existing row",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-name",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      # Three pre-existing readings for the same serial with null name.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "123456789",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 100.0,
+          yield_day: 500.0
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "123456789",
+          mppt_index: 1,
+          inverter_name: nil,
+          dc_power: 95.0,
+          yield_day: 480.0
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "123456789",
+          mppt_index: 2,
+          inverter_name: nil,
+          dc_power: 5.0,
+          yield_day: 20.0
+        })
+
+      # A reading for a *different* serial — must NOT be touched.
+      {:ok, _other} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "987654321",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 50.0
+        })
+
+      # OpenDTU publishes the name configured in its web UI.
+      msg = {:uplink, "client_name", device_info, "solar/123456789/name", "Roof Inverter"}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      readings_for_target = Devices.list_recent_readings(user, dtu.id)
+      updated = Enum.filter(readings_for_target, &(&1.inverter_serial == "123456789"))
+
+      assert length(updated) == 3
+      assert Enum.all?(updated, &(&1.inverter_name == "Roof Inverter"))
+
+      # Different serial keeps its nil name.
+      [other] = Enum.filter(readings_for_target, &(&1.inverter_serial == "987654321"))
+      assert other.inverter_name == nil
+    end
+
+    test "OpenDTU {serial}/name with empty payload is ignored and leaves names untouched",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-empty-name",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-X",
+          mppt_index: 0,
+          inverter_name: "Existing Name",
+          ac_power: 100.0
+        })
+
+      msg = {:uplink, "client_blank", device_info, "solar/INV-X/name", "   "}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_name == "Existing Name"
+    end
+
+    test "OpenDTU {serial}/status/producing patches the latest reading's producing flag",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-status",
+          base_topic: "solar"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      now = DateTime.utc_now()
+
+      # Two readings for the same serial. The status uplink should patch
+      # the most recent one (inserted second, with the later timestamp).
+      {:ok, older} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 50.0,
+          producing: true,
+          inserted_at: DateTime.add(now, -60, :second)
+        })
+
+      {:ok, latest} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: nil,
+          ac_power: 200.0,
+          producing: true,
+          inserted_at: now
+        })
+
+      msg = {:uplink, "client_st", device_info, "solar/INV-1/status/producing", "0"}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      import Ecto.Query
+      alias DtuApp.Devices.Reading
+
+      reload = fn r ->
+        from(reading in Reading,
+          where:
+            reading.dtu_id == ^r.dtu_id and
+              reading.inverter_serial == ^r.inverter_serial and
+              reading.mppt_index == ^r.mppt_index and
+              reading.inserted_at == ^r.inserted_at
+        )
+        |> DtuApp.Repo.one!()
+      end
+
+      # Only the latest row was patched — the older one keeps its original
+      # `producing: true`.
+      assert reload.(older).producing == true
+      assert reload.(latest).producing == false
+    end
+
+    test "AhoyDTU ch0 publishes are tagged mppt_index=0 (AC aggregate row)",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-ch0",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      msg =
+        {:uplink, "client_ch0", device_info, "inverter/balcony-inv/ch0/P_AC", "180.0"}
+
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "balcony-inv"
+      assert reading.mppt_index == 0
+      assert reading.ac_power == 180.0
+      assert reading.inverter_name == "balcony-inv"
+    end
+
+    test "AhoyDTU ch1 publishes are tagged mppt_index=1 (per-MPPT row)",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-ch1",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      msg =
+        {:uplink, "client_ch1", device_info, "inverter/balcony-inv/ch1/P_DC", "150.0"}
+
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.mppt_index == 1
+      assert reading.dc_power == 150.0
     end
   end
 end

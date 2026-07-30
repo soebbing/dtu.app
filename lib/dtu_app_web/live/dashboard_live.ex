@@ -172,7 +172,7 @@ defmodule DtuAppWeb.DashboardLive do
 
     max_power =
       chart_points
-      |> Enum.map(fn {_, power} -> power end)
+      |> Enum.map(& &1.power)
       |> Enum.max(fn -> 100.0 end)
       |> max(100.0)
       |> Float.ceil()
@@ -180,46 +180,149 @@ defmodule DtuAppWeb.DashboardLive do
     # Scale max power to next multiple of 100
     y_max = Float.ceil(max_power / 100) * 100
 
-    # Build SVG points
-    # Chart dimensions: width 800, height 250
-    # X range: 0 (midnight) to 86400 (next midnight)
-    points =
+    # Chart dimensions: width 800, height 250 (with 20px top padding).
+    # X range: 0 (midnight) to 86400 (next midnight).
+
+    # Group points by series (one line per (inverter, MPPT) pair) and
+    # translate each point into SVG coordinates.
+    series_points =
       chart_points
-      |> Enum.map(fn {time, power} ->
-        seconds = time.hour * 3600 + time.minute * 60 + time.second
-        x = seconds / 86400.0 * 800.0
-        # leave 20px padding at top
-        y = 250.0 - power / y_max * 230.0
-        {Float.round(x, 1), Float.round(y, 1)}
+      |> Enum.group_by(& &1.series)
+      |> Enum.map(fn {series, pts} ->
+        coords =
+          pts
+          |> Enum.map(fn %{time: time, power: power} ->
+            seconds = time.hour * 3600 + time.minute * 60 + time.second
+            x = seconds / 86400.0 * 800.0
+            y = 250.0 - power / y_max * 230.0
+            {Float.round(x, 1), Float.round(y, 1)}
+          end)
+          |> Enum.sort_by(&elem(&1, 0))
+
+        {series, coords}
+      end)
+      |> Enum.sort_by(fn {{dtu_id, serial, mppt_index, _name}, _pts} ->
+        {dtu_id, serial, mppt_index}
       end)
 
-    path_data =
-      case points do
-        [] ->
-          ""
+    # Build path data per series, plus an area fill for the first
+    # series (the AC aggregate, mppt_index = 0) for the existing
+    # "tinted under the curve" look.
+    series_paths =
+      Enum.map(series_points, fn {series, coords} ->
+        path =
+          case coords do
+            [] ->
+              ""
 
-        [{first_x, first_y} | rest] ->
-          "M #{first_x} #{first_y} " <>
-            (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end))
-      end
+            [{first_x, first_y} | rest] ->
+              "M #{first_x} #{first_y} " <>
+                (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end))
+          end
 
+        {series, path}
+      end)
+      |> Map.new()
+
+    # Color palette per series. Grouped by (dtu_id, inverter_serial) so
+    # the same inverter gets the same base color across its MPPT lines;
+    # the MPPT index then shifts to a darker shade of that hue.
+    inverter_color = inverte_order_to_color(series_points)
+
+    series_palette =
+      Enum.map(series_points, fn {series, _pts} ->
+        dtu_id = elem(series, 0)
+        serial = elem(series, 1)
+        mppt_index = elem(series, 2)
+        base = Map.get(inverter_color, {dtu_id, serial})
+        shade = mppt_shade(mppt_index)
+        {series, {base, shade}}
+      end)
+      |> Map.new()
+
+    # Friendly names for the legend. Prefer the user-set `inverter_name`,
+    # fall back to the serial. The MPPT index is shown only for AC-aggregate
+    # rows (mppt_index = 0 — ch0 — which is the AC-side) and skipped for
+    # the per-MPPT rows because the user can already guess "MPPT 1 / MPPT 2"
+    # from the line context.
+    series_legend =
+      Enum.map(series_points, fn {{dtu_id, serial, mppt_index, name}, _pts} ->
+        friendly = name || serial
+
+        label =
+          cond do
+            mppt_index == 0 -> "#{friendly} (AC)"
+            mppt_index == 1 -> "#{friendly} — MPPT 1"
+            true -> "#{friendly} — MPPT #{mppt_index}"
+          end
+
+        {{dtu_id, serial, mppt_index, name}, label}
+      end)
+      |> Map.new()
+
+    # Build an area fill under the first series (typically the AC
+    # aggregate) so the chart retains the existing visual treatment.
+    # Only meaningful when the series has at least 2 points (so we can
+    # close the polygon back to the X axis at the end of the day).
     area_path_data =
-      case points do
+      case series_points do
         [] ->
           ""
 
-        [{first_x, first_y} | rest] ->
+        [{_series, [_first_coord | _rest = []]} | _] ->
+          ""
+
+        [{_series, [{first_x, first_y} | rest]} | _] when rest != [] ->
+          coords = Enum.map(rest, & &1)
+          {last_x, _} = List.last(coords)
+
           "M #{first_x} 250 L #{first_x} #{first_y} " <>
-            (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end)) <>
-            " L #{elem(List.last(points), 0)} 250 Z"
+            (coords |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end)) <>
+            " L #{last_x} 250 Z"
+
+        _ ->
+          ""
       end
 
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
-    |> assign(:path_data, path_data)
+    |> assign(:series_paths, series_paths)
+    |> assign(:series_palette, series_palette)
+    |> assign(:series_legend, series_legend)
+    |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
     |> assign(:area_path_data, area_path_data)
   end
+
+  # Empty `series_paths` map is OK; we just need a default for the
+  # `path_data` assign so the template always has a string.
+  defp hd_or_first_key(map) when map_size(map) == 0, do: nil
+  defp hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
+
+  # Deterministic palette: assign each (dtu_id, inverter_serial) pair a
+  # base hue from a fixed set, in the order they first appear. Stable
+  # across requests so the chart doesn't flicker.
+  @palette ~w(emerald amber sky violet rose fuchsia cyan lime orange teal)
+
+  defp inverte_order_to_color(series_points) do
+    series_points
+    |> Enum.map(fn {series, _} -> {elem(series, 0), elem(series, 1)} end)
+    |> Enum.uniq()
+    |> Enum.with_index()
+    |> Map.new(fn {{dtu_id, serial}, idx} ->
+      {{dtu_id, serial}, Enum.at(@palette, rem(idx, length(@palette)))}
+    end)
+  end
+
+  # MPPT index → Tailwind shade class. mppt_index = 0 is the AC
+  # aggregate (the topmost / brightest line); 1+ are the per-string
+  # MPPTs at progressively darker shades of the base hue. The legend
+  # order matches the visual depth.
+  defp mppt_shade(0), do: "500"
+  defp mppt_shade(1), do: "600"
+  defp mppt_shade(2), do: "700"
+  defp mppt_shade(3), do: "800"
+  defp mppt_shade(_), do: "900"
 
   # Helper to construct SVG bar chart coordinates and range
   defp assign_bar_chart_data(socket, bar_data) do
@@ -503,13 +606,13 @@ defmodule DtuAppWeb.DashboardLive do
         peak_power =
           case points do
             [] -> 0.0
-            pts -> pts |> Enum.map(fn {_, p} -> p end) |> Enum.max(fn -> 0.0 end)
+            pts -> pts |> Enum.map(& &1.power) |> Enum.max(fn -> 0.0 end)
           end
 
         avg_power =
           case points do
             [] -> 0.0
-            pts -> Enum.sum(pts |> Enum.map(fn {_, p} -> p end)) / length(pts)
+            pts -> Enum.sum(pts |> Enum.map(& &1.power)) / length(pts)
           end
 
         stats = %{
@@ -1204,17 +1307,47 @@ defmodule DtuAppWeb.DashboardLive do
                       24:00
                     </text>
 
-                    <!-- Line paths -->
-                    <path d={@area_path_data} fill="url(#chartGrad)" />
-                    <path
-                      d={@path_data}
-                      fill="none"
-                      stroke="#10b981"
-                      stroke-width="2.5"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
+                    <!-- One SVG path per (inverter, MPPT) series. The first
+                         series (typically the AC aggregate, mppt_index = 0)
+                         also gets a translucent area fill under the curve. -->
+                    <%= if @area_path_data != "" do %>
+                      <path d={@area_path_data} fill="url(#chartGrad)" />
+                    <% end %>
+                    <%= for {series, path} <- @series_paths do %>
+                      <% {base, shade} = Map.get(@series_palette, series) %>
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke={"text-#{base}-#{shade}"}
+                        class={"stroke-#{shade}"}
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        data-series={inspect(series)}
+                      />
+                    <% end %>
                   </svg>
+
+                  <%!-- Legend: one swatch + label per series, in the same order
+                       as the paths above so the visual reads top-to-bottom
+                       in the same order as the MPPT index. --%>
+                  <%= if map_size(@series_legend) > 0 do %>
+                    <div
+                      class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
+                      id="chart-legend"
+                    >
+                      <%= for {series, label} <- @series_legend do %>
+                        <% {base, shade} = Map.get(@series_palette, series) %>
+                        <span class="inline-flex items-center gap-1.5">
+                          <span
+                            class={"inline-block h-2.5 w-2.5 rounded-sm bg-#{base}-#{shade}"}
+                            aria-hidden="true"
+                          />
+                          <span class="text-zinc-700 dark:text-zinc-300">{label}</span>
+                        </span>
+                      <% end %>
+                    </div>
+                  <% end %>
                 </div>
               <% end %>
             <% else %>
