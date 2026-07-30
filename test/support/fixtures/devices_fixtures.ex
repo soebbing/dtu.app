@@ -28,12 +28,19 @@ defmodule DtuApp.DevicesFixtures do
   Insert a raw reading for the given device. `inserted_at` defaults to
   `DateTime.utc_now/0`; pass an explicit value when the test needs the
   reading to fall inside or outside the today-UTC window.
+
+  `mppt_index` is 0 for the AC-side aggregate reading (AhoyDTU ch0, OpenDTU
+  total) and 1+ for individual MPPT channels. `inverter_name` is the
+  human-friendly label, populated by the AhoyDTU parser from the topic
+  name and by the device edit page for OpenDTU.
   """
   def reading_fixture(device, attrs \\ %{}) do
     {raw_inserted_at, attrs} = Map.pop(attrs, :inserted_at, DateTime.utc_now())
     inserted_at = DateTime.truncate(raw_inserted_at, :microsecond)
 
     {inverter_serial, attrs} = Map.pop(attrs, :inverter_serial, unique_inverter_serial())
+    {mppt_index, attrs} = Map.pop(attrs, :mppt_index, 0)
+    {inverter_name, attrs} = Map.pop(attrs, :inverter_name, nil)
     {ac_power, attrs} = Map.pop(attrs, :ac_power, 0.0)
     {yield_day, attrs} = Map.pop(attrs, :yield_day, 0.0)
     {yield_total, attrs} = Map.pop(attrs, :yield_total, 0.0)
@@ -41,6 +48,8 @@ defmodule DtuApp.DevicesFixtures do
     base = %{
       dtu_id: device.id,
       inverter_serial: inverter_serial,
+      mppt_index: mppt_index,
+      inverter_name: inverter_name,
       ac_power: ac_power,
       dc_power: ac_power,
       yield_day: yield_day,
@@ -59,6 +68,8 @@ defmodule DtuApp.DevicesFixtures do
         :yield_total,
         :inserted_at,
         :inverter_serial,
+        :mppt_index,
+        :inverter_name,
         :producing,
         :reachable
       ])

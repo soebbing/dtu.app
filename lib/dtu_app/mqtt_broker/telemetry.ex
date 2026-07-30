@@ -2,12 +2,40 @@ defmodule DtuApp.MqttBroker.Telemetry do
   @moduledoc """
   Consumes MQTT uplinks from DTUs and parses OpenDTU-format or AhoyDTU-format telemetry.
 
-  OpenDTU publishes a consolidated JSON message on `{base}/{inverter_serial}/realtime/data`.
-  AhoyDTU publishes individual metrics under `{base}/{inverter_name}/ch0/{metric}`.
+  ## Topic layouts
 
-  This module turns those raw uplinks into structured `Reading` records, saves them to the
-  database, and republishes them on the `dtu:reading` PubSub topic. It also listens to presence
-  broadcasts to update the physical DTUs' online/offline statuses in the database.
+  ### OpenDTU
+
+      {base}/{inverter_serial}/realtime/data            # consolidated JSON (AC + status)
+      {base}/{inverter_serial}/name                     # friendly inverter name (string)
+      {base}/{inverter_serial}/{0-9}/{field}            # per-channel metric, e.g. 1/power
+      {base}/{inverter_serial}/status/producing         # 0 or 1
+      {base}/{inverter_serial}/status/reachable         # 0 or 1
+
+  Channel `0` is the AC aggregate (the value also published via `realtime/data`,
+  so we ignore per-field `0/*` uplinks to avoid double-counting); channels `1..N`
+  are individual DC MPPT inputs and become `mppt_index = N` rows in `readings`.
+
+  ### AhoyDTU
+
+      {base}/{inverter_name}/ch0/{Metric}                # numeric scalar per metric
+      {base}/{inverter_name}/ch0                         # JSON object of ch0 metrics
+      {base}/{inverter_name}/ch{1..6}/{Metric}           # DC per-string inputs
+      {base}/{inverter_name}/ch{1..6}                    # JSON per DC input
+      {base}/total/...                                   # ignored (recomputed by the dashboard)
+
+  Per-channel metrics arrive on staggered intervals (P_AC in one uplink, YieldDay
+  in the next), so we buffer them per `(inverter, channel)` and flush a row
+  whenever any meaningful metric arrives.
+
+  ## Outputs
+
+  Every parsed reading is persisted as a row in `readings` and republished on
+  the `dtu:reading` PubSub topic. OpenDTU's `{serial}/name` topic updates
+  `readings.inverter_name` retroactively for every existing row of that
+  `(dtu_id, inverter_serial)` pair so the chart legend picks the friendly name
+  up immediately. OpenDTU's `{serial}/status/{producing|reachable}` uplinks
+  update the latest reading for that inverter.
   """
 
   use GenServer
@@ -36,7 +64,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
     Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
-    {:ok, %{ahoy_buffers: %{}}}
+    {:ok, %{buffers: %{}}}
   end
 
   @impl true
@@ -96,63 +124,231 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
+  # --- OpenDTU ----------------------------------------------------------------
+
+  # The OpenDTU parser returns one of:
+  #   {:reading, attrs}   — insert a reading row
+  #   {:buffer, serial, channel, pairs} — buffer the pairs and flush a row
+  #   {:name, serial, name} — retroactively rename all rows for this serial
+  #   {:status, serial, %{producing: ..., reachable: ...}} — patch the latest row
+  #   {:ignored, reason} — log at debug and move on
   defp handle_opendtu(client_id, device_info, topic_str, payload, state) do
     case parse_opendtu(topic_str, device_info.base_topic, payload) do
-      {:ok, reading_attrs} ->
-        reading_attrs = Map.put(reading_attrs, :dtu_id, device_info.id)
+      {:reading, attrs} ->
+        attrs = Map.put(attrs, :dtu_id, device_info.id)
+        flush_opendtu_reading(client_id, device_info, attrs, state)
 
-        case DtuApp.Devices.create_reading(reading_attrs) do
-          {:ok, db_reading} ->
-            Logger.debug("[Telemetry] Saved OpenDTU reading for DTU #{device_info.id}")
+      {:buffer, serial, channel, pairs} ->
+        flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, state)
 
-            Phoenix.PubSub.broadcast(
-              DtuApp.PubSub,
-              @reading_topic,
-              {:reading, client_id, db_reading}
-            )
+      {:name, serial, name} ->
+        {:ok, count} = DtuApp.Devices.update_inverter_name(device_info.id, serial, name)
 
+        Logger.debug(
+          "[Telemetry] OpenDTU inverter name for DTU #{device_info.id} " <>
+            "serial=#{serial} -> #{name} (#{count} rows backfilled)"
+        )
+
+        {:noreply, state}
+
+      {:status, serial, flags} ->
+        case DtuApp.Devices.patch_latest_reading_status(device_info.id, serial, flags) do
+          {:ok, _} ->
             {:noreply, state}
 
-          {:error, changeset} ->
-            Logger.warning(
-              "[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}"
-            )
-
+          {:error, reason} ->
+            Logger.debug("[Telemetry] OpenDTU status patch skipped: #{inspect(reason)}")
             {:noreply, state}
         end
 
-      {:error, reason} ->
+      {:ignored, reason} ->
         Logger.debug("[Telemetry] OpenDTU parse skipped: #{inspect(reason)}")
         {:noreply, state}
     end
   end
 
+  defp flush_opendtu_reading(client_id, device_info, attrs, state) do
+    case DtuApp.Devices.create_reading(attrs) do
+      {:ok, db_reading} ->
+        Logger.debug(
+          "[Telemetry] Saved OpenDTU reading for DTU #{device_info.id} " <>
+            "serial=#{attrs[:inverter_serial]} mppt=#{attrs[:mppt_index]}"
+        )
+
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @reading_topic,
+          {:reading, client_id, db_reading}
+        )
+
+        {:noreply, state}
+
+      {:error, changeset} ->
+        Logger.warning("[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}")
+
+        {:noreply, state}
+    end
+  end
+
+  # Per-MPPT DC input topics arrive as independent uplinks, so we buffer
+  # multiple fields per (serial, channel) and flush whenever a recognised
+  # field lands. Mirrors the AhoyDTU per-channel buffer.
+  defp flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, state) do
+    buffer_key = {device_info.id, {serial, channel}}
+
+    initial = %{
+      inverter_serial: serial,
+      mppt_index: channel,
+      # Friendly name is filled in retroactively when `{serial}/name` arrives.
+      inverter_name: nil,
+      ac_power: nil,
+      dc_power: nil,
+      yield_day: nil,
+      yield_total: nil,
+      frequency: nil,
+      temperature: nil,
+      producing: nil,
+      reachable: nil
+    }
+
+    current = Map.get(state.buffers, buffer_key, initial)
+
+    updated_buffer =
+      Enum.reduce(pairs, current, fn {metric_atom, value}, buf ->
+        if metric_atom == :other, do: buf, else: Map.put(buf, metric_atom, value)
+      end)
+
+    new_buffers = Map.put(state.buffers, buffer_key, updated_buffer)
+    new_state = %{state | buffers: new_buffers}
+
+    flush? = Enum.any?(pairs, fn {metric_atom, _value} -> metric_atom != :other end)
+
+    if flush? do
+      reading_attrs = Map.put(updated_buffer, :dtu_id, device_info.id)
+      flush_opendtu_reading(client_id, device_info, reading_attrs, new_state)
+    else
+      {:noreply, new_state}
+    end
+  end
+
+  defp parse_opendtu(topic_str, base_topic, payload) do
+    case String.split(topic_str, "/") do
+      # Inverter-friendly name published by OpenDTU's web UI. Retroactively
+      # attached to every existing reading for this (dtu_id, inverter_serial).
+      [binary_base, serial, "name"] when binary_base == base_topic ->
+        {:name, serial, payload}
+
+      # Per-inverter status flags (1/0 scalar).
+      [binary_base, serial, "status", field]
+      when binary_base == base_topic and field in ["producing", "reachable"] ->
+        case parse_bool(payload) do
+          {:ok, value} -> {:status, serial, %{field => value}}
+          :error -> {:ignored, :bad_status_value}
+        end
+
+      # Consolidated realtime JSON — the AC aggregate + status + temperature.
+      [binary_base, serial, "realtime", "data"] when binary_base == base_topic ->
+        case Jason.decode(payload) do
+          {:ok, json} ->
+            attrs = %{
+              inverter_serial: serial,
+              # `0` = AC aggregate (same convention as AhoyDTU ch0). Per-MPPT
+              # DC inputs land on rows with mppt_index 1..N.
+              mppt_index: 0,
+              inverter_name: nil,
+              ac_power: cast_float(get_in(json, ["AC", "Power", "v"])),
+              dc_power: cast_float(get_in(json, ["DC", "Power", "v"])),
+              yield_day: cast_float(get_in(json, ["AC", "YieldDay", "v"])),
+              yield_total: cast_float(get_in(json, ["AC", "YieldTotal", "v"])),
+              frequency: cast_float(get_in(json, ["AC", "Frequency", "v"])),
+              temperature: cast_float(get_in(json, ["INV", "Temperature", "v"])),
+              producing: truthy?(get_in(json, ["status", "producing"])),
+              reachable: truthy?(get_in(json, ["status", "reachable"]))
+            }
+
+            {:reading, attrs}
+
+          _ ->
+            {:ignored, :bad_json}
+        end
+
+      # AC channel (channel 0) per-field topics — already covered by
+      # realtime/data, so we ignore to avoid double-counting.
+      [binary_base, _serial, "0", _field] when binary_base == base_topic ->
+        {:ignored, :ac_per_field_redundant}
+
+      # DC MPPT per-field topic (channels 1..N). Map a recognised field to
+      # a known metric atom; everything else becomes `:other` (ignored for
+      # flush but kept for future fields without code changes).
+      [binary_base, serial, channel_str, field] when binary_base == base_topic ->
+        case Integer.parse(channel_str) do
+          {channel, ""} when channel >= 1 ->
+            metric_atom = opendtu_metric(field)
+
+            if metric_atom == :other do
+              {:ignored, :unknown_opendtu_field}
+            else
+              value = opendtu_metric_value(metric_atom, payload)
+              {:buffer, serial, channel, [{metric_atom, value}]}
+            end
+
+          _ ->
+            {:ignored, :bad_channel}
+        end
+
+      _ ->
+        {:ignored, :unknown_topic}
+    end
+  end
+
+  # Map an OpenDTU per-MPPT field name to one of the metric atoms the Reading
+  # schema can store. Fields we don't persist (voltage, current, irradiation,
+  # DC-string friendly name) become `:other` and are dropped from the flush.
+  defp opendtu_metric("power"), do: :dc_power
+  defp opendtu_metric("yieldday"), do: :yield_day
+  defp opendtu_metric("yieldtotal"), do: :yield_total
+  defp opendtu_metric(_), do: :other
+
+  defp opendtu_metric_value(metric, payload)
+       when metric in [:yield_day, :yield_total, :dc_power] do
+    cast_float(payload)
+  end
+
+  # --- AhoyDTU ----------------------------------------------------------------
+
   defp handle_ahoydtu(client_id, device_info, topic_str, payload, state) do
     case parse_ahoydtu(topic_str, device_info.base_topic, payload) do
-      {:ok, name, pairs} when pairs != [] ->
-        device_buffers = Map.get(state.ahoy_buffers, device_info.id, %{})
+      {:ok, name, channel, pairs} when pairs != [] ->
+        # Each (inverter, channel) pair gets its own row in `readings` —
+        # ch0 = mppt_index 0 (the AC-side aggregate), ch1..N = MPPT 1..N.
+        # The buffer is keyed by `{inverter_name, channel}` so the per-channel
+        # metrics that arrive at staggered intervals still land in the
+        # same row until we flush.
+        buffer_key = {device_info.id, {name, channel}}
 
-        inverter_buffer =
-          Map.get(device_buffers, name, %{
-            inverter_serial: name,
-            ac_power: nil,
-            dc_power: nil,
-            yield_day: nil,
-            yield_total: nil,
-            frequency: nil,
-            temperature: nil,
-            producing: nil,
-            reachable: nil
-          })
+        initial = %{
+          inverter_serial: name,
+          mppt_index: channel,
+          inverter_name: name,
+          ac_power: nil,
+          dc_power: nil,
+          yield_day: nil,
+          yield_total: nil,
+          frequency: nil,
+          temperature: nil,
+          producing: nil,
+          reachable: nil
+        }
 
-        updated_inverter =
-          Enum.reduce(pairs, inverter_buffer, fn {metric_atom, value}, buf ->
+        current = Map.get(state.buffers, buffer_key, initial)
+
+        updated_buffer =
+          Enum.reduce(pairs, current, fn {metric_atom, value}, buf ->
             if metric_atom == :other, do: buf, else: Map.put(buf, metric_atom, value)
           end)
 
-        updated_device_buffers = Map.put(device_buffers, name, updated_inverter)
-        new_ahoy_buffers = Map.put(state.ahoy_buffers, device_info.id, updated_device_buffers)
-        new_state = %{state | ahoy_buffers: new_ahoy_buffers}
+        new_buffers = Map.put(state.buffers, buffer_key, updated_buffer)
+        new_state = %{state | buffers: new_buffers}
 
         # Bugfix: the buffer was previously only flushed to the DB when an
         # AC power reading arrived in the same uplink. AC power is only
@@ -166,11 +362,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
           Enum.any?(pairs, fn {metric_atom, _value} -> metric_atom != :other end)
 
         if flush? do
-          reading_attrs = Map.put(updated_inverter, :dtu_id, device_info.id)
+          reading_attrs = Map.put(updated_buffer, :dtu_id, device_info.id)
 
           case DtuApp.Devices.create_reading(reading_attrs) do
             {:ok, db_reading} ->
-              Logger.debug("[Telemetry] Saved AhoyDTU reading for DTU #{device_info.id}")
+              Logger.debug(
+                "[Telemetry] Saved AhoyDTU reading for DTU #{device_info.id} " <>
+                  "inverter=#{name} channel=#{channel}"
+              )
 
               Phoenix.PubSub.broadcast(
                 DtuApp.PubSub,
@@ -196,38 +395,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
-  defp parse_opendtu(topic_str, base_topic, payload) do
-    case String.split(topic_str, "/") do
-      [binary_base, serial, "realtime", "data"] when binary_base == base_topic ->
-        case Jason.decode(payload) do
-          {:ok, json} ->
-            reading_attrs = %{
-              inverter_serial: serial,
-              ac_power: cast_float(get_in(json, ["AC", "Power", "v"])),
-              dc_power: cast_float(get_in(json, ["DC", "Power", "v"])),
-              yield_day: cast_float(get_in(json, ["AC", "YieldDay", "v"])),
-              yield_total: cast_float(get_in(json, ["AC", "YieldTotal", "v"])),
-              frequency: cast_float(get_in(json, ["AC", "Frequency", "v"])),
-              temperature: cast_float(get_in(json, ["INV", "Temperature", "v"])),
-              producing: truthy?(get_in(json, ["status", "producing"])),
-              reachable: truthy?(get_in(json, ["status", "reachable"]))
-            }
-
-            {:ok, reading_attrs}
-
-          _ ->
-            {:error, :bad_json}
-        end
-
-      _ ->
-        {:error, :ignored_topic}
-    end
-  end
-
   defp parse_ahoydtu(topic_str, base_topic, payload) do
     case String.split(topic_str, "/") do
       # Numeric layout: {base}/{name}/ch{0..6}/{Metric} -> one scalar.
-      [binary_base, name, <<"ch", _::binary>> = channel, metric]
+      [binary_base, name, <<"ch", rest::binary>> = channel, metric]
       when binary_base == base_topic and channel != "total" ->
         # If the payload is itself JSON, defer to the JSON-layout clause below;
         # otherwise treat it as a single numeric scalar.
@@ -236,16 +407,16 @@ defmodule DtuApp.MqttBroker.Telemetry do
         else
           metric_atom = parse_ahoy_metric(metric)
           value = parse_ahoy_value(metric_atom, payload)
-          {:ok, name, [{metric_atom, value}]}
+          {:ok, name, channel_index(rest), [{metric_atom, value}]}
         end
 
       # JSON layout: {base}/{name}/ch{0..6} -> a JSON object of many metrics.
-      [binary_base, name, <<"ch", _::binary>> = channel]
+      [binary_base, name, <<"ch", rest::binary>> = channel]
       when binary_base == base_topic and channel != "total" ->
         case Jason.decode(payload) do
           {:ok, json_map} when is_map(json_map) ->
             pairs = ahoy_json_to_pairs(json_map, channel)
-            {:ok, name, pairs}
+            {:ok, name, channel_index(rest), pairs}
 
           _ ->
             {:error, :ignored_topic}
@@ -257,6 +428,18 @@ defmodule DtuApp.MqttBroker.Telemetry do
         {:error, :ignored_topic}
     end
   end
+
+  # --- Shared parsing helpers -------------------------------------------------
+
+  # Extract the integer MPPT index from a channel segment like "ch0" -> 0,
+  # "ch1" -> 1, "ch12" -> 12. Falls back to 0 on parse failure so a bad
+  # topic doesn't crash the parser.
+  defp channel_index(<<>>), do: 0
+  defp channel_index(rest), do: Integer.parse(rest) |> elem(0) |> Kernel.||(0)
+
+  # Buffer-then-flush for OpenDTU per-MPPT per-field topics happens in
+  # `flush_opendtu_buffer/6` — the parser only tags the metric, the handler
+  # owns the state.
 
   # Map an AhoyDTU per-channel JSON object into normalized {metric, value} pairs.
   # ch0 carries AC-side values (incl. calculated P_DC); ch1..6 carry DC inputs.
@@ -332,4 +515,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
   defp truthy?(true), do: true
   defp truthy?(false), do: false
   defp truthy?(_), do: nil
+
+  defp parse_bool("1"), do: {:ok, true}
+  defp parse_bool("0"), do: {:ok, false}
+  defp parse_bool("true"), do: {:ok, true}
+  defp parse_bool("false"), do: {:ok, false}
+  defp parse_bool(_), do: :error
 end

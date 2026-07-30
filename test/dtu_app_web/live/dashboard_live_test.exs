@@ -187,5 +187,61 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert element(view, "#stat-current-power") |> render() =~ "300.0 W"
       assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
     end
+
+    test "renders one chart legend entry per (inverter, MPPT) series", %{
+      conn: conn,
+      user: user
+    } do
+      # Two inverters; the second one has two MPPT channels. The legend
+      # should expose a friendly label per series so the chart reader can
+      # tell the lines apart.
+      dtu =
+        device_fixture(user, %{
+          name: "Multi MPPT Inverter",
+          kind: "opendtu",
+          mqtt_username: "multi-mppt"
+        })
+
+      now = DateTime.utc_now()
+
+      for {serial, mppt_index, name, power} <- [
+            {"INV-1", 0, "East Array", 200.0},
+            {"INV-2", 1, "West Array", 80.0},
+            {"INV-2", 2, "West Array", 70.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: serial,
+            mppt_index: mppt_index,
+            inverter_name: name,
+            ac_power: power,
+            inserted_at: now
+          })
+      end
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # Legend is rendered with one swatch per series.
+      assert has_element?(view, "#chart-legend")
+
+      # Three legend entries — one per (inverter, MPPT) pair. The label
+      # uses the user-set `inverter_name` and tags the AC line with
+      # "(AC)" and the per-MPPT lines with "— MPPT N".
+      assert html =~ "East Array (AC)"
+      assert html =~ "West Array — MPPT 1"
+      assert html =~ "West Array — MPPT 2"
+
+      # The chart SVG carries one path per series, tagged with the inverter
+      # serial + MPPT index so tests and any future JS hook can address
+      # them. Three distinct paths total — one per (inverter, MPPT) pair.
+      path_count = html |> String.split(~s(data-series=)) |> length() |> Kernel.-(1)
+      assert path_count == 3
+
+      # And each serial appears at least once (rough sanity check that all
+      # three series made it into the rendered SVG, not just the first).
+      assert html =~ "INV-1"
+      assert html =~ "INV-2"
+    end
   end
 end

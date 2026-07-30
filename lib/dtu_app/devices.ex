@@ -105,6 +105,93 @@ defmodule DtuApp.Devices do
     |> Repo.insert()
   end
 
+  @doc """
+  Backfill `inverter_name` for every existing reading of `(dtu_id, inverter_serial)`.
+
+  Called when OpenDTU publishes `{serial}/name` — the inverter's friendly
+  name as configured in the OpenDTU web UI. Updating every historical row
+  makes the chart legend pick up the new name immediately, instead of only
+  appearing on readings that arrive after the name uplink.
+
+  Empty / whitespace-only names are ignored so we don't blank out a name
+  that a different uplink already set.
+  """
+  def update_inverter_name(dtu_id, inverter_serial, name)
+      when is_integer(dtu_id) and is_binary(inverter_serial) and is_binary(name) do
+    trimmed = String.trim(name)
+
+    if trimmed == "" do
+      # Empty / whitespace-only payload — refuse to blank out a name a prior
+      # uplink already set. Returns `{:ok, 0}` so the caller's pattern match
+      # is uniform with the success path.
+      {:ok, 0}
+    else
+      {count, _} =
+        Repo.update_all(
+          from(r in Reading,
+            where: r.dtu_id == ^dtu_id and r.inverter_serial == ^inverter_serial
+          ),
+          set: [inverter_name: trimmed]
+        )
+
+      {:ok, count}
+    end
+  end
+
+  @doc """
+  Update `producing` / `reachable` flags on the latest reading for an inverter.
+
+  OpenDTU's `{serial}/status/{producing|reachable}` uplinks arrive
+  independently from the `realtime/data` consolidated message. To avoid
+  producing yet another row per flag change, we patch the most recent
+  existing reading for that `(dtu_id, inverter_serial)` in place.
+
+  Returns `{:error, :no_readings}` if the inverter has no readings yet —
+  the next `realtime/data` uplink will create the first row and pick up
+  the flags via the consolidated payload.
+  """
+  def patch_latest_reading_status(dtu_id, inverter_serial, flags)
+      when is_integer(dtu_id) and is_binary(inverter_serial) and is_map(flags) do
+    sub =
+      from(r in Reading,
+        where: r.dtu_id == ^dtu_id and r.inverter_serial == ^inverter_serial,
+        order_by: [desc: r.inserted_at],
+        limit: 1
+      )
+
+    case Repo.one(sub) do
+      nil ->
+        {:error, :no_readings}
+
+      latest ->
+        # `flags` may have atom keys (tests) or string keys (the OpenDTU
+        # parser emits string keys from the MQTT topic). Normalise to atoms
+        # so the schema cast receives the right field names.
+        atom_flags =
+          flags
+          |> Enum.map(fn
+            {k, v} when is_atom(k) -> {k, v}
+            {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+          end)
+          |> Map.new()
+
+        update_attrs =
+          atom_flags
+          |> Map.take([:producing, :reachable])
+          |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+          |> Map.new()
+
+        if map_size(update_attrs) == 0 do
+          {:ok, latest}
+        else
+          {:ok,
+           latest
+           |> Reading.changeset(update_attrs)
+           |> Repo.update!()}
+        end
+    end
+  end
+
   @doc "List recent readings for a specific user-owned DTU."
   def list_recent_readings(%User{} = user, dtu_id, limit \\ 100) do
     if owned?(user, dtu_id) do
@@ -134,18 +221,35 @@ defmodule DtuApp.Devices do
           where:
             r.dtu_id in ^dtu_ids and r.inserted_at >= ^day_start and r.inserted_at <= ^day_end,
           order_by: [asc: r.inserted_at],
-          select: %{inserted_at: r.inserted_at, ac_power: r.ac_power, dtu_id: r.dtu_id}
+          select: %{
+            inserted_at: r.inserted_at,
+            ac_power: r.ac_power,
+            dtu_id: r.dtu_id,
+            inverter_serial: r.inverter_serial,
+            mppt_index: r.mppt_index,
+            inverter_name: r.inverter_name
+          }
       )
     end
   end
 
-  @doc """
-  Fetch a specific day's power readings as 5-minute buckets for charts.
+  # A chart series identifies one line on the live/day chart: one
+  # (inverter, mppt) pair. `inverter_name` is the optional display label
+  # the user can set; the chart falls back to the serial when it's nil.
+  @type series_key ::
+          {dtu_id :: pos_integer(), inverter_serial :: String.t(),
+           mppt_index :: non_neg_integer(), inverter_name :: String.t() | nil}
 
-  Buckets raw rows in Elixir so the "today" view stays live (a continuous
-  aggregate would lag by its refresh window and miss just-inserted readings).
-  The `readings_5m` aggregate is available for batch/historical queries where
-  a little staleness is acceptable.
+  @type chart_point :: %{time: DateTime.t(), series: series_key(), power: float()}
+
+  @doc """
+  Fetch a day's worth of readings for the user's DTUs and bucket them
+  per (dtu_id, inverter_serial, mppt_index) into 5-minute averages, so
+  the chart can render one line per (inverter, MPPT) instead of a
+  single total. `ac_power` is the only field aggregated; the chart only
+  needs power. `mppt_index = 0` rows are the AhoyDTU ch0 / OpenDTU
+  total — drawn as the AC line. `mppt_index >= 1` are the per-string
+  MPPT channels.
   """
   def list_day_chart_data(%User{} = user, date, dtu_id \\ nil) do
     readings = list_day_readings_for_chart(user, date, dtu_id)
@@ -155,20 +259,19 @@ defmodule DtuApp.Devices do
     else
       readings
       |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
-      |> Enum.map(fn {bucket, bucket_readings} ->
-        dtu_grouped = Enum.group_by(bucket_readings, & &1.dtu_id)
+      |> Enum.flat_map(fn {bucket, bucket_readings} ->
+        time = DateTime.from_unix!(bucket * 300)
 
-        sum_of_averages =
-          dtu_grouped
-          |> Enum.map(fn {_dtu_id, dtu_readings} ->
-            powers = Enum.map(dtu_readings, &(&1.ac_power || 0.0))
-            Enum.sum(powers) / length(powers)
-          end)
-          |> Enum.sum()
+        bucket_readings
+        |> Enum.group_by(fn r -> {r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name} end)
+        |> Enum.map(fn {series, series_readings} ->
+          powers = Enum.map(series_readings, &(&1.ac_power || 0.0))
+          power = Enum.sum(powers) / length(series_readings)
 
-        {DateTime.from_unix!(bucket * 300), sum_of_averages}
+          %{time: time, series: series, power: power}
+        end)
       end)
-      |> Enum.sort_by(fn {time, _} -> time end)
+      |> Enum.sort_by(& &1.time)
     end
   end
 
@@ -187,7 +290,7 @@ defmodule DtuApp.Devices do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
-      %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0}
+      %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0, per_series: []}
     else
       # Latest reading per (dtu_id, inverter_serial) — used for current_power.
       # Uses the hypertable's time-descending index.
@@ -207,36 +310,37 @@ defmodule DtuApp.Devices do
         |> Enum.map(&(&1.ac_power || 0.0))
         |> Enum.sum()
 
-      # Today's total yield: MAX(yield_day) per (dtu_id, inverter_serial)
-      # within today's UTC window, summed across inverters. yield_day is the
-      # inverter's cumulative daily counter (resets at the inverter's local
-      # midnight), so MAX guarantees we use the freshest reading for each
-      # inverter even when the latest raw row is stale. Summing the latest
-      # reading's yield_day (the old behaviour) breaks when an inverter went
-      # offline mid-day and came back online — its freshest reading could be
-      # the start-of-day counter, giving a near-zero total.
+      # Today's total yield: MAX(yield_day) per (dtu_id, inverter_serial,
+      # mppt_index) within today's UTC window, summed across all series.
+      # yield_day is the cumulative daily counter (resets at the
+      # inverter's local midnight) per MPPT string, so MAX guarantees
+      # we use the freshest reading for each (inverter, MPPT) even when
+      # the latest raw row is stale. For OpenDTU and 1-MPPT inverters,
+      # mppt_index = 1 and this reduces to the per-inverter sum.
       today = Date.utc_today()
       today_start = DateTime.new!(today, ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(today, ~T[23:59:59], "Etc/UTC")
 
-      today_yield_per_inverter =
+      today_yield_per_series =
         Repo.all(
           from r in Reading,
             where:
               r.dtu_id in ^dtu_ids and
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            group_by: [r.dtu_id, r.inverter_serial],
+            group_by: [r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name],
             select: %{
               dtu_id: r.dtu_id,
               inverter_serial: r.inverter_serial,
+              mppt_index: r.mppt_index,
+              inverter_name: r.inverter_name,
               max_yield: max(r.yield_day)
             }
         )
 
       today_yield =
-        today_yield_per_inverter
+        today_yield_per_series
         |> Enum.map(fn row ->
-          # nil can leak in if every reading for an inverter has yield_day: nil
+          # nil can leak in if every reading for a series has yield_day: nil
           # (e.g. an inverter that has never reported a daily total).
           case row.max_yield do
             nil -> 0.0
@@ -258,11 +362,27 @@ defmodule DtuApp.Devices do
 
           points ->
             points
-            |> Enum.map(fn {_, power} -> power end)
+            |> Enum.map(& &1.power)
             |> Enum.max(fn -> 0.0 end)
         end
 
       peak_power = max(current_power, bucket_max)
+
+      # Per-(inverter, MPPT) peak so the dashboard can show, e.g., "MPPT 1
+      # peaked at 580 W". `mppt_index = 0` is the AC aggregate (AhoyDTU ch0 /
+      # OpenDTU total). Today's peak per series is just the live `ac_power`
+      # for that series: each (inverter, MPPT) row is its own max, again
+      # the same live-vs-bucket trade-off.
+      per_series_peak =
+        latest_readings
+        |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
+        |> Enum.reduce(%{}, fn r, acc ->
+          series = {r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name}
+
+          Map.update(acc, series, r.ac_power || 0.0, fn cur ->
+            max(cur, r.ac_power || 0.0)
+          end)
+        end)
 
       %{
         current_power: Float.round(current_power * 1.0, 1),
@@ -271,7 +391,25 @@ defmodule DtuApp.Devices do
         # a kWh label, so divide by 1000 before returning so the displayed
         # number matches the unit.
         today_yield: Float.round(today_yield / 1000, 3),
-        peak_power: Float.round(peak_power * 1.0, 1)
+        peak_power: Float.round(peak_power * 1.0, 1),
+
+        # Per (inverter, MPPT) breakdown so the dashboard can show each
+        # string's contribution and name in the chart legend. Yields are
+        # in kWh, peak powers in W (matching the totals' units).
+        per_series:
+          Enum.map(today_yield_per_series, fn row ->
+            series = {row.dtu_id, row.inverter_serial, row.mppt_index, row.inverter_name}
+
+            %{
+              dtu_id: row.dtu_id,
+              inverter_serial: row.inverter_serial,
+              inverter_name: row.inverter_name,
+              mppt_index: row.mppt_index,
+              # nil can leak in if every reading for a series has yield_day: nil.
+              today_yield: Float.round((row.max_yield || 0.0) / 1000, 3),
+              peak_power: Float.round(Map.get(per_series_peak, series, 0.0), 1)
+            }
+          end)
       }
     end
   end
