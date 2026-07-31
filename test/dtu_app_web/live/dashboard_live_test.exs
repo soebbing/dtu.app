@@ -562,4 +562,250 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end)
     |> Enum.reject(&is_nil/1)
   end
+
+  describe "Chart tooltip" do
+    # Adds a hover/touch interaction: the ChartTooltip colocated JS hook
+    # listens for mouse/touch events on the chart, draws a vertical
+    # guide line at the cursor's X position, and shows a tooltip with
+    # the time + the per-series power values at that time. The hook
+    # reads its data from data-* attributes on the SVG (no LiveView
+    # round-trip) so the tooltip stays smooth on hover.
+
+    test "embeds x-min-seconds and x-max-seconds on the chart SVG", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Tooltip DTU",
+          kind: "opendtu",
+          mqtt_username: "tooltip-dtu",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at:
+            Date.utc_today() |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Extract each attr independently — HEEx may emit them in any
+      # order between class and id. `Regex.run` returns a list of
+      # capture-group lists for patterns with groups; the last element
+      # is the captured digits.
+      x_min = Regex.run(~r/data-x-min-seconds="(\d+)"/, html) |> List.last()
+      x_max = Regex.run(~r/data-x-max-seconds="(\d+)"/, html) |> List.last()
+
+      # 12:00 today means x_min = 12 * 3600 = 43200; end_hour = 13 →
+      # x_max = 46800 (the 1-hour buffer past the bucket's last full hour).
+      assert String.to_integer(x_min) == 43_200
+      assert String.to_integer(x_max) == 46_800
+    end
+
+    test "each series path carries a data-points JSON array", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "JSON points",
+          kind: "opendtu",
+          mqtt_username: "json-points",
+          base_topic: "solar"
+        })
+
+      # Three readings at 12:00, 12:15, 12:30 with non-trivial powers
+      # so the JSON round-trip can be verified.
+      for {hour, minute, power} <- [{12, 0, 100.0}, {12, 15, 175.0}, {12, 30, 250.0}] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV",
+            mppt_index: 0,
+            ac_power: power,
+            inserted_at:
+              Date.utc_today()
+              |> DateTime.new!(Time.new!(hour, minute, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Each <path data-series="..."> must carry data-points="..." with a
+      # JSON array of {time, power} objects. HEEx HTML-escapes the
+      # quotes (`"` → `&quot;`) when interpolating the attribute, so
+      # the raw HTML has escaped JSON; the browser un-escapes via
+      # `dataset.points`. Unescape here so Jason.decode can parse it.
+      assert [_capture | _] =
+               Regex.run(
+                 ~r/data-series="\{[^}]+\}"\s+data-points="(\[[^"]+\])"/,
+                 html
+               )
+
+      [_, points_json] =
+        Regex.run(
+          ~r/data-series="\{[^}]+\}"\s+data-points="(\[[^"]+\])"/,
+          html
+        )
+
+      # HEEx HTML-escapes the JSON's `"` to `&quot;` when interpolating
+      # into the attribute. The browser unescapes via `dataset.points`,
+      # but Jason.decode needs real quotes. Replace `&quot;` with `"`
+      # before parsing.
+      points_json = String.replace(points_json, "&quot;", "\"")
+
+      assert {:ok, points} = Jason.decode(points_json)
+      assert is_list(points)
+      assert length(points) == 3
+
+      # Compare by key/value, not by key order — Jason serializes the
+      # keys in its own order regardless of how the map was constructed.
+      [first, _mid, last] = points
+      assert first["time"] == 43_200 and first["power"] == 100
+      assert last["time"] == 45_000 and last["power"] == 250
+    end
+
+    test "path data-points times reverse-map back to the original chart range", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Reverse map",
+          kind: "opendtu",
+          mqtt_username: "reverse-map",
+          base_topic: "solar"
+        })
+
+      for {hour, minute} <- [{6, 0}, {12, 30}, {19, 0}] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              Date.utc_today()
+              |> DateTime.new!(Time.new!(hour, minute, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Extract all data-points JSON arrays and verify the times cover
+      # the data range (06:00, 12:30, 19:00 → 21600, 45000, 68400).
+      [_, points_json] =
+        Regex.run(~r/data-points="(\[[^"]+\])"/, html)
+
+      points_json = String.replace(points_json, "&quot;", "\"")
+
+      assert {:ok, points} = Jason.decode(points_json)
+      times = Enum.map(points, & &1["time"])
+      assert 21_600 in times
+      assert 45_000 in times
+      assert 68_400 in times
+    end
+
+    test "the chart container wires the ChartTooltip hook", %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Hooked",
+          kind: "opendtu",
+          mqtt_username: "hooked",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at:
+            Date.utc_today() |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Phoenix LiveView expands colocated hook names to their fully
+      # qualified module path in the rendered HTML — the `.ChartTooltip`
+      # shorthand in the template becomes
+      # `phx-hook="DtuAppWeb.DashboardLive.ChartTooltip"`.
+      assert html =~ ~s(id="solar-chart-container")
+      assert html =~ ~s(phx-hook="DtuAppWeb.DashboardLive.ChartTooltip")
+    end
+
+    test "the chart embeds the guide line and tooltip overlay elements", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Overlay",
+          kind: "opendtu",
+          mqtt_username: "overlay",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at:
+            Date.utc_today() |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The vertical guide line starts hidden (display:none) and the
+      # tooltip overlay (foreignObject) too. The JS hook un-hides them
+      # on hover.
+      assert html =~ ~s(id="chart-guide-line")
+      assert html =~ ~s(id="chart-tooltip")
+      assert html =~ ~s(id="chart-tooltip-body")
+      assert html =~ "display:none"
+    end
+
+    test "the area-fill path is non-interactive so it doesn't block hover on chart lines",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Area non-interactive",
+          kind: "opendtu",
+          mqtt_username: "area-non-interactive",
+          base_topic: "solar"
+        })
+
+      # At least two readings so the area-fill polygon is generated.
+      for minute <- [0, 30] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              Date.utc_today()
+              |> DateTime.new!(Time.new!(12, minute, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The area fill sits below the chart lines and would otherwise eat
+      # mousemove events. `pointer-events="none"` lets them pass through.
+      assert html =~ ~r/fill="url\(#chartGrad\)"\s+pointer-events="none"/
+    end
+  end
 end

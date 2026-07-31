@@ -198,6 +198,10 @@ defmodule DtuAppWeb.DashboardLive do
 
     # Group points by series (one line per (inverter, MPPT) pair) and
     # translate each point into SVG coordinates within the dynamic X range.
+    # We also capture the bucket time (seconds-of-day) per point so the
+    # ChartTooltip hook can look up values by cursor time without
+    # reverse-mapping the rounded X coord (which would lose ~1 s of
+    # precision through float math).
     series_points =
       chart_points
       |> Enum.group_by(& &1.series)
@@ -208,7 +212,7 @@ defmodule DtuAppWeb.DashboardLive do
             seconds = time.hour * 3600 + time.minute * 60 + time.second
             x = (seconds - x_min_seconds) / x_span * 800.0
             y = 250.0 - power / y_max * 230.0
-            {Float.round(x, 1), Float.round(y, 1)}
+            {Float.round(x, 1), Float.round(y, 1), seconds}
           end)
           |> Enum.sort_by(&elem(&1, 0))
 
@@ -228,9 +232,9 @@ defmodule DtuAppWeb.DashboardLive do
             [] ->
               ""
 
-            [{first_x, first_y} | rest] ->
+            [{first_x, first_y, _first_t} | rest] ->
               "M #{first_x} #{first_y} " <>
-                (rest |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end))
+                (rest |> Enum.map_join(" ", fn {x, y, _t} -> "L #{x} #{y}" end))
           end
 
         {series, path}
@@ -285,12 +289,12 @@ defmodule DtuAppWeb.DashboardLive do
         [{_series, [_first_coord | _rest = []]} | _] ->
           ""
 
-        [{_series, [{first_x, first_y} | rest]} | _] when rest != [] ->
+        [{_series, [{first_x, first_y, _first_t} | rest]} | _] when rest != [] ->
           coords = Enum.map(rest, & &1)
-          {last_x, _} = List.last(coords)
+          {last_x, _, _} = List.last(coords)
 
           "M #{first_x} 250 L #{first_x} #{first_y} " <>
-            (coords |> Enum.map_join(" ", fn {x, y} -> "L #{x} #{y}" end)) <>
+            (coords |> Enum.map_join(" ", fn {x, y, _t} -> "L #{x} #{y}" end)) <>
             " L #{last_x} 250 Z"
 
         _ ->
@@ -298,6 +302,22 @@ defmodule DtuAppWeb.DashboardLive do
       end
 
     x_labels = chart_x_labels(x_min_seconds, x_max_seconds)
+
+    # Time series per series for the tooltip hook. Encoded as JSON
+    # strings (data-points="...") so the JS hook can look up the value
+    # at the cursor's time without parsing the SVG path's `d=` string.
+    # Each series entry is a list of {time, power} pairs in seconds /
+    # watts, sorted by time. We use the bucket time captured alongside
+    # each point in `series_points` (third tuple element) so we don't
+    # lose precision reverse-mapping through the rounded X coord.
+    series_points_data =
+      Enum.map(series_points, fn {series, coords} ->
+        {series,
+         Enum.map(coords, fn {_x, y, seconds} ->
+           %{time: seconds, power: power_at_from_coord(y, y_max)}
+         end)}
+      end)
+      |> Map.new()
 
     socket
     |> assign(:chart_points, chart_points)
@@ -308,7 +328,16 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
     |> assign(:area_path_data, area_path_data)
     |> assign(:x_labels, x_labels)
+    |> assign(:x_min_seconds, x_min_seconds)
+    |> assign(:x_max_seconds, x_max_seconds)
+    |> assign(:series_points_data, series_points_data)
   end
+
+  # Reverse the data-point Y coord back to watts so the tooltip shows
+  # real values, not SVG units. (The X coord is no longer round-tripped
+  # through float math — `series_points_data` carries the bucket time
+  # directly so we don't lose seconds of precision.)
+  defp power_at_from_coord(y, y_max), do: round((250.0 - y) / 230.0 * y_max)
 
   # Compute the chart's X-axis time range (in seconds-of-day).
   #
@@ -396,14 +425,65 @@ defmodule DtuAppWeb.DashboardLive do
     end)
   end
 
+  # Map a (base, shade) Tailwind palette pair to a hex color string.
+  # The ChartTooltip JS hook renders the tooltip's color swatches as
+  # inline `style="background-color: …"` (we can't reach CSS custom
+  # properties or theme tokens from a colocated hook without shipping
+  # the Tailwind output as JSON), so we resolve to a concrete hex.
+  # Values are the Tailwind v3 default emerald/amber/sky/violet/rose/
+  # fuchsia/cyan/lime/orange/teal palette at the requested shade.
+  @tailwind_colors %{
+    {"emerald", "400"} => "#34d399",
+    {"emerald", "600"} => "#059669",
+    {"emerald", "800"} => "#065f46",
+    {"emerald", "900"} => "#064e3b",
+    {"amber", "400"} => "#fbbf24",
+    {"amber", "600"} => "#d97706",
+    {"amber", "800"} => "#92400e",
+    {"amber", "900"} => "#78350f",
+    {"sky", "400"} => "#38bdf8",
+    {"sky", "600"} => "#0284c7",
+    {"sky", "800"} => "#075985",
+    {"sky", "900"} => "#0c4a6e",
+    {"violet", "400"} => "#a78bfa",
+    {"violet", "600"} => "#7c3aed",
+    {"violet", "800"} => "#5b21b6",
+    {"violet", "900"} => "#4c1d95",
+    {"rose", "400"} => "#fb7185",
+    {"rose", "600"} => "#e11d48",
+    {"rose", "800"} => "#9f1239",
+    {"rose", "900"} => "#881337",
+    {"fuchsia", "400"} => "#e879f9",
+    {"fuchsia", "600"} => "#c026d3",
+    {"fuchsia", "800"} => "#86198f",
+    {"fuchsia", "900"} => "#701a75",
+    {"cyan", "400"} => "#22d3ee",
+    {"cyan", "600"} => "#0891b2",
+    {"cyan", "800"} => "#155e75",
+    {"cyan", "900"} => "#164e63",
+    {"lime", "400"} => "#a3e635",
+    {"lime", "600"} => "#65a30d",
+    {"lime", "800"} => "#3f6212",
+    {"lime", "900"} => "#365314",
+    {"orange", "400"} => "#fb923c",
+    {"orange", "600"} => "#ea580c",
+    {"orange", "800"} => "#9a3412",
+    {"orange", "900"} => "#7c2d12",
+    {"teal", "400"} => "#2dd4bf",
+    {"teal", "600"} => "#0d9488",
+    {"teal", "800"} => "#115e59",
+    {"teal", "900"} => "#134e4a"
+  }
+  defp tooltip_to_hex(base, shade), do: Map.fetch!(@tailwind_colors, {base, shade})
+
   # MPPT index → Tailwind shade class. mppt_index = 0 is the AC
-  # aggregate (the topmost / brightest line); 1+ are the per-string
-  # MPPTs at progressively darker shades of the base hue. The legend
-  # order matches the visual depth.
-  defp mppt_shade(0), do: "500"
+  # aggregate (lightest shade so it pops against the tinted area
+  # fill); 1+ are the per-string MPPTs at progressively darker shades
+  # of that hue. The spread is wide (400–900) so 2-MPPT inverters
+  # don't have AC/MPPT lines that look like the same green at a glance.
+  defp mppt_shade(0), do: "400"
   defp mppt_shade(1), do: "600"
-  defp mppt_shade(2), do: "700"
-  defp mppt_shade(3), do: "800"
+  defp mppt_shade(2), do: "800"
   defp mppt_shade(_), do: "900"
 
   # Helper to construct SVG bar chart coordinates and range
@@ -1278,12 +1358,18 @@ defmodule DtuAppWeb.DashboardLive do
                   </p>
                 </div>
               <% else %>
-                <div class="relative w-full overflow-hidden" id="solar-chart-container">
+                <div
+                  class="relative w-full overflow-hidden"
+                  id="solar-chart-container"
+                  phx-hook=".ChartTooltip"
+                >
                   <!-- Chart SVG -->
                   <svg
                     viewBox="0 0 800 280"
                     class="w-full h-auto overflow-visible"
                     id="solar-chart-svg"
+                    data-x-min-seconds={@x_min_seconds}
+                    data-x-max-seconds={@x_max_seconds}
                   >
                     <defs>
                       <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
@@ -1368,14 +1454,70 @@ defmodule DtuAppWeb.DashboardLive do
                       </text>
                     <% end %>
 
+                    <!-- Vertical guide line drawn at the cursor's X
+                         position. Hidden by default; the ChartTooltip
+                         hook shows it on hover/touch. -->
+                    <line
+                      x1="0"
+                      y1="20"
+                      x2="0"
+                      y2="250"
+                      stroke="#a1a1aa"
+                      class="dark:stroke-zinc-500"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                      pointer-events="none"
+                      style="display:none"
+                      id="chart-guide-line"
+                    />
+
+                    <!-- Floating tooltip overlay rendered by the
+                         ChartTooltip hook. Hidden by default; positioned
+                         via the foreignObject's x/y attributes as the
+                         cursor moves. `pointer-events: none` so it
+                         never blocks hover on the chart. -->
+                    <foreignObject
+                      x="0"
+                      y="0"
+                      width="200"
+                      height="160"
+                      pointer-events="none"
+                      style="display:none;overflow:visible"
+                      id="chart-tooltip"
+                    >
+                      <div
+                        xmlns="http://www.w3.org/1999/xhtml"
+                        class="rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
+                      >
+                        <div
+                          id="chart-tooltip-body"
+                          class="font-mono text-xs text-zinc-700 dark:text-zinc-200"
+                        >
+                        </div>
+                      </div>
+                    </foreignObject>
+
                     <!-- One SVG path per (inverter, MPPT) series. The first
                          series (typically the AC aggregate, mppt_index = 0)
-                         also gets a translucent area fill under the curve. -->
+                         also gets a translucent area fill under the curve.
+                         Each path carries its (time, power) data points as
+                         a JSON data attribute so the ChartTooltip hook
+                         can look up the cursor-time value without parsing
+                         the SVG `d=` string. -->
                     <%= if @area_path_data != "" do %>
-                      <path d={@area_path_data} fill="url(#chartGrad)" />
+                      <path d={@area_path_data} fill="url(#chartGrad)" pointer-events="none" />
                     <% end %>
                     <%= for {series, path} <- @series_paths do %>
                       <% {base, shade} = Map.get(@series_palette, series) %>
+                      <% stroke_hex = tooltip_to_hex(base, shade) %>
+                      <% series_json =
+                        Jason.encode!(%{
+                          dtu_id: elem(series, 0),
+                          serial: elem(series, 1),
+                          mppt_index: elem(series, 2),
+                          name: elem(series, 3)
+                        }) %>
+                      <% points_json = Jason.encode!(Map.get(@series_points_data, series, [])) %>
                       <path
                         d={path}
                         fill="none"
@@ -1384,7 +1526,9 @@ defmodule DtuAppWeb.DashboardLive do
                         stroke-width="2.5"
                         stroke-linecap="round"
                         stroke-linejoin="round"
-                        data-series={inspect(series)}
+                        data-series={series_json}
+                        data-points={points_json}
+                        data-stroke={stroke_hex}
                       />
                     <% end %>
                   </svg>
@@ -1410,6 +1554,171 @@ defmodule DtuAppWeb.DashboardLive do
                     </div>
                   <% end %>
                 </div>
+
+                <%!-- Colocated JS hook: shows a vertical guide line + a
+                     tooltip with the time and per-series power at the
+                     cursor's position. The tooltip body is rendered
+                     directly into the DOM (no LiveView round-trip) so
+                     it stays smooth on hover. Series data is read
+                     from the SVG's `data-series` / `data-points`
+                     attributes; the time range from `data-x-min-seconds`
+                     / `data-x-max-seconds`. --%>
+                <script :type={Phoenix.LiveView.ColocatedHook} name=".ChartTooltip">
+                  export default {
+                    mounted() {
+                      this.svg = this.el.querySelector("#solar-chart-svg");
+                      this.guide = this.svg.querySelector("#chart-guide-line");
+                      this.tooltip = this.svg.querySelector("#chart-tooltip");
+                      this.body = this.svg.querySelector("#chart-tooltip-body");
+
+                      this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
+                      this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+
+                      this.series = Array.from(
+                        this.svg.querySelectorAll("path[data-series][data-points]")
+                      ).map((p) => ({
+                        meta: JSON.parse(p.dataset.series),
+                        points: JSON.parse(p.dataset.points),
+                        color: p.dataset.stroke
+                      }));
+
+                      this.handlers = {
+                        mousemove: (e) => this.move(e),
+                        mouseleave: () => this.hide(),
+                        touchstart: (e) => this.move(e),
+                        touchmove: (e) => this.move(e),
+                        touchend: () => this.hide(),
+                        touchcancel: () => this.hide(),
+                        resize: () => this.refRect()
+                      };
+
+                      for (const [event, handler] of Object.entries(this.handlers)) {
+                        if (event === "resize") {
+                          window.addEventListener(event, handler);
+                        } else {
+                          this.svg.addEventListener(event, handler, { passive: true });
+                        }
+                      }
+                    },
+
+                    destroyed() {
+                      for (const [event, handler] of Object.entries(this.handlers)) {
+                        if (event === "resize") {
+                          window.removeEventListener(event, handler);
+                        } else {
+                          this.svg.removeEventListener(event, handler);
+                        }
+                      }
+                    },
+
+                    refRect() {
+                      this.rect = this.svg.getBoundingClientRect();
+                    },
+
+                    move(e) {
+                      e.preventDefault();
+                      const touch = e.touches && e.touches[0];
+                      const clientX = touch ? touch.clientX : e.clientX;
+                      this.refRect();
+                      const x = clientX - this.rect.left;
+                      if (x < 0 || x > this.rect.width) {
+                        this.hide();
+                        return;
+                      }
+
+                      const span = this.xMax - this.xMin;
+                      const time = span > 0
+                        ? this.xMin + (x / this.rect.width) * span
+                        : this.xMin;
+
+                      this.guide.setAttribute("x1", String(x));
+                      this.guide.setAttribute("x2", String(x));
+                      this.guide.style.display = "";
+
+                      const rows = this.series
+                        .filter((s) => s.points.length > 0)
+                        .map((s) => {
+                          const nearest = this.nearest(s.points, time);
+                          return { ...s, value: nearest ? nearest.power : null };
+                        });
+
+                      this.body.innerHTML = this.renderRows(time, rows);
+
+                      // Position the tooltip. Flip to the left of the cursor
+                      // when near the right edge so it stays on-screen.
+                      const tooltipWidth = 200;
+                      const tooltipX =
+                        x > this.rect.width - tooltipWidth - 20
+                          ? Math.max(0, x - tooltipWidth - 10)
+                          : Math.min(this.rect.width - tooltipWidth, x + 10);
+                      this.tooltip.setAttribute("x", String(tooltipX));
+                      this.tooltip.style.display = "";
+                    },
+
+                    hide() {
+                      if (this.guide) this.guide.style.display = "none";
+                      if (this.tooltip) this.tooltip.style.display = "none";
+                    },
+
+                    nearest(points, time) {
+                      // `points` is sorted ascending by time; binary search
+                      // for the closest entry to the cursor's time.
+                      let lo = 0;
+                      let hi = points.length - 1;
+                      while (lo < hi) {
+                        const mid = (lo + hi) >> 1;
+                        if (points[mid].time < time) lo = mid + 1;
+                        else hi = mid;
+                      }
+                      const a = points[lo - 1];
+                      const b = points[lo];
+                      if (!a) return b;
+                      if (!b) return a;
+                      return Math.abs(a.time - time) < Math.abs(b.time - time) ? a : b;
+                    },
+
+                    seriesLabel(meta) {
+                      const friendly = meta.name || meta.serial || "";
+                      if (meta.mppt_index === 0) return `${friendly} (AC)`;
+                      if (meta.mppt_index === 1) return `${friendly} — MPPT 1`;
+                      return `${friendly} — MPPT ${meta.mppt_index}`;
+                    },
+
+                    renderRows(time, rows) {
+                      const hh = String(Math.floor(time / 3600)).padStart(2, "0");
+                      const mm = String(Math.floor((time % 3600) / 60)).padStart(2, "0");
+                      const header =
+                        '<div class="font-semibold mb-1 tabular-nums">' +
+                        hh + ":" + mm +
+                        "</div>";
+                      const body = rows
+                        .map((r) => {
+                          const val = r.value == null ? "—" : Math.round(r.value) + " W";
+                          const swatch =
+                            '<span class="inline-block h-2 w-2 rounded-sm mr-1.5" ' +
+                            'style="background-color:' + r.color + '"></span>';
+                          return (
+                            '<div class="flex items-center justify-between gap-3">' +
+                            '<span class="truncate">' + swatch + this.escape(this.seriesLabel(r.meta)) + "</span>" +
+                            '<span class="tabular-nums font-medium">' + val + "</span>" +
+                            "</div>"
+                          );
+                        })
+                        .join("");
+                      return header + body;
+                    },
+
+                    escape(s) {
+                      return String(s).replace(/[&<>"']/g, (c) => ({
+                        "&": "&amp;",
+                        "<": "&lt;",
+                        ">": "&gt;",
+                        '"': "&quot;",
+                        "'": "&#39;"
+                      })[c]);
+                    }
+                  }
+                </script>
               <% end %>
             <% else %>
               <!-- Bar Chart -->
