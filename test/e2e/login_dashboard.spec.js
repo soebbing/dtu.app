@@ -26,7 +26,11 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
 
     // 6. Verify key elements on the dashboard page
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
-    await expect(page.locator('#stat-current-power')).toContainText('0.0 W', { timeout: 10000 });
+    // Current-power stat is rendered in `N.N W` form. The seed includes a
+    // fresh reading for the multi-MPPT Garage Array so the Total view
+    // reflects live production rather than always 0; just assert the
+    // format.
+    await expect(page.locator('#stat-current-power')).toContainText(/\d+\.\d+ W/, { timeout: 10000 });
     await expect(page.locator('#device-status-grid')).toBeVisible({ timeout: 10000 });
 
     // 7. Click Manage Devices

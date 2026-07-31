@@ -14,6 +14,11 @@ and a seeded database.
   stat cards, the granularity stepper (Day/Week/Month/Year) swapping stat cards
   and chart title, the prev/next stepper hitting the empty state past the data
   horizon, and the DTU switcher filtering between a single device and Total.
+- `dashboard_multi_mppt.spec.js` — the per-inverter / per-MPPT breakdown:
+  Current Generation reflects the AC aggregate of every polled inverter (the
+  bug where a multi-MPPT DTU showed 0 W while producing), and the chart
+  legend's per-MPPT lines actually draw instead of staying flat at the
+  X-axis.
 
 ## Running them
 

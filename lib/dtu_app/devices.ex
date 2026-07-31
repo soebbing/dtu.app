@@ -224,6 +224,10 @@ defmodule DtuApp.Devices do
           select: %{
             inserted_at: r.inserted_at,
             ac_power: r.ac_power,
+            # Per-MPPT rows store their power in `dc_power` (the firmware
+            # only emits per-channel DC scalars). The chart aggregation
+            # below picks the right one per row via `chart_power_for_mppt/1`.
+            dc_power: r.dc_power,
             dtu_id: r.dtu_id,
             inverter_serial: r.inverter_serial,
             mppt_index: r.mppt_index,
@@ -246,10 +250,15 @@ defmodule DtuApp.Devices do
   Fetch a day's worth of readings for the user's DTUs and bucket them
   per (dtu_id, inverter_serial, mppt_index) into 5-minute averages, so
   the chart can render one line per (inverter, MPPT) instead of a
-  single total. `ac_power` is the only field aggregated; the chart only
-  needs power. `mppt_index = 0` rows are the AhoyDTU ch0 / OpenDTU
-  total — drawn as the AC line. `mppt_index >= 1` are the per-string
-  MPPT channels.
+  single total.
+
+  Each `power` point picks `ac_power` for the AC-aggregate row
+  (`mppt_index = 0` — the AhoyDTU ch0 / OpenDTU total) and `dc_power`
+  for the per-MPPT rows (`mppt_index >= 1` — individual DC strings).
+  Per-MPPT rows never carry `ac_power` (the firmware only emits
+  per-channel DC on `[serial]/[1-4]/...` topics), so collapsing them
+  to `ac_power || 0.0` would draw every per-MPPT line flat at the
+  X-axis even when those strings are producing.
   """
   def list_day_chart_data(%User{} = user, date, dtu_id \\ nil) do
     readings = list_day_readings_for_chart(user, date, dtu_id)
@@ -265,7 +274,7 @@ defmodule DtuApp.Devices do
         bucket_readings
         |> Enum.group_by(fn r -> {r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name} end)
         |> Enum.map(fn {series, series_readings} ->
-          powers = Enum.map(series_readings, &(&1.ac_power || 0.0))
+          powers = Enum.map(series_readings, &chart_power_for_mppt/1)
           power = Enum.sum(powers) / length(series_readings)
 
           %{time: time, series: series, power: power}
@@ -292,20 +301,36 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0, per_series: []}
     else
-      # Latest reading per (dtu_id, inverter_serial) — used for current_power.
-      # Uses the hypertable's time-descending index.
-      sub =
-        from r in Reading,
-          where: r.dtu_id in ^dtu_ids,
-          distinct: [r.dtu_id, r.inverter_serial],
-          order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at]
-
-      latest_readings = Repo.all(sub)
-
       two_minutes_ago = DateTime.utc_now() |> DateTime.add(-120, :second)
 
+      # Current power: only the AC aggregate row carries `ac_power`. A DTU
+      # can publish many per-MPPT rows in between (and they're the most
+      # recent rows for any given inverter), so we filter to mppt_index = 0
+      # before picking the latest reading per inverter. Without this filter,
+      # a per-MPPT row whose `ac_power` is nil would zero out the whole
+      # `current_power` sum.
+      latest_ac_readings =
+        Repo.all(
+          from r in Reading,
+            where: r.dtu_id in ^dtu_ids and r.mppt_index == 0,
+            distinct: [r.dtu_id, r.inverter_serial],
+            order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at]
+        )
+
+      # Latest reading per (dtu_id, inverter_serial, mppt_index) for the
+      # per-series peak computation. The chart's per-series power uses the
+      # same `chart_power_for_mppt/1` selection as the rest of this module
+      # (ac_power for mppt_index = 0, dc_power for >= 1).
+      latest_per_series_readings =
+        Repo.all(
+          from r in Reading,
+            where: r.dtu_id in ^dtu_ids,
+            distinct: [r.dtu_id, r.inverter_serial, r.mppt_index],
+            order_by: [r.dtu_id, r.inverter_serial, r.mppt_index, desc: r.inserted_at]
+        )
+
       current_power =
-        latest_readings
+        latest_ac_readings
         |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
         |> Enum.map(&(&1.ac_power || 0.0))
         |> Enum.sum()
@@ -369,18 +394,23 @@ defmodule DtuApp.Devices do
       peak_power = max(current_power, bucket_max)
 
       # Per-(inverter, MPPT) peak so the dashboard can show, e.g., "MPPT 1
-      # peaked at 580 W". `mppt_index = 0` is the AC aggregate (AhoyDTU ch0 /
-      # OpenDTU total). Today's peak per series is just the live `ac_power`
-      # for that series: each (inverter, MPPT) row is its own max, again
-      # the same live-vs-bucket trade-off.
+      # peaked at 580 W". The "right" power field depends on the MPPT index:
+      #   mppt_index = 0 → ac_power (the AC aggregate the firmware emits
+      #     via `realtime/data` / AhoyDTU ch0)
+      #   mppt_index >= 1 → dc_power (per-string DC input the firmware emits
+      #     via `[serial]/[1-4]/...` / AhoyDTU ch1..N)
+      # Using `chart_power_for_mppt/1` keeps this consistent with the chart
+      # bucketing above so the legend's per-series peaks match what the
+      # lines actually plot.
       per_series_peak =
-        latest_readings
+        latest_per_series_readings
         |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
         |> Enum.reduce(%{}, fn r, acc ->
           series = {r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name}
+          power = chart_power_for_mppt(r)
 
-          Map.update(acc, series, r.ac_power || 0.0, fn cur ->
-            max(cur, r.ac_power || 0.0)
+          Map.update(acc, series, power, fn cur ->
+            max(cur, power)
           end)
         end)
 
@@ -483,6 +513,22 @@ defmodule DtuApp.Devices do
   end
 
   # --- Helpers ----------------------------------------------------------------
+
+  # Pick the right "power" field for a row depending on its MPPT index.
+  # AC aggregate rows (`mppt_index = 0` — AhoyDTU ch0 / OpenDTU realtime/data)
+  # carry `ac_power` (the inverter's AC output). Per-MPPT rows
+  # (`mppt_index >= 1`) only carry `dc_power` (per-string DC input the
+  # firmware publishes on `[serial]/[1-4]/...`). Reading `ac_power` on a
+  # per-MPPT row returns nil and zeroes the line out — this helper ensures
+  # each series plots whatever the firmware actually publishes for it.
+  @spec chart_power_for_mppt(%{
+          required(:mppt_index) => integer(),
+          optional(:ac_power) => float(),
+          optional(:dc_power) => float()
+        }) :: float()
+  def chart_power_for_mppt(%{mppt_index: 0, ac_power: ac}) when not is_nil(ac), do: ac
+  def chart_power_for_mppt(%{mppt_index: _, dc_power: dc}) when not is_nil(dc), do: dc
+  def chart_power_for_mppt(_), do: 0.0
 
   # Resolve the user's DTU ids for a query, scoped to either all of the user's
   # devices or one specific (owned) device. Returns [] if the device isn't owned.
