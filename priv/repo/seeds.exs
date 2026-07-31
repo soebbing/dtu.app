@@ -231,7 +231,11 @@ seed_multi_mppt_today.()
 # always greater than `now - 120s` for any "now" before 23:53 today).
 # Same shape as the bucket rows so the chart bucketing picks them up
 # as today's points and the line continues across the 23:55 bucket.
-live_inserted_at = DateTime.new!(today, ~T[23:55:00], "Etc/UTC")
+# `DateTime.new!/2` returns precision 0 by default, which Ecto's
+# `:utc_datetime_usec` cast rejects — force precision 6 like the
+# sine-arc bucket timestamps above.
+live_inserted_at =
+  %{DateTime.new!(today, ~T[23:55:00], "Etc/UTC") | microsecond: {0, 6}}
 
 Repo.insert!(%Reading{
   dtu_id: dtu3.id,
