@@ -310,4 +310,234 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "offline"
     end
   end
+
+  describe "Dynamic chart X-axis range" do
+    # The chart used to render with a fixed X-axis spanning 00:00–24:00
+    # regardless of where the data was. That's wasteful when the data
+    # only covers, say, 06:00–19:00 — half the chart is empty space on
+    # both sides. Now the X-axis zooms to the data: from the floor of
+    # the hour of the first data point to the next full hour after the
+    # last data point. The labels adapt accordingly.
+
+    test "zoomed chart renders hour-aligned labels at the start, middle, and end of the data range",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Daytime Inverter",
+          kind: "opendtu",
+          mqtt_username: "daytime-inv",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # 06:00–19:00 sine-arc shape with 30-min buckets, so 27 buckets.
+      # Last bucket exactly on the 19:00 hour boundary; chart's end_hour
+      # becomes 20:00 (next full hour after 19:00).
+      minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
+
+      for minute <- minutes do
+        hour = div(minute, 60)
+        min = rem(minute, 60)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-1",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, min, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The data spans 06:00–19:00. Chart range is 06:00–20:00
+      # (total_hours = 14, step = 6).
+      assert html =~ ">06:00<"
+      assert html =~ ">12:00<"
+      assert html =~ ">18:00<"
+      assert html =~ ">20:00<"
+
+      # The full-day markers should NOT be present in a zoomed chart —
+      # they're replaced by the zoomed labels.
+      refute html =~ ">00:00<"
+      refute html =~ ">24:00<"
+    end
+
+    test "narrow single-bucket range renders start and end labels only", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Short Burst",
+          kind: "opendtu",
+          mqtt_username: "short-burst",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Two readings at 12:00 and 12:30 — single-bucket range.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "BURST",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at:
+            DateTime.new!(today, ~T[12:00:00])
+            |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "BURST",
+          mppt_index: 0,
+          ac_power: 80.0,
+          inserted_at:
+            DateTime.new!(today, ~T[12:30:00])
+            |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Chart range is 12:00–13:00 (end_hour = 12 + 1 = 13, since the
+      # last bucket minute > 0). total_hours = 1, step = 1, so labels at
+      # 12:00 and 13:00 only.
+      assert html =~ ">12:00<"
+      assert html =~ ">13:00<"
+
+      # No other labels
+      refute html =~ ">00:00<"
+      refute html =~ ">11:00<"
+      refute html =~ ">14:00<"
+      refute html =~ ">24:00<"
+    end
+
+    test "end_hour is capped at 24 when last data is past 23:00", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Late Producer",
+          kind: "opendtu",
+          mqtt_username: "late-producer",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Reading at 23:30 — end_hour would be 24 (min(23+1, 24)).
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "LATE",
+          mppt_index: 0,
+          ac_power: 50.0,
+          inserted_at:
+            DateTime.new!(today, ~T[23:30:00])
+            |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Range: 23:00–24:00 (end_hour capped at 24). Labels at 23:00 and 24:00.
+      assert html =~ ">23:00<"
+      assert html =~ ">24:00<"
+      refute html =~ ">00:00<"
+    end
+
+    test "chart point X coordinates scale to the dynamic range, not the fixed 00:00–24:00 range",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Mid Day",
+          kind: "opendtu",
+          mqtt_username: "mid-day",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # 06:00–19:00 sine arc. With dynamic range 06:00–20:00, the 06:00
+      # point is at x = 0 (left edge) and the 19:00 point is at
+      # x = (19-6) / 14 * 800 ≈ 742.9. Pre-fix the 06:00 point was at
+      # x = (6/24) * 800 = 200 — well inside the chart with empty space
+      # to its left.
+      minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 15) == 0))
+
+      for minute <- minutes do
+        hour = div(minute, 60)
+        min = rem(minute, 60)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "MID",
+            mppt_index: 0,
+            ac_power: 250.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, min, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Pull the first path's `d` attribute. It should start with
+      # `M 0.0 ` (first data point at the left edge of the zoomed range).
+      first_d = extract_first_path_d(html)
+      assert first_d != nil, "expected at least one <path data-series=...>"
+
+      assert String.starts_with?(first_d, "M 0.0 "),
+             "first data point should be at x=0 in a zoomed range, got: #{first_d}"
+
+      # And the last point in the path should be near x ≈ 742.9 (19:00
+      # of a 06:00–20:00 zoomed range). Allow ±1 px for rounding.
+      coords = extract_xy_coords(first_d)
+      assert length(coords) > 0
+      {last_x, _last_y} = List.last(coords)
+      assert_in_delta last_x, 742.9, 1.5
+    end
+
+    # Helpers used by the dynamic-chart tests above.
+  end
+
+  defp extract_first_path_d(html) do
+    # Find each <path> tag with data-series and extract the `d` attribute.
+    # `data-series` and `d` can appear in either order in the rendered HTML.
+    # `Regex.scan/2` returns a list of capture-group lists — pull the
+    # full match out of each with `hd/1` before regexing on it.
+    Regex.scan(~r/<path\b[^>]*\/?>/, html)
+    |> Enum.find_value(fn [path_tag | _] ->
+      cond do
+        Regex.match?(~r/data-series="/, path_tag) ->
+          case Regex.run(~r/\sd="([^"]+)"/, path_tag) do
+            [_, d] -> d
+            _ -> nil
+          end
+
+        true ->
+          nil
+      end
+    end)
+  end
+
+  defp extract_xy_coords(d) do
+    d
+    |> String.split(["M ", "L "], trim: true)
+    |> Enum.map(fn segment ->
+      case String.split(segment, " ") do
+        [x, y] -> {Float.parse(x) |> elem(0), Float.parse(y) |> elem(0)}
+        _ -> nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
 end
