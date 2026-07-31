@@ -1352,17 +1352,17 @@ defmodule DtuAppWeb.DashboardLive do
                          24:00) when no data, or zoomed to data when
                          present (see `chart_time_range/1`). -->
                     <%= for {{x, label}, edge} <- Enum.with_index(@x_labels) do %>
+                      <% anchor =
+                        cond do
+                          edge == 0 -> "start"
+                          edge == length(@x_labels) - 1 -> "end"
+                          true -> "middle"
+                        end %>
                       <text
                         x={x}
                         y="270"
                         class="text-[10px] font-medium fill-zinc-400"
-                        text-anchor={
-                          cond do
-                            edge == 0 -> "start"
-                            edge == length(@x_labels) - 1 -> "end"
-                            true -> "middle"
-                          end
-                        }
+                        text-anchor={anchor}
                       >
                         {label}
                       </text>
