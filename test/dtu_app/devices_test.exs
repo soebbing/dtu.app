@@ -312,7 +312,12 @@ defmodule DtuApp.DevicesTest do
         })
       end
 
-      points = Devices.list_day_chart_data(user, Date.utc_today())
+      points =
+        Devices.list_day_chart_data(
+          user,
+          ~U[2026-07-31 00:00:00Z],
+          ~U[9999-12-31 23:59:59Z]
+        )
 
       series_set =
         points
@@ -550,7 +555,12 @@ defmodule DtuApp.DevicesTest do
         inserted_at: bucket
       })
 
-      points = Devices.list_day_chart_data(user, Date.utc_today())
+      points =
+        Devices.list_day_chart_data(
+          user,
+          ~U[2026-07-31 00:00:00Z],
+          ~U[9999-12-31 23:59:59Z]
+        )
 
       by_mppt = Map.new(points, &{elem(&1.series, 2), &1.power})
 
@@ -672,6 +682,40 @@ defmodule DtuApp.DevicesTest do
         DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: false, last_seen_at: nil}))
 
       assert {0, []} = Devices.mark_stale_dtus_offline(300)
+    end
+  end
+
+  describe "local_day_utc_range/2" do
+    # Translates a user-facing local date into the UTC range that
+    # contains the readings for that local day. The chart queries use
+    # this so a Berlin user at 23:30 UTC (= 00:30 Berlin next day)
+    # sees tomorrow's data, not today's — and vice versa.
+
+    test "offset 0 (UTC) returns midnight-to-midnight in UTC" do
+      assert {~U[2026-07-31 00:00:00Z], ~U[2026-07-31 23:59:59Z]} =
+               Devices.local_day_utc_range(~D[2026-07-31], 0)
+    end
+
+    test "positive offset (east of UTC) shifts the UTC window earlier" do
+      # Berlin winter: +01:00. Local 2026-07-31 = UTC 2026-07-30 23:00
+      # → 2026-07-31 22:59:59.
+      assert {~U[2026-07-30 23:00:00Z], ~U[2026-07-31 22:59:59Z]} =
+               Devices.local_day_utc_range(~D[2026-07-31], 3_600)
+    end
+
+    test "positive offset crosses a UTC day boundary at the start" do
+      # Tokyo winter: +09:00. Local 2026-08-01 in Tokyo = UTC 2026-07-31
+      # 15:00 → 2026-08-01 14:59:59. The UTC day is DIFFERENT from the
+      # local day at the start of the range.
+      assert {~U[2026-07-31 15:00:00Z], ~U[2026-08-01 14:59:59Z]} =
+               Devices.local_day_utc_range(~D[2026-08-01], 32_400)
+    end
+
+    test "negative offset (west of UTC) shifts the UTC window later" do
+      # Honolulu winter: -10:00. Local 2026-07-31 in Honolulu = UTC
+      # 2026-07-31 10:00 → 2026-08-01 09:59:59.
+      assert {~U[2026-07-31 10:00:00Z], ~U[2026-08-01 09:59:59Z]} =
+               Devices.local_day_utc_range(~D[2026-07-31], -36_000)
     end
   end
 end
