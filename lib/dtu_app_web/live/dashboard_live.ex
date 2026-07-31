@@ -5,12 +5,17 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuApp.MqttBroker.Telemetry
   alias DtuApp.MqttBroker.Broker
 
+  @timezone_topic "dtu:timezone"
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Telemetry.subscribe()
       Telemetry.subscribe_status()
       Broker.subscribe_presence()
+      # Listen for the client-side timezone push (via PubSub from
+      # `.ChartTooltip` or from tests).
+      Phoenix.PubSub.subscribe(DtuApp.PubSub, @timezone_topic)
     end
 
     user = socket.assigns.current_scope.user
@@ -25,11 +30,28 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:granularity, "day")
       |> assign(:time_range, "today")
       |> assign(:selected_period, nil)
+      # Default to UTC (offset 0). The client-side `.SetTimezone`
+      # colocated hook pushes the real offset once the WebSocket is
+      # connected, and `handle_info({:set_timezone, ...})` updates this
+      # assign + re-renders.
+      |> assign(:user_tz_offset_seconds, 0)
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
     {:ok, socket}
   end
+
+  # `phx-push` path: the JS hook's `this.pushEvent("set_timezone", ...)`
+  # arrives here and is forwarded to `handle_info({:set_timezone, ...})`
+  # (grouped with the other `handle_info/2` clauses further down). Tests
+  # use `Phoenix.PubSub.broadcast/2` directly, hitting the same handler.
+  @impl true
+  def handle_event("set_timezone", %{"offset_seconds" => raw}, socket)
+      when is_binary(raw) do
+    handle_info({:set_timezone, String.to_integer(raw)}, socket)
+  end
+
+  def handle_event("set_timezone", _payload, socket), do: {:noreply, socket}
 
   @impl true
   def handle_event("select_dtu", %{"id" => id_str}, socket) do
@@ -84,7 +106,7 @@ defmodule DtuAppWeb.DashboardLive do
     user = socket.assigns.current_scope.user
     dtu_id = socket.assigns.selected_dtu_id
     granularity = socket.assigns.granularity
-    current = socket.assigns.selected_period || Date.utc_today()
+    current = socket.assigns.selected_period || local_today(socket.assigns.user_tz_offset_seconds)
 
     period = shift_period(current, granularity, dir)
 
@@ -170,15 +192,39 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
+  # Timezone push from the `.ChartTooltip` colocated JS hook (or a test
+  # via `Phoenix.PubSub.broadcast/2`). Invalid payloads are silently
+  # ignored so a malformed client payload can't crash the dashboard.
+  @impl true
+  def handle_info({:set_timezone, offset_seconds}, socket)
+      when is_integer(offset_seconds) do
+    {:noreply,
+     socket
+     |> assign(:user_tz_offset_seconds, offset_seconds)
+     |> assign_dashboard_data(
+       socket.assigns.current_scope.user,
+       socket.assigns.selected_dtu_id,
+       socket.assigns.time_range,
+       socket.assigns.selected_period
+     )}
+  end
+
+  def handle_info({:set_timezone, _other}, socket), do: {:noreply, socket}
+
   # Catch-all for other messages
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
 
-  # Helper to construct SVG line chart coordinates and range
-  defp assign_line_chart_data(socket, user, date, dtu_id) do
-    chart_points = Devices.list_day_chart_data(user, date, dtu_id)
+  # Helper to construct SVG line chart coordinates and range.
+  # `local_date` is the user-facing date in the browser's timezone
+  # (already converted from `selected_period` or `local_today/1`).
+  # `tz_offset_seconds` shifts bucket times and labels so they read in
+  # local time.
+  defp assign_line_chart_data(socket, user, local_date, tz_offset_seconds, dtu_id) do
+    {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
+    chart_points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
 
     max_power =
       chart_points
@@ -192,16 +238,16 @@ defmodule DtuAppWeb.DashboardLive do
 
     # Chart dimensions: width 800, height 250 (with 20px top padding).
     # X range is dynamic: zoomed to data when present, full day (00:00–
-    # 24:00) when empty. See `chart_time_range/1` below.
-    {x_min_seconds, x_max_seconds} = chart_time_range(chart_points)
+    # 24:00) when empty. See `chart_time_range/2` below.
+    {x_min_seconds, x_max_seconds} = chart_time_range(chart_points, tz_offset_seconds)
     x_span = x_max_seconds - x_min_seconds
 
     # Group points by series (one line per (inverter, MPPT) pair) and
     # translate each point into SVG coordinates within the dynamic X range.
-    # We also capture the bucket time (seconds-of-day) per point so the
-    # ChartTooltip hook can look up values by cursor time without
-    # reverse-mapping the rounded X coord (which would lose ~1 s of
-    # precision through float math).
+    # We also capture the LOCAL bucket time (seconds-of-day, after applying
+    # the user's timezone offset) per point so the ChartTooltip hook can
+    # look up values by cursor time in the user's frame of reference
+    # without round-tripping through the UTC values.
     series_points =
       chart_points
       |> Enum.group_by(& &1.series)
@@ -209,10 +255,12 @@ defmodule DtuAppWeb.DashboardLive do
         coords =
           pts
           |> Enum.map(fn %{time: time, power: power} ->
-            seconds = time.hour * 3600 + time.minute * 60 + time.second
-            x = (seconds - x_min_seconds) / x_span * 800.0
+            utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+            local_seconds = utc_seconds + tz_offset_seconds
+            local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
+            x = (local_seconds - x_min_seconds) / x_span * 800.0
             y = 250.0 - power / y_max * 230.0
-            {Float.round(x, 1), Float.round(y, 1), seconds}
+            {Float.round(x, 1), Float.round(y, 1), local_seconds}
           end)
           |> Enum.sort_by(&elem(&1, 0))
 
@@ -339,28 +387,29 @@ defmodule DtuAppWeb.DashboardLive do
   # directly so we don't lose seconds of precision.)
   defp power_at_from_coord(y, y_max), do: round((250.0 - y) / 230.0 * y_max)
 
-  # Compute the chart's X-axis time range (in seconds-of-day).
+  # Compute the chart's X-axis time range (in LOCAL seconds-of-day,
+  # so the labels read in the user's timezone).
   #
   #   * Empty `chart_points`         → full day (00:00–24:00)
   #   * Non-empty `chart_points`      → from the floor-of-the-hour of the
   #                                     first data point to the next full
   #                                     hour after the last data point
   #
-  # Bucket boundaries are multiples of 5 minutes, so `first_time.hour` is
-  # already the first full hour the data falls into. `end_hour =
-  # last_time.hour + 1` adds a 1-hour buffer so the line doesn't end at
-  # the chart's right edge. Capped at 24 to keep the chart within the
-  # current day.
-  @spec chart_time_range([%{required(:time) => DateTime.t()}]) ::
+  # Bucket boundaries are multiples of 5 minutes (UTC). Their hour-of-day
+  # in the user's zone is `rem(bucket_utc_hour + tz_offset_hours, 24)`,
+  # so we shift first/last before computing the range. `end_hour`
+  # adds a 1-hour buffer so the line doesn't end at the chart's right
+  # edge.
+  @spec chart_time_range([%{required(:time) => DateTime.t()}], integer()) ::
           {non_neg_integer(), pos_integer()}
-  defp chart_time_range([]), do: {0, 86_400}
+  defp chart_time_range([], _tz_offset_seconds), do: {0, 86_400}
 
-  defp chart_time_range(points) do
-    first_time = Enum.min_by(points, & &1.time).time
-    last_time = Enum.max_by(points, & &1.time).time
+  defp chart_time_range(points, tz_offset_seconds) do
+    first_local = shift_local(Enum.min_by(points, & &1.time).time, tz_offset_seconds)
+    last_local = shift_local(Enum.max_by(points, & &1.time).time, tz_offset_seconds)
 
-    start_hour = first_time.hour
-    end_hour = min(last_time.hour + 1, 24)
+    start_hour = first_local.hour
+    end_hour = min(last_local.hour + 1, 24)
 
     # Ensure at least a 1-hour window so single-bucket data (e.g. one
     # point at 12:00) still draws as a 1-hour segment instead of a
@@ -370,12 +419,30 @@ defmodule DtuAppWeb.DashboardLive do
     {start_hour * 3600, end_hour * 3600}
   end
 
+  # Convert a UTC DateTime to a (possibly-wrapped) LOCAL seconds-of-day.
+  # Used by the chart's range computation, the X-axis label generator,
+  # and the ChartTooltip data embedding. Returns a `%Time{}` struct
+  # because we only need hour/minute/second — and we want the wrap
+  # to happen naturally (23 + 2h offset in CET = 01 next day).
+  @spec shift_local(DateTime.t(), integer()) :: %Time{}
+  defp shift_local(%DateTime{} = dt, tz_offset_seconds) do
+    shifted = DateTime.add(dt, tz_offset_seconds, :second)
+    # DateTime.add can return a datetime on the previous or next day;
+    # we only care about the time-of-day component.
+    %Time{
+      hour: shifted.hour,
+      minute: shifted.minute,
+      second: shifted.second,
+      microsecond: {0, 0}
+    }
+  end
+
   # Generate X-axis label positions for the chart. Returns a list of
   # `{x, label}` tuples where `x` is the SVG x-coordinate (0–800) and
-  # `label` is the time-of-day string (e.g. "07:00"). Labels always
-  # include the chart's start and end hours; intermediate hours are
-  # spaced at 1, 2, 3, or 6 hours depending on the total span so the
-  # label density stays roughly constant regardless of zoom.
+  # `label` is the LOCAL time-of-day string (e.g. "07:00"). Labels
+  # always include the chart's start and end hours; intermediate hours
+  # are spaced at 1, 2, 3, or 6 hours depending on the total span so
+  # the label density stays roughly constant regardless of zoom.
   @spec chart_x_labels(non_neg_integer(), pos_integer()) :: [{float(), String.t()}]
   defp chart_x_labels(x_min_seconds, x_max_seconds) do
     start_hour = div(x_min_seconds, 3600)
@@ -400,10 +467,36 @@ defmodule DtuAppWeb.DashboardLive do
     end
   end
 
+  # Format a local hour-of-day (0–24) as "HH:00". The ChartTooltip
+  # also uses this for its tooltip body.
   defp format_hour_label(0), do: "00:00"
   defp format_hour_label(24), do: "24:00"
   defp format_hour_label(hour) when hour < 10, do: "0#{hour}:00"
   defp format_hour_label(hour), do: "#{hour}:00"
+
+  # Today's date in the user's local timezone. `Date.utc_today()`
+  # would give us "today in London"; for a Berlin user looking at the
+  # dashboard at 23:30 UTC (= 00:30 Berlin next day) we want the
+  # Berlin date so the chart shows the day they're actually in.
+  @spec local_today(integer()) :: Date.t()
+  defp local_today(tz_offset_seconds) do
+    DateTime.utc_now()
+    |> DateTime.add(tz_offset_seconds, :second)
+    |> DateTime.to_date()
+  end
+
+  # Convert a local date (as the user sees it on the dashboard) to the
+  # inclusive UTC day range `[start_utc, end_utc]` that the DB query
+  # needs to fetch readings for that local day.
+  @spec utc_day_range_for_local_date(Date.t(), integer()) ::
+          {DateTime.t(), DateTime.t()}
+  def utc_day_range_for_local_date(%Date{} = local_date, tz_offset_seconds) do
+    {:ok, start_local} = DateTime.new(local_date, ~T[00:00:00])
+    {:ok, end_local} = DateTime.new(local_date, ~T[23:59:59])
+
+    {DateTime.add(start_local, -tz_offset_seconds, :second),
+     DateTime.add(end_local, -tz_offset_seconds, :second)}
+  end
 
   # Empty `series_paths` map is OK; we just need a default for the
   # `path_data` assign so the template always has a string.
@@ -736,6 +829,8 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
+    tz_offset_seconds = socket.assigns.user_tz_offset_seconds
+
     case time_range do
       "today" ->
         stats = Devices.get_daily_stats(user, dtu_id)
@@ -743,7 +838,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:stats, stats)
         |> assign(:chart_type, :line)
-        |> assign_line_chart_data(user, Date.utc_today(), dtu_id)
+        |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
 
       "day" ->
         date =
@@ -753,11 +848,15 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              List.first(selectable) || Date.utc_today()
+              List.first(selectable) || local_today(tz_offset_seconds)
           end
 
-        points = Devices.list_day_chart_data(user, date, dtu_id)
-        yields = Devices.list_range_yield_data(user, date, date, dtu_id)
+        # Convert the user-facing local date to the UTC range that
+        # contains the readings for that local day.
+        {utc_start, utc_end} = Devices.local_day_utc_range(date, tz_offset_seconds)
+
+        points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
+        yields = Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id)
 
         total_yield =
           case yields do
@@ -787,7 +886,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
         |> assign(:chart_type, :line)
-        |> assign_line_chart_data(user, date, dtu_id)
+        |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
 
       "week" ->
         monday =
@@ -797,12 +896,14 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || Date.utc_today()
+              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
               Date.add(latest_date, -(Date.day_of_week(latest_date) - 1))
           end
 
         sunday = Date.add(monday, 6)
-        yields = Devices.list_range_yield_data(user, monday, sunday, dtu_id)
+        {monday_utc, _} = Devices.local_day_utc_range(monday, tz_offset_seconds)
+        {sunday_utc, _} = Devices.local_day_utc_range(sunday, tz_offset_seconds)
+        yields = Devices.list_range_yield_data(user, monday_utc, sunday_utc, dtu_id)
         total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
         avg_yield = total_yield / 7.0
 
@@ -843,12 +944,14 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || Date.utc_today()
+              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
               Date.new!(latest_date.year, latest_date.month, 1)
           end
 
         last_day = Date.end_of_month(first_day)
-        yields = Devices.list_range_yield_data(user, first_day, last_day, dtu_id)
+        {first_utc, _} = Devices.local_day_utc_range(first_day, tz_offset_seconds)
+        {last_utc, _} = Devices.local_day_utc_range(last_day, tz_offset_seconds)
+        yields = Devices.list_range_yield_data(user, first_utc, last_utc, dtu_id)
         total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
         total_days = Date.diff(last_day, first_day) + 1
         avg_yield = total_yield / total_days
@@ -893,13 +996,15 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || Date.utc_today()
+              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
               latest_date.year
           end
 
         start_date = Date.new!(year, 1, 1)
         end_date = Date.new!(year, 12, 31)
-        yields = Devices.list_range_yield_data(user, start_date, end_date, dtu_id)
+        {start_utc, _} = Devices.local_day_utc_range(start_date, tz_offset_seconds)
+        {end_utc, _} = Devices.local_day_utc_range(end_date, tz_offset_seconds)
+        yields = Devices.list_range_yield_data(user, start_utc, end_utc, dtu_id)
         total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
         avg_yield = total_yield / 12.0
 
@@ -1566,6 +1671,13 @@ defmodule DtuAppWeb.DashboardLive do
                 <script :type={Phoenix.LiveView.ColocatedHook} name=".ChartTooltip">
                   export default {
                     mounted() {
+                      // The chart X-axis labels and the bucket times
+                      // embedded in `data-points` are pre-shifted to
+                      // LOCAL time on the server (`assign_line_chart_data/5`
+                      // applies `tz_offset_seconds`). The chart range, the
+                      // tooltip body and the cursor math all use those
+                      // local values directly — no client-side timezone
+                      // conversion is needed here.
                       this.svg = this.el.querySelector("#solar-chart-svg");
                       this.guide = this.svg.querySelector("#chart-guide-line");
                       this.tooltip = this.svg.querySelector("#chart-tooltip");
@@ -1581,6 +1693,18 @@ defmodule DtuAppWeb.DashboardLive do
                         points: JSON.parse(p.dataset.points),
                         color: p.dataset.stroke
                       }));
+
+                      // Push the browser's UTC offset (in seconds,
+                      // positive east of UTC) so the LiveView can
+                      // re-render labels / chart range with the right
+                      // timezone. The very first render uses the default
+                      // offset of 0 (UTC) until this fires — see the
+                      // `set_timezone` handler in DashboardLive.
+                      const offsetMinutes = new Date().getTimezoneOffset();
+                      const offsetSeconds = -offsetMinutes * 60;
+                      this.pushEvent("set_timezone", {
+                        offset_seconds: String(offsetSeconds)
+                      });
 
                       this.handlers = {
                         mousemove: (e) => this.move(e),

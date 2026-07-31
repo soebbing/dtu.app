@@ -243,20 +243,23 @@ defmodule DtuApp.Devices do
     {count, ids}
   end
 
-  @doc "Fetch all of a specific day's readings for the user's DTUs (raw rows)."
-  def list_day_readings_for_chart(%User{} = user, date, dtu_id \\ nil) do
+  @doc """
+  Fetch all readings for the user's DTUs whose `inserted_at` falls within
+  the inclusive UTC range `[utc_start, utc_end]`. Use `local_day_utc_range/2`
+  to translate a user-facing local date into a UTC range before calling.
+  """
+  def list_day_readings_for_chart(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
       []
     else
-      day_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
-      day_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
-
       Repo.all(
         from r in Reading,
           where:
-            r.dtu_id in ^dtu_ids and r.inserted_at >= ^day_start and r.inserted_at <= ^day_end,
+            r.dtu_id in ^dtu_ids and
+              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
           order_by: [asc: r.inserted_at],
           select: %{
             inserted_at: r.inserted_at,
@@ -272,6 +275,29 @@ defmodule DtuApp.Devices do
           }
       )
     end
+  end
+
+  @doc """
+  Translate a user-facing local date into the inclusive UTC range
+  `[00:00 local, 23:59:59 local]` — what the readings table actually
+  queries against. Pass `tz_offset_seconds` from
+  `socket.assigns.user_tz_offset_seconds`.
+
+  Examples (winter, no DST):
+
+      iex> local_day_utc_range(~D[2026-07-31], 3600)
+      {~U[2026-07-30 23:00:00Z], ~U[2026-07-31 22:59:59Z]}
+
+      iex> local_day_utc_range(~D[2026-07-31], 0)
+      {~U[2026-07-31 00:00:00Z], ~U[2026-07-31 23:59:59Z]}
+  """
+  @spec local_day_utc_range(Date.t(), integer()) :: {DateTime.t(), DateTime.t()}
+  def local_day_utc_range(%Date{} = local_date, tz_offset_seconds) do
+    {:ok, start_local} = DateTime.new(local_date, ~T[00:00:00])
+    {:ok, end_local} = DateTime.new(local_date, ~T[23:59:59])
+
+    {DateTime.add(start_local, -tz_offset_seconds, :second),
+     DateTime.add(end_local, -tz_offset_seconds, :second)}
   end
 
   # A chart series identifies one line on the live/day chart: one
@@ -297,8 +323,9 @@ defmodule DtuApp.Devices do
   to `ac_power || 0.0` would draw every per-MPPT line flat at the
   X-axis even when those strings are producing.
   """
-  def list_day_chart_data(%User{} = user, date, dtu_id \\ nil) do
-    readings = list_day_readings_for_chart(user, date, dtu_id)
+  def list_day_chart_data(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
+    readings = list_day_readings_for_chart(user, utc_start, utc_end, dtu_id)
 
     if readings == [] do
       []
@@ -321,14 +348,18 @@ defmodule DtuApp.Devices do
     end
   end
 
-  @doc "Fetch all of today's readings for the user's DTUs (raw rows)."
+  @doc "Fetch today's readings for the user's DTUs (raw rows)."
   def list_today_readings_for_chart(%User{} = user, dtu_id \\ nil) do
-    list_day_readings_for_chart(user, Date.utc_today(), dtu_id)
+    today_utc = Date.utc_today()
+    {utc_start, _} = local_day_utc_range(today_utc, 0)
+    list_day_readings_for_chart(user, utc_start, ~U[9999-12-31 23:59:59Z], dtu_id)
   end
 
   @doc "Fetch today's power readings as 5-minute buckets for charts."
   def list_today_chart_data(%User{} = user, dtu_id \\ nil) do
-    list_day_chart_data(user, Date.utc_today(), dtu_id)
+    today_utc = Date.utc_today()
+    {utc_start, _} = local_day_utc_range(today_utc, 0)
+    list_day_chart_data(user, utc_start, ~U[9999-12-31 23:59:59Z], dtu_id)
   end
 
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
@@ -503,11 +534,9 @@ defmodule DtuApp.Devices do
   end
 
   @doc "Fetch daily yield totals over a date range."
-  def list_range_yield_data(%User{} = user, start_date, end_date, dtu_id \\ nil) do
+  def list_range_yield_data(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
-
-    start_dt = DateTime.new!(start_date, ~T[00:00:00], "Etc/UTC")
-    end_dt = DateTime.new!(end_date, ~T[23:59:59], "Etc/UTC")
 
     if dtu_ids == [] do
       []
@@ -516,7 +545,7 @@ defmodule DtuApp.Devices do
         Repo.all(
           from r in Reading,
             where:
-              r.dtu_id in ^dtu_ids and r.inserted_at >= ^start_dt and r.inserted_at <= ^end_dt,
+              r.dtu_id in ^dtu_ids and r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
             group_by: [fragment("?::date", r.inserted_at), r.dtu_id, r.inverter_serial],
             select: %{
               date: fragment("?::date", r.inserted_at),
