@@ -355,16 +355,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # The data spans 06:00–19:00. Chart range is 06:00–20:00
-      # (total_hours = 14, step = 6).
-      assert html =~ ">06:00<"
-      assert html =~ ">12:00<"
-      assert html =~ ">18:00<"
-      assert html =~ ">20:00<"
+      # (total_hours = 14, step = 6). The HEEx-rendered label text
+      # may be padded with whitespace inside the <text> element, so we
+      # match the time string directly instead of `>06:00<` style brackets.
+      assert label_text(html, "06:00")
+      assert label_text(html, "12:00")
+      assert label_text(html, "18:00")
+      assert label_text(html, "20:00")
 
       # The full-day markers should NOT be present in a zoomed chart —
       # they're replaced by the zoomed labels.
-      refute html =~ ">00:00<"
-      refute html =~ ">24:00<"
+      refute label_text(html, "00:00")
+      refute label_text(html, "24:00")
     end
 
     test "narrow single-bucket range renders start and end labels only", %{
@@ -409,14 +411,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Chart range is 12:00–13:00 (end_hour = 12 + 1 = 13, since the
       # last bucket minute > 0). total_hours = 1, step = 1, so labels at
       # 12:00 and 13:00 only.
-      assert html =~ ">12:00<"
-      assert html =~ ">13:00<"
+      assert label_text(html, "12:00")
+      assert label_text(html, "13:00")
 
       # No other labels
-      refute html =~ ">00:00<"
-      refute html =~ ">11:00<"
-      refute html =~ ">14:00<"
-      refute html =~ ">24:00<"
+      refute label_text(html, "00:00")
+      refute label_text(html, "11:00")
+      refute label_text(html, "14:00")
+      refute label_text(html, "24:00")
     end
 
     test "end_hour is capped at 24 when last data is past 23:00", %{
@@ -448,9 +450,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # Range: 23:00–24:00 (end_hour capped at 24). Labels at 23:00 and 24:00.
-      assert html =~ ">23:00<"
-      assert html =~ ">24:00<"
-      refute html =~ ">00:00<"
+      assert label_text(html, "23:00")
+      assert label_text(html, "24:00")
+      refute label_text(html, "00:00")
     end
 
     test "chart point X coordinates scale to the dynamic range, not the fixed 00:00–24:00 range",
@@ -507,6 +509,26 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
 
     # Helpers used by the dynamic-chart tests above.
+  end
+
+  # `Phoenix.LiveViewTest` returns the rendered HTML as a single line of
+  # pretty-printed markup. HEEx leaves whitespace inside interpolations
+  # when the template has multi-line tags (e.g. indented `<text>{label}
+  # </text>`), so the label text often appears with surrounding
+  # whitespace inside the <text> element. Scope the search to the
+  # chart's X-axis <text y="270"> elements (template comments like
+  # "full day (00:00–24:00)" also contain those time strings and would
+  # produce false positives) and check all of them for the label text.
+  # The body between `>` and `</text>` may span lines, so use a
+  # capture group `(...)` and the `(?:.|\n)` alternation that handles
+  # newlines without depending on the regex engine's single-line flag.
+  defp label_text(html, label) do
+    regex = ~r/<text[^>]*y="270"[^>]*>((?:.|\n)*?)<\/text>/
+
+    case Regex.scan(regex, html) do
+      [] -> false
+      matches -> Enum.any?(matches, fn [_, body] -> body =~ label end)
+    end
   end
 
   defp extract_first_path_d(html) do
