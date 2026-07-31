@@ -402,4 +402,164 @@ defmodule DtuApp.DevicesTest do
       assert reading.inverter_name == "Existing Name"
     end
   end
+
+  describe "get_daily_stats/2 — current_power with multi-MPPT DTUs (regression)" do
+    # Customer-reported bug: a DTU with multiple inverters, each exposing
+    # one or two MPPTs, showed "Current Generation: 0 W" on the dashboard
+    # even though the production curve was clearly producing. Root cause:
+    # the previous query did `distinct: [dtu_id, inverter_serial]` without
+    # filtering on mppt_index, so the "latest reading per inverter" was
+    # whichever (inverter, MPPT) row happened to have the most recent
+    # timestamp. Per-MPPT rows only carry `dc_power` (not `ac_power`), so
+    # summing `ac_power || 0.0` over those rows always yielded 0.
+
+    test "current_power is the sum of ac_power across the latest AC rows per inverter" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Two inverters, each with one AC row and one per-MPPT row.
+      # Per-MPPT row for inverter-1 is published *more recently* than its
+      # AC row — this is the regression trigger. Pre-fix, the latest-row
+      # pick for inverter-1 would be the per-MPPT row whose ac_power is
+      # nil, dropping the inverter's contribution from `current_power`.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 0,
+        ac_power: 400.0,
+        inserted_at: DateTime.add(now, -60, :second)
+      })
+
+      # The per-MPPT row arrives a minute later — typical for OpenDTU's
+      # `[serial]/[1-4]/power` topic which fires more often than
+      # `realtime/data`.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 1,
+        dc_power: 200.0,
+        ac_power: nil,
+        inserted_at: now
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-2",
+        inverter_name: "West Array",
+        mppt_index: 0,
+        ac_power: 250.0,
+        inserted_at: DateTime.add(now, -30, :second)
+      })
+
+      stats = Devices.get_daily_stats(user)
+
+      # current_power is the sum of the latest AC row's ac_power per
+      # inverter (400 + 250 = 650 W), not the sum of `latest row per
+      # inverter` regardless of mppt_index.
+      assert_in_delta stats.current_power, 650.0, 0.1
+    end
+
+    test "current_power ignores a per-MPPT row whose dc_power is nil (no contribution)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Inverter has only a per-MPPT row (no AC row yet) — `current_power`
+      # should still be 0 because there's no ac_power to sum.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "Solo MPPT",
+        mppt_index: 1,
+        dc_power: 200.0,
+        ac_power: nil,
+        inserted_at: now
+      })
+
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.current_power, 0.0, 0.1
+    end
+
+    test "per_series_peak uses dc_power for per-MPPT rows (not ac_power)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Per-MPPT row whose ac_power is nil but dc_power is 380 W. Pre-fix
+      # the per-series peak for this MPPT would be 0; post-fix it should
+      # be 380 W.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 1,
+        dc_power: 380.0,
+        ac_power: nil,
+        inserted_at: now
+      })
+
+      stats = Devices.get_daily_stats(user)
+
+      [mppt_1] = Enum.filter(stats.per_series, &(&1.mppt_index == 1))
+      assert_in_delta mppt_1.peak_power, 380.0, 0.1
+    end
+  end
+
+  describe "list_day_chart_data/3 — per-MPPT lines (regression)" do
+    # Customer-reported bug: when a DTU emits per-MPPT rows alongside the
+    # AC aggregate, the chart legend listed each (inverter, MPPT) pair but
+    # the per-MPPT lines were drawn flat at the X-axis. Root cause: the
+    # chart bucketed `ac_power || 0.0`, but per-MPPT rows only store
+    # `dc_power`. Post-fix each row's power picks the right field via
+    # `chart_power_for_mppt/1`.
+
+    test "per-MPPT chart points pick dc_power so per-string lines actually draw" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # All three readings fall inside today's UTC day-window but inside
+      # the same 5-min bucket so the chart emits one point per
+      # (inverter, MPPT) series.
+      bucket =
+        Date.utc_today()
+        |> DateTime.new!(~T[06:02:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 0,
+        ac_power: 500.0,
+        dc_power: 520.0,
+        inserted_at: bucket
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 1,
+        ac_power: nil,
+        dc_power: 250.0,
+        inserted_at: bucket
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        inverter_name: "East Array",
+        mppt_index: 2,
+        ac_power: nil,
+        dc_power: 240.0,
+        inserted_at: bucket
+      })
+
+      points = Devices.list_day_chart_data(user, Date.utc_today())
+
+      by_mppt = Map.new(points, &{elem(&1.series, 2), &1.power})
+
+      # The AC aggregate line uses ac_power (500 W); per-MPPT lines use
+      # dc_power (250 W and 240 W). Pre-fix all three would be plotted
+      # at 0 because the bucketing read `ac_power || 0.0`.
+      assert_in_delta by_mppt[0], 500.0, 0.1
+      assert_in_delta by_mppt[1], 250.0, 0.1
+      assert_in_delta by_mppt[2], 240.0, 0.1
+    end
+  end
 end
