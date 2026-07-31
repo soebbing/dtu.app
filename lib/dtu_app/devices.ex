@@ -206,6 +206,43 @@ defmodule DtuApp.Devices do
     end
   end
 
+  @doc """
+  Flip `online` to `false` for every DTU whose `last_seen_at` is older
+  than `stale_after` seconds (default 300 s = 5 min). Returns
+  `{count, ids}` so callers can broadcast which DTUs changed for
+  downstream UI refreshes.
+
+  Used by the periodic sweep in `DtuApp.MqttBroker.Telemetry` to catch
+  DTUs that dropped off the network silently — the broker's CONNECT /
+  DISCONNECT broadcasts only fire on real MQTT lifecycle changes. A
+  WiFi blip, NAT timeout, or DTU power-cycle without a clean MQTT
+  DISCONNECT leaves the `online` flag stuck at `true` indefinitely,
+  while the dashboard's "Last seen: 49 minutes ago" label quietly
+  contradicts the green "online" badge.
+
+  Idempotent: the `online: true` filter excludes already-offline DTUs,
+  so calling repeatedly does no harm. `last_seen_at` is left alone —
+  it's the historical record of the last uplink, not a staleness flag.
+  """
+  @spec mark_stale_dtus_offline(non_neg_integer()) :: {non_neg_integer(), [pos_integer()]}
+  def mark_stale_dtus_offline(stale_after_seconds \\ 300)
+
+  def mark_stale_dtus_offline(stale_after_seconds)
+      when is_integer(stale_after_seconds) and stale_after_seconds >= 0 do
+    cutoff = DateTime.utc_now() |> DateTime.add(-stale_after_seconds, :second)
+
+    {count, ids} =
+      Repo.update_all(
+        from(d in Dtu,
+          where: d.online == true and d.last_seen_at < ^cutoff,
+          select: d.id
+        ),
+        set: [online: false]
+      )
+
+    {count, ids}
+  end
+
   @doc "Fetch all of a specific day's readings for the user's DTUs (raw rows)."
   def list_day_readings_for_chart(%User{} = user, date, dtu_id \\ nil) do
     dtu_ids = owned_dtu_ids(user, dtu_id)

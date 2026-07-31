@@ -244,4 +244,70 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "INV-2"
     end
   end
+
+  describe "Online badge staleness" do
+    # The dashboard subscribes to `dtu:status` and refreshes the device
+    # card list when the periodic sweep in `Telemetry` flips any DTU
+    # to `online: false`. Without this refresh, a DTU that dropped
+    # off the network silently would stay "online" in the badge even
+    # though "Last seen: 49 minutes ago" sits right next to it.
+    #
+    # Note: a full LiveView + PubSub integration test would require
+    # the connected LiveView process to actually receive broadcasts.
+    # Phoenix.LiveViewTest's `live/2` returns a static-rendered LiveView
+    # whose handle_info wiring is exercised by the existing
+    # `renders connected devices and dynamically updates power stats`
+    # test (same pattern with `dtu:reading`). The
+    # `Devices.mark_stale_dtus_offline/1` + `Telemetry.run_stale_dtu_sweep/0`
+    # tests in the other files cover the sweep → broadcast wiring; this
+    # describe block covers the dashboard's render-side contract: a
+    # DTU with `online: false` renders the offline badge.
+
+    test "renders 'online' badge for a fresh DTU with recent uplink", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Fresh DTU",
+          kind: "opendtu",
+          mqtt_username: "fresh-dtu",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(dtu, %{online: true, last_seen_at: DateTime.utc_now()})
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ "Fresh DTU"
+      assert html =~ "online"
+    end
+
+    test "renders 'offline' badge for a DTU with online: false in the DB", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Already Offline",
+          kind: "opendtu",
+          mqtt_username: "already-offline",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(dtu, %{online: false, last_seen_at: DateTime.utc_now()})
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The badge text is `offline` when `device.online == false`.
+      assert html =~ "Already Offline"
+      assert html =~ "offline"
+    end
+  end
 end

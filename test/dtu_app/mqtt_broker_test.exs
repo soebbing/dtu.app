@@ -608,4 +608,79 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.dc_power == 150.0
     end
   end
+
+  describe "run_stale_dtu_sweep/0" do
+    # Tests the wiring between the periodic sweep (scheduled in
+    # Telemetry.init/0) and the dashboard refresh path: when the sweep
+    # flips a stale DTU to `online: false`, it must broadcast on
+    # `dtu:status` so subscribed LiveViews re-render the device cards.
+    # No LiveView subscribed here — the test asserts the broadcast
+    # payload directly.
+
+    test "flips stale DTUs and broadcasts :dtu_status_changed with the affected ids" do
+      user = user_fixture()
+      device = device_fixture(user)
+
+      # Mark the DTU as online but with a long-stale `last_seen_at` so
+      # the sweep picks it up.
+      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
+
+      {:ok, _} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: stale}))
+
+      :ok = Telemetry.subscribe_status()
+
+      Telemetry.run_stale_dtu_sweep()
+
+      # Broadcast payload includes the flipped DTU's id, so subscribers
+      # know which row to refresh (the dashboard LiveView just refreshes
+      # the whole device list, but the contract is "ids of affected
+      # DTUs").
+      device_id = device.id
+      assert_receive {:dtu_status_changed, [flipped_id]}, 1_000
+      assert flipped_id == device_id
+
+      assert DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id).online == false
+    end
+
+    test "does not broadcast when no DTUs are stale" do
+      user = user_fixture()
+      device = device_fixture(user)
+
+      recent = DateTime.utc_now() |> DateTime.add(-30, :second)
+
+      {:ok, _} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: recent}))
+
+      :ok = Telemetry.subscribe_status()
+
+      Telemetry.run_stale_dtu_sweep()
+
+      # `assert_receive` with a timeout acts as a "this message must
+      # NOT arrive" check — a positive `receive` would block forever,
+      # so we use the refute form.
+      refute_receive {:dtu_status_changed, _ids}, 200
+    end
+
+    test "is idempotent — running twice after the first flip is a no-op" do
+      user = user_fixture()
+      device = device_fixture(user)
+
+      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
+
+      {:ok, _} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: stale}))
+
+      :ok = Telemetry.subscribe_status()
+      device_id = device.id
+
+      Telemetry.run_stale_dtu_sweep()
+      assert_receive {:dtu_status_changed, [flipped_id]}, 1_000
+      assert flipped_id == device_id
+
+      # Second sweep: DTU is already offline, so no broadcast.
+      Telemetry.run_stale_dtu_sweep()
+      refute_receive {:dtu_status_changed, _ids}, 200
+    end
+  end
 end
