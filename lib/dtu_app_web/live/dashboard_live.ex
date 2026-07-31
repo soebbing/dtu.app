@@ -9,6 +9,7 @@ defmodule DtuAppWeb.DashboardLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Telemetry.subscribe()
+      Telemetry.subscribe_status()
       Broker.subscribe_presence()
     end
 
@@ -156,6 +157,15 @@ defmodule DtuAppWeb.DashboardLive do
 
   @impl true
   def handle_info({:dtu_disconnected, _client_id, _device_id}, socket) do
+    user = socket.assigns.current_scope.user
+    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
+  end
+
+  # Refresh the device card list when the periodic stale-DTU sweep
+  # flips `online` to `false` for any DTU. The cards re-render with the
+  # correct "online" badge the next time the LiveView patches.
+  @impl true
+  def handle_info({:dtu_status_changed, _ids}, socket) do
     user = socket.assigns.current_scope.user
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end

@@ -36,6 +36,18 @@ defmodule DtuApp.MqttBroker.Telemetry do
   `(dtu_id, inverter_serial)` pair so the chart legend picks the friendly name
   up immediately. OpenDTU's `{serial}/status/{producing|reachable}` uplinks
   update the latest reading for that inverter.
+
+  ## Stale-DTU sweep
+
+  In addition to MQTT-presence-driven `online` flips, a periodic sweep
+  (every `stale_dtu_sweep_interval_ms`, default 60 s) flips the
+  `online` flag to `false` for any DTU whose `last_seen_at` is older
+  than `stale_after_seconds` (default 300 s). Catches the case where a
+  DTU drops off the network silently — WiFi blip, NAT timeout, power
+  cycle without a clean MQTT DISCONNECT — so the dashboard's "online"
+  badge doesn't lie. When the sweep flips any DTU, it broadcasts
+  `{:dtu_status_changed, ids}` on the `dtu:status` topic; the
+  dashboard subscribes and refreshes the device list.
   """
 
   use GenServer
@@ -45,15 +57,28 @@ defmodule DtuApp.MqttBroker.Telemetry do
   alias DtuApp.MqttBroker.Broker
 
   @reading_topic "dtu:reading"
+  @status_topic "dtu:status"
+
+  # How often the GenServer runs the stale-DTU sweep. Short enough
+  # that an "online" badge catches up within ~one interval of the
+  # threshold; long enough that the DB UPDATE is not on a hot path.
+  @stale_dtu_sweep_interval_ms 60_000
 
   # --- Public API -------------------------------------------------------------
 
   @doc "The PubSub topic parsed readings are broadcast on."
   def reading_topic, do: @reading_topic
 
+  @doc "The PubSub topic DTU status changes are broadcast on."
+  def status_topic, do: @status_topic
+
   @doc "Subscribe the calling process to parsed readings."
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @reading_topic)
+
+  @doc "Subscribe the calling process to DTU status changes."
+  @spec subscribe_status() :: :ok | {:error, term()}
+  def subscribe_status, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @status_topic)
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
@@ -63,6 +88,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   def init(:ok) do
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
+    schedule_stale_dtu_sweep()
     Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
     {:ok, %{buffers: %{}}}
   end
@@ -102,8 +128,41 @@ defmodule DtuApp.MqttBroker.Telemetry do
     {:noreply, state}
   end
 
+  # Periodic sweep: flips `online` to false for any DTU whose
+  # `last_seen_at` is older than the staleness threshold. Re-schedules
+  # itself so the timer never expires.
+  @impl true
+  def handle_info(:sweep_stale_dtus, state) do
+    run_stale_dtu_sweep()
+    schedule_stale_dtu_sweep()
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(_message, state), do: {:noreply, state}
+
+  defp schedule_stale_dtu_sweep do
+    Process.send_after(self(), :sweep_stale_dtus, @stale_dtu_sweep_interval_ms)
+  end
+
+  @doc false
+  # Run the stale-DTU sweep and broadcast which DTUs flipped.
+  # Public so tests can invoke the sweep without waiting for the timer.
+  def run_stale_dtu_sweep do
+    case DtuApp.Devices.mark_stale_dtus_offline() do
+      {0, _ids} ->
+        :ok
+
+      {count, ids} ->
+        Logger.info("[Telemetry] marked #{count} stale DTU(s) offline: #{inspect(ids)}")
+
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @status_topic,
+          {:dtu_status_changed, ids}
+        )
+    end
+  end
 
   # --- Ingestion & Parsing Helpers --------------------------------------------
 
