@@ -220,13 +220,18 @@ end
 
 seed_multi_mppt_today.()
 
-# One fresh reading per series for the Garage Array, timestamped
-# 30 seconds ago. This guarantees `current_power` is non-zero for the
-# e2e tests regardless of when the suite runs (otherwise the 2-minute
-# freshness filter would exclude the sine-arc readings once the wall
-# clock passes 19:02). Same shape as the bucket rows above so the chart
-# picks them up as today's points.
-live_inserted_at = DateTime.utc_now() |> DateTime.add(-30, :second)
+# One fresh reading per series for the Garage Array. The dashboard's
+# `current_power` only sums readings within a 2-minute freshness
+# window, so a `now - 30s` timestamp would age out by the time the e2e
+# pipeline reaches the test (the pipeline takes ~2 min between seed
+# and test run — the Phoenix startup + wait-for-server loop alone is
+# 30-60 s). Use 23:55 today instead: it's well past the sine arc's
+# last bucket (19:00) so it remains the latest-by-`inserted_at` row
+# for every series, and it's always within 2 min of "now" (23:55 is
+# always greater than `now - 120s` for any "now" before 23:53 today).
+# Same shape as the bucket rows so the chart bucketing picks them up
+# as today's points and the line continues across the 23:55 bucket.
+live_inserted_at = DateTime.new!(today, ~T[23:55:00], "Etc/UTC")
 
 Repo.insert!(%Reading{
   dtu_id: dtu3.id,
