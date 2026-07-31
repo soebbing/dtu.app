@@ -191,10 +191,13 @@ defmodule DtuAppWeb.DashboardLive do
     y_max = Float.ceil(max_power / 100) * 100
 
     # Chart dimensions: width 800, height 250 (with 20px top padding).
-    # X range: 0 (midnight) to 86400 (next midnight).
+    # X range is dynamic: zoomed to data when present, full day (00:00–
+    # 24:00) when empty. See `chart_time_range/1` below.
+    {x_min_seconds, x_max_seconds} = chart_time_range(chart_points)
+    x_span = x_max_seconds - x_min_seconds
 
     # Group points by series (one line per (inverter, MPPT) pair) and
-    # translate each point into SVG coordinates.
+    # translate each point into SVG coordinates within the dynamic X range.
     series_points =
       chart_points
       |> Enum.group_by(& &1.series)
@@ -203,7 +206,7 @@ defmodule DtuAppWeb.DashboardLive do
           pts
           |> Enum.map(fn %{time: time, power: power} ->
             seconds = time.hour * 3600 + time.minute * 60 + time.second
-            x = seconds / 86400.0 * 800.0
+            x = (seconds - x_min_seconds) / x_span * 800.0
             y = 250.0 - power / y_max * 230.0
             {Float.round(x, 1), Float.round(y, 1)}
           end)
@@ -294,6 +297,8 @@ defmodule DtuAppWeb.DashboardLive do
           ""
       end
 
+    x_labels = chart_x_labels(x_min_seconds, x_max_seconds)
+
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
@@ -302,7 +307,74 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:series_legend, series_legend)
     |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
     |> assign(:area_path_data, area_path_data)
+    |> assign(:x_labels, x_labels)
   end
+
+  # Compute the chart's X-axis time range (in seconds-of-day).
+  #
+  #   * Empty `chart_points`         → full day (00:00–24:00)
+  #   * Non-empty `chart_points`      → from the floor-of-the-hour of the
+  #                                     first data point to the next full
+  #                                     hour after the last data point
+  #
+  # Bucket boundaries are multiples of 5 minutes, so `first_time.hour` is
+  # already the first full hour the data falls into. `end_hour =
+  # last_time.hour + 1` adds a 1-hour buffer so the line doesn't end at
+  # the chart's right edge. Capped at 24 to keep the chart within the
+  # current day.
+  @spec chart_time_range([%{required(:time) => DateTime.t()}]) ::
+          {non_neg_integer(), pos_integer()}
+  defp chart_time_range([]), do: {0, 86_400}
+
+  defp chart_time_range(points) do
+    first_time = Enum.min_by(points, & &1.time).time
+    last_time = Enum.max_by(points, & &1.time).time
+
+    start_hour = first_time.hour
+    end_hour = min(last_time.hour + 1, 24)
+
+    # Ensure at least a 1-hour window so single-bucket data (e.g. one
+    # point at 12:00) still draws as a 1-hour segment instead of a
+    # single-pixel spike.
+    end_hour = max(end_hour, min(start_hour + 1, 24))
+
+    {start_hour * 3600, end_hour * 3600}
+  end
+
+  # Generate X-axis label positions for the chart. Returns a list of
+  # `{x, label}` tuples where `x` is the SVG x-coordinate (0–800) and
+  # `label` is the time-of-day string (e.g. "07:00"). Labels always
+  # include the chart's start and end hours; intermediate hours are
+  # spaced at 1, 2, 3, or 6 hours depending on the total span so the
+  # label density stays roughly constant regardless of zoom.
+  @spec chart_x_labels(non_neg_integer(), pos_integer()) :: [{float(), String.t()}]
+  defp chart_x_labels(x_min_seconds, x_max_seconds) do
+    start_hour = div(x_min_seconds, 3600)
+    end_hour = div(x_max_seconds, 3600)
+    total_hours = end_hour - start_hour
+
+    step =
+      cond do
+        total_hours <= 2 -> 1
+        total_hours <= 6 -> 2
+        total_hours <= 12 -> 3
+        true -> 6
+      end
+
+    span = x_max_seconds - x_min_seconds
+
+    for hour <- start_hour..end_hour,
+        hour == start_hour or hour == end_hour or rem(hour - start_hour, step) == 0 do
+      seconds = hour * 3600
+      x = (seconds - x_min_seconds) / span * 800.0
+      {Float.round(x, 1), format_hour_label(hour)}
+    end
+  end
+
+  defp format_hour_label(0), do: "00:00"
+  defp format_hour_label(24), do: "24:00"
+  defp format_hour_label(hour) when hour < 10, do: "0#{hour}:00"
+  defp format_hour_label(hour), do: "#{hour}:00"
 
   # Empty `series_paths` map is OK; we just need a default for the
   # `path_data` assign so the template always has a string.
@@ -1275,47 +1347,26 @@ defmodule DtuAppWeb.DashboardLive do
                     </text>
                     <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
 
-                    <!-- X-Axis Labels (Time slots) -->
-                    <text
-                      x="0"
-                      y="270"
-                      class="text-[10px] font-medium fill-zinc-400"
-                      text-anchor="start"
-                    >
-                      00:00
-                    </text>
-                    <text
-                      x="200"
-                      y="270"
-                      class="text-[10px] font-medium fill-zinc-400"
-                      text-anchor="middle"
-                    >
-                      06:00
-                    </text>
-                    <text
-                      x="400"
-                      y="270"
-                      class="text-[10px] font-medium fill-zinc-400"
-                      text-anchor="middle"
-                    >
-                      12:00
-                    </text>
-                    <text
-                      x="600"
-                      y="270"
-                      class="text-[10px] font-medium fill-zinc-400"
-                      text-anchor="middle"
-                    >
-                      18:00
-                    </text>
-                    <text
-                      x="800"
-                      y="270"
-                      class="text-[10px] font-medium fill-zinc-400"
-                      text-anchor="end"
-                    >
-                      24:00
-                    </text>
+                    <!-- X-Axis Labels (Time slots). Dynamically positioned to
+                         fit the chart's X-axis range — full day (00:00–
+                         24:00) when no data, or zoomed to data when
+                         present (see `chart_time_range/1`). -->
+                    <%= for {{x, label}, edge} <- Enum.with_index(@x_labels) do %>
+                      <% anchor =
+                        cond do
+                          edge == 0 -> "start"
+                          edge == length(@x_labels) - 1 -> "end"
+                          true -> "middle"
+                        end %>
+                      <text
+                        x={x}
+                        y="270"
+                        class="text-[10px] font-medium fill-zinc-400"
+                        text-anchor={anchor}
+                      >
+                        {label}
+                      </text>
+                    <% end %>
 
                     <!-- One SVG path per (inverter, MPPT) series. The first
                          series (typically the AC aggregate, mppt_index = 0)
