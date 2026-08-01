@@ -107,4 +107,48 @@ test.describe('Acceptance Tests: Magic-Link Login (Mailpit SMTP capture)', () =>
       await api.dispose();
     }
   });
+
+  test('second click on same magic link is rejected (one-time use)', async ({ page, playwright }) => {
+    // Verify that consuming the token the first time invalidates it for
+    // any subsequent click — this is what `Accounts.login_user_by_magic_link`
+    // relies on (the controller's `confirm` deletes the token on success).
+    const api = await request.newContext({ baseURL: MAILPIT_URL });
+
+    try {
+      await clearInbox(api);
+      await page.goto('/users/log-in');
+      await page.fill('#login_form_magic input[type="email"]', USER_EMAIL);
+      await Promise.all([
+        page.waitForURL(/\/users\/log-in/, { timeout: 10000 }),
+        page.click('#login_form_magic button')
+      ]);
+      const { link } = await fetchMagicLink(api, { toEmail: USER_EMAIL });
+
+      // First click → succeeds and lands on dashboard.
+      const visitor1 = await playwright.request.newContext({
+        baseURL: 'http://localhost:4000'
+      });
+      const res1 = await visitor1.get(link);
+      await expect(res1).toBeOK();
+      expect(res1.url()).toMatch(/\/dashboard/);
+      await visitor1.dispose();
+
+      // Second click on the SAME link in a fresh context → controller
+      // shows the "Magic link is invalid or it has expired." flash.
+      const visitor2 = await playwright.request.newContext({
+        baseURL: 'http://localhost:4000'
+      });
+      const res2 = await visitor2.get(link);
+      await expect(res2).toBeOK();
+      // The controller redirects to /users/log-in after setting the error
+      // flash — follow the redirect manually because Playwright's
+      // request context doesn't persist session cookies, so we just
+      // assert the immediate redirect Location.
+      const location = res2.headers()['location'] || '';
+      expect(location).toMatch(/\/users\/log-in/);
+      await visitor2.dispose();
+    } finally {
+      await api.dispose();
+    }
+  });
 });
