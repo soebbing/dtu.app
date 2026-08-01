@@ -71,7 +71,12 @@ defmodule DtuApp.MqttBroker.Broker do
 
   @impl true
   def handle_publish(topic, payload, _opts, state) do
-    topic_str = Enum.join(topic, "/")
+    topic_str =
+      case topic do
+        binary when is_binary(binary) -> binary
+        list when is_list(list) -> Enum.join(list, "/")
+        other -> to_string(other)
+      end
 
     Logger.debug("[MQTT] PUBLISH client_id=#{state.client_id} topic=#{topic_str}")
 

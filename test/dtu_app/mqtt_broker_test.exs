@@ -770,4 +770,28 @@ defmodule DtuApp.MqttBrokerTest do
       assert DateTime.compare(reloaded.last_seen_at, stale) == :gt
     end
   end
+
+  describe "Broker.handle_publish/4" do
+    alias DtuApp.MqttBroker.Broker
+
+    test "handles topic as a binary string" do
+      :ok = Broker.subscribe_uplink()
+      device = %{id: 123, kind: :opendtu, base_topic: "inverter"}
+      state = %{client_id: "test_client", device: device}
+
+      assert {:ok, ^state} = Broker.handle_publish("inverter/mqtt", "payload_data", [], state)
+      assert_receive {:uplink, "test_client", ^device, "inverter/mqtt", "payload_data"}
+    end
+
+    test "handles topic as a list of path segments" do
+      :ok = Broker.subscribe_uplink()
+      device = %{id: 123, kind: :opendtu, base_topic: "inverter"}
+      state = %{client_id: "test_client", device: device}
+
+      assert {:ok, ^state} =
+               Broker.handle_publish(["inverter", "mqtt"], "payload_data", [], state)
+
+      assert_receive {:uplink, "test_client", ^device, "inverter/mqtt", "payload_data"}
+    end
+  end
 end
