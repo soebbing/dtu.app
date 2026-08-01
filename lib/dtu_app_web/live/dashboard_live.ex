@@ -233,8 +233,27 @@ defmodule DtuAppWeb.DashboardLive do
       |> max(100.0)
       |> Float.ceil()
 
-    # Scale max power to next multiple of 100
-    y_max = Float.ceil(max_power / 100) * 100
+    # Fleet Total is the sum of every series at each bucket, which is
+    # larger than any individual series power when more than one
+    # inverter/MPPT is producing. The y-axis must cover the Total line
+    # peak or it renders off-screen.
+    total_max_power =
+      chart_points
+      |> Enum.group_by(& &1.time)
+      |> Enum.map(fn {_time, pts} -> Enum.sum(Enum.map(pts, & &1.power)) end)
+      |> Enum.max(fn -> 0.0 end)
+
+    # Scale max power to next multiple of 100, taking the larger of
+    # the per-series peak and the Total peak so the headline curve
+    # stays inside the chart area.
+    y_max =
+      [max_power, total_max_power]
+      |> Enum.max()
+      |> Float.ceil()
+      |> Kernel./(100)
+      |> Float.ceil()
+      |> Kernel.*(100)
+      |> max(100.0)
 
     # Chart dimensions: width 800, height 250 (with 20px top padding).
     # X range is dynamic: zoomed to data when present, full day (00:00–
@@ -367,6 +386,52 @@ defmodule DtuAppWeb.DashboardLive do
       end)
       |> Map.new()
 
+    # Fleet-wide "Total" line: sum of every series' power at each
+    # bucket. This is the headline curve a customer wants to see — it
+    # answers "how much am I producing right now?" without having to
+    # mentally add up MPPT rows. Computed server-side from
+    # `chart_points` (one entry per (inverter, MPPT) per bucket) so
+    # the total is exact, not interpolated.
+    #
+    # Only emitted when there's at least one bucket to plot. Buckets
+    # where every series is empty contribute 0 W and would extend the
+    # total line into the noise floor, so we restrict to timestamps
+    # that appear in some series.
+    {total_path, total_coords} =
+      chart_points
+      |> Enum.group_by(& &1.time)
+      |> Enum.map(fn {time, pts} ->
+        utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+        local_seconds = rem(utc_seconds + tz_offset_seconds + 86_400 * 4, 86_400)
+        x = (local_seconds - x_min_seconds) / x_span * 800.0
+        total_power = pts |> Enum.map(& &1.power) |> Enum.sum()
+        y = 250.0 - total_power / y_max * 230.0
+        {Float.round(x, 1), Float.round(y, 1), local_seconds, total_power}
+      end)
+      |> Enum.sort_by(&elem(&1, 0))
+      |> then(fn pts ->
+        path =
+          case pts do
+            [] ->
+              ""
+
+            [{fx, fy, _, _} | rest] ->
+              "M #{fx} #{fy} " <>
+                Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
+          end
+
+        coords = Enum.map(pts, fn {x, y, t, _} -> {x, y, t} end)
+        {path, coords}
+      end)
+
+    # Total-time -> power data for the tooltip, in the same shape as
+    # `series_points_data` so the ChartTooltip hook can iterate over
+    # both uniformly.
+    total_points_data =
+      Enum.map(total_coords, fn {_x, y, seconds} ->
+        %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
+      end)
+
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
@@ -379,6 +444,9 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:x_min_seconds, x_min_seconds)
     |> assign(:x_max_seconds, x_max_seconds)
     |> assign(:series_points_data, series_points_data)
+    |> assign(:total_path, total_path)
+    |> assign(:total_points_data, total_points_data)
+    |> assign(:total_palette, {"emerald", "900"})
   end
 
   # Reverse the data-point Y coord back to watts so the tooltip shows
@@ -1608,7 +1676,9 @@ defmodule DtuAppWeb.DashboardLive do
                          Each path carries its (time, power) data points as
                          a JSON data attribute so the ChartTooltip hook
                          can look up the cursor-time value without parsing
-                         the SVG `d=` string. -->
+                         the SVG `d=` string. The Total line is rendered
+                         last so it sits on top of every per-inverter /
+                         per-MPPT path -- it's the headline curve. -->
                     <%= if @area_path_data != "" do %>
                       <path d={@area_path_data} fill="url(#chartGrad)" pointer-events="none" />
                     <% end %>
@@ -1623,6 +1693,8 @@ defmodule DtuAppWeb.DashboardLive do
                           name: elem(series, 3)
                         }) %>
                       <% points_json = Jason.encode!(Map.get(@series_points_data, series, [])) %>
+                      <% legend_key =
+                        "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
                       <path
                         d={path}
                         fill="none"
@@ -1634,27 +1706,79 @@ defmodule DtuAppWeb.DashboardLive do
                         data-series={series_json}
                         data-points={points_json}
                         data-stroke={stroke_hex}
+                        data-legend-key={legend_key}
+                      />
+                    <% end %>
+                    <%= if @total_path != "" do %>
+                      <% total_json =
+                        Jason.encode!(%{
+                          is_total: true,
+                          name: gettext("Total"),
+                          serial: "",
+                          mppt_index: -1
+                        }) %>
+                      <% total_points_json = Jason.encode!(@total_points_data) %>
+                      <% {tbase, tshade} = @total_palette %>
+                      <path
+                        d={@total_path}
+                        fill="none"
+                        stroke={"text-#{tbase}-#{tshade}"}
+                        class={"stroke-#{tshade}"}
+                        stroke-width="3"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        data-series={total_json}
+                        data-points={total_points_json}
+                        data-stroke={tooltip_to_hex(tbase, tshade)}
+                        data-legend-key="total"
                       />
                     <% end %>
                   </svg>
 
-                  <%!-- Legend: one swatch + label per series, in the same order
-                       as the paths above so the visual reads top-to-bottom
-                       in the same order as the MPPT index. --%>
-                  <%= if map_size(@series_legend) > 0 do %>
+                  <%!-- Legend: Total line first (the headline), then one entry
+                       per (inverter, MPPT) series in the same order as the
+                       paths above. Each entry is a real <button> so it's
+                       keyboard- and screen-reader-accessible; the
+                       ChartTooltip hook toggles the matching path's hidden
+                       class on click. --%>
+                  <%= if map_size(@series_legend) > 0 or @total_path != "" do %>
                     <div
                       class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
                       id="chart-legend"
                     >
+                      <%= if @total_path != "" do %>
+                        <% {tbase, tshade} = @total_palette %>
+                        <button
+                          type="button"
+                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                          data-legend-key="total"
+                          aria-pressed="true"
+                        >
+                          <span
+                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{tbase}-#{tshade}"}
+                            aria-hidden="true"
+                          />
+                          <span class="text-zinc-700 dark:text-zinc-300">
+                            {gettext("Total")}
+                          </span>
+                        </button>
+                      <% end %>
                       <%= for {series, label} <- @series_legend do %>
                         <% {base, shade} = Map.get(@series_palette, series) %>
-                        <span class="inline-flex items-center gap-1.5">
+                        <% legend_key =
+                          "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
+                        <button
+                          type="button"
+                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                          data-legend-key={legend_key}
+                          aria-pressed="true"
+                        >
                           <span
-                            class={"inline-block h-2.5 w-2.5 rounded-sm bg-#{base}-#{shade}"}
+                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{base}-#{shade}"}
                             aria-hidden="true"
                           />
                           <span class="text-zinc-700 dark:text-zinc-300">{label}</span>
-                        </span>
+                        </button>
                       <% end %>
                     </div>
                   <% end %>
@@ -1682,16 +1806,32 @@ defmodule DtuAppWeb.DashboardLive do
                       this.guide = this.svg.querySelector("#chart-guide-line");
                       this.tooltip = this.svg.querySelector("#chart-tooltip");
                       this.body = this.svg.querySelector("#chart-tooltip-body");
+                      this.legend = this.el.querySelector("#chart-legend");
 
                       this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
                       this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+
+                      // Map every chart path (including the synthetic
+                      // Total path) to its `data-legend-key` so the
+                      // legend toggle can flip its `hidden` class. The
+                      // keys are deterministic strings emitted by the
+                      // server template (`"total"` for the aggregate,
+                      // `"series:<dtu>:<serial>:<mppt>"` otherwise).
+                      this.pathsByKey = new Map();
+                      this.hiddenKeys = new Set();
+
+                      for (const p of this.svg.querySelectorAll("path[data-series][data-points]")) {
+                        const key = p.dataset.legendKey;
+                        if (key) this.pathsByKey.set(key, p);
+                      }
 
                       this.series = Array.from(
                         this.svg.querySelectorAll("path[data-series][data-points]")
                       ).map((p) => ({
                         meta: JSON.parse(p.dataset.series),
                         points: JSON.parse(p.dataset.points),
-                        color: p.dataset.stroke
+                        color: p.dataset.stroke,
+                        key: p.dataset.legendKey || null
                       }));
 
                       // Push the browser's UTC offset (in seconds,
@@ -1705,6 +1845,35 @@ defmodule DtuAppWeb.DashboardLive do
                       this.pushEvent("set_timezone", {
                         offset_seconds: String(offsetSeconds)
                       });
+
+                      // Legend click -> toggle the matching path's
+                      // `display:none`. No LiveView round-trip needed;
+                      // the next hover rebuilds the tooltip rows from
+                      // `this.series` and skips anything in
+                      // `this.hiddenKeys`.
+                      this.legendClick = (e) => {
+                        const btn = e.target.closest("button.legend-toggle");
+                        if (!btn) return;
+                        const key = btn.dataset.legendKey;
+                        if (!key) return;
+                        const path = this.pathsByKey.get(key);
+                        if (!path) return;
+                        const nowHidden = !this.hiddenKeys.has(key);
+                        if (nowHidden) {
+                          this.hiddenKeys.add(key);
+                          path.style.display = "none";
+                          btn.setAttribute("aria-pressed", "false");
+                          btn.classList.add("opacity-40");
+                        } else {
+                          this.hiddenKeys.delete(key);
+                          path.style.display = "";
+                          btn.setAttribute("aria-pressed", "true");
+                          btn.classList.remove("opacity-40");
+                        }
+                      };
+                      if (this.legend) {
+                        this.legend.addEventListener("click", this.legendClick);
+                      }
 
                       this.handlers = {
                         mousemove: (e) => this.move(e),
@@ -1733,6 +1902,9 @@ defmodule DtuAppWeb.DashboardLive do
                           this.svg.removeEventListener(event, handler);
                         }
                       }
+                      if (this.legend && this.legendClick) {
+                        this.legend.removeEventListener("click", this.legendClick);
+                      }
                     },
 
                     refRect() {
@@ -1759,22 +1931,36 @@ defmodule DtuAppWeb.DashboardLive do
                       this.guide.setAttribute("x2", String(x));
                       this.guide.style.display = "";
 
+                      // Drop rows whose legend entry was toggled off
+                      // before computing nearest-bucket lookup.
                       const rows = this.series
                         .filter((s) => s.points.length > 0)
+                        .filter((s) => !this.hiddenKeys.has(s.key))
                         .map((s) => {
                           const nearest = this.nearest(s.points, time);
                           return { ...s, value: nearest ? nearest.power : null };
+                        })
+                        // Total line always sits at the top of the
+                        // tooltip so the headline value is the first
+                        // thing the reader sees; otherwise preserve
+                        // server render order.
+                        .sort((a, b) => {
+                          if (a.meta.is_total) return -1;
+                          if (b.meta.is_total) return 1;
+                          return 0;
                         });
 
                       this.body.innerHTML = this.renderRows(time, rows);
 
-                      // Position the tooltip. Flip to the left of the cursor
-                      // when near the right edge so it stays on-screen.
+                      // Position the tooltip just to the right of the
+                      // cursor (4 px gap so it hugs the guide line
+                      // without overlapping the data point); flip to
+                      // the left when near the right edge.
                       const tooltipWidth = 200;
                       const tooltipX =
                         x > this.rect.width - tooltipWidth - 20
                           ? Math.max(0, x - tooltipWidth - 10)
-                          : Math.min(this.rect.width - tooltipWidth, x + 10);
+                          : Math.min(this.rect.width - tooltipWidth, x + 4);
                       this.tooltip.setAttribute("x", String(tooltipX));
                       this.tooltip.style.display = "";
                     },
@@ -1802,6 +1988,7 @@ defmodule DtuAppWeb.DashboardLive do
                     },
 
                     seriesLabel(meta) {
+                      if (meta.is_total) return meta.name || "Total";
                       const friendly = meta.name || meta.serial || "";
                       if (meta.mppt_index === 0) return `${friendly} (AC)`;
                       if (meta.mppt_index === 1) return `${friendly} — MPPT 1`;
@@ -1821,8 +2008,11 @@ defmodule DtuAppWeb.DashboardLive do
                           const swatch =
                             '<span class="inline-block h-2 w-2 rounded-sm mr-1.5" ' +
                             'style="background-color:' + r.color + '"></span>';
+                          const rowClass = r.meta.is_total
+                            ? "flex items-center justify-between gap-3 font-semibold"
+                            : "flex items-center justify-between gap-3";
                           return (
-                            '<div class="flex items-center justify-between gap-3">' +
+                            '<div class="' + rowClass + '">' +
                             '<span class="truncate">' + swatch + this.escape(this.seriesLabel(r.meta)) + "</span>" +
                             '<span class="tabular-nums font-medium">' + val + "</span>" +
                             "</div>"
