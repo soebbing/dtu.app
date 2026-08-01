@@ -389,6 +389,90 @@ defmodule DtuApp.AccountsTest do
     end
   end
 
+  describe "sanitize_magic_link_token/1" do
+    # Real email round-trips append garbage to the magic-link token:
+    # quoted-printable soft-line-breaks, trailing `=` padding that some
+    # clients add when they confuse base64url with standard base64, and
+    # plain whitespace from copy-paste. The verifier has to decode all
+    # of these as the same token — that's the user's report.
+
+    setup do
+      user = user_fixture()
+      {encoded_token, _user_token} = generate_user_magic_link_token(user)
+      %{token: encoded_token}
+    end
+
+    test "round-trips a clean token unchanged", %{token: token} do
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(token)
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "strips quoted-printable soft-line-break at the end (=\\n)", %{token: token} do
+      # When the email body wraps a long URL at column 76, quoted-printable
+      # appends `=\r\n` (or just `=\n`) at the wrap point. The receiver
+      # is supposed to collapse it back to nothing, but a copy-pasted
+      # link can carry the artifact verbatim.
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(token <> "=\n")
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "strips quoted-printable soft-line-break in the middle", %{token: token} do
+      half = div(byte_size(token), 2)
+
+      wrapped =
+        binary_part(token, 0, half) <>
+          "=\r\n" <> binary_part(token, half, byte_size(token) - half)
+
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(wrapped)
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "strips trailing = padding that some email clients add", %{token: token} do
+      # E.g. Outlook inserts a single trailing `=` when the URL crosses
+      # the line wrap boundary and gets re-encoded as standard base64.
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(token <> "=")
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "strips trailing whitespace (newline / space) that the email client left behind", %{
+      token: token
+    } do
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(token <> "\n")
+      assert {:ok, decoded} == UserToken.sanitize_magic_link_token(token <> " ")
+      assert {:ok, decoded} == UserToken.sanitize_magic_link_token(token <> "\r\n")
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "strips leading whitespace", %{token: token} do
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(" \t" <> token)
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+
+    test "still rejects a token that is genuinely too short", %{token: _token} do
+      assert :error = UserToken.sanitize_magic_link_token("abc")
+      assert :error = UserToken.sanitize_magic_link_token("")
+      assert :error = UserToken.sanitize_magic_link_token(nil)
+    end
+
+    test "still rejects a token with non-base64url characters", %{token: _token} do
+      # `!` is not in the base64url alphabet — if a token comes through
+      # with this, it's been tampered with, not just mangled by an
+      # email client.
+      assert :error = UserToken.sanitize_magic_link_token("abc!def")
+    end
+
+    test "round-trip with full email-simulated URL noise", %{token: token} do
+      # The worst case: copy-pasted from an email client that has done
+      # the lot — quoted-printable soft-line-breaks, trailing whitespace,
+      # trailing `=` padding, AND the user typed a leading space.
+      noisy =
+        " " <> String.replace(token, "abc", "=\r\nabc=\n") <> " =  \r\n"
+
+      assert {:ok, decoded} = UserToken.sanitize_magic_link_token(noisy)
+      assert {:ok, decoded} == Base.url_decode64(token, padding: false)
+    end
+  end
+
   describe "inspect/2 for the User module" do
     test "does not include password" do
       refute inspect(%User{password: "123456"}) =~ "password: \"123456\""

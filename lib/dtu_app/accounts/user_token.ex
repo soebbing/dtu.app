@@ -103,9 +103,21 @@ defmodule DtuApp.Accounts.UserToken do
   The given token is valid if it matches its hashed counterpart in the
   database. This function also checks whether the token has expired. The context
   of a magic link token is always "login".
+
+  Tokens come from `Base.url_encode64/2` (no padding, URL-safe alphabet)
+  but they reach us through a real email round-trip — an email client
+  may append `=` padding (URL-safe base64 → standard base64 padding
+  conversion), trailing whitespace from a soft line break in the
+  body, or quote-printable line-fold sequences (`=\r\n` → empty) when
+  the URL crosses the 76-column QP wrap boundary. `Base.url_decode64/2`
+  with `padding: false` rejects all of these as invalid base64url.
+
+  `sanitize_magic_link_token/1` strips QP artifacts and re-pads before
+  `Base.url_decode64/2` runs, so a clean copy-paste from any email
+  client resolves to the same decoded token.
   """
   def verify_magic_link_token_query(token) do
-    case Base.url_decode64(token, padding: false) do
+    case sanitize_magic_link_token(token) do
       {:ok, decoded_token} ->
         hashed_token = :crypto.hash(@hash_algorithm, decoded_token)
 
@@ -124,6 +136,69 @@ defmodule DtuApp.Accounts.UserToken do
   end
 
   @doc """
+  Strip the artifacts that real email round-trips append to a magic-link
+  token before calling `Base.url_decode64/2`.
+
+  Handles the three real-world noise sources:
+    * **Whitespace at the start / end** of the token — copy-paste
+      artifacts, address-bar formatting, an accidental trailing space.
+      `String.trim/1` strips only leading and trailing whitespace, so
+      the original token bytes in the middle are preserved.
+    * **Quoted-printable soft-line-break markers `=\r\n` / `=\n`** —
+      inserted when an email body wraps a long URL at column 76. They
+      appear anywhere in the string (most often mid-token).
+    * **Trailing `=` padding** that some email clients append when they
+      confuse base64url with standard base64.
+
+  Intentionally does NOT strip middle whitespace — a paste with
+  arbitrary characters between letters is a typo, not an email-client
+  artifact. Rejecting those cases is the correct UX (the user gets the
+  "Magic link is invalid" flash and retries).
+  """
+  @spec sanitize_magic_link_token(String.t()) :: {:ok, binary()} | :error
+  def sanitize_magic_link_token(token) when is_binary(token) do
+    sanitized =
+      token
+      # QP soft-line-break: `=\r\n` (Windows / RFC standard) or `=\n`
+      # (some clients strip the `\r` themselves first). These are
+      # zero-width line-break markers — collapse them to nothing so the
+      # base64url chars on either side reconnect.
+      |> String.replace("=\r\n", "")
+      |> String.replace("=\n", "")
+      # Trim twice: once before stripping the trailing `=` (to remove
+      # surrounding whitespace from a copy-paste), and once after (to
+      # remove any whitespace that was sitting just past the trailing
+      # `=`, e.g. `" =  "` at the end). base64url has no whitespace
+      # anywhere in its alphabet, so any in the token is noise. Trim
+      # both ends without touching the middle.
+      |> String.trim()
+      # Trailing `=` padding that some clients add when they confuse
+      # base64url with standard base64. Trim only the end (`=$`); an
+      # embedded `=` mid-token would have been a QP marker, which the
+      # earlier `String.replace` already collapsed.
+      |> String.replace(~r/=+$/, "")
+      |> String.trim()
+
+    case sanitized do
+      "" ->
+        :error
+
+      s when byte_size(s) >= 43 ->
+        # 32 raw bytes encode to 43 base64url chars without padding.
+        # Anything shorter is malformed.
+        case Base.url_decode64(s, padding: false) do
+          {:ok, decoded} when byte_size(decoded) == 32 -> {:ok, decoded}
+          _ -> :error
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  def sanitize_magic_link_token(_), do: :error
+
+  @doc """
   Checks if the token is valid and returns its underlying lookup query.
 
   The query returns the user_token found by the token, if any.
@@ -135,7 +210,7 @@ defmodule DtuApp.Accounts.UserToken do
   The context must always start with "change:".
   """
   def verify_change_email_token_query(token, "change:" <> _ = context) do
-    case Base.url_decode64(token, padding: false) do
+    case sanitize_magic_link_token(token) do
       {:ok, decoded_token} ->
         hashed_token = :crypto.hash(@hash_algorithm, decoded_token)
 
