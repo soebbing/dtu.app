@@ -1811,19 +1811,12 @@ defmodule DtuAppWeb.DashboardLive do
                       this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
                       this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
 
-                      // Map every chart path (including the synthetic
-                      // Total path) to its `data-legend-key` so the
-                      // legend toggle can flip its `hidden` class. The
-                      // keys are deterministic strings emitted by the
-                      // server template (`"total"` for the aggregate,
-                      // `"series:<dtu>:<serial>:<mppt>"` otherwise).
-                      this.pathsByKey = new Map();
+                      // Track which series the user has hidden via the
+                      // legend so the tooltip can skip them on the next
+                      // hover. Keys survive LiveView re-renders because
+                      // they're derived from the server template, not
+                      // from DOM node identity.
                       this.hiddenKeys = new Set();
-
-                      for (const p of this.svg.querySelectorAll("path[data-series][data-points]")) {
-                        const key = p.dataset.legendKey;
-                        if (key) this.pathsByKey.set(key, p);
-                      }
 
                       this.series = Array.from(
                         this.svg.querySelectorAll("path[data-series][data-points]")
@@ -1856,7 +1849,14 @@ defmodule DtuAppWeb.DashboardLive do
                         if (!btn) return;
                         const key = btn.dataset.legendKey;
                         if (!key) return;
-                        const path = this.pathsByKey.get(key);
+                        // Re-query the SVG path on every click rather than
+                        // caching it in `pathsByKey`. LiveView re-renders
+                        // swap the path elements out for fresh ones, so a
+                        // cached reference would point at a detached node
+                        // that no longer affects what's on screen.
+                        const path = this.svg.querySelector(
+                          `path[data-legend-key="${CSS.escape(key)}"]`
+                        );
                         if (!path) return;
                         const nowHidden = !this.hiddenKeys.has(key);
                         if (nowHidden) {
@@ -1871,9 +1871,14 @@ defmodule DtuAppWeb.DashboardLive do
                           btn.classList.remove("opacity-40");
                         }
                       };
-                      if (this.legend) {
-                        this.legend.addEventListener("click", this.legendClick);
-                      }
+                      // Listen on the hook container (`#solar-chart-container`)
+                      // rather than `#chart-legend` so the handler survives
+                      // LiveView re-renders that swap the legend strip out
+                      // for a fresh one — events from the new buttons still
+                      // bubble up to the container, and we re-query the
+                      // matching path on every click so we still operate on
+                      // the live DOM node.
+                      this.el.addEventListener("click", this.legendClick);
 
                       this.handlers = {
                         mousemove: (e) => this.move(e),
@@ -1902,8 +1907,8 @@ defmodule DtuAppWeb.DashboardLive do
                           this.svg.removeEventListener(event, handler);
                         }
                       }
-                      if (this.legend && this.legendClick) {
-                        this.legend.removeEventListener("click", this.legendClick);
+                      if (this.legendClick) {
+                        this.el.removeEventListener("click", this.legendClick);
                       }
                     },
 
