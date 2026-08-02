@@ -57,10 +57,68 @@ defmodule DtuApp.Devices.Reading do
   defp maybe_default_inserted_at(changeset) do
     case get_field(changeset, :inserted_at) do
       nil ->
-        put_change(changeset, :inserted_at, DateTime.utc_now() |> DateTime.truncate(:microsecond))
+        # Use the database clock for the hypertable time column. Reading
+        # `now()` from the DB (rather than `DateTime.utc_now()` on the app)
+        # keeps the value that gets bucketed by `time_bucket(...)` and the
+        # value the dashboard compares against in lock-step. See
+        # `DtuApp.Time` for the rationale.
+        changeset
+        |> put_change(:inserted_at, DtuApp.Time.utc_now_usec())
+        |> bump_on_pk_collision()
 
       _ ->
         changeset
     end
+  end
+
+  # The composite PK `(dtu_id, inverter_serial, mppt_index, inserted_at)`
+  # collides if two uplinks for the same `(dtu_id, inverter_serial,
+  # mppt_index)` land on the same microsecond — which is now possible
+  # because `DtuApp.Time.utc_now_usec/0` round-trips through the DB
+  # rather than the app clock (the app clock used to drift a few µs
+  # between calls by accident, masking this). Bump `inserted_at` by 1 µs
+  # whenever a row already exists at that exact instant, up to 1000
+  # attempts (1 ms of micro-bumps). In practice one or two bumps suffice;
+  # the bound exists only so we can't spin forever on a degenerate clock.
+  defp bump_on_pk_collision(changeset) do
+    dtu_id = get_field(changeset, :dtu_id)
+    inverter_serial = get_field(changeset, :inverter_serial)
+    mppt_index = get_field(changeset, :mppt_index) || 0
+    inserted_at = get_field(changeset, :inserted_at)
+
+    cond do
+      is_nil(dtu_id) or is_nil(inverter_serial) or is_nil(inserted_at) ->
+        changeset
+
+      true ->
+        new_ts =
+          1..1_000
+          |> Enum.reduce_while(inserted_at, fn _attempt, ts ->
+            if pk_exists?(dtu_id, inverter_serial, mppt_index, ts) do
+              {:cont, DateTime.add(ts, 1, :microsecond)}
+            else
+              {:halt, ts}
+            end
+          end)
+
+        if DateTime.compare(new_ts, inserted_at) == :gt do
+          put_change(changeset, :inserted_at, new_ts)
+        else
+          changeset
+        end
+    end
+  end
+
+  defp pk_exists?(dtu_id, inverter_serial, mppt_index, inserted_at) do
+    import Ecto.Query
+
+    DtuApp.Repo.exists?(
+      from r in __MODULE__,
+        where:
+          r.dtu_id == ^dtu_id and
+            r.inverter_serial == ^inverter_serial and
+            r.mppt_index == ^mppt_index and
+            r.inserted_at == ^inserted_at
+    )
   end
 end

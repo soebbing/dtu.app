@@ -91,7 +91,10 @@ defmodule DtuAppWeb.UserAuth do
 
   # Reissue the session token if it is older than the configured reissue age.
   defp maybe_reissue_user_session_token(conn, user, token_inserted_at) do
-    token_age = DateTime.diff(DateTime.utc_now(:second), token_inserted_at, :day)
+    # Use the database clock — the session token's `inserted_at` was
+    # written via `DtuApp.Time.utc_now/0` (see `UserToken.build_session_token/1`),
+    # so the age comparison must use the same source. See `DtuApp.Time`.
+    token_age = DateTime.diff(DtuApp.Time.utc_now(), token_inserted_at, :day)
 
     if token_age >= @session_reissue_age_in_days do
       create_or_extend_session(conn, user, %{})

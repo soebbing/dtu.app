@@ -108,7 +108,10 @@ defmodule DtuApp.Accounts.User do
   Confirms the account by setting `confirmed_at`.
   """
   def confirm_changeset(user) do
-    now = DateTime.utc_now(:second)
+    # Use the database clock so `confirmed_at` lines up with whatever the
+    # DB later compares it against (e.g. downstream "X minutes since
+    # confirmation" logic). See `DtuApp.Time`.
+    now = DtuApp.Time.utc_now()
     change(user, confirmed_at: now)
   end
 

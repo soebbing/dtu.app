@@ -548,7 +548,10 @@ defmodule DtuAppWeb.DashboardLive do
   # Berlin date so the chart shows the day they're actually in.
   @spec local_today(integer()) :: Date.t()
   defp local_today(tz_offset_seconds) do
-    DateTime.utc_now()
+    # Use the database clock so "today in the user's timezone" matches
+    # the day the readings table's `inserted_at` was bucketed under.
+    # See `DtuApp.Time`.
+    DtuApp.Time.utc_now()
     |> DateTime.add(tz_offset_seconds, :second)
     |> DateTime.to_date()
   end
@@ -789,7 +792,7 @@ defmodule DtuAppWeb.DashboardLive do
   # absolute YYYY-MM-DD HH:MM string for points in time more than a week
   # back, since minute/hour counts get unwieldy beyond that. Clamps future
   # timestamps to "just now" rather than rendering negative values.
-  defp relative_time_label(%DateTime{} = dt, now \\ DateTime.utc_now()) do
+  defp relative_time_label(%DateTime{} = dt, now \\ DtuApp.Time.utc_now()) do
     diff = DateTime.diff(now, dt, :second) |> max(0)
 
     cond do
