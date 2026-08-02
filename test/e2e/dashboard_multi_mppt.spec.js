@@ -133,6 +133,32 @@ test.describe('Acceptance Tests: Multi-Inverter / Per-MPPT Breakdown', () => {
     expect(legendText).toContain('East Garage (AC)');
   });
 
+  test('Garage Array chart exposes a fleet-wide "Total" line and clicking its legend entry hides the curve', async ({ page }) => {
+    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 4);
+
+    // The Total line is the headline curve; it must appear in the
+    // legend strip alongside the per-inverter / per-MPPT entries.
+    const totalLegend = page.locator('#chart-legend button[data-legend-key="total"]');
+    await expect(totalLegend).toBeVisible();
+
+    // The Total path itself must start out visible (display !== "none").
+    const totalPath = page.locator('#solar-chart-svg path[data-legend-key="total"]');
+    await expect(totalPath).toBeVisible();
+
+    // Clicking the Total legend button toggles the path's display:none
+    // and dims the button so the user can see which series are off.
+    await totalLegend.click();
+    await expect(totalPath).toBeHidden();
+    await expect(totalLegend).toHaveAttribute('aria-pressed', 'false');
+    await expect(totalLegend).toHaveClass(/opacity-40/);
+
+    // Clicking again restores the path and the legend button state.
+    await totalLegend.click();
+    await expect(totalPath).toBeVisible();
+    await expect(totalLegend).toHaveAttribute('aria-pressed', 'true');
+    await expect(totalLegend).not.toHaveClass(/opacity-40/);
+  });
+
   test('Garage Array chart lines actually move vertically — no per-MPPT line is flat at the X-axis', async ({ page }) => {
     // Pre-fix regression: every per-MPPT line was drawn flat at y=250
     // because the bucketing read `ac_power || 0.0` even though those

@@ -91,7 +91,10 @@ defmodule DtuApp.Accounts do
   def sudo_mode?(user, minutes \\ -20)
 
   def sudo_mode?(%User{authenticated_at: ts}, minutes) when is_struct(ts, DateTime) do
-    DateTime.after?(ts, DateTime.utc_now() |> DateTime.add(minutes, :minute))
+    # `authenticated_at` is populated from the session token's
+    # `inserted_at`, which is written via `DtuApp.Time.utc_now()`; the
+    # comparison side must use the same DB clock so it doesn't drift.
+    DateTime.after?(ts, DtuApp.Time.utc_now() |> DateTime.add(minutes, :minute))
   end
 
   def sudo_mode?(_user, _minutes), do: false

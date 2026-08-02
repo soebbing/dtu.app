@@ -174,8 +174,12 @@ defmodule DtuApp.MqttBroker.Telemetry do
           :ok
 
         dtu ->
+          # Use the database clock for `last_seen_at` so the staleness
+          # sweep (`Devices.mark_stale_dtus_offline/1`) and the
+          # dashboard's "Last seen X ago" label compare against the same
+          # clock that wrote the value. See `DtuApp.Time`.
           dtu
-          |> Ecto.Changeset.change(%{online: online, last_seen_at: DateTime.utc_now()})
+          |> Ecto.Changeset.change(%{online: online, last_seen_at: DtuApp.Time.utc_now()})
           |> DtuApp.Repo.update()
       end
     rescue

@@ -188,13 +188,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
     end
 
-    test "renders one chart legend entry per (inverter, MPPT) series", %{
+    test "renders one chart legend entry per (inverter, MPPT) series plus the Total line", %{
       conn: conn,
       user: user
     } do
       # Two inverters; the second one has two MPPT channels. The legend
       # should expose a friendly label per series so the chart reader can
-      # tell the lines apart.
+      # tell the lines apart, AND a Total line at the top so the fleet
+      # aggregate is always visible.
       dtu =
         device_fixture(user, %{
           name: "Multi MPPT Inverter",
@@ -222,26 +223,175 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, view, html} = live(conn, ~p"/dashboard")
 
-      # Legend is rendered with one swatch per series.
+      # Legend is rendered with one swatch per series plus a Total
+      # entry at the top.
       assert has_element?(view, "#chart-legend")
 
-      # Three legend entries — one per (inverter, MPPT) pair. The label
-      # uses the user-set `inverter_name` and tags the AC line with
-      # "(AC)" and the per-MPPT lines with "— MPPT N".
+      # Three per-series labels and one fleet Total. The per-series
+      # labels use the user-set `inverter_name` and tag the AC line
+      # with "(AC)" and the per-MPPT lines with "-- MPPT N".
+      assert html =~ "Total"
       assert html =~ "East Array (AC)"
       assert html =~ "West Array — MPPT 1"
       assert html =~ "West Array — MPPT 2"
 
-      # The chart SVG carries one path per series, tagged with the inverter
-      # serial + MPPT index so tests and any future JS hook can address
-      # them. Three distinct paths total — one per (inverter, MPPT) pair.
+      # The chart SVG carries one path per series plus the Total path,
+      # tagged with the inverter serial + MPPT index (or `is_total`
+      # for the aggregate) so tests and any future JS hook can address
+      # them. Four distinct paths total.
       path_count = html |> String.split(~s(data-series=)) |> length() |> Kernel.-(1)
-      assert path_count == 3
+      assert path_count == 4
 
       # And each serial appears at least once (rough sanity check that all
       # three series made it into the rendered SVG, not just the first).
       assert html =~ "INV-1"
       assert html =~ "INV-2"
+    end
+
+    test "fleet Total line sums every series at each bucket", %{
+      conn: conn,
+      user: user
+    } do
+      # Spread three series across two 5-minute buckets (12:00 and
+      # 12:05) so the Total path has at least one line segment. The
+      # chart reads `ac_power` for the AC aggregate (mppt_index = 0)
+      # and `dc_power` for per-MPPT rows (mppt_index >= 1), so the
+      # test populates the right field per row.
+      dtu =
+        device_fixture(user, %{
+          name: "Sum Test",
+          kind: "opendtu",
+          mqtt_username: "sum-test"
+        })
+
+      bucket1 = DateTime.utc_now() |> DateTime.truncate(:second)
+      bucket2 = DateTime.add(bucket1, 300, :second)
+
+      for {serial, mppt_index, name, bucket, power} <- [
+            {"INV-1", 0, "East", bucket1, 200.0},
+            {"INV-2", 1, "West", bucket1, 80.0},
+            {"INV-2", 2, "West", bucket1, 70.0},
+            {"INV-1", 0, "East", bucket2, 150.0},
+            {"INV-2", 1, "West", bucket2, 60.0},
+            {"INV-2", 2, "West", bucket2, 40.0}
+          ] do
+        attrs = %{
+          dtu_id: dtu.id,
+          inverter_serial: serial,
+          mppt_index: mppt_index,
+          inverter_name: name,
+          inserted_at: bucket
+        }
+
+        attrs =
+          if mppt_index == 0,
+            do: Map.put(attrs, :ac_power, power),
+            else: Map.put(attrs, :dc_power, power)
+
+        {:ok, _} = Devices.create_reading(attrs)
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Locate the Total path element (the <path data-legend-key="total"...>)
+      # and pull its `d` attribute plus its JSON-encoded `data-points`.
+      [[total_path_html]] =
+        Regex.scan(~r/<path[^>]*data-legend-key="total"[^>]*>/, html, capture: :first)
+
+      [total_d] =
+        Regex.run(~r/\sd="([^"]+)"/, total_path_html, capture: :all_but_first)
+
+      assert total_d =~ " L ",
+             "expected Total path to have at least one L segment, got: #{total_d}"
+
+      [points_json_escaped] =
+        Regex.run(~r/data-points="(\[[^\]]+\])"/, total_path_html, capture: :all_but_first)
+
+      # The `data-points` attribute is rendered with HTML-escaped
+      # quotes (HEEx auto-escapes the embedded JSON); unescape before
+      # decoding.
+      points_json = String.replace(points_json_escaped, "&quot;", "\"")
+      {:ok, points} = Jason.decode(points_json)
+      assert is_list(points)
+      assert length(points) >= 1
+
+      # Per-bucket totals match what we'd hand-compute from the series
+      # contributions: 350 W at bucket1, 250 W at bucket2 => 600 W
+      # total. The chart's reverse-mapping through (250 - y) / 230 *
+      # y_max quantizes to the nearest watt and may round to slightly
+      # different values, so we accept a 30 W tolerance band per pair.
+      total_watts = points |> Enum.map(& &1["power"]) |> Enum.sum()
+
+      assert total_watts >= 570 and total_watts <= 630,
+             "expected fleet Total sum ~600 W across two buckets, got #{total_watts} W (rounded #{Enum.map(points, & &1["power"])})"
+    end
+
+    test "Total line is omitted when no readings exist for the day", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Empty",
+          kind: "opendtu",
+          mqtt_username: "empty"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # No data => no Total path either (it has no buckets to plot).
+      refute html =~ ~s(data-legend-key="total"),
+             "Total path should not be rendered when there is no data"
+    end
+
+    test "Total legend entry is rendered first so the headline value is the first thing the reader sees",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Order Test",
+          kind: "opendtu",
+          mqtt_username: "order-test"
+        })
+
+      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "Panel",
+          ac_power: 150.0,
+          inserted_at: bucket
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The Total legend button must appear before any per-series
+      # legend button in the rendered DOM order. The Total PATH comes
+      # after the per-series paths (drawn on top), but the Total LEGEND
+      # BUTTON is rendered first so the headline value is the first
+      # thing the reader sees in the legend strip. We assert the
+      # button order by looking for the Total button immediately
+      # preceded by `legend-toggle`, which only buttons get.
+      total_button_offset =
+        case Regex.run(~r/legend-toggle[^>]*data-legend-key="total"/, html) do
+          nil -> nil
+          [match] -> :binary.match(html, match) |> elem(0)
+        end
+
+      series_button_offset =
+        case Regex.run(~r/legend-toggle[^>]*data-legend-key="series:[^"]+"/, html) do
+          nil -> nil
+          [match] -> :binary.match(html, match) |> elem(0)
+        end
+
+      assert total_button_offset != nil, "expected a Total legend button"
+      assert series_button_offset != nil, "expected at least one series legend button"
+
+      assert total_button_offset < series_button_offset,
+             "Total legend button should appear before per-series legend buttons " <>
+               "(Total at #{total_button_offset}, series at #{series_button_offset})"
     end
   end
 

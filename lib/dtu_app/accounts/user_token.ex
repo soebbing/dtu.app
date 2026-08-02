@@ -43,7 +43,10 @@ defmodule DtuApp.Accounts.UserToken do
   """
   def build_session_token(user) do
     token = :crypto.strong_rand_bytes(@rand_size)
-    dt = user.authenticated_at || DateTime.utc_now(:second)
+    # Use the database clock for `authenticated_at` so the comparison below
+    # (`token.inserted_at > ^cutoff`) round-trips through one and only one
+    # time source — the DB. See `DtuApp.Time` for the rationale.
+    dt = user.authenticated_at || DtuApp.Time.utc_now()
     {token, %UserToken{token: token, context: "session", user_id: user.id, authenticated_at: dt}}
   end
 
@@ -56,10 +59,16 @@ defmodule DtuApp.Accounts.UserToken do
   not expired (after @session_validity_in_days).
   """
   def verify_session_token_query(token) do
+    # Pin the cutoff to the database clock so the comparison matches the
+    # clock that wrote `inserted_at`. Previously this used `ago(N, "day")`
+    # which is also DB-side, but the write site used `DateTime.utc_now()`
+    # on the app — two clocks, possible drift. See `DtuApp.Time`.
+    cutoff = DtuApp.Time.utc_now() |> DateTime.add(-@session_validity_in_days, :day)
+
     query =
       from token in by_token_and_context_query(token, "session"),
         join: user in assoc(token, :user),
-        where: token.inserted_at > ago(@session_validity_in_days, "day"),
+        where: token.inserted_at > ^cutoff,
         select: {%{user | authenticated_at: token.authenticated_at}, token.inserted_at}
 
     {:ok, query}
@@ -121,10 +130,17 @@ defmodule DtuApp.Accounts.UserToken do
       {:ok, decoded_token} ->
         hashed_token = :crypto.hash(@hash_algorithm, decoded_token)
 
+        # Pin the cutoff to the database clock. The magic-link window is
+        # only 15 minutes wide, so even a few minutes of app↔DB clock drift
+        # would mis-classify a freshly-issued link as "expired" on click —
+        # the production bug this whole refactor exists to prevent.
+        cutoff =
+          DtuApp.Time.utc_now() |> DateTime.add(-@magic_link_validity_in_minutes, :minute)
+
         query =
           from token in by_token_and_context_query(hashed_token, "login"),
             join: user in assoc(token, :user),
-            where: token.inserted_at > ago(^@magic_link_validity_in_minutes, "minute"),
+            where: token.inserted_at > ^cutoff,
             where: token.sent_to == user.email,
             select: {user, token}
 
@@ -214,9 +230,12 @@ defmodule DtuApp.Accounts.UserToken do
       {:ok, decoded_token} ->
         hashed_token = :crypto.hash(@hash_algorithm, decoded_token)
 
+        cutoff =
+          DtuApp.Time.utc_now() |> DateTime.add(-@change_email_validity_in_days, :day)
+
         query =
           from token in by_token_and_context_query(hashed_token, context),
-            where: token.inserted_at > ago(@change_email_validity_in_days, "day")
+            where: token.inserted_at > ^cutoff
 
         {:ok, query}
 

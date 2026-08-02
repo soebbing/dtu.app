@@ -229,7 +229,9 @@ defmodule DtuApp.Devices do
 
   def mark_stale_dtus_offline(stale_after_seconds)
       when is_integer(stale_after_seconds) and stale_after_seconds >= 0 do
-    cutoff = DateTime.utc_now() |> DateTime.add(-stale_after_seconds, :second)
+    # Pin the cutoff to the database clock so it matches the clock that
+    # wrote `last_seen_at` (see `MqttBroker.Telemetry.update_dtu_status/2`).
+    cutoff = DtuApp.Time.utc_now() |> DateTime.add(-stale_after_seconds, :second)
 
     {count, ids} =
       Repo.update_all(
@@ -369,7 +371,11 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0, per_series: []}
     else
-      two_minutes_ago = DateTime.utc_now() |> DateTime.add(-120, :second)
+      # "Recent" reads against `readings.inserted_at`, which is written
+      # via `DtuApp.Time.utc_now_usec/0`. Use the same DB clock for the
+      # cutoff so a drifted app clock doesn't artificially age out fresh
+      # rows (or vice versa).
+      two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
 
       # Current power: only the AC aggregate row carries `ac_power`. A DTU
       # can publish many per-MPPT rows in between (and they're the most
