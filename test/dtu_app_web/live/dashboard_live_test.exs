@@ -247,6 +247,76 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "INV-2"
     end
 
+    test "every chart path uses a concrete hex stroke, not a Tailwind class name",
+         %{conn: conn, user: user} do
+      # Regression: the chart used to set stroke="text-emerald-400" and
+      # class="stroke-400" on each path, both of which silently fail —
+      # the former because SVG `stroke` expects a real color value, the
+      # latter because Tailwind's JIT can't see interpolated class
+      # names. The result was that NO series lines rendered, only the
+      # tinted area fill under the first series was visible. The fix
+      # passes the already-resolved hex color (`stroke_hex` from
+      # `tooltip_to_hex/2`) directly to the SVG `stroke=` attribute.
+      dtu =
+        device_fixture(user, %{
+          name: "Stroke Test",
+          kind: "opendtu",
+          mqtt_username: "stroke-test"
+        })
+
+      now = DateTime.utc_now()
+
+      for {serial, mppt_index, name, power} <- [
+            {"INV-1", 0, "East Array", 200.0},
+            {"INV-2", 1, "West Array", 80.0},
+            {"INV-2", 2, "West Array", 70.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: serial,
+            mppt_index: mppt_index,
+            inverter_name: name,
+            ac_power: power,
+            inserted_at: now
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Pull every <path data-series=... ...> opening tag and assert
+      # each carries a hex `stroke=` attribute. Skip the area-fill
+      # path (it doesn't carry data-series).
+      path_tags =
+        Regex.scan(~r/<path\b[^>]*data-series="[^"]+"[^>]*>/, html)
+        |> Enum.map(fn [tag | _] -> tag end)
+
+      assert length(path_tags) == 4,
+             "expected 3 series paths + 1 Total path, got #{length(path_tags)}"
+
+      Enum.each(path_tags, fn tag ->
+        assert Regex.match?(~r/stroke="#[0-9a-fA-F]{6}"/, tag),
+               "expected every chart path to set stroke=\"#hex\", got: #{tag}"
+      end)
+
+      # And the per-series paths should each get a *distinct* hex color
+      # so the legend's swatches and tooltip colors line up with what's
+      # actually drawn.
+      stroke_colors =
+        path_tags
+        |> Enum.map(fn tag ->
+          # `Regex.run` with one capture group returns
+          # `["<full match>", "<capture>"]`. Pull the capture with
+          # `List.last/1` instead of destructuring (avoids a
+          # brittle two-element pattern).
+          Regex.run(~r/stroke="(#[0-9a-fA-F]{6})"/, tag, capture: :all_but_first) |> List.last()
+        end)
+
+      assert length(Enum.uniq(stroke_colors)) == length(path_tags),
+             "expected every chart path to have a distinct stroke color, " <>
+               "got duplicates: #{inspect(stroke_colors)}"
+    end
+
     test "fleet Total line sums every series at each bucket", %{
       conn: conn,
       user: user
