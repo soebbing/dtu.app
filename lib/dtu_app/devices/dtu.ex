@@ -19,7 +19,11 @@ defmodule DtuApp.Devices.Dtu do
     field :mqtt_password, :string, redact: true
     field :mqtt_password_hash, :string, redact: true
     field :base_topic, :string, default: "solar"
-    field :online, :boolean, default: false
+    # Online/offline status is **derived** from `last_seen_at`, not
+    # stored. See `online?/2` below. `last_seen_at` is touched on every
+    # MQTT uplink (`DtuApp.MqttBroker.Telemetry`) and on CONNECT /
+    # DISCONNECT, so the derived value tracks the DTU's actual liveness
+    # in real time.
     field :last_seen_at, :utc_datetime_usec
 
     belongs_to :user, DtuApp.Accounts.User
@@ -121,4 +125,47 @@ defmodule DtuApp.Devices.Dtu do
     Argon2.no_user_verify()
     false
   end
+
+  # Threshold (in seconds) below which a DTU is considered online.
+  # Five minutes gives enough headroom for OpenDTU's and AhoyDTU's
+  # normal publish cadence (telemetry usually lands every 5–30 s) while
+  # still flipping to offline within a few minutes of a silent drop —
+  # WiFi blip, NAT timeout, power-cycle without a clean MQTT
+  # DISCONNECT, etc. See `online?/2` for the comparison.
+  @online_threshold_seconds 300
+
+  @doc """
+  Is this DTU currently online?
+
+  Online is derived from `last_seen_at`: a DTU is online iff
+  `now - last_seen_at < #{@online_threshold_seconds} s`. `last_seen_at`
+  is touched on every MQTT uplink (and on CONNECT / DISCONNECT) by
+  `DtuApp.MqttBroker.Telemetry`, so the answer reflects the DTU's
+  real-time liveness rather than the last time the broker saw a TCP
+  CONNECT.
+
+  A `nil` `last_seen_at` (the device has never been seen) is offline.
+
+  Pass `now` explicitly in tests to make the comparison deterministic
+  relative to a fixed clock. Defaults to `DtuApp.Time.utc_now/0` so
+  both sides of the comparison (the stored timestamp and the
+  comparison time) come from the database clock — see the
+  `DtuApp.Time` @moduledoc for why this matters.
+  """
+  @spec online?(%__MODULE__{}, DateTime.t()) :: boolean()
+  def online?(dtu, now \\ nil)
+
+  def online?(%__MODULE__{last_seen_at: nil}, _now), do: false
+
+  def online?(%__MODULE__{last_seen_at: last_seen_at}, nil)
+      when is_struct(last_seen_at, DateTime) do
+    online?(%__MODULE__{last_seen_at: last_seen_at}, DtuApp.Time.utc_now())
+  end
+
+  def online?(%__MODULE__{last_seen_at: last_seen_at}, now)
+      when is_struct(last_seen_at, DateTime) and is_struct(now, DateTime) do
+    DateTime.diff(now, last_seen_at, :second) < @online_threshold_seconds
+  end
+
+  def online?(%__MODULE__{}, _now), do: false
 end

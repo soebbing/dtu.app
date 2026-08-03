@@ -37,17 +37,21 @@ defmodule DtuApp.MqttBroker.Telemetry do
   up immediately. OpenDTU's `{serial}/status/{producing|reachable}` uplinks
   update the latest reading for that inverter.
 
-  ## Stale-DTU sweep
+  ## Online status (derived from `last_seen_at`)
 
-  In addition to MQTT-presence-driven `online` flips, a periodic sweep
-  (every `stale_dtu_sweep_interval_ms`, default 60 s) flips the
-  `online` flag to `false` for any DTU whose `last_seen_at` is older
-  than `stale_after_seconds` (default 300 s). Catches the case where a
-  DTU drops off the network silently — WiFi blip, NAT timeout, power
-  cycle without a clean MQTT DISCONNECT — so the dashboard's "online"
-  badge doesn't lie. When the sweep flips any DTU, it broadcasts
-  `{:dtu_status_changed, ids}` on the `dtu:status` topic; the
-  dashboard subscribes and refreshes the device list.
+  Every uplink (and every CONNECT / DISCONNECT) touches the DTU's
+  `last_seen_at` column. The dashboard and the device-list LiveView
+  render an "online" badge by calling `DtuApp.Devices.Dtu.online?/2`,
+  which is `true` iff `now - last_seen_at < 300 s`. Because every
+  uplink touches the timestamp, the badge reflects the DTU's actual
+  liveness in real time — even a DTU that stays MQTT-connected but
+  stops publishing (silent WiFi drop, NAT timeout, …) flips to
+  "offline" within five minutes of its last PUBLISH.
+
+  Every uplink also broadcasts `:dtu_seen` on the `dtu:status` topic
+  with the affected `device_id`. Subscribed LiveViews re-read their
+  device list and the badge updates without any DB-write loop or
+  periodic sweep.
   """
 
   use GenServer
@@ -55,14 +59,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
   require Logger
 
   alias DtuApp.MqttBroker.Broker
+  alias DtuApp.Devices.Dtu
 
   @reading_topic "dtu:reading"
   @status_topic "dtu:status"
-
-  # How often the GenServer runs the stale-DTU sweep. Short enough
-  # that an "online" badge catches up within ~one interval of the
-  # threshold; long enough that the DB UPDATE is not on a hot path.
-  @stale_dtu_sweep_interval_ms 60_000
 
   # --- Public API -------------------------------------------------------------
 
@@ -88,7 +88,6 @@ defmodule DtuApp.MqttBroker.Telemetry do
   def init(:ok) do
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
-    schedule_stale_dtu_sweep()
     Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
     {:ok, %{buffers: %{}}}
   end
@@ -99,6 +98,12 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # Ignore unauthenticated uplinks
       {:noreply, state}
     else
+      # Touch `last_seen_at` first so the dashboard's online badge can
+      # flip from offline → online within one publish interval of the
+      # DTU waking up — independent of which parser branch (or no
+      # branch at all, e.g. an unknown topic) runs below.
+      touch_last_seen(device_info.id)
+
       case device_info.kind do
         :opendtu ->
           handle_opendtu(client_id, device_info, topic_str, payload, state)
@@ -109,81 +114,63 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
-  # Handle presence tracking for DTUs
+  # Handle presence tracking for DTUs. CONNECT / DISCONNECT both touch
+  # `last_seen_at` so the derived `Dtu.online?/2` flips accordingly;
+  # we no longer carry a stored `online` boolean.
   @impl true
   def handle_info({:dtu_connected, _client_id, device_id}, state) do
-    if device_id do
-      update_dtu_status(device_id, true)
-    end
-
+    if device_id, do: touch_last_seen(device_id)
     {:noreply, state}
   end
 
   @impl true
   def handle_info({:dtu_disconnected, _client_id, device_id}, state) do
-    if device_id do
-      update_dtu_status(device_id, false)
-    end
-
-    {:noreply, state}
-  end
-
-  # Periodic sweep: flips `online` to false for any DTU whose
-  # `last_seen_at` is older than the staleness threshold. Re-schedules
-  # itself so the timer never expires.
-  @impl true
-  def handle_info(:sweep_stale_dtus, state) do
-    run_stale_dtu_sweep()
-    schedule_stale_dtu_sweep()
+    if device_id, do: touch_last_seen(device_id)
     {:noreply, state}
   end
 
   @impl true
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp schedule_stale_dtu_sweep do
-    Process.send_after(self(), :sweep_stale_dtus, @stale_dtu_sweep_interval_ms)
-  end
-
-  @doc false
-  # Run the stale-DTU sweep and broadcast which DTUs flipped.
-  # Public so tests can invoke the sweep without waiting for the timer.
-  def run_stale_dtu_sweep do
-    case DtuApp.Devices.mark_stale_dtus_offline() do
-      {0, _ids} ->
-        :ok
-
-      {count, ids} ->
-        Logger.info("[Telemetry] marked #{count} stale DTU(s) offline: #{inspect(ids)}")
-
-        Phoenix.PubSub.broadcast(
-          DtuApp.PubSub,
-          @status_topic,
-          {:dtu_status_changed, ids}
-        )
-    end
-  end
-
   # --- Ingestion & Parsing Helpers --------------------------------------------
 
-  defp update_dtu_status(device_id, online) do
-    try do
-      DtuApp.Repo.get(DtuApp.Devices.Dtu, device_id)
-      |> case do
-        nil ->
-          :ok
+  # Update `dtus.last_seen_at` for `device_id` to the DB clock. Used
+  # on every MQTT activity (uplink, CONNECT, DISCONNECT) so the
+  # derived `Dtu.online?/2` reflects real-time liveness. Broadcasts
+  # `:dtu_seen` on `dtu:status` so subscribed LiveViews can refresh
+  # their device list and the badge flips within one publish interval.
+  #
+  # `last_seen_at` is typed `:utc_datetime_usec`, so we use the
+  # microsecond-precision `utc_now_usec/0` (otherwise Ecto would
+  # reject the write with `:utc_datetime_usec expects microsecond
+  # precision`).
+  #
+  # Errors are swallowed (`rescue _`): the worst case is a missed
+  # badge flip on the next render, and the next uplink will retry
+  # anyway. Logging at warn keeps the noise floor low but leaves a
+  # breadcrumb for debugging.
+  defp touch_last_seen(device_id) do
+    DtuApp.Repo.get(Dtu, device_id)
+    |> case do
+      nil ->
+        :ok
 
-        dtu ->
-          # Use the database clock for `last_seen_at` so the staleness
-          # sweep (`Devices.mark_stale_dtus_offline/1`) and the
-          # dashboard's "Last seen X ago" label compare against the same
-          # clock that wrote the value. See `DtuApp.Time`.
+      dtu ->
+        try do
           dtu
-          |> Ecto.Changeset.change(%{online: online, last_seen_at: DtuApp.Time.utc_now()})
+          |> Ecto.Changeset.change(%{last_seen_at: DtuApp.Time.utc_now_usec()})
           |> DtuApp.Repo.update()
-      end
-    rescue
-      _ -> :ok
+
+          Phoenix.PubSub.broadcast(
+            DtuApp.PubSub,
+            @status_topic,
+            {:dtu_seen, device_id}
+          )
+        rescue
+          e ->
+            Logger.warning("[Telemetry] touch_last_seen(#{device_id}) failed: #{inspect(e)}")
+            :ok
+        end
     end
   end
 
