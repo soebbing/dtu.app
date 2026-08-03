@@ -1,10 +1,16 @@
 const { test, expect } = require('@playwright/test');
 
-// E2E coverage for the multi-inverter / per-MPPT chart breakdown.
+// E2E coverage for the multi-inverter chart.
 //
-// Regression: a customer with a DTU that polled multiple inverters, each
-// exposing one or two MPPT strings, reported two symptoms on the live
-// system:
+// The dashboard's power chart collapses per-MPPT DC rows into the
+// inverter's AC aggregate on the server (see the `Enum.filter` in
+// `assign_line_chart_data/5`), so the chart exposes one line per
+// inverter plus a fleet-wide Total line. The fleet Total is
+// suppressed when there's only one inverter in scope.
+//
+// Historical context: a customer with a DTU that polled multiple
+// inverters, each exposing one or two MPPT strings, reported two
+// symptoms on the live system:
 //   1. "Current Generation" displayed 0 W even though the production
 //      curve clearly showed the system producing.
 //   2. The chart legend listed every (inverter, MPPT) pair, but the
@@ -27,7 +33,8 @@ const { test, expect } = require('@playwright/test');
 //
 // The seeded "Garage Array" DTU (see priv/repo/seeds.exs) has two
 // inverters ("West Roof" with two MPPTs, "East Garage" with one) and
-// exposes the full multi-series chart surface.
+// exposes the full multi-series chart surface — 2 inverter lines +
+// 1 fleet Total = 3 distinct `<path data-series>` elements.
 
 const E2E_EMAIL = 'test@example.com';
 const E2E_PASSWORD = 'password123456';
@@ -64,7 +71,7 @@ async function selectDtuAndWait(page, buttonSelector, expectedSeriesCount) {
   }
 }
 
-test.describe('Acceptance Tests: Multi-Inverter / Per-MPPT Breakdown', () => {
+test.describe('Acceptance Tests: Multi-Inverter Chart', () => {
   test.beforeEach(async ({ page }) => {
     await logIn(page);
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
@@ -91,12 +98,12 @@ test.describe('Acceptance Tests: Multi-Inverter / Per-MPPT Breakdown', () => {
     expect(todayYield).toBeGreaterThan(0);
   });
 
-  test('Garage Array chart renders one path per (inverter, MPPT) — not all flat at zero', async ({ page }) => {
-    // Three series expected: West Roof AC, West Roof MPPT 1, West Roof
-    // MPPT 2 (plus East Garage AC, but East Garage is part of "Total").
-    // We're filtering to Garage Array only, so 3 distinct series for
-    // the West Roof inverter + 1 for East Garage = 4. Wait for that.
-    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 4);
+  test('Garage Array chart renders one path per inverter — not all flat at zero', async ({ page }) => {
+    // Garage Array has two inverters (West Roof, East Garage).
+    // Per-MPPT DC rows are filtered out on the server
+    // (`assign_line_chart_data/5`), so the chart shows 2 inverter paths
+    // + 1 fleet Total = 3 distinct series.
+    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 3);
 
     // Each path must have a non-empty `d` attribute AND that path must
     // describe a non-flat curve. We assert the path's `d` attribute
@@ -119,25 +126,29 @@ test.describe('Acceptance Tests: Multi-Inverter / Per-MPPT Breakdown', () => {
     }
   });
 
-  test('Garage Array legend lists each (inverter, MPPT) entry with the right label', async ({ page }) => {
-    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 4);
+  test('Garage Array legend lists each inverter with the right label', async ({ page }) => {
+    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 3);
 
-    // Legend must contain the friendly name for the AC aggregate and
-    // each per-MPPT string. The labels follow
-    // `Name (AC)` / `Name — MPPT N` per `series_legend` in
-    // `assign_line_chart_data/4`.
+    // Legend must contain the friendly name for each inverter. Per-MPPT
+    // DC rows are collapsed into the inverter's AC line on the server
+    // (see the `Enum.filter` in `assign_line_chart_data/5`), so the
+    // labels are just the inverter name — no `(AC)` or `— MPPT N`
+    // suffix.
     const legendText = await page.locator('#chart-legend').textContent();
-    expect(legendText).toContain('West Roof (AC)');
-    expect(legendText).toContain('West Roof — MPPT 1');
-    expect(legendText).toContain('West Roof — MPPT 2');
-    expect(legendText).toContain('East Garage (AC)');
+    expect(legendText).toContain('West Roof');
+    expect(legendText).toContain('East Garage');
+    // Sanity-check that MPPT-specific suffixes are NOT present (the
+    // fix collapses per-MPPT rows into the inverter AC line).
+    expect(legendText).not.toContain('MPPT 1');
+    expect(legendText).not.toContain('MPPT 2');
   });
 
   test('Garage Array chart exposes a fleet-wide "Total" line and clicking its legend entry hides the curve', async ({ page }) => {
-    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 4);
+    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 3);
 
     // The Total line is the headline curve; it must appear in the
-    // legend strip alongside the per-inverter / per-MPPT entries.
+    // legend strip alongside the per-inverter entries (Garage Array
+    // has 2 inverters in scope, which is > 1, so the Total renders).
     const totalLegend = page.locator('#chart-legend button[data-legend-key="total"]');
     await expect(totalLegend).toBeVisible();
 
@@ -159,15 +170,16 @@ test.describe('Acceptance Tests: Multi-Inverter / Per-MPPT Breakdown', () => {
     await expect(totalLegend).not.toHaveClass(/opacity-40/);
   });
 
-  test('Garage Array chart lines actually move vertically — no per-MPPT line is flat at the X-axis', async ({ page }) => {
-    // Pre-fix regression: every per-MPPT line was drawn flat at y=250
-    // because the bucketing read `ac_power || 0.0` even though those
-    // rows only carry `dc_power`. After the fix each per-MPPT path's
-    // y-coordinates span a range that includes both the bottom of the
-    // SVG (y=250) and points meaningfully above it (the sine arc peak
-    // reaches ~30 W on a 200 W y_max, so y-coords drop to ~215 — well
-    // above the X-axis).
-    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 4);
+  test('Garage Array chart lines actually move vertically — no inverter line is flat at the X-axis', async ({ page }) => {
+    // Regression: the original per-MPPT chart bucketed `ac_power || 0.0`
+    // even though per-MPPT rows only carry `dc_power`, so every
+    // per-MPPT line was drawn flat at y=250. After the per-inverter
+    // collapse in `assign_line_chart_data/5`, each path's y-coordinates
+    // span a range that includes both the bottom of the SVG (y=250)
+    // and points meaningfully above it (the sine arc peak reaches
+    // ~30 W on a 200 W y_max, so y-coords drop to ~215 — well above
+    // the X-axis).
+    await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 3);
 
     // For each path with a `data-series` attribute, parse its `d`
     // attribute and collect the y-coordinates. Pre-fix the per-MPPT
