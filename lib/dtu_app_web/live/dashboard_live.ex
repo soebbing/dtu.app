@@ -1717,8 +1717,7 @@ defmodule DtuAppWeb.DashboardLive do
                       <path
                         d={path}
                         fill="none"
-                        stroke={"text-#{base}-#{shade}"}
-                        class={"stroke-#{shade}"}
+                        stroke={stroke_hex}
                         stroke-width="2.5"
                         stroke-linecap="round"
                         stroke-linejoin="round"
@@ -1738,17 +1737,17 @@ defmodule DtuAppWeb.DashboardLive do
                         }) %>
                       <% total_points_json = Jason.encode!(@total_points_data) %>
                       <% {tbase, tshade} = @total_palette %>
+                      <% total_stroke_hex = tooltip_to_hex(tbase, tshade) %>
                       <path
                         d={@total_path}
                         fill="none"
-                        stroke={"text-#{tbase}-#{tshade}"}
-                        class={"stroke-#{tshade}"}
+                        stroke={total_stroke_hex}
                         stroke-width="3"
                         stroke-linecap="round"
                         stroke-linejoin="round"
                         data-series={total_json}
                         data-points={total_points_json}
-                        data-stroke={tooltip_to_hex(tbase, tshade)}
+                        data-stroke={total_stroke_hex}
                         data-legend-key="total"
                       />
                     <% end %>
