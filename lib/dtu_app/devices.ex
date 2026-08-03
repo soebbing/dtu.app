@@ -455,7 +455,10 @@ defmodule DtuApp.Devices do
         # firmware's `YieldDay` field). The dashboard renders this stat with
         # a kWh label, so divide by 1000 before returning so the displayed
         # number matches the unit.
-        today_yield: Float.round(today_yield / 1000, 3),
+        #
+        # Round to one decimal place so the "Today's Total Yield" stat reads
+        # as e.g. `12.3 kWh` rather than `12.345 kWh`.
+        today_yield: Float.round(today_yield / 1000, 1),
         peak_power: Float.round(peak_power * 1.0, 1),
 
         # Per (inverter, MPPT) breakdown so the dashboard can show each
