@@ -228,7 +228,14 @@ defmodule DtuAppWeb.DashboardLive do
   # local time.
   defp assign_line_chart_data(socket, user, local_date, tz_offset_seconds, dtu_id) do
     {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-    chart_points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
+    all_chart_points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
+
+    # The dashboard exposes one line per *inverter* (its AC aggregate,
+    # mppt_index = 0). Per-MPPT DC rows are intentionally collapsed so
+    # the chart stays readable when a fleet mixes single- and multi-
+    # MPPT inverters; users can drill into a specific DTU on the
+    # /devices page if they need MPPT-level detail.
+    chart_points = Enum.filter(all_chart_points, fn pt -> pt.series |> elem(2) == 0 end)
 
     max_power =
       chart_points
@@ -312,39 +319,33 @@ defmodule DtuAppWeb.DashboardLive do
       end)
       |> Map.new()
 
-    # Color palette per series. Grouped by (dtu_id, inverter_serial) so
-    # the same inverter gets the same base color across its MPPT lines;
-    # the MPPT index then shifts to a darker shade of that hue.
+    # Color palette per series. Each series is now one line per
+    # inverter (mppt_index = 0 only), so we just need the per-inverter
+    # base hue. The shade is fixed at 400 because there's no second
+    # MPPT line to differentiate against anymore — using a single
+    # bright shade keeps each inverter's line clearly visible against
+    # the tinted area fill.
     inverter_color = inverte_order_to_color(series_points)
 
     series_palette =
       Enum.map(series_points, fn {series, _pts} ->
         dtu_id = elem(series, 0)
         serial = elem(series, 1)
-        mppt_index = elem(series, 2)
         base = Map.get(inverter_color, {dtu_id, serial})
-        shade = mppt_shade(mppt_index)
-        {series, {base, shade}}
+        {series, {base, "400"}}
       end)
       |> Map.new()
 
     # Friendly names for the legend. Prefer the user-set `inverter_name`,
-    # fall back to the serial. The MPPT index is shown only for AC-aggregate
-    # rows (mppt_index = 0 — ch0 — which is the AC-side) and skipped for
-    # the per-MPPT rows because the user can already guess "MPPT 1 / MPPT 2"
-    # from the line context.
+    # fall back to the serial. Per-MPPT rows are collapsed into the
+    # inverter's AC line (see the `Enum.filter` further up), so the
+    # legend labels are simply the inverter's friendly name — no
+    # `MPPT N` suffix needed.
     series_legend =
-      Enum.map(series_points, fn {{dtu_id, serial, mppt_index, name}, _pts} ->
+      Enum.map(series_points, fn {series, _pts} ->
+        {dtu_id, serial, mppt_index, name} = series
         friendly = name || serial
-
-        label =
-          cond do
-            mppt_index == 0 -> "#{friendly} (AC)"
-            mppt_index == 1 -> "#{friendly} — MPPT 1"
-            true -> "#{friendly} — MPPT #{mppt_index}"
-          end
-
-        {{dtu_id, serial, mppt_index, name}, label}
+        {{dtu_id, serial, mppt_index, name}, friendly}
       end)
       |> Map.new()
 
@@ -393,40 +394,50 @@ defmodule DtuAppWeb.DashboardLive do
     # Fleet-wide "Total" line: sum of every series' power at each
     # bucket. This is the headline curve a customer wants to see — it
     # answers "how much am I producing right now?" without having to
-    # mentally add up MPPT rows. Computed server-side from
-    # `chart_points` (one entry per (inverter, MPPT) per bucket) so
-    # the total is exact, not interpolated.
+    # mentally add up per-inverter lines. Computed server-side from
+    # `chart_points` (one entry per inverter per bucket) so the total
+    # is exact, not interpolated.
     #
-    # Only emitted when there's at least one bucket to plot. Buckets
-    # where every series is empty contribute 0 W and would extend the
-    # total line into the noise floor, so we restrict to timestamps
-    # that appear in some series.
-    {total_path, total_coords} =
+    # The Total is suppressed when there's only one inverter in scope
+    # — in that case the per-inverter line *is* the total and adding
+    # it again would be a redundant curve.
+    distinct_inverters =
       chart_points
-      |> Enum.group_by(& &1.time)
-      |> Enum.map(fn {time, pts} ->
-        utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-        local_seconds = rem(utc_seconds + tz_offset_seconds + 86_400 * 4, 86_400)
-        x = (local_seconds - x_min_seconds) / x_span * 800.0
-        total_power = pts |> Enum.map(& &1.power) |> Enum.sum()
-        y = 250.0 - total_power / y_max * 230.0
-        {Float.round(x, 1), Float.round(y, 1), local_seconds, total_power}
-      end)
-      |> Enum.sort_by(&elem(&1, 0))
-      |> then(fn pts ->
-        path =
-          case pts do
-            [] ->
-              ""
+      |> Enum.map(fn pt -> {elem(pt.series, 0), elem(pt.series, 1)} end)
+      |> Enum.uniq()
 
-            [{fx, fy, _, _} | rest] ->
-              "M #{fx} #{fy} " <>
-                Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
-          end
+    show_total? = length(distinct_inverters) > 1
 
-        coords = Enum.map(pts, fn {x, y, t, _} -> {x, y, t} end)
-        {path, coords}
-      end)
+    {total_path, total_coords} =
+      if show_total? do
+        chart_points
+        |> Enum.group_by(& &1.time)
+        |> Enum.map(fn {time, pts} ->
+          utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+          local_seconds = rem(utc_seconds + tz_offset_seconds + 86_400 * 4, 86_400)
+          x = (local_seconds - x_min_seconds) / x_span * 800.0
+          total_power = pts |> Enum.map(& &1.power) |> Enum.sum()
+          y = 250.0 - total_power / y_max * 230.0
+          {Float.round(x, 1), Float.round(y, 1), local_seconds, total_power}
+        end)
+        |> Enum.sort_by(&elem(&1, 0))
+        |> then(fn pts ->
+          path =
+            case pts do
+              [] ->
+                ""
+
+              [{fx, fy, _, _} | rest] ->
+                "M #{fx} #{fy} " <>
+                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
+            end
+
+          coords = Enum.map(pts, fn {x, y, t, _} -> {x, y, t} end)
+          {path, coords}
+        end)
+      else
+        {"", []}
+      end
 
     # Total-time -> power data for the tooltip, in the same shape as
     # `series_points_data` so the ChartTooltip hook can iterate over
@@ -644,15 +655,12 @@ defmodule DtuAppWeb.DashboardLive do
   }
   defp tooltip_to_hex(base, shade), do: Map.fetch!(@tailwind_colors, {base, shade})
 
-  # MPPT index → Tailwind shade class. mppt_index = 0 is the AC
-  # aggregate (lightest shade so it pops against the tinted area
-  # fill); 1+ are the per-string MPPTs at progressively darker shades
-  # of that hue. The spread is wide (400–900) so 2-MPPT inverters
-  # don't have AC/MPPT lines that look like the same green at a glance.
-  defp mppt_shade(0), do: "400"
-  defp mppt_shade(1), do: "600"
-  defp mppt_shade(2), do: "800"
-  defp mppt_shade(_), do: "900"
+  # MPPT-specific shades were used when the chart plotted per-MPPT
+  # lines (`mppt_index = 0` was the AC aggregate, 1+ were per-string
+  # DC). Now that the dashboard exposes one line per inverter (the
+  # `Enum.filter` in `assign_line_chart_data/5` collapses all MPPTs
+  # into the inverter's AC row), there's nothing to shade-vary — see
+  # `series_palette` for the fixed `"400"` shade.
 
   # Helper to construct SVG bar chart coordinates and range
   defp assign_bar_chart_data(socket, bar_data) do
@@ -2011,11 +2019,14 @@ defmodule DtuAppWeb.DashboardLive do
                     },
 
                     seriesLabel(meta) {
+                      // Per-MPPT lines were collapsed into the
+                      // inverter's AC row on the server (see the
+                      // `Enum.filter` in `assign_line_chart_data/5`),
+                      // so the tooltip only ever sees the Total
+                      // pseudo-series or one row per inverter. No
+                      // `MPPT N` / `(AC)` suffix is needed.
                       if (meta.is_total) return meta.name || "Total";
-                      const friendly = meta.name || meta.serial || "";
-                      if (meta.mppt_index === 0) return `${friendly} (AC)`;
-                      if (meta.mppt_index === 1) return `${friendly} — MPPT 1`;
-                      return `${friendly} — MPPT ${meta.mppt_index}`;
+                      return meta.name || meta.serial || "";
                     },
 
                     renderRows(time, rows) {

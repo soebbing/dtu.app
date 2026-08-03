@@ -187,37 +187,57 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
     end
 
-    test "renders one chart legend entry per (inverter, MPPT) series plus the Total line", %{
+    test "renders one chart legend entry per inverter plus the Total line", %{
       conn: conn,
       user: user
     } do
-      # Two inverters; the second one has two MPPT channels. The legend
-      # should expose a friendly label per series so the chart reader can
-      # tell the lines apart, AND a Total line at the top so the fleet
-      # aggregate is always visible.
-      dtu =
+      # Two inverters, each with its own AC aggregate. The legend should
+      # expose one entry per inverter (so the chart reader can tell the
+      # lines apart) AND a Total line at the top because the fleet has
+      # more than one inverter — see `assign_line_chart_data/5`'s
+      # `show_total?` check.
+      dtu1 =
         device_fixture(user, %{
-          name: "Multi MPPT Inverter",
+          name: "Inverter One",
           kind: "opendtu",
-          mqtt_username: "multi-mppt"
+          mqtt_username: "inv-one"
+        })
+
+      dtu2 =
+        device_fixture(user, %{
+          name: "Inverter Two",
+          kind: "ahoydtu",
+          mqtt_username: "inv-two"
         })
 
       now = DateTime.utc_now()
 
-      for {serial, mppt_index, name, power} <- [
-            {"INV-1", 0, "East Array", 200.0},
-            {"INV-2", 1, "West Array", 80.0},
-            {"INV-2", 2, "West Array", 70.0}
+      for {dtu_id, serial, mppt_index, name, power} <- [
+            {dtu1.id, "INV-1", 0, "East Array", 200.0},
+            # `dtu2`'s AC aggregate — needed so the chart sees two
+            # distinct inverters and renders the fleet Total.
+            {dtu2.id, "INV-2", 0, "West Array", 150.0},
+            # `dc_power` rows (per-MPPT) are intentionally included so
+            # we can verify they're filtered out of the chart by the
+            # `Enum.filter` in `assign_line_chart_data/5` — the chart
+            # should still show one line per inverter, not three.
+            {dtu2.id, "INV-2", 1, "West Array", 80.0},
+            {dtu2.id, "INV-2", 2, "West Array", 70.0}
           ] do
-        {:ok, _} =
-          Devices.create_reading(%{
-            dtu_id: dtu.id,
-            inverter_serial: serial,
-            mppt_index: mppt_index,
-            inverter_name: name,
-            ac_power: power,
-            inserted_at: now
-          })
+        attrs = %{
+          dtu_id: dtu_id,
+          inverter_serial: serial,
+          mppt_index: mppt_index,
+          inverter_name: name,
+          inserted_at: now
+        }
+
+        attrs =
+          if mppt_index == 0,
+            do: Map.put(attrs, :ac_power, power),
+            else: Map.put(attrs, :dc_power, power)
+
+        {:ok, _} = Devices.create_reading(attrs)
       end
 
       {:ok, view, html} = live(conn, ~p"/dashboard")
@@ -226,23 +246,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # entry at the top.
       assert has_element?(view, "#chart-legend")
 
-      # Three per-series labels and one fleet Total. The per-series
-      # labels use the user-set `inverter_name` and tag the AC line
-      # with "(AC)" and the per-MPPT lines with "-- MPPT N".
+      # Two per-inverter labels (per-MPPT DC rows are collapsed into the
+      # inverter's AC line on the server) and one fleet Total.
       assert html =~ "Total"
-      assert html =~ "East Array (AC)"
-      assert html =~ "West Array — MPPT 1"
-      assert html =~ "West Array — MPPT 2"
+      assert html =~ "East Array"
+      assert html =~ "West Array"
 
-      # The chart SVG carries one path per series plus the Total path,
-      # tagged with the inverter serial + MPPT index (or `is_total`
-      # for the aggregate) so tests and any future JS hook can address
-      # them. Four distinct paths total.
+      # The chart SVG carries one path per inverter (DC rows filtered
+      # out) plus the Total path: 2 + 1 = 3 paths.
       path_count = html |> String.split(~s(data-series=)) |> length() |> Kernel.-(1)
-      assert path_count == 4
+      assert path_count == 3
 
-      # And each serial appears at least once (rough sanity check that all
-      # three series made it into the rendered SVG, not just the first).
+      # Sanity check that both inverter serials appear in the SVG.
       assert html =~ "INV-1"
       assert html =~ "INV-2"
     end
@@ -257,42 +272,61 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # tinted area fill under the first series was visible. The fix
       # passes the already-resolved hex color (`stroke_hex` from
       # `tooltip_to_hex/2`) directly to the SVG `stroke=` attribute.
-      dtu =
+      dtu1 =
         device_fixture(user, %{
-          name: "Stroke Test",
+          name: "Stroke DTU One",
           kind: "opendtu",
-          mqtt_username: "stroke-test"
+          mqtt_username: "stroke-one"
+        })
+
+      dtu2 =
+        device_fixture(user, %{
+          name: "Stroke DTU Two",
+          kind: "ahoydtu",
+          mqtt_username: "stroke-two"
         })
 
       now = DateTime.utc_now()
 
-      for {serial, mppt_index, name, power} <- [
-            {"INV-1", 0, "East Array", 200.0},
-            {"INV-2", 1, "West Array", 80.0},
-            {"INV-2", 2, "West Array", 70.0}
+      for {dtu_id, serial, mppt_index, name, power} <- [
+            {dtu1.id, "INV-1", 0, "East Array", 200.0},
+            {dtu2.id, "INV-2", 0, "West Array", 150.0},
+            # Per-MPPT DC rows are filtered out of the chart by the
+            # server (see `assign_line_chart_data/5`). Seed them too
+            # to verify the filter — they should NOT produce any extra
+            # `<path>` elements.
+            {dtu2.id, "INV-2", 1, "West Array", 80.0},
+            {dtu2.id, "INV-2", 2, "West Array", 70.0}
           ] do
-        {:ok, _} =
-          Devices.create_reading(%{
-            dtu_id: dtu.id,
-            inverter_serial: serial,
-            mppt_index: mppt_index,
-            inverter_name: name,
-            ac_power: power,
-            inserted_at: now
-          })
+        attrs = %{
+          dtu_id: dtu_id,
+          inverter_serial: serial,
+          mppt_index: mppt_index,
+          inverter_name: name,
+          inserted_at: now
+        }
+
+        attrs =
+          if mppt_index == 0,
+            do: Map.put(attrs, :ac_power, power),
+            else: Map.put(attrs, :dc_power, power)
+
+        {:ok, _} = Devices.create_reading(attrs)
       end
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # Pull every <path data-series=... ...> opening tag and assert
       # each carries a hex `stroke=` attribute. Skip the area-fill
-      # path (it doesn't carry data-series).
+      # path (it doesn't carry data-series). Per-MPPT DC rows are
+      # filtered out by the server (see `assign_line_chart_data/5`),
+      # so two inverters + one Total = three paths.
       path_tags =
         Regex.scan(~r/<path\b[^>]*data-series="[^"]+"[^>]*>/, html)
         |> Enum.map(fn [tag | _] -> tag end)
 
-      assert length(path_tags) == 4,
-             "expected 3 series paths + 1 Total path, got #{length(path_tags)}"
+      assert length(path_tags) == 3,
+             "expected 2 inverter paths + 1 Total path, got #{length(path_tags)}"
 
       Enum.each(path_tags, fn tag ->
         assert Regex.match?(~r/stroke="#[0-9a-fA-F]{6}"/, tag),
@@ -321,43 +355,44 @@ defmodule DtuAppWeb.DashboardLiveTest do
       conn: conn,
       user: user
     } do
-      # Spread three series across two 5-minute buckets (12:00 and
+      # Spread two inverters across two 5-minute buckets (12:00 and
       # 12:05) so the Total path has at least one line segment. The
-      # chart reads `ac_power` for the AC aggregate (mppt_index = 0)
-      # and `dc_power` for per-MPPT rows (mppt_index >= 1), so the
-      # test populates the right field per row.
-      dtu =
+      # Total only renders when the fleet has more than one inverter
+      # (see `assign_line_chart_data/5`'s `show_total?` check), so we
+      # need two DTUs. Per-MPPT DC rows are filtered out by the
+      # server, so each inverter contributes exactly one line.
+      dtu1 =
         device_fixture(user, %{
-          name: "Sum Test",
+          name: "Sum DTU One",
           kind: "opendtu",
-          mqtt_username: "sum-test"
+          mqtt_username: "sum-one"
+        })
+
+      dtu2 =
+        device_fixture(user, %{
+          name: "Sum DTU Two",
+          kind: "ahoydtu",
+          mqtt_username: "sum-two"
         })
 
       bucket1 = DateTime.utc_now() |> DateTime.truncate(:second)
       bucket2 = DateTime.add(bucket1, 300, :second)
 
-      for {serial, mppt_index, name, bucket, power} <- [
-            {"INV-1", 0, "East", bucket1, 200.0},
-            {"INV-2", 1, "West", bucket1, 80.0},
-            {"INV-2", 2, "West", bucket1, 70.0},
-            {"INV-1", 0, "East", bucket2, 150.0},
-            {"INV-2", 1, "West", bucket2, 60.0},
-            {"INV-2", 2, "West", bucket2, 40.0}
+      for {dtu_id, serial, name, bucket, power} <- [
+            {dtu1.id, "INV-1", "East", bucket1, 200.0},
+            {dtu2.id, "INV-2", "West", bucket1, 150.0},
+            {dtu1.id, "INV-1", "East", bucket2, 100.0},
+            {dtu2.id, "INV-2", "West", bucket2, 50.0}
           ] do
-        attrs = %{
-          dtu_id: dtu.id,
-          inverter_serial: serial,
-          mppt_index: mppt_index,
-          inverter_name: name,
-          inserted_at: bucket
-        }
-
-        attrs =
-          if mppt_index == 0,
-            do: Map.put(attrs, :ac_power, power),
-            else: Map.put(attrs, :dc_power, power)
-
-        {:ok, _} = Devices.create_reading(attrs)
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu_id,
+            inverter_serial: serial,
+            mppt_index: 0,
+            inverter_name: name,
+            ac_power: power,
+            inserted_at: bucket
+          })
       end
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
@@ -384,15 +419,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert is_list(points)
       assert length(points) >= 1
 
-      # Per-bucket totals match what we'd hand-compute from the series
-      # contributions: 350 W at bucket1, 250 W at bucket2 => 600 W
-      # total. The chart's reverse-mapping through (250 - y) / 230 *
-      # y_max quantizes to the nearest watt and may round to slightly
-      # different values, so we accept a 30 W tolerance band per pair.
+      # Per-bucket totals match what we'd hand-compute from the
+      # inverter contributions: 350 W at bucket1 (200 + 150), 150 W at
+      # bucket2 (100 + 50) => 500 W total. The chart's reverse-mapping
+      # through (250 - y) / 230 * y_max quantizes to the nearest watt
+      # and may round to slightly different values, so we accept a
+      # 30 W tolerance band per pair.
       total_watts = points |> Enum.map(& &1["power"]) |> Enum.sum()
 
-      assert total_watts >= 570 and total_watts <= 630,
-             "expected fleet Total sum ~600 W across two buckets, got #{total_watts} W (rounded #{Enum.map(points, & &1["power"])})"
+      assert total_watts >= 470 and total_watts <= 530,
+             "expected fleet Total sum ~500 W across two buckets, got #{total_watts} W (rounded #{Enum.map(points, & &1["power"])})"
     end
 
     test "Total line is omitted when no readings exist for the day", %{
@@ -413,24 +449,74 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "Total path should not be rendered when there is no data"
     end
 
-    test "Total legend entry is rendered first so the headline value is the first thing the reader sees",
-         %{conn: conn, user: user} do
+    test "Total line is omitted when only one inverter has readings", %{
+      conn: conn,
+      user: user
+    } do
+      # Single DTU = single inverter in the chart's scope. With only
+      # one inverter, the per-inverter line *is* the total — adding a
+      # Total curve would be redundant, so it's suppressed
+      # (`show_total?` in `assign_line_chart_data/5`).
       dtu =
         device_fixture(user, %{
-          name: "Order Test",
+          name: "Solo Inverter",
           kind: "opendtu",
-          mqtt_username: "order-test"
+          mqtt_username: "solo"
         })
-
-      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
 
       {:ok, _} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
           inverter_serial: "INV-1",
           mppt_index: 0,
-          inverter_name: "Panel",
+          inverter_name: "Solo",
+          ac_power: 200.0,
+          inserted_at: DateTime.utc_now()
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ ~s(data-legend-key="total"),
+             "Total path should not be rendered when only one inverter is in scope"
+    end
+
+    test "Total legend entry is rendered first so the headline value is the first thing the reader sees",
+         %{conn: conn, user: user} do
+      # Two inverters so the fleet Total is rendered (single-inverter
+      # fleets hide the Total — see `assign_line_chart_data/5`).
+      dtu1 =
+        device_fixture(user, %{
+          name: "Order DTU One",
+          kind: "opendtu",
+          mqtt_username: "order-one"
+        })
+
+      dtu2 =
+        device_fixture(user, %{
+          name: "Order DTU Two",
+          kind: "ahoydtu",
+          mqtt_username: "order-two"
+        })
+
+      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu1.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "Panel A",
           ac_power: 150.0,
+          inserted_at: bucket
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu2.id,
+          inverter_serial: "INV-2",
+          mppt_index: 0,
+          inverter_name: "Panel B",
+          ac_power: 100.0,
           inserted_at: bucket
         })
 
