@@ -473,6 +473,78 @@ defmodule DtuApp.AccountsTest do
     end
   end
 
+  describe "UserToken inserted_at uses the database clock (db-clock refactor)" do
+    # The DB-clock refactor exists because every other timestamp in the app
+    # is rounded to the same time source — the database. Without explicit
+    # `inserted_at: DtuApp.Time.utc_now()` in `build_*_token/1`, Ecto's
+    # `timestamps(type: :utc_datetime, updated_at: false)` macro auto-fills
+    # `inserted_at` from `DateTime.utc_now()` on the app container. That
+    # reintroduces app↔DB clock drift in the verify query and mis-classifies
+    # freshly-issued magic links as "expired" when the app clock runs ahead
+    # of (or behind) the DB clock. See `DtuApp.Time` and the
+    # `set_db_clock_defaults_for_time_columns` migration for the rationale.
+
+    setup do
+      %{user: user_fixture()}
+    end
+
+    test "build_email_token/2 pre-fills inserted_at from DtuApp.Time.utc_now()", %{user: user} do
+      # Capture the DB clock immediately around the build call so the
+      # assertion tolerates the round-trip's microsecond drift (DtuApp.Time
+      # truncates to whole seconds, but the call still races a clock tick
+      # between build and verify).
+      before = DtuApp.Time.utc_now()
+      {_encoded, user_token} = UserToken.build_email_token(user, "login")
+      after_ = DtuApp.Time.utc_now()
+
+      # The pre-filled value must come from the DB clock helper, not from
+      # `DateTime.utc_now()`. In tests both clocks agree, so the bound is
+      # `before <= inserted_at <= after_` — exactly what `DtuApp.Time.utc_now()`
+      # would return.
+      assert user_token.inserted_at != nil
+      assert DateTime.compare(user_token.inserted_at, before) in [:gt, :eq]
+      assert DateTime.compare(user_token.inserted_at, after_) in [:lt, :eq]
+    end
+
+    test "build_session_token/1 pre-fills inserted_at from DtuApp.Time.utc_now()", %{user: user} do
+      before = DtuApp.Time.utc_now()
+      {_token, user_token} = UserToken.build_session_token(user)
+      after_ = DtuApp.Time.utc_now()
+
+      assert user_token.inserted_at != nil
+      assert DateTime.compare(user_token.inserted_at, before) in [:gt, :eq]
+      assert DateTime.compare(user_token.inserted_at, after_) in [:lt, :eq]
+    end
+
+    test "a token written via the app helper round-trips through verify_magic_link_token_query/1",
+         %{user: user} do
+      # End-to-end regression: build, insert, verify. With the fix in
+      # place, `inserted_at` is set from `DtuApp.Time.utc_now()` on the
+      # write side, so the verify query's `DtuApp.Time.utc_now() - 15min`
+      # cutoff compares two values from the same clock and the token is
+      # found. Without the fix, Ecto's autogenerate would write
+      # `DateTime.utc_now()` from the app container, and any drift between
+      # the app and DB clocks would mis-classify a fresh link as expired.
+      {encoded_token, user_token} = UserToken.build_email_token(user, "login")
+
+      # Sanity check: the helper stamped `inserted_at` from the DB clock.
+      # If this assertion ever fails, the bug is back.
+      db_now = DtuApp.Time.utc_now()
+
+      assert DateTime.compare(user_token.inserted_at, db_now) in [:gt, :eq],
+             "build_email_token/2 should pre-fill inserted_at from DtuApp.Time.utc_now(); " <>
+               "got #{inspect(user_token.inserted_at)} but DtuApp.Time.utc_now()=#{inspect(db_now)}"
+
+      # Now insert and verify — the round trip should succeed because the
+      # stored `inserted_at` is consistent with the DB clock used by the
+      # verify query, regardless of any drift between the host's wall
+      # clock and the DB server's wall clock.
+      Repo.insert!(user_token)
+
+      assert %User{} = Accounts.get_user_by_magic_link_token(encoded_token)
+    end
+  end
+
   describe "inspect/2 for the User module" do
     test "does not include password" do
       refute inspect(%User{password: "123456"}) =~ "password: \"123456\""
