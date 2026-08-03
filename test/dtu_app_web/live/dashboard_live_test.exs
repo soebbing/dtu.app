@@ -1081,17 +1081,22 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "display:none"
     end
 
-    test "the area-fill path is non-interactive so it doesn't block hover on chart lines",
+    test "the chart has no tinted area-fill under the curves",
          %{conn: conn, user: user} do
+      # The chart used to render a tinted polygon (a green gradient fill
+      # anchored to the first inverter's line) under the curve. The tint
+      # was decorative noise: in single-inverter fleets, the only
+      # inverter's line *is* the total, so users reasonably read the
+      # tinted region as "Total" — but it wasn't. The fill was removed;
+      # this test pins the absence so it can't regress.
       dtu =
         device_fixture(user, %{
-          name: "Area non-interactive",
+          name: "No Area Fill",
           kind: "opendtu",
-          mqtt_username: "area-non-interactive",
+          mqtt_username: "no-area-fill",
           base_topic: "solar"
         })
 
-      # At least two readings so the area-fill polygon is generated.
       for minute <- [0, 30] do
         {:ok, _} =
           Devices.create_reading(%{
@@ -1108,9 +1113,15 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # The area fill sits below the chart lines and would otherwise eat
-      # mousemove events. `pointer-events="none"` lets them pass through.
-      assert html =~ ~r/fill="url\(#chartGrad\)"\s+pointer-events="none"/
+      # The chartGrad gradient and its consumer <path fill="url(#chartGrad)">
+      # must no longer appear in the rendered SVG. Note: we use plain
+      # string literals rather than `~s(...)` because the `(` in
+      # `url(#chartGrad)` would prematurely close the sigil.
+      refute html =~ "fill=\"url(#chartGrad)\"",
+             "the chart should not render a tinted area-fill anymore"
+
+      refute html =~ "id=\"chartGrad\"",
+             "the chartGrad <linearGradient> should no longer be defined"
     end
   end
 
