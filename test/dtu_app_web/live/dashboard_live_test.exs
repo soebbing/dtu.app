@@ -113,10 +113,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
         {:reading, "client_1", %{dtu_id: dtu.id}}
       )
 
-      # Assert the view received the update and shows 350.0 W
+      # Assert the view received the update and shows 350.0 W. Today's
+      # Total Yield is rounded to one decimal place, so 1_250 Wh
+      # (1.25 kWh) renders as "1.3 kWh".
       html = render(view)
       assert html =~ "350.0 W"
-      assert html =~ "1.25 kWh"
+      assert html =~ "1.3 kWh"
       assert html =~ "solar-chart-svg"
     end
 
