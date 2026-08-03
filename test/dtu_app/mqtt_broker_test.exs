@@ -609,78 +609,141 @@ defmodule DtuApp.MqttBrokerTest do
     end
   end
 
-  describe "run_stale_dtu_sweep/0" do
-    # Tests the wiring between the periodic sweep (scheduled in
-    # Telemetry.init/0) and the dashboard refresh path: when the sweep
-    # flips a stale DTU to `online: false`, it must broadcast on
-    # `dtu:status` so subscribed LiveViews re-render the device cards.
-    # No LiveView subscribed here — the test asserts the broadcast
-    # payload directly.
+  describe "last_seen_at touch path — :dtu_seen broadcast" do
+    # Online status is **derived** from `last_seen_at` (see
+    # `DtuApp.Devices.Dtu.online?/2`). `last_seen_at` is touched on every
+    # MQTT activity (uplink, CONNECT, DISCONNECT) by
+    # `Telemetry.handle_info/2`, and the touched timestamp is followed
+    # by a `:dtu_seen` broadcast on `dtu:status` so subscribed
+    # LiveViews can refresh their device list. The tests below pin the
+    # wiring so the dashboard badge flips within one publish interval
+    # of a DTU waking up.
 
-    test "flips stale DTUs and broadcasts :dtu_status_changed with the affected ids" do
+    test "every uplink touches last_seen_at to the DB clock" do
       user = user_fixture()
-      device = device_fixture(user)
+      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "uplink-touch", base_topic: "solar"})
+      Credentials.refresh(dtu.mqtt_username)
 
-      # Mark the DTU as online but with a long-stale `last_seen_at` so
-      # the sweep picks it up.
-      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
 
-      {:ok, _} =
-        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: stale}))
+      # Anchor: a stale `last_seen_at` well below the threshold so
+      # the device starts offline, then a single uplink should flip
+      # it to "just now" (within threshold).
+      stale = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      {:ok, _} = DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{last_seen_at: stale}))
 
-      :ok = Telemetry.subscribe_status()
+      msg = {:uplink, "client_touch", device_info, "solar/SN/realtime/data", "{}"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
 
-      Telemetry.run_stale_dtu_sweep()
-
-      # Broadcast payload includes the flipped DTU's id, so subscribers
-      # know which row to refresh (the dashboard LiveView just refreshes
-      # the whole device list, but the contract is "ids of affected
-      # DTUs").
-      device_id = device.id
-      assert_receive {:dtu_status_changed, [flipped_id]}, 1_000
-      assert flipped_id == device_id
-
-      assert DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id).online == false
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      # The new `last_seen_at` is within the 5-min threshold (i.e.
+      # `now - last_seen_at < 300 s`).
+      diff = DateTime.diff(DateTime.utc_now(), reloaded.last_seen_at, :second)
+      assert diff < 300, "expected last_seen_at to be touched to within 5 minutes, got diff=#{diff}s"
+      # And the new value is strictly newer than the stale anchor.
+      assert DateTime.compare(reloaded.last_seen_at, stale) == :gt
     end
 
-    test "does not broadcast when no DTUs are stale" do
+    test "every uplink broadcasts :dtu_seen on the dtu:status topic with the device id" do
       user = user_fixture()
-      device = device_fixture(user)
+      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "uplink-broadcast", base_topic: "solar"})
+      Credentials.refresh(dtu.mqtt_username)
 
-      recent = DateTime.utc_now() |> DateTime.add(-30, :second)
-
-      {:ok, _} =
-        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: recent}))
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
 
       :ok = Telemetry.subscribe_status()
 
-      Telemetry.run_stale_dtu_sweep()
+      msg = {:uplink, "client_bc", device_info, "solar/SN/realtime/data", "{}"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
 
-      # `assert_receive` with a timeout acts as a "this message must
-      # NOT arrive" check — a positive `receive` would block forever,
-      # so we use the refute form.
-      refute_receive {:dtu_status_changed, _ids}, 200
+      assert_receive {:dtu_seen, device_id}, 1_000
+      assert device_id == dtu.id
     end
 
-    test "is idempotent — running twice after the first flip is a no-op" do
+    test ":dtu_connected and :dtu_disconnected both touch last_seen_at" do
       user = user_fixture()
-      device = device_fixture(user)
+      dtu = device_fixture(user)
+      Credentials.refresh(dtu.mqtt_username)
 
-      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
+      stale = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      {:ok, _} = DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{last_seen_at: stale}))
 
-      {:ok, _} =
-        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: true, last_seen_at: stale}))
+      # CONNECT and DISCONNECT both go through `touch_last_seen/1`.
+      Telemetry.handle_info({:dtu_connected, "client_x", dtu.id}, %{buffers: %{}})
+
+      after_connect = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id).last_seen_at
+      assert DateTime.compare(after_connect, stale) == :gt
+
+      stale2 = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      {:ok, _} = DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{last_seen_at: stale2}))
+
+      Telemetry.handle_info({:dtu_disconnected, "client_x", dtu.id}, %{buffers: %{}})
+
+      after_disconnect = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id).last_seen_at
+      assert DateTime.compare(after_disconnect, stale2) == :gt
+    end
+
+    test "unauthenticated uplinks (device_info = nil) do not touch last_seen_at or broadcast" do
+      user = user_fixture()
+      dtu = device_fixture(user)
+
+      original = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      {:ok, _} = DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{last_seen_at: original}))
 
       :ok = Telemetry.subscribe_status()
-      device_id = device.id
 
-      Telemetry.run_stale_dtu_sweep()
-      assert_receive {:dtu_status_changed, [flipped_id]}, 1_000
-      assert flipped_id == device_id
+      # Unauthenticated uplink: device_info = nil. The handler short-
+      # circuits before any DB write or broadcast.
+      msg = {:uplink, "anon", nil, "solar/SN/realtime/data", "{}"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
 
-      # Second sweep: DTU is already offline, so no broadcast.
-      Telemetry.run_stale_dtu_sweep()
-      refute_receive {:dtu_status_changed, _ids}, 200
+      refute_receive {:dtu_seen, _}, 200
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert DateTime.compare(reloaded.last_seen_at, original) == :eq
+    end
+
+    test "uploads touch last_seen_at even when the topic is ignored by the parser" do
+      # The bug we're fixing: a DTU that stays MQTT-connected but
+      # publishes only on topics the parser doesn't recognise used to
+      # leave `last_seen_at` stale, so the dashboard showed it offline
+      # even though telemetry was flowing. Now the touch happens before
+      # the parser, so any PUBLISH — even one we drop — counts as
+      # evidence the DTU is alive.
+      user = user_fixture()
+      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "unknown-topic", base_topic: "solar"})
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      stale = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      {:ok, _} = DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{last_seen_at: stale}))
+
+      # `garbage/foo` doesn't match any of the OpenDTU topic patterns
+      # in `parse_opendtu/3` — it returns `{:ignored, :unknown_topic}`.
+      msg = {:uplink, "client_unk", device_info, "solar/garbage/foo", "data"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert DateTime.compare(reloaded.last_seen_at, stale) == :gt
     end
   end
 end

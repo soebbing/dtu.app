@@ -25,17 +25,18 @@
       id={dom_id}
       class="flex items-center justify-between gap-4 bg-white px-4 py-3 dark:bg-zinc-900"
     >
+      <% online? = DtuApp.Devices.Dtu.online?(device) %>
       <div class="min-w-0">
         <div class="flex items-center gap-2">
           <span
             class={[
               "inline-block size-2 rounded-full",
-              if(device.online,
+              if(online?,
                 do: "bg-emerald-500",
                 else: "bg-zinc-300 dark:bg-zinc-600"
               )
             ]}
-            title={if(device.online, do: gettext("online"), else: gettext("offline"))}
+            title={if(online?, do: gettext("online"), else: gettext("offline"))}
           />
           <p class="truncate font-medium text-zinc-900 dark:text-zinc-100">
             {device.name}

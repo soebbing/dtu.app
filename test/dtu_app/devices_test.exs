@@ -573,115 +573,84 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
-  describe "mark_stale_dtus_offline/1" do
-    # The broker only flips `online` on real CONNECT/DISCONNECT events.
-    # A DTU that drops off silently (WiFi blip, NAT timeout, power-cycle
-    # without a clean MQTT disconnect) keeps `online: true` indefinitely,
-    # which contradicts the dashboard's "Last seen: 49 minutes ago" label.
-    # The periodic sweep in `DtuApp.MqttBroker.Telemetry` calls
-    # `mark_stale_dtus_offline/1` to catch this case. Tests here pin
-    # the contract of that sweep so the dashboard LiveView's
-    # `online`-badge refresh path stays correct.
+  describe "Dtu.online?/2 — derived online status from last_seen_at" do
+    # Online status is **derived**, not stored. A DTU is online iff
+    # `now - last_seen_at < 300 s` (the `Dtu.online_threshold_seconds`
+    # module attribute). The dashboard reads this directly so it
+    # reflects real-time liveness rather than the last broker
+    # CONNECT. Tests here pin the boundary contract so the badge
+    # stays correct as we touch `last_seen_at` from every MQTT
+    # activity path.
 
-    test "flips online to false for DTUs whose last_seen_at is older than the threshold" do
+    alias DtuApp.Devices.Dtu
+
+    test "DTU with last_seen_at = nil is offline (never seen)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert Dtu.online?(device) == false
+      # Even when `now` is far in the past, a DTU that's never been
+      # seen is offline — the helper short-circuits on nil.
+      assert Dtu.online?(device, DateTime.utc_now()) == false
+    end
+
+    test "DTU with last_seen_at within the threshold is online" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # last_seen_at = now - 60 s → online
+      one_min_ago = DateTime.utc_now() |> DateTime.add(-60, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_seen_at: one_min_ago}))
+
+      now = DateTime.utc_now()
+      assert Dtu.online?(device, now) == true
+    end
+
+    test "DTU with last_seen_at at exactly the threshold is offline (<, not <=)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      # 300 s exactly → NOT online (the comparison is strict <)
+      five_min_ago = DateTime.add(now, -300, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_seen_at: five_min_ago}))
+
+      assert Dtu.online?(device, now) == false
+    end
+
+    test "DTU with last_seen_at older than the threshold is offline" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
       ten_min_ago = DateTime.utc_now() |> DateTime.add(-600, :second)
 
-      {:ok, _} =
-        DtuApp.Repo.update(
-          Ecto.Changeset.change(device, %{online: true, last_seen_at: ten_min_ago})
-        )
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_seen_at: ten_min_ago}))
 
-      assert {1, [flipped_id]} = Devices.mark_stale_dtus_offline(300)
-      assert flipped_id == device.id
-
-      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id)
-      assert reloaded.online == false
-      # `last_seen_at` is the historical record of the last uplink —
-      # the sweep must not touch it.
-      assert DateTime.compare(reloaded.last_seen_at, ten_min_ago) == :eq
+      assert Dtu.online?(device) == false
     end
 
-    test "leaves recent DTUs alone (last_seen_at within the threshold)" do
+    test "online? accepts an explicit `now` argument for deterministic tests" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      one_min_ago = DateTime.utc_now() |> DateTime.add(-60, :second)
+      # last_seen_at is typed `:utc_datetime_usec`, so the test value
+      # needs microsecond precision to round-trip through Ecto. With
+      # now = +60 s, online; with now = +600 s, offline.
+      fixed_last_seen = ~U[2026-08-01 12:00:00.000000Z]
 
-      {:ok, _} =
-        DtuApp.Repo.update(
-          Ecto.Changeset.change(device, %{online: true, last_seen_at: one_min_ago})
-        )
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_seen_at: fixed_last_seen}))
 
-      assert {0, []} = Devices.mark_stale_dtus_offline(300)
-      assert DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id).online == true
-    end
+      one_min_after = ~U[2026-08-01 12:01:00.000000Z]
+      ten_min_after = ~U[2026-08-01 12:10:00.000000Z]
 
-    test "skips already-offline DTUs (idempotent — running twice is a no-op)" do
-      user = DtuApp.AccountsFixtures.user_fixture()
-      device = DevicesFixtures.device_fixture(user)
-
-      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
-
-      {:ok, _} =
-        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: false, last_seen_at: stale}))
-
-      assert {0, []} = Devices.mark_stale_dtus_offline(300)
-    end
-
-    test "honors a custom stale_after threshold" do
-      user = DtuApp.AccountsFixtures.user_fixture()
-      device = DevicesFixtures.device_fixture(user)
-
-      # Online 30 s ago. With the default 300 s threshold, this would
-      # not flip. With a 10 s threshold, it should.
-      thirty_sec_ago = DateTime.utc_now() |> DateTime.add(-30, :second)
-
-      {:ok, _} =
-        DtuApp.Repo.update(
-          Ecto.Changeset.change(device, %{online: true, last_seen_at: thirty_sec_ago})
-        )
-
-      assert {0, []} = Devices.mark_stale_dtus_offline(300)
-
-      assert {1, [flipped_id]} = Devices.mark_stale_dtus_offline(10)
-      assert flipped_id == device.id
-    end
-
-    test "only flips DTUs owned by the affected user — no cross-user side effects" do
-      # `update_all` is unscoped, so any stale DTU in the table is a
-      # candidate. This test verifies the flip is scoped to the rows
-      # that match the predicate (online AND stale), not by user —
-      # which is correct: a DTU being stale is a property of the device,
-      # not of who's logged in. Two users owning different DTUs see
-      # both flips if both devices are stale.
-      user1 = DtuApp.AccountsFixtures.user_fixture()
-      user2 = DtuApp.AccountsFixtures.user_fixture()
-
-      dtu1 = DevicesFixtures.device_fixture(user1)
-      dtu2 = DevicesFixtures.device_fixture(user2)
-
-      stale = DateTime.utc_now() |> DateTime.add(-600, :second)
-
-      for dtu <- [dtu1, dtu2] do
-        {:ok, _} =
-          DtuApp.Repo.update(Ecto.Changeset.change(dtu, %{online: true, last_seen_at: stale}))
-      end
-
-      assert {2, ids} = Devices.mark_stale_dtus_offline(300)
-      assert Enum.sort(ids) == Enum.sort([dtu1.id, dtu2.id])
-    end
-
-    test "DTUs with last_seen_at = nil are skipped (they've never connected)" do
-      user = DtuApp.AccountsFixtures.user_fixture()
-      device = DevicesFixtures.device_fixture(user)
-
-      {:ok, _} =
-        DtuApp.Repo.update(Ecto.Changeset.change(device, %{online: false, last_seen_at: nil}))
-
-      assert {0, []} = Devices.mark_stale_dtus_offline(300)
+      assert Dtu.online?(device, one_min_after) == true
+      assert Dtu.online?(device, ten_min_after) == false
     end
   end
 

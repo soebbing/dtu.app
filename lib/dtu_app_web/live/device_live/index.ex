@@ -4,9 +4,17 @@ defmodule DtuAppWeb.DeviceLive.Index do
 
   alias DtuApp.Devices
   alias DtuApp.Devices.Dtu
+  alias DtuApp.MqttBroker.Telemetry
 
   @impl true
   def mount(_params, _session, socket) do
+    if connected?(socket) do
+      # `:dtu_seen` fires on every MQTT uplink (and CONNECT / DISCONNECT).
+      # Re-stream the device list so the online indicator on each row
+      # stays current without forcing the user to refresh the page.
+      Telemetry.subscribe_status()
+    end
+
     {:ok,
      socket
      |> stream(:devices, Devices.list_devices(socket.assigns.current_scope.user))
@@ -14,6 +22,16 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> assign(:created_device, nil)
      |> assign(:mqtt_host, mqtt_host())
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
+  end
+
+  @impl true
+  def handle_info({:dtu_seen, _device_id}, socket) do
+    # Re-stream every device so each row's `Dtu.online?/2` call sees a
+    # fresh `last_seen_at`. `stream/3` is a no-op when the underlying
+    # row hasn't changed, so the cost is one query plus one diff pass
+    # per status flip.
+    {:noreply,
+     stream(socket, :devices, Devices.list_devices(socket.assigns.current_scope.user), reset: true)}
   end
 
   # Host shown to users as the MQTT broker address in the created-device modal.

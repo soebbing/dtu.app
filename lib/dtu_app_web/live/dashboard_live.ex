@@ -160,13 +160,15 @@ defmodule DtuAppWeb.DashboardLive do
 
     socket = assign_selectable_periods(socket, user, selected_id)
 
-    # Only live views refresh on every reading; historical views are static.
+    # Every reading also touches the DTU's `last_seen_at` (see
+    # `DtuApp.MqttBroker.Telemetry`), so re-read the device list here
+    # to refresh the derived online badge — without this refresh the
+    # badge would only update on a CONNECT / DISCONNECT, which means
+    # a DTU that wakes up but stays MQTT-connected wouldn't flip from
+    # offline to online until the next reconnect.
     socket =
-      if socket.assigns.live do
-        assign_dashboard_data(socket, user, selected_id, socket.assigns.time_range, nil)
-      else
-        socket
-      end
+      assign(socket, :devices, Devices.list_devices(user))
+      |> maybe_reassign_dashboard_data(user, selected_id)
 
     {:noreply, socket}
   end
@@ -183,11 +185,13 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
-  # Refresh the device card list when the periodic stale-DTU sweep
-  # flips `online` to `false` for any DTU. The cards re-render with the
-  # correct "online" badge the next time the LiveView patches.
+  # Every MQTT uplink (and every CONNECT / DISCONNECT) broadcasts a
+  # `:dtu_seen` on `dtu:status` after touching `last_seen_at`. Re-read
+  # the device list so the badge flips on the next render. The
+  # historical-view path is left alone — only the live view's stats
+  # chart is refreshed on every reading.
   @impl true
-  def handle_info({:dtu_status_changed, _ids}, socket) do
+  def handle_info({:dtu_seen, _device_id}, socket) do
     user = socket.assigns.current_scope.user
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
@@ -704,6 +708,18 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   # --- Time-picker helpers ----------------------------------------------------
+
+  # Apply `assign_dashboard_data/5` only on the live view — historical
+  # views (day / week / month / year) are static and don't refresh on
+  # every reading. Kept as a helper so the reading handler above can
+  # stay readable.
+  defp maybe_reassign_dashboard_data(socket, user, selected_id) do
+    if socket.assigns.live do
+      assign_dashboard_data(socket, user, selected_id, socket.assigns.time_range, nil)
+    else
+      socket
+    end
+  end
 
   # Re-run the dashboard for whichever view is active after a DTU switch.
   defp reapply_current_view(socket, user, dtu_id) do
@@ -2153,6 +2169,7 @@ defmodule DtuAppWeb.DashboardLive do
 
             <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
               <%= for device <- @devices do %>
+                <% online? = DtuApp.Devices.Dtu.online?(device) %>
                 <div
                   class="border border-zinc-200 dark:border-zinc-700 rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition"
                   id={"device-card-#{device.id}"}
@@ -2164,13 +2181,13 @@ defmodule DtuAppWeb.DashboardLive do
                       </h3>
                       <span class={[
                         "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
-                        if(device.online,
+                        if(online?,
                           do:
                             "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
                           else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
                         )
                       ]}>
-                        {if device.online, do: gettext("online"), else: gettext("offline")}
+                        {if online?, do: gettext("online"), else: gettext("offline")}
                       </span>
                     </div>
                     <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
