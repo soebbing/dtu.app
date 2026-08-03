@@ -621,7 +621,14 @@ defmodule DtuApp.MqttBrokerTest do
 
     test "every uplink touches last_seen_at to the DB clock" do
       user = user_fixture()
-      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "uplink-touch", base_topic: "solar"})
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "uplink-touch",
+          base_topic: "solar"
+        })
+
       Credentials.refresh(dtu.mqtt_username)
 
       device_info = %{
@@ -645,14 +652,24 @@ defmodule DtuApp.MqttBrokerTest do
       # The new `last_seen_at` is within the 5-min threshold (i.e.
       # `now - last_seen_at < 300 s`).
       diff = DateTime.diff(DateTime.utc_now(), reloaded.last_seen_at, :second)
-      assert diff < 300, "expected last_seen_at to be touched to within 5 minutes, got diff=#{diff}s"
+
+      assert diff < 300,
+             "expected last_seen_at to be touched to within 5 minutes, got diff=#{diff}s"
+
       # And the new value is strictly newer than the stale anchor.
       assert DateTime.compare(reloaded.last_seen_at, stale) == :gt
     end
 
     test "every uplink broadcasts :dtu_seen on the dtu:status topic with the device id" do
       user = user_fixture()
-      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "uplink-broadcast", base_topic: "solar"})
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "uplink-broadcast",
+          base_topic: "solar"
+        })
+
       Credentials.refresh(dtu.mqtt_username)
 
       device_info = %{
@@ -723,7 +740,14 @@ defmodule DtuApp.MqttBrokerTest do
       # the parser, so any PUBLISH — even one we drop — counts as
       # evidence the DTU is alive.
       user = user_fixture()
-      dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "unknown-topic", base_topic: "solar"})
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "unknown-topic",
+          base_topic: "solar"
+        })
+
       Credentials.refresh(dtu.mqtt_username)
 
       device_info = %{

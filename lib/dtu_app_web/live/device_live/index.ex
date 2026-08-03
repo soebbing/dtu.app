@@ -31,7 +31,9 @@ defmodule DtuAppWeb.DeviceLive.Index do
     # row hasn't changed, so the cost is one query plus one diff pass
     # per status flip.
     {:noreply,
-     stream(socket, :devices, Devices.list_devices(socket.assigns.current_scope.user), reset: true)}
+     stream(socket, :devices, Devices.list_devices(socket.assigns.current_scope.user),
+       reset: true
+     )}
   end
 
   # Host shown to users as the MQTT broker address in the created-device modal.
