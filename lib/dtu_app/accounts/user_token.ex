@@ -43,11 +43,25 @@ defmodule DtuApp.Accounts.UserToken do
   """
   def build_session_token(user) do
     token = :crypto.strong_rand_bytes(@rand_size)
-    # Use the database clock for `authenticated_at` so the comparison below
-    # (`token.inserted_at > ^cutoff`) round-trips through one and only one
-    # time source — the DB. See `DtuApp.Time` for the rationale.
+    # Use the database clock for `authenticated_at` AND `inserted_at` so the
+    # comparison in `verify_session_token_query/1` (`token.inserted_at >
+    # ^cutoff`) round-trips through one and only one time source — the DB.
+    # The schema's `timestamps(type: :utc_datetime, updated_at: false)` macro
+    # would otherwise auto-fill `inserted_at` from `DateTime.utc_now()` on the
+    # app container, reintroducing app↔DB clock drift on the verify query.
+    # See `DtuApp.Time` for the rationale and the
+    # `set_db_clock_defaults_for_time_columns` migration for the column-level
+    # safety net.
     dt = user.authenticated_at || DtuApp.Time.utc_now()
-    {token, %UserToken{token: token, context: "session", user_id: user.id, authenticated_at: dt}}
+
+    {token,
+     %UserToken{
+       token: token,
+       context: "session",
+       user_id: user.id,
+       authenticated_at: dt,
+       inserted_at: DtuApp.Time.utc_now()
+     }}
   end
 
   @doc """
@@ -95,12 +109,20 @@ defmodule DtuApp.Accounts.UserToken do
     token = :crypto.strong_rand_bytes(@rand_size)
     hashed_token = :crypto.hash(@hash_algorithm, token)
 
+    # Route `inserted_at` through the DB clock — see the matching comment in
+    # `build_session_token/1`. Without this explicit assignment, Ecto's
+    # `timestamps(type: :utc_datetime, updated_at: false)` macro would
+    # auto-fill `inserted_at` from `DateTime.utc_now()` on the app container,
+    # defeating the migration's `DEFAULT now()` safety net and reintroducing
+    # app↔DB clock drift in `verify_magic_link_token_query/1` and
+    # `verify_change_email_token_query/2`.
     {Base.url_encode64(token, padding: false),
      %UserToken{
        token: hashed_token,
        context: context,
        sent_to: sent_to,
-       user_id: user.id
+       user_id: user.id,
+       inserted_at: DtuApp.Time.utc_now()
      }}
   end
 
