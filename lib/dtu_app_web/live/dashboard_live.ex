@@ -349,29 +349,12 @@ defmodule DtuAppWeb.DashboardLive do
       end)
       |> Map.new()
 
-    # Build an area fill under the first series (typically the AC
-    # aggregate) so the chart retains the existing visual treatment.
-    # Only meaningful when the series has at least 2 points (so we can
-    # close the polygon back to the X axis at the end of the day).
-    area_path_data =
-      case series_points do
-        [] ->
-          ""
-
-        [{_series, [_first_coord | _rest = []]} | _] ->
-          ""
-
-        [{_series, [{first_x, first_y, _first_t} | rest]} | _] when rest != [] ->
-          coords = Enum.map(rest, & &1)
-          {last_x, _, _} = List.last(coords)
-
-          "M #{first_x} 250 L #{first_x} #{first_y} " <>
-            (coords |> Enum.map_join(" ", fn {x, y, _t} -> "L #{x} #{y}" end)) <>
-            " L #{last_x} 250 Z"
-
-        _ ->
-          ""
-      end
+    # No tinted area under the curves. The decorative fill that used to
+    # sit under the first inverter's line was misleading: in single-
+    # inverter fleets the only inverter's line *is* the total, so users
+    # reasonably read the tinted region as "Total" — but it wasn't.
+    # The chart's lines, legend, and tooltip already convey all the
+    # information; the fill was just visual noise.
 
     x_labels = chart_x_labels(x_min_seconds, x_max_seconds)
 
@@ -454,7 +437,6 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:series_palette, series_palette)
     |> assign(:series_legend, series_legend)
     |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
-    |> assign(:area_path_data, area_path_data)
     |> assign(:x_labels, x_labels)
     |> assign(:x_min_seconds, x_min_seconds)
     |> assign(:x_max_seconds, x_max_seconds)
@@ -1571,13 +1553,6 @@ defmodule DtuAppWeb.DashboardLive do
                     data-x-min-seconds={@x_min_seconds}
                     data-x-max-seconds={@x_max_seconds}
                   >
-                    <defs>
-                      <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="#10b981" stop-opacity="0.25" />
-                        <stop offset="100%" stop-color="#10b981" stop-opacity="0.00" />
-                      </linearGradient>
-                    </defs>
-
                     <!-- Grid Lines -->
                     <line
                       x1="0"
@@ -1697,18 +1672,13 @@ defmodule DtuAppWeb.DashboardLive do
                       </div>
                     </foreignObject>
 
-                    <!-- One SVG path per (inverter, MPPT) series. The first
-                         series (typically the AC aggregate, mppt_index = 0)
-                         also gets a translucent area fill under the curve.
-                         Each path carries its (time, power) data points as
-                         a JSON data attribute so the ChartTooltip hook
-                         can look up the cursor-time value without parsing
-                         the SVG `d=` string. The Total line is rendered
-                         last so it sits on top of every per-inverter /
-                         per-MPPT path -- it's the headline curve. -->
-                    <%= if @area_path_data != "" do %>
-                      <path d={@area_path_data} fill="url(#chartGrad)" pointer-events="none" />
-                    <% end %>
+                    <!-- One SVG path per inverter. Each path carries its
+                         (time, power) data points as a JSON data attribute
+                         so the ChartTooltip hook can look up the cursor-
+                         time value without parsing the SVG `d=` string.
+                         The Total line is rendered last so it sits on top
+                         of every per-inverter path — it's the headline
+                         curve. -->
                     <%= for {series, path} <- @series_paths do %>
                       <% {base, shade} = Map.get(@series_palette, series) %>
                       <% stroke_hex = tooltip_to_hex(base, shade) %>
