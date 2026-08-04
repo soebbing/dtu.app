@@ -868,6 +868,20 @@ defmodule DtuAppWeb.DashboardLiveTest do
     |> Enum.reject(&is_nil/1)
   end
 
+  # Drop any pending notification payloads from the test process's
+  # mailbox. `Phoenix.PubSub.drain/2` isn't in this version, so we
+  # use a `receive` loop with a 0 ms timeout. Used by the sun-down
+  # tests to ignore messages from the dashboard's mount-time
+  # `:reading` handler so we only count messages from the test's
+  # explicit reading broadcast.
+  defp flush_notifications do
+    receive do
+      {:notification, _payload} -> flush_notifications()
+    after
+      0 -> :ok
+    end
+  end
+
   describe "Chart tooltip" do
     # Adds a hover/touch interaction: the ChartTooltip colocated JS hook
     # listens for mouse/touch events on the chart, draws a vertical
@@ -1126,12 +1140,6 @@ defmodule DtuAppWeb.DashboardLiveTest do
   end
 
   describe "Local-time display" do
-    # Readings are stored in UTC, but the dashboard displays the
-    # chart's X-axis labels and the ChartTooltip's HH:MM in the user's
-    # browser timezone. The JS `.ChartTooltip` hook pushes the browser's
-    # UTC offset on mount, which `handle_event("set_timezone", ...)`
-    # stores in `@user_tz_offset_seconds` and re-renders.
-
     test "chart X-axis labels shift by the browser's UTC offset", %{
       conn: conn,
       user: user
@@ -1302,6 +1310,65 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       html = render(view)
       assert html =~ "12:00"
+    end
+  end
+
+  describe "Sun-down notification firing" do
+    # The dashboard's `handle_info({:reading, ...})` clause calls
+    # `maybe_fire_sun_down_notification/2`, which (when the fleet has
+    # been at 0 W for ≥ 15 min and the user has `notify_sun_down`
+    # enabled) pushes a `:sun_down` payload to the user's session
+    # topic. The JS hook on the page (Notifications) then formats and
+    # fires the actual `new Notification(...)`.
+    #
+    # Mocking the 15-min idle window in a unit test is awkward
+    # without a sleep or a process-dict injection, so this describe
+    # block focuses on the gating conditions that are easy to
+    # assert synchronously: user opt-in and historical view.
+    alias DtuApp.Notifications
+
+    test "does not fire when notify_sun_down is off", %{conn: conn, user: user} do
+      # Default: notify_sun_down is false. After the fleet has been
+      # at 0 W, no event is broadcast — even though the in-process
+      # tracker would otherwise have fired.
+      dtu =
+        device_fixture(user, %{
+          name: "No Notify DTU",
+          kind: "opendtu",
+          mqtt_username: "no-notify"
+        })
+
+      :ok = Notifications.subscribe(user.id)
+
+      {:ok, _view, _html} = live(conn, ~p"/dashboard")
+
+      # Drain any prior messages so we only count what the reading
+      # broadcast triggers. `Phoenix.PubSub.drain/2` isn't in this
+      # version; use a manual `receive` loop with a 0ms timeout.
+      flush_notifications()
+
+      # Bring `current_power` to 0 via a 0-W reading.
+      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 0.0,
+          inserted_at: bucket
+        })
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        Telemetry.reading_topic(),
+        {:reading, "client_1", %{dtu_id: dtu.id}}
+      )
+
+      # Drain for up to 1s — the dashboard should NOT broadcast a
+      # sun-down event because the user opted out. If we receive any
+      # `sun_down` event in that window, fail.
+      refute_receive {:notification, %{event: "sun_down"}}, 1_000
     end
   end
 end

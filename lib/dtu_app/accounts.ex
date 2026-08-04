@@ -170,6 +170,17 @@ defmodule DtuApp.Accounts do
     |> update_user_and_delete_all_tokens()
   end
 
+  @doc """
+  Updates the user's notification preferences (`notify_dtu_connection`,
+  `notify_sun_down`). The dashboard reads these via the LiveView's
+  socket assigns to decide whether to push a browser notification.
+  """
+  def update_notification_settings(user, attrs) do
+    user
+    |> User.notification_settings_changeset(attrs)
+    |> Repo.update()
+  end
+
   ## Session
 
   @doc """
