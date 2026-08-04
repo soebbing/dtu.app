@@ -113,7 +113,7 @@
                 <li>
                   <.link
                     href={~p"/devices"}
-                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
+                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 whitespace-nowrap transition"
                   >{gettext("Manage Devices")}</.link>
                 </li>
                 <%!-- Notifications preferences: opt in/out of browser
@@ -123,20 +123,20 @@
                   <.link
                     href={~p"/notifications"}
                     id="navbar-notifications"
-                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
+                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 whitespace-nowrap transition"
                   >{gettext("Notifications")}</.link>
                 </li>
                 <li>
                   <.link
                     href={~p"/users/settings"}
-                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
+                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 whitespace-nowrap transition"
                   >{gettext("Settings")}</.link>
                 </li>
                 <li>
                   <.link
                     href={~p"/users/log-out"}
                     method="delete"
-                    class="text-sm font-medium text-zinc-650 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-100 bg-zinc-200/50 dark:bg-zinc-800/40 px-3 py-1.5 rounded-lg transition"
+                    class="text-sm font-medium text-zinc-650 hover:text-zinc-950 dark:text-zinc-300 dark:hover:text-zinc-100 bg-zinc-200/50 dark:bg-zinc-800/40 px-3 py-1.5 rounded-lg whitespace-nowrap transition"
                   >{gettext("Log out")}</.link>
                 </li>
               <% else %>
