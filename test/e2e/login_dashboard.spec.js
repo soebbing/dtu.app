@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { waitForLiveSocketConnected } = require('./_helpers');
 
 test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () => {
   test('successfully logs in, displays dashboard, and manages system-defined DTUs', async ({ page }) => {
@@ -55,6 +56,13 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
     // Fill the allowed fields
     await page.fill('input[name="dtu[name]"]', 'Garden Inverter');
     await page.selectOption('select[name="dtu[kind]"]', 'opendtu');
+
+    // Wait for the LiveView socket to connect before
+    // clicking Save; otherwise the form may submit as
+    // a native POST to its `action` URL, which on
+    // `/devices/new` 404s because the route is
+    // GET-only. See `_helpers.js` for the why.
+    await waitForLiveSocketConnected(page);
 
     // Save and wait for redirect
     await Promise.all([
