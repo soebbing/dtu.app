@@ -14,8 +14,11 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
         page.click('#login_form_password button')
       ]);
 
-      // 2. Navigate to Device management
-      await page.click('#btn-manage-devices');
+      // 2. Navigate to Device management. The dashboard's "Manage
+      // Devices" CTA only renders in the onboarding state
+      // (`@devices == []`), so once the seeds' DTUs exist we navigate
+      // directly to `/devices` via the URL.
+      await page.goto('/devices');
       await expect(page).toHaveURL(/\/devices/, { timeout: 10000 });
       await page.waitForTimeout(500);
 
@@ -65,8 +68,11 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
         page.click('#login_form_password button')
       ]);
 
-      // 2. Navigate to Device management
-      await page.click('#btn-manage-devices');
+      // 2. Navigate to Device management. The dashboard's "Manage
+      // Devices" CTA only renders in the onboarding state
+      // (`@devices == []`), so once the seeds' DTUs exist we navigate
+      // directly to `/devices` via the URL.
+      await page.goto('/devices');
       await page.waitForTimeout(500); // Wait for navigation
 
       // 3. Add DTU (German: DTU hinzufügen)
@@ -114,8 +120,11 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
         page.click('#login_form_password button')
       ]);
 
-      // 2. Navigate to Device management
-      await page.click('#btn-manage-devices');
+      // 2. Navigate to Device management. The dashboard's "Manage
+      // Devices" CTA only renders in the onboarding state
+      // (`@devices == []`), so once the seeds' DTUs exist we navigate
+      // directly to `/devices` via the URL.
+      await page.goto('/devices');
       await page.waitForTimeout(500); // Wait for navigation
 
       // 3. Add DTU (French: Ajouter une DTU)

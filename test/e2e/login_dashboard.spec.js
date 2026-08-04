@@ -33,9 +33,11 @@ test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () =
     await expect(page.locator('#stat-current-power')).toContainText(/\d+\.\d+ W/, { timeout: 10000 });
     await expect(page.locator('#device-status-grid')).toBeVisible({ timeout: 10000 });
 
-    // 7. Click Manage Devices
-    await page.click('#btn-manage-devices');
-    await page.waitForTimeout(1000); // Wait for navigation and LiveView update
+    // 7. Navigate to Manage Devices. The dashboard's "Manage Devices"
+    // CTA only renders in the onboarding state (`@devices == []`),
+    // so once the seeds' DTUs exist we navigate to `/devices` directly
+    // via the burger menu's link or the URL.
+    await page.goto('/devices');
     await expect(page).toHaveURL(/\/devices/, { timeout: 10000 });
 
     // 8. Add a new DTU
