@@ -1136,20 +1136,26 @@ defmodule DtuAppWeb.DashboardLive do
               {gettext("Real-time and historic generation stats for your solar converter system.")}
             </p>
           </div>
-          <div>
-            <.link
-              navigate={~p"/devices"}
-              id="btn-manage-devices"
-              class={[
-                "inline-flex items-center px-4 py-2 border rounded-md shadow-sm text-sm font-medium transition",
-                "border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 bg-white dark:bg-zinc-800",
-                "hover:bg-zinc-50 dark:hover:bg-zinc-700 focus:outline-none"
-              ]}
-            >
-              <.icon name="hero-cog-6-tooth" class="-ml-1 mr-2 h-5 w-5 text-zinc-400" />
-              {gettext("Manage Devices")}
-            </.link>
-          </div>
+          <%= if @devices == [] do %>
+            <%!-- Promoted in the burger menu once a device exists. The
+                 dashboard's main "Manage Devices" CTA only renders in
+                 the onboarding state, so it doesn't compete with the
+                 device cards below or the burger menu's link. --%>
+            <div>
+              <.link
+                navigate={~p"/devices"}
+                id="btn-manage-devices"
+                class={[
+                  "inline-flex items-center px-4 py-2 border rounded-md shadow-sm text-sm font-medium transition",
+                  "border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 bg-white dark:bg-zinc-800",
+                  "hover:bg-zinc-50 dark:hover:bg-zinc-700 focus:outline-none"
+                ]}
+              >
+                <.icon name="hero-cog-6-tooth" class="-ml-1 mr-2 h-5 w-5 text-zinc-400" />
+                {gettext("Manage Devices")}
+              </.link>
+            </div>
+          <% end %>
         </div>
 
         <%= if @devices == [] do %>
