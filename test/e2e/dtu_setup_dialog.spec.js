@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { waitForLiveSocketConnected } = require('./_helpers');
 
 test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', () => {
   
@@ -28,7 +29,13 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.waitForTimeout(500);
       await page.fill('input[name="dtu[name]"]', dtuName);
       await page.selectOption('select[name="dtu[kind]"]', 'opendtu');
-      
+
+      // Wait for the LiveView socket to connect before
+      // clicking Save; otherwise the form may submit as
+      // a native POST to its `action` URL, which on
+      // `/devices/new` 404s because the route is
+      // GET-only. See `_helpers.js` for the why.
+      await waitForLiveSocketConnected(page);
       await page.click('button:has-text("Save")');
 
       // Wait for modal to appear
@@ -81,6 +88,9 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.fill('input[name="dtu[name]"]', dtuName);
       await page.selectOption('select[name="dtu[kind]"]', 'opendtu');
 
+      // See the English test above for the rationale;
+      // LiveView socket must be up before submitting.
+      await waitForLiveSocketConnected(page);
       await page.click('button:has-text("Speichern")');
 
       // Wait for modal to appear
@@ -133,6 +143,9 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
       await page.fill('input[name="dtu[name]"]', dtuName);
       await page.selectOption('select[name="dtu[kind]"]', 'opendtu');
 
+      // See the English test above for the rationale;
+      // LiveView socket must be up before submitting.
+      await waitForLiveSocketConnected(page);
       await page.click('button:has-text("Enregistrer")');
 
       // Wait for modal to appear
