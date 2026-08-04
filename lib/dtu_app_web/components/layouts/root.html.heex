@@ -48,6 +48,22 @@
           }
         });
       })();
+
+      // Close the mobile burger menu when the user clicks outside it.
+      // The <details> element toggles open/closed on <summary> click;
+      // this listener prevents the menu from getting stuck open when
+      // the user taps the page content. Bootstrap's dropdown.js uses
+      // the same pattern — single document-level click, delegated
+      // close — kept inline here because the burger menu is the only
+      // dropdown in the navbar.
+      (() => {
+        document.addEventListener("click", (e) => {
+          const burger = document.getElementById("nav-burger");
+          if (!burger || !burger.open) return;
+          if (burger.contains(e.target)) return;
+          burger.removeAttribute("open");
+        });
+      })();
     </script>
   </head>
   <body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 min-h-screen transition-colors duration-250 flex flex-col antialiased">
@@ -85,7 +101,7 @@
             />
             <Layouts.theme_toggle />
 
-            <ul class="flex items-center gap-3">
+            <ul class="hidden md:flex items-center gap-3">
               <%= if @current_scope && @current_scope.user do %>
                 <li class="hidden sm:inline text-xs text-zinc-500 dark:text-zinc-400 font-mono">
                   {@current_scope.user.email}
@@ -118,6 +134,84 @@
                 </li>
               <% end %>
             </ul>
+
+            <%!-- Burger menu: visible on mobile, hidden on md+. Contains
+                 the right-side controls (theme toggle, account links,
+                 and a "Manage Devices" link) that the desktop nav
+                 shows inline. Using <details> for a no-JS toggle +
+                 a relative wrapper so the dropdown panel anchors to
+                 the hamburger. --%>
+            <details
+              id="nav-burger"
+              class="relative md:hidden"
+              phx-no-format
+            >
+              <summary
+                class="list-none cursor-pointer p-2 rounded-lg text-zinc-700 hover:bg-zinc-200/50 dark:text-zinc-200 dark:hover:bg-zinc-800/40 transition flex items-center justify-center"
+                aria-label={gettext("Open menu")}
+                id="nav-burger-toggle"
+              >
+                <%!-- Hamburger icon (heroicons bars-3). --%>
+                <.icon name="hero-bars-3" class="h-6 w-6" />
+              </summary>
+              <div
+                class="absolute right-0 mt-2 w-56 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 shadow-lg ring-1 ring-black/5 dark:ring-white/5 p-2 z-50"
+                id="nav-burger-panel"
+              >
+                <ul class="flex flex-col gap-1">
+                  <%= if @current_scope && @current_scope.user do %>
+                    <li class="px-2 py-1 text-xs text-zinc-500 dark:text-zinc-400 font-mono truncate">
+                      {@current_scope.user.email}
+                    </li>
+                    <li>
+                      <.link
+                        href={~p"/devices"}
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-700/50 transition"
+                      >
+                        <.icon name="hero-cog-6-tooth" class="h-4 w-4" />
+                        {gettext("Manage Devices")}
+                      </.link>
+                    </li>
+                    <li>
+                      <.link
+                        href={~p"/users/settings"}
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-700/50 transition"
+                      >
+                        <.icon name="hero-user-circle" class="h-4 w-4" />
+                        {gettext("Settings")}
+                      </.link>
+                    </li>
+                    <li>
+                      <.link
+                        href={~p"/users/log-out"}
+                        method="delete"
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-700/50 transition"
+                      >
+                        <.icon name="hero-arrow-right-start-on-rectangle" class="h-4 w-4" />
+                        {gettext("Log out")}
+                      </.link>
+                    </li>
+                  <% else %>
+                    <li>
+                      <.link
+                        href={~p"/users/log-in"}
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-700/50 transition"
+                      >
+                        {gettext("Log in")}
+                      </.link>
+                    </li>
+                    <li>
+                      <.link
+                        href={~p"/users/register"}
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-semibold bg-emerald-500 hover:bg-emerald-400 text-zinc-950 transition"
+                      >
+                        {gettext("Register")}
+                      </.link>
+                    </li>
+                  <% end %>
+                </ul>
+              </div>
+            </details>
           </div>
         </div>
       </div>
