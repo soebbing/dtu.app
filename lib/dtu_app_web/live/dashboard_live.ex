@@ -1230,83 +1230,91 @@ defmodule DtuAppWeb.DashboardLive do
             <% end %>
 
             <!-- Time Range Tab Selector -->
-          <!-- Quick ranges: live, auto-refreshing views -->
-            <div
-              class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
-              id="quick-range-switcher"
-            >
-              <.quick_range_btn id="btn-range-today" range="today" active={@live}>
-                {gettext("Today")}
-              </.quick_range_btn>
-            </div>
-
-            <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › -->
-            <div
-              class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
-              id="history-picker"
-            >
-              <button
-                phx-click="navigate_period"
-                phx-value-dir="prev"
-                id="btn-history-prev"
-                aria-label={gettext("Previous period")}
-                class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
+            <!-- "Today" button + historical stepper share the same row so
+                 the toolbar reads as one toolbar instead of two stacked
+                 controls. The wrapping <div> uses `flex flex-wrap
+                 items-center gap-4` so the two clusters stay side by
+                 side on desktop and wrap below each other on narrow
+                 viewports. -->
+            <div class="flex flex-wrap items-center gap-4">
+              <!-- Quick ranges: live, auto-refreshing views -->
+              <div
+                class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
+                id="quick-range-switcher"
               >
-                <.icon name="hero-chevron-left" class="size-4" />
-              </button>
+                <.quick_range_btn id="btn-range-today" range="today" active={@live}>
+                  {gettext("Today")}
+                </.quick_range_btn>
+              </div>
 
-              <form phx-change="set_granularity" id="form-granularity" class="inline-block">
-                <select
-                  name="granularity"
-                  id="select-granularity"
-                  class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+              <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › -->
+              <div
+                class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
+                id="history-picker"
+              >
+                <button
+                  phx-click="navigate_period"
+                  phx-value-dir="prev"
+                  id="btn-history-prev"
+                  aria-label={gettext("Previous period")}
+                  class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
                 >
-                  <%= for {label, value} <- [
+                  <.icon name="hero-chevron-left" class="size-4" />
+                </button>
+
+                <form phx-change="set_granularity" id="form-granularity" class="inline-block">
+                  <select
+                    name="granularity"
+                    id="select-granularity"
+                    class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+                  >
+                    <%= for {label, value} <- [
                       {gettext("Day"), "day"},
                       {gettext("Week"), "week"},
                       {gettext("Month"), "month"},
                       {gettext("Year"), "year"}
                     ] do %>
-                    <option value={value} selected={value == @granularity}>
-                      {label}
-                    </option>
-                  <% end %>
-                </select>
-              </form>
+                      <option value={value} selected={value == @granularity}>
+                        {label}
+                      </option>
+                    <% end %>
+                  </select>
+                </form>
 
-              <!-- Date label: clicking reveals the native calendar -->
-              <label
-                class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
-                title={gettext("Choose date")}
-              >
-                <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
-                <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
-                <input
-                  type="date"
-                  phx-change="set_date"
-                  id="history-date-input"
-                  value={date_input_value(@selected_period)}
-                  min={date_min_bound(@selectable_dates)}
-                  max={date_max_bound(@selectable_dates)}
-                  class="absolute inset-0 opacity-0 cursor-pointer"
-                />
-              </label>
+                <!-- Date label: clicking reveals the native calendar -->
+                <label
+                  class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+                  title={gettext("Choose date")}
+                >
+                  <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
+                  <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
+                  <input
+                    type="date"
+                    phx-change="set_date"
+                    id="history-date-input"
+                    value={date_input_value(@selected_period)}
+                    min={date_min_bound(@selectable_dates)}
+                    max={date_max_bound(@selectable_dates)}
+                    class="absolute inset-0 opacity-0 cursor-pointer"
+                  />
+                </label>
 
-              <button
-                phx-click="navigate_period"
-                phx-value-dir="next"
-                id="btn-history-next"
-                aria-label={gettext("Next period")}
-                class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
-              >
-                <.icon name="hero-chevron-right" class="size-4" />
-              </button>
+                <button
+                  phx-click="navigate_period"
+                  phx-value-dir="next"
+                  id="btn-history-next"
+                  aria-label={gettext("Next period")}
+                  class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
+                >
+                  <.icon name="hero-chevron-right" class="size-4" />
+                </button>
 
-              <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
-                <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
-                  {gettext("No historical data for this period.")}
-                </span>
-              <% end %>
+                <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
+                  <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
+                    {gettext("No historical data for this period.")}
+                  </span>
+                <% end %>
+              </div>
             </div>
           </div>
 
