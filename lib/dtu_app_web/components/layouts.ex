@@ -45,27 +45,6 @@ defmodule DtuAppWeb.Layouts do
       </div>
     </main>
 
-    <%!--
-      Notifications-firing hook. Mounted on every page that uses
-      <Layouts.app> so the user only has to grant permission once per
-      device and the JS hook (`assets/js/notifications.js`) is in scope
-      for every LiveView. The hook is invisible (`hidden`) and only acts
-      as a `phx:notify` event sink. The server pushes events via
-      `DtuApp.Notifications.broadcast/2`; this hook fires the actual
-      `new Notification(...)` after dedup against localStorage.
-
-      `data-user-id` is "0" until the layout mounts a LiveView; the
-      JS hook re-reads it on every event so a logged-in user's
-      notifications get the right per-user dedup key.
-    --%>
-    <div
-      id="notifications-firing"
-      phx-hook="Notifications"
-      data-user-id="0"
-      hidden
-    >
-    </div>
-
     <.flash_group flash={@flash} />
     """
   end

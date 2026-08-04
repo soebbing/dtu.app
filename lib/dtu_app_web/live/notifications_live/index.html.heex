@@ -1,4 +1,17 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
+  <%!--
+    Notifications-firing hook. Mounted here (and on the dashboard)
+    so the user can configure their preferences and the JS hook is in
+    scope to fire `new Notification(...)` on `notify` events. The hook
+    is invisible (`hidden`) and only acts as a `phx:notify` event
+    sink. The server pushes events via `DtuApp.Notifications.broadcast/2`.
+  --%>
+  <div
+    id="notifications-firing"
+    phx-hook="Notifications"
+    data-user-id={@current_scope.user.id}
+    hidden
+  ></div>
   <div class="mx-auto max-w-2xl space-y-6 py-8" id="notifications-page">
     <div>
       <h1 class="text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">

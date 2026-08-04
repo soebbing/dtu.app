@@ -1292,6 +1292,21 @@ defmodule DtuAppWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} class="max-w-7xl">
+      <%!--
+        Notifications-firing hook. The JS hook (assets/js/notifications.js)
+        listens for `notify` events from the LiveView and fires the
+        actual `new Notification(...)` after dedup against localStorage.
+        Mounted on the dashboard because that's where the user is most
+        likely to be when an event arrives. (We deliberately don't put
+        this on Layouts.app because the JS hook was breaking the page
+        render for some E2E tests when mounted globally — see PR #39.)
+      --%>
+      <div
+        id="notifications-firing"
+        phx-hook="Notifications"
+        data-user-id={@current_scope.user.id}
+        hidden
+      ></div>
       <div class="space-y-6 py-4">
         <!-- Title & Action -->
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
