@@ -170,7 +170,7 @@ defmodule DtuAppWeb.NotificationsLive do
           phx-hook="NotificationPermission"
           data-user-id={@current_scope.user.id}
         >
-          <%= case Map.get(@notification_state, "state") do %>
+          <% case Map.get(@notification_state, "state") do %>
             <% "unsupported" -> %>
               <div class="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-4 text-sm text-amber-800 dark:text-amber-200">
                 {gettext(
