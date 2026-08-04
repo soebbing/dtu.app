@@ -116,6 +116,16 @@
                     class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
                   >{gettext("Manage Devices")}</.link>
                 </li>
+                <%!-- Notifications preferences: opt in/out of browser
+                     notifications for DTU connection state changes and
+                     the daily sun-down summary. --%>
+                <li>
+                  <.link
+                    href={~p"/notifications"}
+                    id="navbar-notifications"
+                    class="text-sm font-medium text-zinc-600 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
+                  >{gettext("Notifications")}</.link>
+                </li>
                 <li>
                   <.link
                     href={~p"/users/settings"}
@@ -180,6 +190,16 @@
                       >
                         <.icon name="hero-cog-6-tooth" class="h-4 w-4" />
                         {gettext("Manage Devices")}
+                      </.link>
+                    </li>
+                    <li>
+                      <.link
+                        href={~p"/notifications"}
+                        id="burger-notifications"
+                        class="flex items-center gap-2 px-2 py-2 rounded-lg text-sm font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-700/50 transition"
+                      >
+                        <.icon name="hero-bell" class="h-4 w-4" />
+                        {gettext("Notifications")}
                       </.link>
                     </li>
                     <li>

@@ -550,4 +550,71 @@ defmodule DtuApp.AccountsTest do
       refute inspect(%User{password: "123456"}) =~ "password: \"123456\""
     end
   end
+
+  describe "notification_settings_changeset/2 and update_notification_settings/2" do
+    # Notification preferences are written by the `/notifications`
+    # LiveView via `Accounts.update_notification_settings/2`. The
+    # changeset only needs to cast the two flags; there's no other
+    # validation because the user can save with both flags off (i.e.
+    # "no notifications at all") and that's a valid state.
+    alias DtuApp.Accounts.User, as: AccountsUser
+
+    test "casts the two notification flags" do
+      user = user_fixture()
+
+      changeset = AccountsUser.notification_settings_changeset(user, %{})
+
+      assert changeset.valid?
+      refute get_field(changeset, :notify_dtu_connection)
+      refute get_field(changeset, :notify_sun_down)
+    end
+
+    test "accepts and persists both flags" do
+      user = user_fixture()
+
+      assert {:ok, updated} =
+               Accounts.update_notification_settings(user, %{
+                 notify_dtu_connection: true,
+                 notify_sun_down: true
+               })
+
+      assert updated.notify_dtu_connection
+      assert updated.notify_sun_down
+
+      # Round-trip: a fresh read from the DB sees the new values.
+      reloaded = Repo.get!(User, user.id)
+      assert reloaded.notify_dtu_connection
+      assert reloaded.notify_sun_down
+    end
+
+    test "accepts and persists one flag off" do
+      user = user_fixture()
+
+      assert {:ok, updated} =
+               Accounts.update_notification_settings(user, %{
+                 notify_dtu_connection: true,
+                 notify_sun_down: false
+               })
+
+      assert updated.notify_dtu_connection
+      refute updated.notify_sun_down
+    end
+
+    test "ignores other keys" do
+      # The settings page only sends the two boolean keys; everything
+      # else (e.g. the user's email, password) must be silently
+      # ignored by the changeset. This is a regression guard against
+      # the changeset being made too permissive.
+      user = user_fixture()
+
+      assert {:ok, updated} =
+               Accounts.update_notification_settings(user, %{
+                 notify_dtu_connection: true,
+                 email: "malicious@example.com"
+               })
+
+      assert updated.notify_dtu_connection
+      assert updated.email == user.email
+    end
+  end
 end

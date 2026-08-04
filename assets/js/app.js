@@ -135,7 +135,9 @@ const liveSocket = new LiveSocket("/live", Socket, {
   params: {_csrf_token: csrfToken},
   hooks: {
     ...colocatedHooks,
-    NetworkStatus
+    NetworkStatus,
+    NotificationPermission,
+    Notifications
   },
 })
 

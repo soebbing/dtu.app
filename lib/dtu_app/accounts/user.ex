@@ -9,6 +9,11 @@ defmodule DtuApp.Accounts.User do
     field :confirmed_at, :utc_datetime
     field :authenticated_at, :utc_datetime, virtual: true
 
+    # Notification preferences. Both default to false so existing
+    # users don't silently start receiving notifications on deploy.
+    field :notify_dtu_connection, :boolean, default: false
+    field :notify_sun_down, :boolean, default: false
+
     timestamps(type: :utc_datetime)
   end
 
@@ -113,6 +118,16 @@ defmodule DtuApp.Accounts.User do
     # confirmation" logic). See `DtuApp.Time`.
     now = DtuApp.Time.utc_now()
     change(user, confirmed_at: now)
+  end
+
+  @doc """
+  A changeset for the notification preferences on the `/notifications`
+  page. Both flags are cast; the page is the only writer so we don't
+  need extra validation.
+  """
+  def notification_settings_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:notify_dtu_connection, :notify_sun_down])
   end
 
   @doc """

@@ -72,6 +72,11 @@ defmodule DtuAppWeb.Router do
       live "/devices", DeviceLive.Index, :index
       live "/devices/new", DeviceLive.Index, :new
       live "/devices/:id/edit", DeviceLive.Index, :edit
+      # Notification preferences: opt in/out of browser notifications
+      # for DTU connection state changes and the daily sun-down summary.
+      # The page itself hosts the JS hook that requests permission and
+      # fires the actual `new Notification(...)`.
+      live "/notifications", NotificationsLive, :index
     end
   end
 

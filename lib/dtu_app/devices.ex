@@ -327,6 +327,18 @@ defmodule DtuApp.Devices do
 
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
   def get_daily_stats(%User{} = user, dtu_id \\ nil) do
+    get_daily_stats(user, dtu_id, Date.utc_today())
+  end
+
+  @doc """
+  Same as `get_daily_stats/2` but accepts the target date (UTC) so
+  the sun-down scheduler can request yesterday's totals without
+  duplicating the SQL. `current_power` and `peak_power` are still
+  computed against *today* (the most recent readings) — they only
+  make sense for the live day — but `today_yield` reflects the
+  requested date so we can compare day-over-day.
+  """
+  def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
@@ -377,9 +389,8 @@ defmodule DtuApp.Devices do
       # we use the freshest reading for each (inverter, MPPT) even when
       # the latest raw row is stale. For OpenDTU and 1-MPPT inverters,
       # mppt_index = 1 and this reduces to the per-inverter sum.
-      today = Date.utc_today()
-      today_start = DateTime.new!(today, ~T[00:00:00], "Etc/UTC")
-      today_end = DateTime.new!(today, ~T[23:59:59], "Etc/UTC")
+      today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+      today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
 
       today_yield_per_series =
         Repo.all(
