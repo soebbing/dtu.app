@@ -52,23 +52,24 @@ const LIVEVIEW_JOINED_EVENT = "phx:joined";
 async function waitForLiveSocketConnected(page, opts = {}) {
   const timeout = opts.timeout ?? (process.env.CI ? 30000 : 15000);
 
-  // Playwright's documented pattern for waiting on a
-  // window event from a test is to install the listener
-  // on `window`, store the resolver on `window` so the
-  // `page.evaluate(...)` callback can resolve it, and
-  // race against `setTimeout(...)`. See the
-  // `@playwright/test` docs and the LiveView source for
-  // the `phx:joined` event.
+  // Playwright's `page.evaluate(fn, arg)` signature only accepts
+  // a single argument. We pass `[eventName, timeoutMs]` as that
+  // one argument so the page-side `Promise` can install both
+  // the listener and the timeout. The outer await is bounded
+  // by the per-test actionTimeout in `playwright.config.js`
+  // (10s default, 15s in CI), which is comfortably longer than
+  // the inner setTimeout we install here.
   await page.evaluate(
     ([eventName, timeoutMs]) => {
       return new Promise((resolve, reject) => {
+        let timeoutHandle;
         const handle = () => {
           clearTimeout(timeoutHandle);
           window.removeEventListener(eventName, handle);
           resolve();
         };
 
-        const timeoutHandle = setTimeout(() => {
+        timeoutHandle = setTimeout(() => {
           window.removeEventListener(eventName, handle);
           reject(
             new Error(
@@ -83,8 +84,7 @@ async function waitForLiveSocketConnected(page, opts = {}) {
         window.addEventListener(eventName, handle, { once: true });
       });
     },
-    [LIVEVIEW_JOINED_EVENT, timeout],
-    { timeout }
+    [LIVEVIEW_JOINED_EVENT, timeout]
   );
 }
 
