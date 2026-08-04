@@ -1306,7 +1306,8 @@ defmodule DtuAppWeb.DashboardLive do
         phx-hook="Notifications"
         data-user-id={@current_scope.user.id}
         hidden
-      ></div>
+      >
+      </div>
       <div class="space-y-6 py-4">
         <!-- Title & Action -->
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
