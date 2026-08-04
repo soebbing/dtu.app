@@ -30,10 +30,6 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:granularity, "day")
       |> assign(:time_range, "today")
       |> assign(:selected_period, nil)
-      # Sun-down tracker state. We initialise to `nil` (no
-      # notifications fired yet) and the `maybe_fire_sun_down_notification/2`
-      # handler fills it in on the first reading.
-      |> assign(:sun_down_state, nil)
       # Default to UTC (offset 0). The client-side `.SetTimezone`
       # colocated hook pushes the real offset once the WebSocket is
       # connected, and `handle_info({:set_timezone, ...})` updates this
@@ -173,33 +169,20 @@ defmodule DtuAppWeb.DashboardLive do
     socket =
       assign(socket, :devices, Devices.list_devices(user))
       |> maybe_reassign_dashboard_data(user, selected_id)
-      |> maybe_fire_sun_down_notification(user)
 
     {:noreply, socket}
   end
 
   @impl true
-  def handle_info({:dtu_connected, _client_id, device_id}, socket) do
+  def handle_info({:dtu_connected, _client_id, _device_id}, socket) do
     user = socket.assigns.current_scope.user
-
-    socket =
-      socket
-      |> assign(:devices, Devices.list_devices(user))
-      |> maybe_push_dtu_notification(user, device_id, "dtu_online")
-
-    {:noreply, socket}
+    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
   @impl true
-  def handle_info({:dtu_disconnected, _client_id, device_id}, socket) do
+  def handle_info({:dtu_disconnected, _client_id, _device_id}, socket) do
     user = socket.assigns.current_scope.user
-
-    socket =
-      socket
-      |> assign(:devices, Devices.list_devices(user))
-      |> maybe_push_dtu_notification(user, device_id, "dtu_offline")
-
-    {:noreply, socket}
+    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
   # Every MQTT uplink (and every CONNECT / DISCONNECT) broadcasts a
@@ -236,156 +219,6 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
-  end
-
-  # Per-DTU notification firing. When the dashboard receives a
-  # `:dtu_connected` or `:dtu_disconnected` event, it looks up the
-  # user and (if the user opted in via `notify_dtu_connection`) pushes
-  # a browser notification to the user's session topic. The JS hook
-  # on every page formats and fires the actual `new Notification(...)`.
-  #
-  # "Only once per state and inverter" is enforced on the client via
-  # `localStorage` in `assets/js/notifications.js`. The server only
-  # emits the event; the client decides whether to actually fire.
-  defp maybe_push_dtu_notification(socket, user, device_id, event) do
-    if user.notify_dtu_connection do
-      try do
-        device = Devices.get_device!(user, device_id)
-
-        DtuApp.Notifications.broadcast(user.id, %{
-          event: event,
-          dtu_id: device.id,
-          dtu_name: device.name,
-          # The inverter name comes from the latest reading. We
-          # only have the DTU id at hand here (the device_id is the
-          # DTU's id, not the serial), so we fall back to the DTU
-          # name. Per-inverter names are too noisy for a v1 push
-          # notification (the user can see per-inverter status on
-          # the dashboard), so this is the right trade-off.
-          inverter_name: device.name,
-          inverter_serial: ""
-        })
-
-        socket
-      rescue
-        Ecto.NoResultsError -> socket
-      end
-    else
-      socket
-    end
-  end
-
-  # Idle-detection window: the sun-down notification fires when the
-  # fleet's `current_power` has been at 0 W for at least this long.
-  @sun_down_idle_window_seconds 15 * 60
-
-  # End-of-day sun-down notification firing. Runs on every reading,
-  # tracking the timestamp of the last non-zero fleet reading. When
-  # the fleet is at 0 W (i.e. the latest reading brought `current_power`
-  # to 0) AND that idle window has exceeded the threshold AND the
-  # user has `notify_sun_down` enabled, push a payload to the user's
-  # session topic.
-  #
-  # Trade-offs vs a dedicated GenServer:
-  #   * Only fires while the user has the dashboard open. That's the
-  #     same constraint as the SSE delivery model — browser
-  #     notifications need an active session anyway.
-  #   * No additional SQL state: `current_power` is already on the
-  #     socket assigns (via `assign_dashboard_data/5`).
-  #   * "Once per day" dedup is enforced on the client via
-  #     `localStorage` in `assets/js/notifications.js`.
-  defp maybe_fire_sun_down_notification(socket, user) do
-    # Only the live ("today") view drives the sun-down signal; the
-    # historical views (day/week/month/year) are explicitly
-    # non-realtime and `current_power` reflects the requested period
-    # rather than "right now".
-    if not socket.assigns.live, do: socket, else: do_maybe_fire_sun_down(socket, user)
-  end
-
-  defp do_maybe_fire_sun_down(socket, user) do
-    if user.notify_sun_down do
-      now = DtuApp.Time.utc_now()
-      current_power = socket.assigns.stats.current_power
-
-      {last_non_zero_at, idle_since} = idle_state(socket, now)
-
-      new_last_non_zero_at =
-        cond do
-          # Fleet just produced — reset the idle window.
-          current_power > 0 -> now
-          # Fleet is at 0 W and we already fired for today — wait for
-          # the next sunrise (i.e. the next non-zero reading) to reset.
-          is_nil(idle_since) -> last_non_zero_at
-          # Still idle; carry the timestamp forward.
-          true -> last_non_zero_at
-        end
-
-      # Compute the actual idle window: from the last non-zero
-      # reading up to now.
-      idle_seconds = DateTime.diff(now, new_last_non_zero_at, :second)
-
-      cond do
-        # Already fired today — don't fire again until sunrise.
-        not is_nil(idle_since) ->
-          assign(socket, :sun_down_state, %{
-            last_non_zero_at: new_last_non_zero_at,
-            fired_today_at: idle_since
-          })
-
-        # Fleet is at 0 W for ≥ 15 min and we haven't fired today.
-        current_power == 0 and idle_seconds >= @sun_down_idle_window_seconds ->
-          fire_sun_down(user)
-
-          assign(socket, :sun_down_state, %{
-            last_non_zero_at: new_last_non_zero_at,
-            fired_today_at: now
-          })
-
-        # Still waiting for the threshold; just track the timestamp.
-        true ->
-          assign(socket, :sun_down_state, %{
-            last_non_zero_at: new_last_non_zero_at,
-            fired_today_at: nil
-          })
-      end
-    else
-      socket
-    end
-  end
-
-  # Compute the current idle state. Returns `{last_non_zero_at, fired_today_at}`.
-  defp idle_state(socket, now) do
-    case socket.assigns[:sun_down_state] do
-      nil ->
-        {now, nil}
-
-      %{last_non_zero_at: lnnz, fired_today_at: fired} ->
-        if fired != nil and Date.diff(fired, now) >= 1 do
-          # Yesterday's notification has aged out — reset so we can
-          # fire again today.
-          {now, nil}
-        else
-          {lnnz, fired}
-        end
-    end
-  end
-
-  # Compute today's and yesterday's stats and broadcast the
-  # sun-down payload. Today = current stats; yesterday = same helper
-  # with `Date.add(now, -1)`.
-  defp fire_sun_down(user) do
-    today_stats = Devices.get_daily_stats(user)
-    yesterday_stats = Devices.get_daily_stats(user, nil, Date.add(Date.utc_today(), -1))
-
-    DtuApp.Notifications.broadcast(user.id, %{
-      event: "sun_down",
-      # Today
-      today_yield_kwh: today_stats.today_yield,
-      today_peak_power_w: today_stats.peak_power,
-      # Yesterday (may be nil if there's no historical data yet)
-      yesterday_yield_kwh: yesterday_stats && yesterday_stats.today_yield,
-      yesterday_peak_power_w: yesterday_stats && yesterday_stats.peak_power
-    })
   end
 
   # Helper to construct SVG line chart coordinates and range.
@@ -1292,22 +1125,6 @@ defmodule DtuAppWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} class="max-w-7xl">
-      <%!--
-        Notifications-firing hook. The JS hook (assets/js/notifications.js)
-        listens for `notify` events from the LiveView and fires the
-        actual `new Notification(...)` after dedup against localStorage.
-        Mounted on the dashboard because that's where the user is most
-        likely to be when an event arrives. (We deliberately don't put
-        this on Layouts.app because the JS hook was breaking the page
-        render for some E2E tests when mounted globally — see PR #39.)
-      --%>
-      <div
-        id="notifications-firing"
-        phx-hook="Notifications"
-        data-user-id={@current_scope.user.id}
-        hidden
-      >
-      </div>
       <div class="space-y-6 py-4">
         <!-- Title & Action -->
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
