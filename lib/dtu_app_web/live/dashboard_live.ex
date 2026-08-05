@@ -677,7 +677,7 @@ defmodule DtuAppWeb.DashboardLive do
           w: Float.round(bar_width / 1.0, 1),
           h: Float.round(max(height, 1.0) / 1.0, 1),
           label: item.label,
-          value: Float.round(item.value / 1.0, 3)
+          value: Float.round(item.value / 1.0, 1)
         }
       end)
 
@@ -954,7 +954,7 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         stats = %{
-          total_yield: Float.round(total_yield * 1.0, 3),
+          total_yield: Float.round(total_yield * 1.0, 1),
           peak_power: Float.round(peak_power * 1.0, 1),
           avg_power: Float.round(avg_power * 1.0, 1)
         }
@@ -991,10 +991,10 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         stats = %{
-          total_yield: Float.round(total_yield * 1.0, 3),
-          avg_yield: Float.round(avg_yield * 1.0, 3),
+          total_yield: Float.round(total_yield * 1.0, 1),
+          avg_yield: Float.round(avg_yield * 1.0, 1),
           peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 3)
+          peak_val: Float.round(peak_val * 1.0, 1)
         }
 
         yield_map = Map.new(yields)
@@ -1040,10 +1040,10 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         stats = %{
-          total_yield: Float.round(total_yield * 1.0, 3),
-          avg_yield: Float.round(avg_yield * 1.0, 3),
+          total_yield: Float.round(total_yield * 1.0, 1),
+          avg_yield: Float.round(avg_yield * 1.0, 1),
           peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 3)
+          peak_val: Float.round(peak_val * 1.0, 1)
         }
 
         yield_map = Map.new(yields)
@@ -1092,10 +1092,10 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         stats = %{
-          total_yield: Float.round(total_yield * 1.0, 3),
-          avg_yield: Float.round(avg_yield * 1.0, 3),
+          total_yield: Float.round(total_yield * 1.0, 1),
+          avg_yield: Float.round(avg_yield * 1.0, 1),
           peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 3)
+          peak_val: Float.round(peak_val * 1.0, 1)
         }
 
         yield_map = Map.new(yields)
