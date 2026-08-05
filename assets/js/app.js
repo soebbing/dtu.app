@@ -24,6 +24,16 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/dtu_app"
 import topbar from "../vendor/topbar"
+// Notifications hooks. The `/notifications` LiveView mounts
+// `phx-hook="NotificationPermission"` to push the browser's permission
+// state to the server; the page itself (and the dashboard) mount
+// `phx-hook="Notifications"` to receive `phx:notify` events and fire
+// the actual `new Notification(...)`. The hooks are defined as ES
+// modules, so they must be imported here — without these imports the
+// named hooks resolve to `undefined` in the bundle and the LiveView
+// never receives the permission state (or fires notifications).
+import {NotificationPermission} from "./notification_permission.js"
+import {Notifications} from "./notifications.js"
 
 // Network Status Hook
 const NetworkStatus = {
