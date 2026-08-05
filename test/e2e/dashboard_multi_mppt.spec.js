@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { waitForLiveSocketConnected } = require('./_helpers');
 
 // E2E coverage for the multi-inverter chart.
 //
@@ -75,6 +76,13 @@ test.describe('Acceptance Tests: Multi-Inverter Chart', () => {
   test.beforeEach(async ({ page }) => {
     await logIn(page);
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
+    // The DTU switcher buttons fire `phx-click="select_dtu"` which only
+    // reaches the server once the LiveView WebSocket is connected. On
+    // CI the socket can take noticeably longer to connect than the
+    // local browser is comfortable waiting for, so explicitly block
+    // until `liveSocket.isConnected()` is true. See `_helpers.js` for
+    // the why.
+    await waitForLiveSocketConnected(page);
   });
 
   test('Garage Array DTU shows non-zero Current Generation when multiple inverters are producing', async ({ page }) => {

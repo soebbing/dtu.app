@@ -18,11 +18,24 @@ const LIVEVIEW_JOINED_EVENT = "phx:joined";
 
 /**
  * Wait until Phoenix LiveView's WebSocket has connected
- * for the current LiveView page. LiveView dispatches the
- * standard `phx:joined` event on `window` once the
- * `liveSocket.connect()` handshake completes; this
- * helper installs a one-shot listener for that event
- * (with the requested timeout) and resolves.
+ * for the current LiveView page.
+ *
+ * `liveSocket` is exposed on `window` by `assets/js/app.js`
+ * (`window.liveSocket = liveSocket`). We poll its
+ * `isConnected()` / `connectionState()` for the common case
+ * where the socket has *already* connected — the standard
+ * `phx:joined` window event fires exactly once when the
+ * handshake completes, so if Playwright calls this helper
+ * after that point (which is what happens once navigation
+ * and initial hydration settle) a naive `addEventListener`
+ * for `phx:joined` would wait forever for an event that's
+ * already done.
+ *
+ * For the race-y window where the socket hasn't connected
+ * yet, we also fall back to listening for `phx:joined` so a
+ * Playwright call that arrives *before* the LiveView mount
+ * still gets to wait for the real event rather than racing
+ * the polling interval.
  *
  * Call this right before clicking any submit
  * (`phx-submit`) button on a LiveView form, or right
@@ -54,13 +67,37 @@ async function waitForLiveSocketConnected(page, opts = {}) {
 
   // Playwright's `page.evaluate(fn, arg)` signature only accepts
   // a single argument. We pass `[eventName, timeoutMs]` as that
-  // one argument so the page-side `Promise` can install both
-  // the listener and the timeout. The outer await is bounded
-  // by the per-test actionTimeout in `playwright.config.js`
-  // (10s default, 15s in CI), which is comfortably longer than
-  // the inner setTimeout we install here.
+  // one argument so the page-side `Promise` can read both the
+  // event name to wait on and the timeout to enforce. The outer
+  // await is bounded by the per-test actionTimeout in
+  // `playwright.config.js` (10s default, 15s in CI), which is
+  // comfortably longer than the inner setTimeout we install here.
+  //
+  // The page-side logic:
+  //   1. If `window.liveSocket` exists and reports `isConnected()`
+  //      (or `connectionState() === "open"`), the socket is
+  //      already up — resolve immediately. This is the common
+  //      path: Playwright runs after navigation + hydration, so
+  //      `phx:joined` already fired and a `addEventListener` for
+  //      it would block forever.
+  //   2. Otherwise (e.g. Playwright raced the page load) install
+  //      a one-shot listener for `phx:joined` and resolve when it
+  //      fires, rejecting on timeout.
   await page.evaluate(
     ([eventName, timeoutMs]) => {
+      // Fast path: socket is already up by the time we get here.
+      const ls = window.liveSocket;
+      if (ls) {
+        const state =
+          typeof ls.isConnected === "function"
+            ? ls.isConnected()
+            : typeof ls.connectionState === "function" &&
+                ls.connectionState() === "open";
+        if (state) {
+          return;
+        }
+      }
+
       return new Promise((resolve, reject) => {
         let timeoutHandle;
         const handle = () => {
