@@ -88,6 +88,12 @@ msgstr "Ein DTU (Datenübertragungseinheit) liest Ihren Solar-Wechselrichter aus
 "Echtzeit-Erzeugung zu sehen — funktioniert mit OpenDTU- und"
 "AhoyDTU-Firmware."
 
+#: lib/dtu_app_web/live/notifications_live.ex:199
+#, elixir-autogen, elixir-format
+msgid "A notification whenever an inverter goes offline or comes back online. The notification names the inverter."
+msgstr "Eine Benachrichtigung, wenn ein Wechselrichter die Verbindung verliert oder"
+"wieder online geht. Die Benachrichtigung nennt den Wechselrichter."
+
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:74
 #, elixir-autogen, elixir-format
 msgid "Account data is stored until you delete your account."
@@ -164,16 +170,34 @@ msgstr "Soutenus par des tables de base de données optimisées par index et des
 msgid "Base Topic:"
 msgstr "Sujet de base :"
 
+#: lib/dtu_app_web/live/notifications_live.ex:126
+#, elixir-autogen, elixir-format
+msgid "Browsers must be installed as a PWA to deliver notifications. Add this site to your home screen / applications folder and reopen it from there."
+msgstr "Browser müssen als PWA installiert sein, um Benachrichtigungen zu liefern."
+"Fügen Sie diese Site zu Ihrem Startbildschirm / Anwendungsordner hinzu und"
+"öffnen Sie sie von dort erneut."
+
 #: lib/dtu_app_web/live/device_live/index.html.heex:127
 #: lib/dtu_app_web/live/device_live/index.html.heex:157
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr "Annuler"
 
+#: lib/dtu_app_web/live/notifications_live.ex:169
+#, elixir-autogen, elixir-format
+msgid "Checking browser capabilities…"
+msgstr "Browser-Funktionen werden geprüft…"
+
 #: lib/dtu_app_web/live/dashboard_live.ex:1287
 #, elixir-autogen, elixir-format
 msgid "Choose date"
 msgstr "Datum wählen"
+
+#: lib/dtu_app_web/live/notifications_live.ex:148
+#, elixir-autogen, elixir-format
+msgid "Click the button below; your browser will ask whether to allow notifications for this PWA."
+msgstr "Klicken Sie auf die Schaltfläche unten; Ihr Browser wird fragen, ob er"
+"Benachrichtigungen für diese PWA zulassen soll."
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:73
 #, elixir-autogen, elixir-format
@@ -320,6 +344,16 @@ msgstr "Modifier"
 msgid "Edit DTU"
 msgstr "Modifier la DTU"
 
+#: lib/dtu_app_web/live/notifications_live.ex:158
+#, elixir-autogen, elixir-format
+msgid "Enable notifications"
+msgstr "Benachrichtigungen aktivieren"
+
+#: lib/dtu_app_web/live/notifications_live.ex:214
+#, elixir-autogen, elixir-format
+msgid "End-of-day summary"
+msgstr "Tageszusammenfassung"
+
 #: lib/dtu_app_web/live/device_live/index.html.heex:336
 #, elixir-autogen, elixir-format
 msgid "Ensure MQTT is enabled, save and reboot the DTU."
@@ -378,6 +412,18 @@ msgstr "Impressum"
 msgid "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
 msgstr "Angaben gemäß § 5 TMG (Deutschland) und geltenden"
 "EU-Verbraucherschutzvorschriften."
+
+#: lib/dtu_app_web/live/notifications_live.ex:132
+#, elixir-autogen, elixir-format
+msgid "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission."
+msgstr "Installieren Sie diese Site zuerst als PWA (Browser-Menü → Zum"
+"Startbildschirm hinzufügen / App installieren). Sobald dies geschehen ist,"
+"fordert die Schaltfläche unten die Benachrichtigungsberechtigung an."
+
+#: lib/dtu_app_web/live/notifications_live.ex:196
+#, elixir-autogen, elixir-format
+msgid "Inverter connection state"
+msgstr "Verbindungsstatus des Wechselrichters"
 
 #: lib/dtu_app_web/controllers/page_html/home.html.heex:82
 #, elixir-autogen, elixir-format
@@ -513,9 +559,28 @@ msgstr "Benachrichtigungseinstellungen gespeichert."
 #: lib/dtu_app_web/components/layouts/root.html.heex:127
 #: lib/dtu_app_web/components/layouts/root.html.heex:202
 #: lib/dtu_app_web/live/notifications_live.ex:35
+#: lib/dtu_app_web/live/notifications_live.ex:105
 #, elixir-autogen, elixir-format
 msgid "Notifications"
 msgstr "Benachrichtigungen"
+
+#: lib/dtu_app_web/live/notifications_live.ex:145
+#, elixir-autogen, elixir-format
+msgid "Notifications are available, but not yet enabled."
+msgstr "Benachrichtigungen sind verfügbar, aber noch nicht aktiviert."
+
+#: lib/dtu_app_web/live/notifications_live.ex:138
+#, elixir-autogen, elixir-format
+msgid "Notifications are blocked in your browser settings. Open your browser's site settings and allow notifications for this PWA, then reload this page."
+msgstr "Benachrichtigungen sind in Ihren Browser-Einstellungen blockiert. Öffnen Sie"
+"die Site-Einstellungen Ihres Browsers und erlauben Sie Benachrichtigungen"
+"für diese PWA, und laden Sie diese Seite neu."
+
+#: lib/dtu_app_web/live/notifications_live.ex:163
+#, elixir-autogen, elixir-format
+msgid "Notifications are enabled. Pick what you'd like to be notified about below."
+msgstr "Benachrichtigungen sind aktiviert. Wählen Sie unten aus, worüber Sie"
+"benachrichtigt werden möchten."
 
 #: lib/dtu_app_web/components/layouts/root.html.heex:171
 #, elixir-autogen, elixir-format
@@ -612,6 +677,14 @@ msgstr "Système de télémétrie solaire en temps réel"
 msgid "Real-time and historic generation stats for your solar converter system."
 msgstr "Statistiques de production en temps réel et historiques pour votre système de conversion solaire."
 
+#: lib/dtu_app_web/live/notifications_live.ex:108
+#, elixir-autogen, elixir-format
+msgid "Receive alerts in your browser when your inverters change state or the day's production wraps up. Notifications only fire when this site is installed as a PWA."
+msgstr "Erhalten Sie Benachrichtigungen in Ihrem Browser, wenn sich der Status Ihrer"
+"Wechselrichter ändert oder die Tagesproduktion abgeschlossen ist."
+"Benachrichtigungen werden nur ausgelöst, wenn diese Site als PWA installiert"
+"ist."
+
 #: lib/dtu_app_web/components/layouts/root.html.heex:153
 #: lib/dtu_app_web/components/layouts/root.html.heex:238
 #, elixir-autogen, elixir-format
@@ -639,9 +712,15 @@ msgstr "Verantwortlich für den Inhalt"
 msgid "Save"
 msgstr "Enregistrer"
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:122
+#: lib/dtu_app_web/live/notifications_live.ex:229
 #, elixir-autogen, elixir-format
-msgid "Saving..."
+msgid "Save preferences"
+msgstr "Einstellungen speichern"
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:122
+#: lib/dtu_app_web/live/notifications_live.ex:227
+#, elixir-autogen, elixir-format
+msgid "Saving…"
 msgstr "Enregistrement..."
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:88
@@ -829,6 +908,11 @@ msgstr "Willkommen! Verbinden wir Ihre erste DTU"
 msgid "What happens next"
 msgstr "Was passiert als Nächstes"
 
+#: lib/dtu_app_web/live/notifications_live.ex:185
+#, elixir-autogen, elixir-format
+msgid "What to notify about"
+msgstr "Benachrichtigungen über"
+
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:67
 #, elixir-autogen, elixir-format
 msgid "When email delivery is enabled, the app calls a third-party transactional email provider to send magic-link emails. That provider sees your email address, the email subject, and the message body — typically only the magic-link URL. The current default in this open-source project is Resend; you may self-host with a different provider or disable email delivery entirely."
@@ -838,6 +922,13 @@ msgstr "Wenn der E-Mail-Versand aktiviert ist, ruft die App einen Drittanbieter 
 "typischerweise nur die Magic-Link-URL. Die aktuelle Standardeinstellung in"
 "diesem Open-Source-Projekt ist Resend; Sie können mit einem anderen Anbieter"
 "selbst hosten oder den E-Mail-Versand vollständig deaktivieren."
+
+#: lib/dtu_app_web/live/notifications_live.ex:217
+#, elixir-autogen, elixir-format
+msgid "When the sun goes down, get today's total yield compared to yesterday and the peak power from today compared to yesterday, if yesterday's data is available."
+msgstr "Erhalten Sie bei Sonnenuntergang den heutigen Gesamtertrag im Vergleich zu"
+"gestern sowie die heutige Spitzenleistung im Vergleich zu gestern, sofern"
+"die Daten von gestern verfügbar sind."
 
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:37
 #, elixir-autogen, elixir-format
