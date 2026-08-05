@@ -42,9 +42,38 @@ defmodule DtuApp.Repo.Migrations.AddInverterNameAndMpptIndexToReadings do
     #    `mppt_index` in the GROUP BY (so two inverters / two MPPTs each
     #    produce distinct series) and `inverter_name` in the SELECT
     #    (so the chart can label each line without a separate lookup).
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_5m"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_hourly"
-    execute "DROP MATERIALIZED VIEW IF EXISTS readings_daily"
+    #
+    #    Wrapped in a retry loop because the previous migration's
+    #    `add_continuous_aggregate_policy` registered background workers
+    #    that occasionally fire and acquire a lock on the same
+    #    `_timescaledb_catalog.continuous_agg` tuple our DROP wants — the
+    #    concurrent transaction then aborts with
+    #    "tuple concurrently deleted". Same pattern as
+    #    WidenReadingsTimestampPrecisionToMicroseconds.
+    execute """
+    DO $$
+    DECLARE
+      attempts int := 0;
+      ok boolean := false;
+    BEGIN
+      WHILE attempts < 60 AND NOT ok LOOP
+        BEGIN
+          DROP MATERIALIZED VIEW IF EXISTS readings_5m     CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_hourly CASCADE;
+          DROP MATERIALIZED VIEW IF EXISTS readings_daily  CASCADE;
+          ok := true;
+        EXCEPTION WHEN OTHERS THEN
+          attempts := attempts + 1;
+          RAISE NOTICE 'retrying continuous-aggregate drop (attempt %): %',
+            attempts, SQLERRM;
+          PERFORM pg_sleep(1);
+        END;
+      END LOOP;
+      IF NOT ok THEN
+        RAISE EXCEPTION 'failed to drop continuous aggregates after 60 attempts';
+      END IF;
+    END $$;
+    """
 
     execute """
     CREATE MATERIALIZED VIEW readings_5m
