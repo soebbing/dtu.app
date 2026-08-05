@@ -654,6 +654,193 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "compute_day_period_stats/2" do
+    # Pure data shaping: takes the yields + chart points the LiveView already
+    # fetched (both user-scoped upstream) and rolls them into the day-view
+    # "stat cards" — {total_yield, peak_power, avg_power}, rounded to one
+    # decimal. Lives in the Devices context so the LiveView can stay focused
+    # on rendering. The tests here pin the corner cases that the inline
+    # math in the LiveView used to handle.
+
+    test "returns all-zero stats for an empty day" do
+      stats = Devices.compute_day_period_stats([], [])
+
+      assert stats == %{
+               total_yield: 0.0,
+               peak_power: 0.0,
+               avg_power: 0.0
+             }
+    end
+
+    test "extracts the single-element total_yield from the day's yields list" do
+      # The day view's yields list comes from `list_range_yield_data/4` and
+      # always has exactly one entry — the day being viewed. Anything
+      # else (the `_ -> 0.0` branch) is defensive: an empty range, or a
+      # date that doesn't match, falls back to zero.
+      stats =
+        Devices.compute_day_period_stats(
+          [{~D[2026-07-31], 8.5}],
+          []
+        )
+
+      assert stats.total_yield == 8.5
+      assert stats.peak_power == 0.0
+      assert stats.avg_power == 0.0
+    end
+
+    test "uses the max of points for peak_power" do
+      # Three sampled points: 250 W, 800 W (peak), 320 W. The function
+      # ignores the chronology and takes the simple max — `peak_power`
+      # is "what was the highest sampled reading today".
+      points = [
+        %{time: ~U[2026-07-31 06:00:00Z], series: {1, "S1", 0, nil}, power: 250.0},
+        %{time: ~U[2026-07-31 12:00:00Z], series: {1, "S1", 0, nil}, power: 800.0},
+        %{time: ~U[2026-07-31 18:00:00Z], series: {1, "S1", 0, nil}, power: 320.0}
+      ]
+
+      stats = Devices.compute_day_period_stats([{~D[2026-07-31], 12.3}], points)
+
+      assert stats.peak_power == 800.0
+    end
+
+    test "computes avg_power as the arithmetic mean of points" do
+      points = [
+        %{time: ~U[2026-07-31 06:00:00Z], series: {1, "S1", 0, nil}, power: 100.0},
+        %{time: ~U[2026-07-31 07:00:00Z], series: {1, "S1", 0, nil}, power: 200.0},
+        %{time: ~U[2026-07-31 08:00:00Z], series: {1, "S1", 0, nil}, power: 300.0}
+      ]
+
+      stats = Devices.compute_day_period_stats([{~D[2026-07-31], 5.0}], points)
+
+      assert stats.avg_power == 200.0
+    end
+
+    test "rounds all three stats to one decimal place" do
+      # Floating-point drift between the Wh→kWh division upstream and
+      # the kWh stat here is round-to-one-decimal. Pre-fix this lived in
+      # four `Float.round(..., 3)` calls in the LiveView; the refactor
+      # centralised the precision in one place.
+      points = [
+        %{time: ~U[2026-07-31 06:00:00Z], series: {1, "S1", 0, nil}, power: 123.4567}
+      ]
+
+      stats = Devices.compute_day_period_stats([{~D[2026-07-31], 1.23456}], points)
+
+      assert stats.total_yield == 1.2
+      assert stats.peak_power == 123.5
+      assert stats.avg_power == 123.5
+    end
+  end
+
+  describe "compute_range_period_stats/2" do
+    # Same idea, but for the week / month / year views. The shape is
+    # {total_yield, avg_yield, peak_date, peak_val} — note `peak_date`
+    # (calendar day of the best day) and `avg_yield` (per-day average
+    # computed against the calendar span, not the data span).
+
+    test "returns nil peak_date for an empty period" do
+      stats = Devices.compute_range_period_stats([], 7)
+
+      assert stats == %{
+               total_yield: 0.0,
+               avg_yield: 0.0,
+               peak_date: nil,
+               peak_val: 0.0
+             }
+    end
+
+    test "sums yields and divides by the calendar divisor" do
+      # Week: 7 days, even if only 3 yielded data. avg_yield is per-day
+      # across the full calendar span, not the 3 days with data — so a
+      # partial week still averages over 7 days. `avg_yield` is rounded
+      # to one decimal by the function, so we compare against the rounded
+      # result, not the pre-rounding exact division.
+      yields = [
+        {~D[2026-08-04], 2.0},
+        {~D[2026-08-05], 4.0},
+        {~D[2026-08-06], 6.0}
+      ]
+
+      stats = Devices.compute_range_period_stats(yields, 7)
+
+      assert stats.total_yield == 12.0
+      # 12.0 / 7 ≈ 1.7142… rounded to one decimal = 1.7
+      assert stats.avg_yield == 1.7
+    end
+
+    test "picks the highest-yield day as peak_date / peak_val" do
+      yields = [
+        {~D[2026-08-01], 3.0},
+        {~D[2026-08-02], 7.5},
+        {~D[2026-08-03], 1.0}
+      ]
+
+      stats = Devices.compute_range_period_stats(yields, 3)
+
+      assert stats.peak_date == ~D[2026-08-02]
+      assert stats.peak_val == 7.5
+    end
+
+    test "month divisor: averages over days-in-month" do
+      # Month view: divisor = days-in-month (28, 29, 30, or 31). The
+      # caller passes the exact count from Date.diff(last, first) + 1
+      # so partial months still work (e.g. 17/31 if reading started
+      # mid-month).
+      yields = [{~D[2026-08-01], 31.0}, {~D[2026-08-15], 0.0}]
+
+      stats = Devices.compute_range_period_stats(yields, 31)
+
+      assert stats.total_yield == 31.0
+      assert stats.avg_yield == 31.0 / 31.0
+    end
+
+    test "year divisor: averages over 12 months" do
+      # Each year's yields are monthly aggregates (from the bar chart),
+      # not daily — but the function is shape-agnostic on its input.
+      # Divisor = 12.
+      yields = [
+        {~D[2026-01-01], 10.0},
+        {~D[2026-06-01], 20.0}
+      ]
+
+      stats = Devices.compute_range_period_stats(yields, 12)
+
+      assert stats.total_yield == 30.0
+      assert stats.avg_yield == 30.0 / 12.0
+    end
+
+    test "rejects divisor 0 or negative" do
+      # The function guard rejects zero/negative divisors rather than
+      # dividing by zero or returning a meaningless negative average.
+      # 0 days-in-month shouldn't happen in practice (Date.end_of_month
+      # always returns ≥28), but defending against it makes the contract
+      # explicit.
+      assert_raise FunctionClauseError, fn ->
+        Devices.compute_range_period_stats([{~D[2026-08-01], 1.0}], 0)
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        Devices.compute_range_period_stats([{~D[2026-08-01], 1.0}], -1)
+      end
+    end
+
+    test "rounds total_yield, avg_yield, and peak_val to one decimal place" do
+      # Same precision contract as compute_day_period_stats — the
+      # refactor pulled all the Float.round(..., 3) calls out of the
+      # LiveView and into one place per function.
+      yields = [
+        {~D[2026-08-01], 1.23456},
+        {~D[2026-08-02], 7.89012}
+      ]
+
+      stats = Devices.compute_range_period_stats(yields, 7)
+
+      assert stats.total_yield == 9.1
+      assert_in_delta stats.avg_yield, 1.3, 0.05
+      assert stats.peak_val == 7.9
+    end
+  end
+
   describe "local_day_utc_range/2" do
     # Translates a user-facing local date into the UTC range that
     # contains the readings for that local day. The chart queries use
