@@ -1,8 +1,8 @@
 // dtu.app Service Worker
 // PWA Tier 2: Basic caching strategy for offline functionality
 
-const CACHE_NAME = 'dtu-app-v1'
-const STATIC_CACHE = 'dtu-app-static-v1'
+const CACHE_NAME = 'dtu-app-v2'
+const STATIC_CACHE = 'dtu-app-static-v2'
 
 // Assets to cache immediately on install
 const STATIC_ASSETS = [

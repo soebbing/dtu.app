@@ -32,14 +32,17 @@
 /* PWA standalone mode: keep the navbar clear of the iOS status bar / notch.
    The viewport uses `viewport-fit=cover` and `apple-mobile-web-app-status-bar-style`
    is `black-translucent`, so the status bar overlays the page. We use
-   `max()` so the navbar still gets a bit of top distance in PWA mode on
-   devices that report `safe-area-inset-top: 0` (non-notched iPhones,
-   Android PWAs, desktop PWA installs) — the rule doesn't apply at all
-   in a regular browser tab, where the OS chrome already provides the
-   safe area. */
+   `max()` so the navbar still has a real top distance in PWA mode on devices
+   that report `safe-area-inset-top: 0` (non-notched iPhones, Android PWAs,
+   desktop PWA installs). The minimum is 1.5rem (24px) — enough to clear the
+   iOS status bar on a non-notched iPhone (20-22pt status bar) with a small
+   breathing margin, without being so large that it makes the navbar look
+   weird on devices with a tall safe area (there the env() value wins).
+   The rule doesn't apply at all in a regular browser tab, where the OS
+   chrome already provides the safe area. */
 @media (display-mode: standalone), (display-mode: window-controls-overlay) {
   header.sticky {
-    padding-top: max(env(safe-area-inset-top, 0px), 0.75rem);
+    padding-top: max(env(safe-area-inset-top, 0px), 1.5rem);
   }
 }
 
