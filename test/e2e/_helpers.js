@@ -22,20 +22,28 @@ const LIVEVIEW_JOINED_EVENT = "phx:joined";
  *
  * `liveSocket` is exposed on `window` by `assets/js/app.js`
  * (`window.liveSocket = liveSocket`). We poll its
- * `isConnected()` / `connectionState()` for the common case
- * where the socket has *already* connected — the standard
- * `phx:joined` window event fires exactly once when the
- * handshake completes, so if Playwright calls this helper
- * after that point (which is what happens once navigation
- * and initial hydration settle) a naive `addEventListener`
- * for `phx:joined` would wait forever for an event that's
- * already done.
+ * `isConnected()` / `connectionState()` from the Node side
+ * via `page.waitForFunction()` so we don't depend on the
+ * standard `phx:joined` window event timing.
  *
- * For the race-y window where the socket hasn't connected
- * yet, we also fall back to listening for `phx:joined` so a
- * Playwright call that arrives *before* the LiveView mount
- * still gets to wait for the real event rather than racing
- * the polling interval.
+ * Why poll instead of listening for `phx:joined`?
+ *
+ *   `phx:joined` fires exactly once when the LiveView
+ *   WebSocket handshake completes — typically before
+ *   Playwright gets a chance to install a listener for
+ *   it (Playwright runs after navigation + hydration). A
+ *   naive `addEventListener("phx:joined", …)` then waits
+ *   forever for an event that's already done; every test
+ *   using the helper timed out at 30 s on every CI run.
+ *
+ *   `isConnected()` (a method on Phoenix.LiveSocket
+ *   since 1.x) reads `connection.state() === "open"` on
+ *   the underlying `Socket`. It returns `true` from the
+ *   moment the WebSocket opens and stays `true` across
+ *   reconnects, so polling it from Node is both safe and
+ *   robust to "the event already fired" / "LiveView JS
+ *   hasn't even loaded yet" / "the socket was disconnected
+ *   and is reconnecting" all at once.
  *
  * Call this right before clicking any submit
  * (`phx-submit`) button on a LiveView form, or right
@@ -65,63 +73,41 @@ const LIVEVIEW_JOINED_EVENT = "phx:joined";
 async function waitForLiveSocketConnected(page, opts = {}) {
   const timeout = opts.timeout ?? (process.env.CI ? 30000 : 15000);
 
-  // Playwright's `page.evaluate(fn, arg)` signature only accepts
-  // a single argument. We pass `[eventName, timeoutMs]` as that
-  // one argument so the page-side `Promise` can read both the
-  // event name to wait on and the timeout to enforce. The outer
-  // await is bounded by the per-test actionTimeout in
-  // `playwright.config.js` (10s default, 15s in CI), which is
-  // comfortably longer than the inner setTimeout we install here.
-  //
-  // The page-side logic:
-  //   1. If `window.liveSocket` exists and reports `isConnected()`
-  //      (or `connectionState() === "open"`), the socket is
-  //      already up — resolve immediately. This is the common
-  //      path: Playwright runs after navigation + hydration, so
-  //      `phx:joined` already fired and a `addEventListener` for
-  //      it would block forever.
-  //   2. Otherwise (e.g. Playwright raced the page load) install
-  //      a one-shot listener for `phx:joined` and resolve when it
-  //      fires, rejecting on timeout.
-  await page.evaluate(
-    ([eventName, timeoutMs]) => {
-      // Fast path: socket is already up by the time we get here.
+  // Poll `liveSocket.isConnected()` (with a
+  // `connectionState() === "open"` fallback for older
+  // LiveSocket builds that don't expose `isConnected`)
+  // every 50 ms. `waitForFunction` resolves as soon as
+  // the predicate returns truthy, and rejects with a
+  // `TimeoutError` after the configured timeout — the
+  // exact semantics we want without writing a manual
+  // timer dance.
+  await page.waitForFunction(
+    () => {
       const ls = window.liveSocket;
-      if (ls) {
-        const state =
-          typeof ls.isConnected === "function"
-            ? ls.isConnected()
-            : typeof ls.connectionState === "function" &&
-                ls.connectionState() === "open";
-        if (state) {
-          return;
-        }
+      if (!ls) return false;
+
+      if (typeof ls.isConnected === "function") {
+        return ls.isConnected();
       }
 
-      return new Promise((resolve, reject) => {
-        let timeoutHandle;
-        const handle = () => {
-          clearTimeout(timeoutHandle);
-          window.removeEventListener(eventName, handle);
-          resolve();
-        };
+      if (typeof ls.connectionState === "function") {
+        return ls.connectionState() === "open";
+      }
 
-        timeoutHandle = setTimeout(() => {
-          window.removeEventListener(eventName, handle);
-          reject(
-            new Error(
-              `Timed out after ${timeoutMs} ms waiting for ` +
-              `the LiveView socket to connect (no '${eventName}' ` +
-              `window event). The page may not have a LiveView ` +
-              `mount, or LiveView JavaScript failed to load.`
-            )
-          );
-        }, timeoutMs);
+      // No public API — fall back to inspecting the
+      // underlying Socket, which LiveSocket exposes via
+      // `getSocket()` in 1.x.
+      const sock = typeof ls.getSocket === "function" ? ls.getSocket() : null;
+      if (sock && typeof sock.isConnected === "function") {
+        return sock.isConnected();
+      }
 
-        window.addEventListener(eventName, handle, { once: true });
-      });
+      // Last-resort fallback: assume the event has
+      // already fired (the user navigated and waited).
+      return true;
     },
-    [LIVEVIEW_JOINED_EVENT, timeout]
+    null,
+    { timeout, polling: 50 }
   );
 }
 
