@@ -91,6 +91,11 @@ msgstr ""
 msgid "A DTU (Data Transfer Unit) reads your solar inverter and publishes live telemetry here over MQTT. Add yours to start seeing real-time generation — works with OpenDTU and AhoyDTU firmware."
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:199
+#, elixir-autogen, elixir-format
+msgid "A notification whenever an inverter goes offline or comes back online. The notification names the inverter."
+msgstr ""
+
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:74
 #, elixir-autogen, elixir-format
 msgid "Account data is stored until you delete your account."
@@ -159,15 +164,30 @@ msgstr ""
 msgid "Base Topic:"
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:126
+#, elixir-autogen, elixir-format
+msgid "Browsers must be installed as a PWA to deliver notifications. Add this site to your home screen / applications folder and reopen it from there."
+msgstr ""
+
 #: lib/dtu_app_web/live/device_live/index.html.heex:127
 #: lib/dtu_app_web/live/device_live/index.html.heex:157
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:169
+#, elixir-autogen, elixir-format
+msgid "Checking browser capabilities…"
+msgstr ""
+
 #: lib/dtu_app_web/live/dashboard_live.ex:1287
 #, elixir-autogen, elixir-format
 msgid "Choose date"
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:148
+#, elixir-autogen, elixir-format
+msgid "Click the button below; your browser will ask whether to allow notifications for this PWA."
 msgstr ""
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:73
@@ -315,6 +335,16 @@ msgstr ""
 msgid "Edit DTU"
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:158
+#, elixir-autogen, elixir-format
+msgid "Enable notifications"
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:214
+#, elixir-autogen, elixir-format
+msgid "End-of-day summary"
+msgstr ""
+
 #: lib/dtu_app_web/live/device_live/index.html.heex:336
 #, elixir-autogen, elixir-format
 msgid "Ensure MQTT is enabled, save and reboot the DTU."
@@ -369,6 +399,16 @@ msgstr ""
 #: lib/dtu_app_web/controllers/page_html/imprint.html.heex:6
 #, elixir-autogen, elixir-format
 msgid "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:132
+#, elixir-autogen, elixir-format
+msgid "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:196
+#, elixir-autogen, elixir-format
+msgid "Inverter connection state"
 msgstr ""
 
 #: lib/dtu_app_web/controllers/page_html/home.html.heex:82
@@ -505,8 +545,24 @@ msgstr ""
 #: lib/dtu_app_web/components/layouts/root.html.heex:127
 #: lib/dtu_app_web/components/layouts/root.html.heex:202
 #: lib/dtu_app_web/live/notifications_live.ex:35
+#: lib/dtu_app_web/live/notifications_live.ex:105
 #, elixir-autogen, elixir-format
 msgid "Notifications"
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:145
+#, elixir-autogen, elixir-format
+msgid "Notifications are available, but not yet enabled."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:138
+#, elixir-autogen, elixir-format
+msgid "Notifications are blocked in your browser settings. Open your browser's site settings and allow notifications for this PWA, then reload this page."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:163
+#, elixir-autogen, elixir-format
+msgid "Notifications are enabled. Pick what you'd like to be notified about below."
 msgstr ""
 
 #: lib/dtu_app_web/components/layouts/root.html.heex:171
@@ -594,6 +650,11 @@ msgstr ""
 msgid "Real-time and historic generation stats for your solar converter system."
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:108
+#, elixir-autogen, elixir-format
+msgid "Receive alerts in your browser when your inverters change state or the day's production wraps up. Notifications only fire when this site is installed as a PWA."
+msgstr ""
+
 #: lib/dtu_app_web/components/layouts/root.html.heex:153
 #: lib/dtu_app_web/components/layouts/root.html.heex:238
 #, elixir-autogen, elixir-format
@@ -620,9 +681,15 @@ msgstr ""
 msgid "Save"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:122
+#: lib/dtu_app_web/live/notifications_live.ex:229
 #, elixir-autogen, elixir-format
-msgid "Saving..."
+msgid "Save preferences"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/index.html.heex:122
+#: lib/dtu_app_web/live/notifications_live.ex:227
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Saving…"
 msgstr ""
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:88
@@ -792,9 +859,19 @@ msgstr ""
 msgid "What happens next"
 msgstr ""
 
+#: lib/dtu_app_web/live/notifications_live.ex:185
+#, elixir-autogen, elixir-format
+msgid "What to notify about"
+msgstr ""
+
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:67
 #, elixir-autogen, elixir-format
 msgid "When email delivery is enabled, the app calls a third-party transactional email provider to send magic-link emails. That provider sees your email address, the email subject, and the message body — typically only the magic-link URL. The current default in this open-source project is Resend; you may self-host with a different provider or disable email delivery entirely."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:217
+#, elixir-autogen, elixir-format
+msgid "When the sun goes down, get today's total yield compared to yesterday and the peak power from today compared to yesterday, if yesterday's data is available."
 msgstr ""
 
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:37
