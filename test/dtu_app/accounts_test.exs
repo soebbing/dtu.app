@@ -617,4 +617,108 @@ defmodule DtuApp.AccountsTest do
       assert updated.email == user.email
     end
   end
+
+  describe "settings_changeset/2 and update_user_settings/2" do
+    # The `settings_changeset/2` parses a decimal €/kWh string from the
+    # `/users/settings` form, converts it to whole cents, and validates
+    # the range. The bug fixed in this commit: an empty string (or any
+    # unparseable text) used to fall through to the `:invalid` atom and
+    # then `cast/3` rejected it on the integer field with Ecto's
+    # default "is invalid" message — the user saw "invalid value" on
+    # every blank submit. The fix maps all non-numeric / out-of-range
+    # inputs to `nil`, so the form clears the field silently and the
+    # dashboard hides the savings card.
+
+    test "converts a valid €/kWh value to whole cents" do
+      changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => "0.32"})
+
+      assert changeset.valid?
+      assert get_change(changeset, :cents_per_kwh) == 32
+    end
+
+    test "treats an empty string as clearing the field (no 'is invalid' error)" do
+      # Regression: blank form submission previously added the Ecto
+      # default `{"is invalid", [type: :integer, validation: :cast]}`
+      # error to the changeset. The fix maps empty input to nil so the
+      # field is silently cleared.
+      changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => ""})
+
+      assert changeset.valid?
+      assert get_change(changeset, :cents_per_kwh) == nil
+    end
+
+    test "treats whitespace-only input as clearing the field" do
+      # The form trim()s whitespace before parsing; "   " becomes ""
+      # after String.trim/1 and must yield the same nil result as the
+      # empty-string case.
+      changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => "   "})
+
+      assert changeset.valid?
+      assert get_change(changeset, :cents_per_kwh) == nil
+    end
+
+    test "treats zero as clearing the field" do
+      # The user may type "0" or "0.00" expecting "no rate" — both
+      # parse to `{+0.0, _}` and must round to nil, not 0 cents (which
+      # would otherwise produce a misleading "€0.00 saved" on the
+      # dashboard).
+      for input <- ["0", "0.00", "0.0"] do
+        changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => input})
+        assert changeset.valid?, "input #{inspect(input)} should be valid"
+        assert get_change(changeset, :cents_per_kwh) == nil,
+               "input #{inspect(input)} should clear the field"
+      end
+    end
+
+    test "treats non-numeric input as clearing the field" do
+      # A pasted garbage value (e.g. "abc") must not surface the Ecto
+      # "is invalid" error — it should silently clear the field so
+      # the user can retype.
+      changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => "abc"})
+
+      assert changeset.valid?
+      assert get_change(changeset, :cents_per_kwh) == nil
+    end
+
+    test "reports a friendly range error for sub-cent precision" do
+      # "0.001" parses to 0.001, which rounds to 0 cents. The
+      # changeset detects this and declines with the friendly range
+      # error instead of silently storing 0.
+      {:error, changeset} =
+        Accounts.update_user_settings(user_fixture(), %{"euros_per_kwh" => "0.001"})
+
+      assert errors_on(changeset).cents_per_kwh == ["must be between €0.01 and €100"]
+    end
+
+    test "persists a valid rate and clears it on a subsequent empty submit" do
+      user = user_fixture()
+
+      {:ok, %{cents_per_kwh: 25}} =
+        Accounts.update_user_settings(user, %{"euros_per_kwh" => "0.25"})
+
+      reloaded = Repo.get!(User, user.id)
+      assert reloaded.cents_per_kwh == 25
+
+      {:ok, %{cents_per_kwh: nil}} =
+        Accounts.update_user_settings(reloaded, %{"euros_per_kwh" => ""})
+
+      empty = Repo.get!(User, user.id)
+      assert empty.cents_per_kwh == nil
+    end
+
+    test "ignores other keys" do
+      # The settings page only sends `euros_per_kwh`; everything else
+      # (e.g. the user's email, password) must be silently ignored.
+      user = user_fixture()
+
+      assert {:ok, updated} =
+               Accounts.update_user_settings(user, %{
+                 "euros_per_kwh" => "0.30",
+                 "email" => "malicious@example.com"
+               })
+
+      assert updated.cents_per_kwh == 30
+      assert updated.email == user.email
+    end
+  end
 end

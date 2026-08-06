@@ -161,17 +161,16 @@ defmodule DtuApp.Accounts.User do
       |> to_string()
       |> String.trim()
 
-    # `Float.parse/1` on a string like "0" or "0.00" returns `{+0.0, _}`.
-    # Treat positive zero as "clear the field" (nil → drop the row's
-    # savings on the dashboard) so the user can blank the rate from
-    # the settings form. Out-of-range or non-numeric → :invalid, which
-    # the validate_change clause below turns into a clear error
-    # message rather than a confusing Float-parse error.
+    # `Float.parse/1` returns `:error` for an empty / whitespace-only
+    # string and `{+0.0, _}` for "0" / "0.00". Both must be treated as
+    # "no rate set" → cast `cents_per_kwh` to `nil` so the dashboard
+    # hides the savings card instead of showing red "is invalid"
+    # errors. Out-of-range values are reported as the friendly
+    # "must be between" message by the validate_change clause below.
     cents =
       case Float.parse(euros) do
         {f, _} when f > 0 and f <= 100.0 -> round(f * 100)
-        {+0.0, _} -> nil
-        _ -> :invalid
+        _ -> nil
       end
 
     user
