@@ -61,10 +61,15 @@ async function fillEnergyRateAndSubmit(page, value) {
   await input.fill(value);
 
   // The form is a regular HTML POST (not LiveView), so submit and
-  // wait for the redirect back to /users/settings.
+  // wait for the redirect back to /users/settings. The button is a
+  // bare `<button>` (no explicit `type` attribute, which defaults to
+  // `submit` inside a form), so we identify it by its label "Save
+  // Settings" — that's the only button on /users/settings with that
+  // text and the email/password forms use different labels.
+  const form = page.locator('#update_settings');
   await Promise.all([
     page.waitForURL(/\/users\/settings/, { timeout: 10000 }),
-    page.locator('#update_settings button[type="submit"]').click()
+    form.getByRole('button', { name: /Save Settings/i }).click()
   ]);
 }
 
