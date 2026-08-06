@@ -67,6 +67,11 @@
     </script>
   </head>
   <body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 min-h-screen transition-colors duration-250 flex flex-col antialiased">
+    <%!-- PWA: top-of-page banner shown when the browser is offline.
+         The OfflineBanner hook toggles `data-offline` based on
+         `navigator.onLine`; CSS in app.css slides it in. --%>
+    <OfflineBanner.offline_banner />
+
     <!-- Unified Glassmorphic Navbar -->
     <header class="sticky top-0 z-50 w-full border-b border-zinc-200/50 dark:border-zinc-900/60 bg-white/70 dark:bg-zinc-950/75 backdrop-blur-md">
       <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">

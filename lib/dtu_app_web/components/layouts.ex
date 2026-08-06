@@ -6,6 +6,7 @@ defmodule DtuAppWeb.Layouts do
   use DtuAppWeb, :html
 
   alias DtuAppWeb.NetworkStatusIndicator
+  alias DtuAppWeb.OfflineBanner
 
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
