@@ -34,6 +34,7 @@ import topbar from "../vendor/topbar"
 // never receives the permission state (or fires notifications).
 import {NotificationPermission} from "./notification_permission.js"
 import {Notifications} from "./notifications.js"
+import {OfflineBanner} from "./offline_banner.js"
 
 // Network Status Hook
 const NetworkStatus = {
@@ -147,7 +148,8 @@ const liveSocket = new LiveSocket("/live", Socket, {
     ...colocatedHooks,
     NetworkStatus,
     NotificationPermission,
-    Notifications
+    Notifications,
+    OfflineBanner
   },
 })
 

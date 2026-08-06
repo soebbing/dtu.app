@@ -46,4 +46,12 @@
   }
 }
 
+/* Offline banner: when the OfflineBanner hook sets data-offline="true",
+   slide the banner into view. The base classes on the banner
+   (translate-y-full / opacity-0) keep it hidden by default. */
+.offline-banner[data-offline="true"] {
+  transform: translateY(0);
+  opacity: 1;
+}
+
 /* This file is for your main application CSS */
