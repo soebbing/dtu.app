@@ -35,6 +35,11 @@ defmodule DtuAppWeb.DashboardLive do
       # connected, and `handle_info({:set_timezone, ...})` updates this
       # assign + re-renders.
       |> assign(:user_tz_offset_seconds, 0)
+      # Energy rate for the "Saved today" card. The user sets this on
+      # `/users/settings`; if it's nil the savings card is hidden. Read
+      # from the user schema here so the LiveView re-render on every
+      # reading picks up the same value without a re-read.
+      |> assign(:cents_per_kwh, user.cents_per_kwh)
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 

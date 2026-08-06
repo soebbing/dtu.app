@@ -8,6 +8,7 @@ defmodule DtuAppWeb.UserSettingsController do
 
   plug :require_sudo_mode
   plug :assign_email_and_password_changesets
+  plug :assign_settings_changeset
 
   def edit(conn, _params) do
     render(conn, :edit)
@@ -53,6 +54,20 @@ defmodule DtuAppWeb.UserSettingsController do
     end
   end
 
+  def update(conn, %{"action" => "update_settings"} = params) do
+    user = conn.assigns.current_scope.user
+
+    case Accounts.update_user_settings(user, params) do
+      {:ok, _user} ->
+        conn
+        |> put_flash(:info, "Settings updated successfully.")
+        |> redirect(to: ~p"/users/settings")
+
+      {:error, changeset} ->
+        render(conn, :edit, settings_changeset: changeset)
+    end
+  end
+
   def confirm_email(conn, %{"token" => token}) do
     case Accounts.update_user_email(conn.assigns.current_scope.user, token) do
       {:ok, _user} ->
@@ -73,5 +88,17 @@ defmodule DtuAppWeb.UserSettingsController do
     conn
     |> assign(:email_changeset, Accounts.change_user_email(user))
     |> assign(:password_changeset, Accounts.change_user_password(user))
+  end
+
+  # Pre-build the settings changeset for the GET so the form can
+  # redisplay on validation failure. The form posts `euros_per_kwh`
+  # directly (not under the `user` key) because it's a single
+  # top-level field rather than a User-schema shape; this matches
+  # the existing email/password forms' top-level shapes.
+  defp assign_settings_changeset(conn, _opts) do
+    user = conn.assigns.current_scope.user
+
+    conn
+    |> assign(:settings_changeset, Accounts.change_user_settings(user))
   end
 end

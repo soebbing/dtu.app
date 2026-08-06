@@ -639,6 +639,46 @@ defmodule DtuApp.Devices do
     }
   end
 
+  @doc """
+  Compute the euro-cent savings for a given yield in kWh at a given
+  rate. `cents_per_kwh` is the integer-cent rate stored on the
+  `User` schema; `kwh` is the period's total yield (already rounded
+  to one decimal by the per-period `compute_*_period_stats`
+  functions). The product is divided by 100 to give euro cents:
+
+      compute_savings(250.0, 32)  # 250 kWh at €0.32/kWh
+      # => 80                       # 80 euro-cents (€0.80)
+
+  Pure data shaping, no DB access. `nil` rate (user hasn't set one
+  on `/users/settings`) propagates as `nil` so the dashboard can
+  hide the savings card rather than show "€0.00 saved".
+  """
+  @spec compute_savings(float() | nil, pos_integer() | nil) :: pos_integer() | nil
+  def compute_savings(nil, _cents), do: nil
+  def compute_savings(_kwh, nil), do: nil
+
+  def compute_savings(kwh, cents) when is_number(kwh) and is_integer(cents) and cents > 0 do
+    round(kwh * cents / 100)
+  end
+
+  @doc """
+  Format a euro-cent integer as a `€X.XX` string for display in the
+  dashboard. Mirrors the precision contract of the
+  `compute_*_period_stats` family (two decimal places, no
+  thousands separator — a self-hosted solar app rarely shows four-
+  digit-savings totals, and the dashboard's "Saved this month"
+  card is already in a compact stat-card layout). Returns "€0.00"
+  for `nil` so the template can render a stable placeholder.
+  """
+  @spec format_savings(pos_integer() | nil) :: String.t()
+  def format_savings(nil), do: "€0.00"
+
+  def format_savings(cents) when is_integer(cents) and cents >= 0 do
+    euros = div(cents, 100)
+    remainder = rem(cents, 100)
+    :io_lib.format("€~b.~2..0b", [euros, remainder]) |> IO.iodata_to_binary()
+  end
+
   # --- Helpers ----------------------------------------------------------------
 
   # Pick the right "power" field for a row depending on its MPPT index.
