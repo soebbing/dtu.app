@@ -125,20 +125,30 @@ test.describe('Acceptance Tests: Energy rate (kWh price) on /users/settings', ()
     expect(flash.toLowerCase()).toContain('settings updated');
   });
 
-  test('non-numeric input does NOT show "is invalid" — it clears the rate', async ({ page }) => {
+  test('sub-cent value shows the friendly range error (not "is invalid")', async ({ page }) => {
+    // The original bug surfaced Ecto's "is invalid" cast error for
+    // any unparseable input. The HTML5 form has min=0.01 and
+    // step=0.01, so we strip the min/step constraints before
+    // submitting to test the server-side validation directly — that
+    // way we can confirm the server returns the friendly range
+    // error rather than Ecto's generic "is invalid".
     await navigateToSettings(page);
 
-    // Paste garbage. The browser's <input type="number"> may strip
-    // non-numeric characters on its own; either way the server must
-    // NOT surface "is invalid" — empty and unparseable input both
-    // map to nil at the changeset level.
-    await fillEnergyRateAndSubmit(page, 'abc');
+    // Loosen the input's HTML5 validation so the browser doesn't
+    // block the form submit. We're testing the server's behavior,
+    // not the browser's.
+    await page.evaluate(() => {
+      const input = document.querySelector('#euros_per_kwh');
+      input.removeAttribute('min');
+      input.removeAttribute('step');
+    });
+
+    await fillEnergyRateAndSubmit(page, '0.001');
 
     // The "is invalid" error must NOT appear.
     await expect(page.locator('text=/is invalid/i')).toHaveCount(0);
 
-    // The success flash confirms the save happened.
-    const flash = await getSuccessFlash(page);
-    expect(flash.toLowerCase()).toContain('settings updated');
+    // The friendly range error is shown.
+    await expect(page.locator('text=/must be between/i')).toBeVisible();
   });
 });
