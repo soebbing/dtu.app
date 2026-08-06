@@ -912,6 +912,12 @@ defmodule DtuAppWeb.DashboardLive do
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
     tz_offset_seconds = socket.assigns.user_tz_offset_seconds
+    # Energy rate for the "Saved" card. `cents_per_kwh` is set in
+    # `mount/3` from `user.cents_per_kwh`; if the user hasn't set a
+    # rate yet this is `nil` and `Devices.compute_savings/2`
+    # short-circuits to `nil`, so the card is hidden by the
+    # template (`<%= if @savings %>`).
+    cents = socket.assigns.cents_per_kwh
 
     case time_range do
       "today" ->
@@ -919,6 +925,7 @@ defmodule DtuAppWeb.DashboardLive do
 
         socket
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
 
@@ -944,6 +951,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
 
@@ -978,6 +986,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, monday)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
 
@@ -1013,6 +1022,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, first_day)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
 
@@ -1056,6 +1066,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, Date.new!(year, 1, 1))
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
     end

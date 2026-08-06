@@ -161,18 +161,17 @@ defmodule DtuApp.Accounts.User do
       |> to_string()
       |> String.trim()
 
+    # `Float.parse/1` on a string like "0" or "0.00" returns `{+0.0, _}`.
+    # Treat positive zero as "clear the field" (nil → drop the row's
+    # savings on the dashboard) so the user can blank the rate from
+    # the settings form. Out-of-range or non-numeric → :invalid, which
+    # the validate_change clause below turns into a clear error
+    # message rather than a confusing Float-parse error.
     cents =
       case Float.parse(euros) do
         {f, _} when f > 0 and f <= 100.0 -> round(f * 100)
-        {0.0, _} -> nil
+        {+0.0, _} -> nil
         _ -> :invalid
-      end
-
-    cents =
-      case cents do
-        :invalid -> :invalid
-        nil -> nil
-        c when is_integer(c) -> c
       end
 
     user
@@ -181,6 +180,11 @@ defmodule DtuApp.Accounts.User do
       case value do
         nil -> []
         c when is_integer(c) and c > 0 and c <= 10_000 -> []
+        # Plain-string error message — the User module doesn't have
+        # `use Gettext`, so i18n is handled upstream by the controller /
+        # template's `Ecto.Changeset.traverse_errors/2` when present,
+        # or by the form-rendering helpers. The English literal is
+        # the source of truth here.
         _ -> [cents_per_kwh: "must be between €0.01 and €100"]
       end
     end)

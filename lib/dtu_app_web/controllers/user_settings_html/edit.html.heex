@@ -74,12 +74,14 @@
         end
       }
       placeholder="0.32"
-      help="Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card."
     />
+    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+      Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card.
+    </p>
 
     <%= if error = Keyword.get(@settings_changeset.errors, :cents_per_kwh) do %>
       <p class="mt-1 text-sm text-rose-600 dark:text-rose-400">
-        {error_to_string(error)}
+        {error}
       </p>
     <% end %>
 
