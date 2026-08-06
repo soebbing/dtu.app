@@ -934,30 +934,7 @@ defmodule DtuAppWeb.DashboardLive do
 
         points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
         yields = Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id)
-
-        total_yield =
-          case yields do
-            [{^date, y}] -> y
-            _ -> 0.0
-          end
-
-        peak_power =
-          case points do
-            [] -> 0.0
-            pts -> pts |> Enum.map(& &1.power) |> Enum.max(fn -> 0.0 end)
-          end
-
-        avg_power =
-          case points do
-            [] -> 0.0
-            pts -> Enum.sum(pts |> Enum.map(& &1.power)) / length(pts)
-          end
-
-        stats = %{
-          total_yield: Float.round(total_yield * 1.0, 1),
-          peak_power: Float.round(peak_power * 1.0, 1),
-          avg_power: Float.round(avg_power * 1.0, 1)
-        }
+        stats = Devices.compute_day_period_stats(yields, points)
 
         socket
         |> assign(:selected_period, date)
@@ -981,21 +958,7 @@ defmodule DtuAppWeb.DashboardLive do
         {monday_utc, _} = Devices.local_day_utc_range(monday, tz_offset_seconds)
         {sunday_utc, _} = Devices.local_day_utc_range(sunday, tz_offset_seconds)
         yields = Devices.list_range_yield_data(user, monday_utc, sunday_utc, dtu_id)
-        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
-        avg_yield = total_yield / 7.0
-
-        {peak_date, peak_val} =
-          case yields do
-            [] -> {nil, 0.0}
-            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
-          end
-
-        stats = %{
-          total_yield: Float.round(total_yield * 1.0, 1),
-          avg_yield: Float.round(avg_yield * 1.0, 1),
-          peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 1)
-        }
+        stats = Devices.compute_range_period_stats(yields, 7)
 
         yield_map = Map.new(yields)
 
@@ -1029,22 +992,8 @@ defmodule DtuAppWeb.DashboardLive do
         {first_utc, _} = Devices.local_day_utc_range(first_day, tz_offset_seconds)
         {last_utc, _} = Devices.local_day_utc_range(last_day, tz_offset_seconds)
         yields = Devices.list_range_yield_data(user, first_utc, last_utc, dtu_id)
-        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
         total_days = Date.diff(last_day, first_day) + 1
-        avg_yield = total_yield / total_days
-
-        {peak_date, peak_val} =
-          case yields do
-            [] -> {nil, 0.0}
-            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
-          end
-
-        stats = %{
-          total_yield: Float.round(total_yield * 1.0, 1),
-          avg_yield: Float.round(avg_yield * 1.0, 1),
-          peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 1)
-        }
+        stats = Devices.compute_range_period_stats(yields, total_days)
 
         yield_map = Map.new(yields)
 
@@ -1082,21 +1031,7 @@ defmodule DtuAppWeb.DashboardLive do
         {start_utc, _} = Devices.local_day_utc_range(start_date, tz_offset_seconds)
         {end_utc, _} = Devices.local_day_utc_range(end_date, tz_offset_seconds)
         yields = Devices.list_range_yield_data(user, start_utc, end_utc, dtu_id)
-        total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
-        avg_yield = total_yield / 12.0
-
-        {peak_date, peak_val} =
-          case yields do
-            [] -> {nil, 0.0}
-            list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
-          end
-
-        stats = %{
-          total_yield: Float.round(total_yield * 1.0, 1),
-          avg_yield: Float.round(avg_yield * 1.0, 1),
-          peak_date: peak_date,
-          peak_val: Float.round(peak_val * 1.0, 1)
-        }
+        stats = Devices.compute_range_period_stats(yields, 12)
 
         yield_map = Map.new(yields)
 

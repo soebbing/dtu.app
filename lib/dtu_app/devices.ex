@@ -559,6 +559,86 @@ defmodule DtuApp.Devices do
     end
   end
 
+  @doc """
+  Roll up the day-view "stat cards" from a day's yields and chart points.
+
+  Used by `DashboardLive` for the per-day granularity. The day shape is
+  `{total_yield, peak_power, avg_power}` (no `peak_date` — the day view's
+  peak is the highest sampled power, which is intrinsically tied to the
+  day itself).
+
+  Both inputs are already user-scoped (yields come from
+  `list_range_yield_data/4`, points from `list_day_chart_data/4`), so this
+  function is pure data-shaping with no DB access.
+  """
+  @spec compute_day_period_stats([{Date.t(), float()}], [chart_point()]) :: %{
+          total_yield: float(),
+          peak_power: float(),
+          avg_power: float()
+        }
+  def compute_day_period_stats(yields, points) do
+    total_yield =
+      case yields do
+        [{_date, y}] -> y
+        _ -> 0.0
+      end
+
+    peak_power =
+      case points do
+        [] -> 0.0
+        pts -> pts |> Enum.map(& &1.power) |> Enum.max(fn -> 0.0 end)
+      end
+
+    avg_power =
+      case points do
+        [] -> 0.0
+        pts -> Enum.sum(pts |> Enum.map(& &1.power)) / length(pts)
+      end
+
+    %{
+      total_yield: Float.round(total_yield * 1.0, 1),
+      peak_power: Float.round(peak_power * 1.0, 1),
+      avg_power: Float.round(avg_power * 1.0, 1)
+    }
+  end
+
+  @doc """
+  Roll up the week/month/year "stat cards" from a range's daily yields.
+
+  Returns `{total_yield, avg_yield, peak_date, peak_val}` — `avg_yield`
+  is the average per day across the period (`total_yield / divisor`),
+  `peak_date`/`peak_val` are the single highest-yield day. `divisor` is
+  the number of days the period spans (7 for a week, days-in-month for a
+  month, 12 for a year) — the caller computes it from the calendar, not
+  from the data, so a partial period (e.g. the first week of operation)
+  still averages over the calendar's full span.
+
+  `yields` comes from `list_range_yield_data/4` (already user-scoped).
+  """
+  @spec compute_range_period_stats([{Date.t(), float()}], pos_integer()) :: %{
+          total_yield: float(),
+          avg_yield: float(),
+          peak_date: Date.t() | nil,
+          peak_val: float()
+        }
+  def compute_range_period_stats(yields, divisor) when is_integer(divisor) and divisor > 0 do
+    total_yield = yields |> Enum.map(fn {_, y} -> y end) |> Enum.sum()
+    avg_yield = total_yield / (divisor * 1.0)
+
+    {peak_date, peak_val} =
+      case yields do
+        [] -> {nil, 0.0}
+        list -> list |> Enum.max_by(fn {_, y} -> y end, fn -> {nil, 0.0} end)
+      end
+
+    %{
+      total_yield: Float.round(total_yield * 1.0, 1),
+      avg_yield: Float.round(avg_yield * 1.0, 1),
+      peak_date: peak_date,
+      peak_val: Float.round(peak_val * 1.0, 1)
+    }
+  end
+
   # --- Helpers ----------------------------------------------------------------
 
   # Pick the right "power" field for a row depending on its MPPT index.

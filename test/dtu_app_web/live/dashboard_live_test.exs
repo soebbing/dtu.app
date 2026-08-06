@@ -830,7 +830,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
   defp label_text(html, label) do
     regex = ~r/<text[^>]*y="270"[^>]*>((?:.|\n)*?)<\/text>/
 
-    case Regex.scan(regex, html) do
+    # `render/1` may return an empty/binary value during the brief
+    # window between mount and first render; the helper below polls for
+    # a non-empty string before scanning.
+    case Regex.scan(regex, html || "") do
       [] -> false
       matches -> Enum.any?(matches, fn [_, body] -> body =~ label end)
     end
@@ -880,6 +883,33 @@ defmodule DtuAppWeb.DashboardLiveTest do
     after
       0 -> :ok
     end
+  end
+
+  # Poll the LiveView's rendered HTML for an expected label, with a
+  # short timeout. Used by the `Local-time display` tests where
+  # `Phoenix.PubSub.broadcast` fires an async `handle_info` that
+  # triggers a re-render; a bare `Process.sleep` + `render(view)` is
+  # racy under CI load and caused intermittent failures before this
+  # polling helper. 50 ms between attempts, 1 s total — the
+  # `handle_info` typically lands within a few ms.
+  defp wait_for_label(view, label, timeout_ms \\ 1_000, step_ms \\ 50) do
+    start_ms = System.monotonic_time(:millisecond)
+
+    do_ms = fn do_ms, html ->
+      cond do
+        label_text(html, label) ->
+          html
+
+        System.monotonic_time(:millisecond) - start_ms > timeout_ms ->
+          flunk("label #{inspect(label)} not found in LiveView render within #{timeout_ms} ms")
+
+        true ->
+          Process.sleep(step_ms)
+          do_ms.(do_ms, render(view))
+      end
+    end
+
+    do_ms.(do_ms, render(view))
   end
 
   describe "Chart tooltip" do
@@ -1167,13 +1197,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
         })
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
-      Process.sleep(50)
 
       # Simulate the JS hook pushing Berlin's +01:00 offset.
       Phoenix.PubSub.broadcast(DtuApp.PubSub, "dtu:timezone", {:set_timezone, 3_600})
 
-      # Wait for the handle_info to process, then re-render.
-      html_after = render(view)
+      # Wait for the LiveView's handle_info to process and the chart's
+      # X-axis labels to re-render to local time. We poll the rendered
+      # HTML for the expected new label instead of sleeping for a wall-
+      # clock guess — `Process.sleep(50)` is racy under CI load and
+      # caused this test to fail intermittently before the polling fix.
+      html_after = wait_for_label(view, "13:00")
 
       assert label_text(html_after, "13:00")
       assert label_text(html_after, "14:00")
