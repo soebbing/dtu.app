@@ -181,6 +181,31 @@ defmodule DtuApp.Accounts do
     |> Repo.update()
   end
 
+  @doc """
+  Builds a settings-changeset for the user. The form on
+  `/users/settings` posts `euros_per_kwh` (a decimal string); the
+  underlying `User.settings_changeset/2` converts that to whole
+  cents and validates the range. This wrapper exists so the
+  controller can pass the user through unchanged, matching the
+  pattern used by `change_user_email/3` and `change_user_password/3`.
+  """
+  def change_user_settings(user, attrs \\ %{}) do
+    User.settings_changeset(user, attrs)
+  end
+
+  @doc """
+  Persists the user's account-wide settings. Currently only
+  `cents_per_kwh` (the energy rate for the dashboard savings card);
+  the changeset rejects negative or out-of-range rates. A successful
+  call returns `{:ok, %User{}}`; a validation failure returns
+  `{:error, %Ecto.Changeset{}}` for the controller to redisplay.
+  """
+  def update_user_settings(user, attrs) do
+    user
+    |> User.settings_changeset(attrs)
+    |> Repo.update()
+  end
+
   ## Session
 
   @doc """

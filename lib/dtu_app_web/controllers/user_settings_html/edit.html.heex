@@ -46,4 +46,46 @@
       Save Password
     </.button>
   </.form>
+
+  <div class="divider" />
+
+  <%!-- Energy rate for the dashboard's "Saved this month" card. The
+       form posts a decimal €/kWh value as a plain string; the
+       User.settings_changeset/2 converts it to whole cents and casts
+       into the cents_per_kwh column. The hidden action routes to
+       `update_settings/2` in UserSettingsController. --%>
+  <.form :let={_f} for={@settings_changeset} action={~p"/users/settings"} id="update_settings">
+    <input type="hidden" name="action" value="update_settings" />
+
+    <.input
+      name="euros_per_kwh"
+      id="euros_per_kwh"
+      type="number"
+      step="0.01"
+      min="0.01"
+      max="100"
+      label="Energy rate (€/kWh)"
+      value={
+        case Ecto.Changeset.fetch_field(@settings_changeset, :cents_per_kwh) do
+          {:changes, cents} when is_integer(cents) ->
+            :erlang.float_to_binary(cents / 100.0, decimals: 2)
+
+          _ ->
+            ""
+        end
+      }
+      placeholder="0.32"
+    />
+    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+      Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card.
+    </p>
+
+    <%= if error = Keyword.get(@settings_changeset.errors, :cents_per_kwh) do %>
+      <p class="mt-1 text-sm text-rose-600 dark:text-rose-400">
+        {elem(error, 0)}
+      </p>
+    <% end %>
+
+    <.button variant="primary" phx-disable-with="Saving...">Save Settings</.button>
+  </.form>
 </Layouts.app>

@@ -1239,12 +1239,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
         })
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
-      Process.sleep(50)
 
       # First render uses the default offset of 0 (UTC). The chart
       # range is 06:00–07:00 local (= UTC), so the first label is
-      # "06:00".
-      assert label_text(render(view), "06:00")
+      # "06:00". Use the wait_for_label/2 polling helper (same one the
+      # chart-label-shift test uses) so a re-render in flight doesn't
+      # race the render/2 capture — the racy bare-render pattern was
+      # the root cause of the CI flake on this test.
+      assert label_text(wait_for_label(view, "06:00"), "06:00")
 
       # The end-to-end timezone push via PubSub is tested by the
       # chart-label-shift test above; the racy `render(view)` cycle in

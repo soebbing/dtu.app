@@ -14,6 +14,15 @@ defmodule DtuApp.Accounts.User do
     field :notify_dtu_connection, :boolean, default: false
     field :notify_sun_down, :boolean, default: false
 
+    # Energy rate (in cents per kWh) for the dashboard's
+    # "Saved this month" card. Nullable — when nil, the card is
+    # hidden so we don't show a savings claim with no rate to back
+    # it. Stored as integer cents (NOT a Decimal) so the savings
+    # multiplication is exact: €/kWh in the form is converted to
+    # whole cents (e.g. "0.32" → 32), and the dashboard computes
+    # `month_kwh * cents_per_kwh / 100` for the euro amount.
+    field :cents_per_kwh, :integer
+
     timestamps(type: :utc_datetime)
   end
 
@@ -128,6 +137,57 @@ defmodule DtuApp.Accounts.User do
   def notification_settings_changeset(user, attrs) do
     user
     |> cast(attrs, [:notify_dtu_connection, :notify_sun_down])
+  end
+
+  @doc """
+  A changeset for the user's account-wide settings on the
+  `/users/settings` page — currently just the `cents_per_kwh` energy
+  rate. The form takes a decimal €/kWh value in `euros_per_kwh`; the
+  changeset converts it to whole cents and casts into
+  `cents_per_kwh`. An empty form (or "0") clears the field back to
+  `nil` so the savings card disappears rather than showing
+  €0.00.
+
+  Allowed range: 0 < cents_per_kwh ≤ 10000 (i.e. €0.01 to €100/kWh).
+  The upper bound is generous — German residential rates go up to
+  ~€0.40/kWh, industrial rates can be higher; €100/kWh covers every
+  plausible electricity market. Anything higher is almost certainly
+  a typo and would also produce a misleading savings number.
+  """
+  def settings_changeset(user, attrs) do
+    euros =
+      attrs
+      |> Map.get("euros_per_kwh", "")
+      |> to_string()
+      |> String.trim()
+
+    # `Float.parse/1` on a string like "0" or "0.00" returns `{+0.0, _}`.
+    # Treat positive zero as "clear the field" (nil → drop the row's
+    # savings on the dashboard) so the user can blank the rate from
+    # the settings form. Out-of-range or non-numeric → :invalid, which
+    # the validate_change clause below turns into a clear error
+    # message rather than a confusing Float-parse error.
+    cents =
+      case Float.parse(euros) do
+        {f, _} when f > 0 and f <= 100.0 -> round(f * 100)
+        {+0.0, _} -> nil
+        _ -> :invalid
+      end
+
+    user
+    |> cast(%{"cents_per_kwh" => cents}, [:cents_per_kwh])
+    |> validate_change(:cents_per_kwh, fn _, value ->
+      case value do
+        nil -> []
+        c when is_integer(c) and c > 0 and c <= 10_000 -> []
+        # Plain-string error message — the User module doesn't have
+        # `use Gettext`, so i18n is handled upstream by the controller /
+        # template's `Ecto.Changeset.traverse_errors/2` when present,
+        # or by the form-rendering helpers. The English literal is
+        # the source of truth here.
+        _ -> [cents_per_kwh: "must be between €0.01 and €100"]
+      end
+    end)
   end
 
   @doc """

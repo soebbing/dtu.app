@@ -35,6 +35,11 @@ defmodule DtuAppWeb.DashboardLive do
       # connected, and `handle_info({:set_timezone, ...})` updates this
       # assign + re-renders.
       |> assign(:user_tz_offset_seconds, 0)
+      # Energy rate for the "Saved today" card. The user sets this on
+      # `/users/settings`; if it's nil the savings card is hidden. Read
+      # from the user schema here so the LiveView re-render on every
+      # reading picks up the same value without a re-read.
+      |> assign(:cents_per_kwh, user.cents_per_kwh)
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
@@ -907,6 +912,12 @@ defmodule DtuAppWeb.DashboardLive do
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
     tz_offset_seconds = socket.assigns.user_tz_offset_seconds
+    # Energy rate for the "Saved" card. `cents_per_kwh` is set in
+    # `mount/3` from `user.cents_per_kwh`; if the user hasn't set a
+    # rate yet this is `nil` and `Devices.compute_savings/2`
+    # short-circuits to `nil`, so the card is hidden by the
+    # template (`<%= if @savings %>`).
+    cents = socket.assigns.cents_per_kwh
 
     case time_range do
       "today" ->
@@ -914,6 +925,7 @@ defmodule DtuAppWeb.DashboardLive do
 
         socket
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
 
@@ -939,6 +951,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
 
@@ -973,6 +986,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, monday)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
 
@@ -1008,6 +1022,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, first_day)
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
 
@@ -1051,6 +1066,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, Date.new!(year, 1, 1))
         |> assign(:stats, stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
     end
@@ -1254,7 +1270,7 @@ defmodule DtuAppWeb.DashboardLive do
           </div>
 
           <!-- Stats Grid -->
-          <div class="grid grid-cols-1 gap-5 sm:grid-cols-3">
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
             <%= if @live do %>
               <!-- Current Power (Today only) -->
               <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
@@ -1454,6 +1470,48 @@ defmodule DtuAppWeb.DashboardLive do
                     </div>
                   </div>
                 </div>
+            <% end %>
+
+            <%!-- Savings card: visible only when the user has set an energy
+                 rate on /users/settings. Reads @savings (euro cents, an
+                 integer assigned by assign_dashboard_data/5 via
+                 Devices.compute_savings/2) and formats it as €X.XX. Hidden
+                 when nil so a brand-new user without a rate doesn't see a
+                 misleading "€0.00 saved" claim. --%>
+            <%= if @savings do %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                      <.icon name="hero-banknotes" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Saved this period")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-saved"
+                          >
+                            {Devices.format_savings(@savings)}
+                          </div>
+                        </dd>
+                      </dl>
+                      <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+                        {gettext("at %{rate} €/kWh",
+                          rate:
+                            if(is_integer(@cents_per_kwh),
+                              do: :erlang.float_to_binary(@cents_per_kwh / 100.0, decimals: 2),
+                              else: "—"
+                            )
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             <% end %>
           </div>
 
