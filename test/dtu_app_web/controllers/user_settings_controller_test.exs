@@ -99,6 +99,71 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
     end
   end
 
+  describe "PUT /users/settings (energy rate form)" do
+    # The energy-rate form on `/users/settings` posts a top-level
+    # `euros_per_kwh` value (no `user` wrapper). The form is converted
+    # to whole cents and stored in `users.cents_per_kwh`. The bug
+    # we're guarding against: an empty form submission previously
+    # surfaced the Ecto default `is invalid` error and the user saw
+    # "invalid value" on every blank submit. The fix maps empty /
+    # non-numeric input to `nil` so the field is silently cleared and
+    # the user gets the success flash.
+
+    test "persists a valid €/kWh value and redirects to settings", %{conn: conn, user: user} do
+      conn =
+        put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => "0.32"})
+
+      assert redirected_to(conn) == ~p"/users/settings"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~
+               "Settings updated successfully"
+
+      reloaded = Accounts.get_user!(user.id)
+      assert reloaded.cents_per_kwh == 32
+    end
+
+    test "blank form clears the rate and does not show 'is invalid'", %{conn: conn, user: user} do
+      # Set a rate first.
+      {:ok, _} = Accounts.update_user_settings(user, %{"euros_per_kwh" => "0.45"})
+      assert Accounts.get_user!(user.id).cents_per_kwh == 45
+
+      # Submitting a blank form should clear the field, NOT surface
+      # the cast-time "is invalid" error.
+      conn =
+        put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => ""})
+
+      assert redirected_to(conn) == ~p"/users/settings"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~
+               "Settings updated successfully"
+
+      reloaded = Accounts.get_user!(user.id)
+      assert is_nil(reloaded.cents_per_kwh)
+    end
+
+    test "out-of-range value shows the friendly range error and keeps the rate", %{
+      conn: conn,
+      user: user
+    } do
+      # Sub-cent rates round to 0, which the changeset rejects with
+      # the friendly range error rather than the Ecto default "is
+      # invalid" message.
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_settings",
+          "euros_per_kwh" => "0.001"
+        })
+
+      response = html_response(conn, 200)
+      assert response =~ "Settings"
+      assert response =~ "must be between €0.01 and €100"
+      refute response =~ "is invalid"
+
+      # The original rate (or nil) must be preserved.
+      assert Accounts.get_user!(user.id).cents_per_kwh == user.cents_per_kwh
+    end
+  end
+
   describe "GET /users/settings/confirm-email/:token" do
     setup %{user: user} do
       email = unique_user_email()
