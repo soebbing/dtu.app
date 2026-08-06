@@ -110,7 +110,8 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
     # the user gets the success flash.
 
     test "persists a valid €/kWh value and redirects to settings", %{conn: conn, user: user} do
-      conn = put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => "0.32"})
+      conn =
+        put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => "0.32"})
 
       assert redirected_to(conn) == ~p"/users/settings"
 
@@ -128,7 +129,8 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
 
       # Submitting a blank form should clear the field, NOT surface
       # the cast-time "is invalid" error.
-      conn = put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => ""})
+      conn =
+        put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => ""})
 
       assert redirected_to(conn) == ~p"/users/settings"
 
@@ -139,11 +141,18 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
       assert is_nil(reloaded.cents_per_kwh)
     end
 
-    test "out-of-range value shows the friendly range error and keeps the rate", %{conn: conn, user: user} do
+    test "out-of-range value shows the friendly range error and keeps the rate", %{
+      conn: conn,
+      user: user
+    } do
       # Sub-cent rates round to 0, which the changeset rejects with
       # the friendly range error rather than the Ecto default "is
       # invalid" message.
-      conn = put(conn, ~p"/users/settings", %{"action" => "update_settings", "euros_per_kwh" => "0.001"})
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_settings",
+          "euros_per_kwh" => "0.001"
+        })
 
       response = html_response(conn, 200)
       assert response =~ "Settings"

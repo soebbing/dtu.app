@@ -665,6 +665,7 @@ defmodule DtuApp.AccountsTest do
       for input <- ["0", "0.00", "0.0"] do
         changeset = User.settings_changeset(%User{}, %{"euros_per_kwh" => input})
         assert changeset.valid?, "input #{inspect(input)} should be valid"
+
         assert get_change(changeset, :cents_per_kwh) == nil,
                "input #{inspect(input)} should clear the field"
       end
