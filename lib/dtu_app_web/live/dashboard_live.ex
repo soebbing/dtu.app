@@ -1270,7 +1270,7 @@ defmodule DtuAppWeb.DashboardLive do
           </div>
 
           <!-- Stats Grid -->
-          <div class="grid grid-cols-1 gap-5 sm:grid-cols-3">
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
             <%= if @live do %>
               <!-- Current Power (Today only) -->
               <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
@@ -1470,6 +1470,48 @@ defmodule DtuAppWeb.DashboardLive do
                     </div>
                   </div>
                 </div>
+            <% end %>
+
+            <%!-- Savings card: visible only when the user has set an energy
+                 rate on /users/settings. Reads @savings (euro cents, an
+                 integer assigned by assign_dashboard_data/5 via
+                 Devices.compute_savings/2) and formats it as €X.XX. Hidden
+                 when nil so a brand-new user without a rate doesn't see a
+                 misleading "€0.00 saved" claim. --%>
+            <%= if @savings do %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                      <.icon name="hero-banknotes" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Saved this period")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-saved"
+                          >
+                            {Devices.format_savings(@savings)}
+                          </div>
+                        </dd>
+                      </dl>
+                      <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+                        {gettext("at %{rate} €/kWh",
+                          rate:
+                            if(is_integer(@cents_per_kwh),
+                              do: :erlang.float_to_binary(@cents_per_kwh / 100.0, decimals: 2),
+                              else: "—"
+                            )
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             <% end %>
           </div>
 

@@ -70,7 +70,8 @@
           {:changes, cents} when is_integer(cents) ->
             :erlang.float_to_binary(cents / 100.0, decimals: 2)
 
-          _ -> ""
+          _ ->
+            ""
         end
       }
       placeholder="0.32"
@@ -81,7 +82,7 @@
 
     <%= if error = Keyword.get(@settings_changeset.errors, :cents_per_kwh) do %>
       <p class="mt-1 text-sm text-rose-600 dark:text-rose-400">
-        {error}
+        {elem(error, 0)}
       </p>
     <% end %>
 
