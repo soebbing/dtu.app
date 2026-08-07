@@ -592,11 +592,21 @@ defmodule DtuApp.Devices do
 
       # Latest reading per (dtu_id) — Shelly only publishes one
       # meter (em:0) per device, so we don't key by inverter_serial.
+      # `distinct: [r.dtu_id]` is the Ecto spelling of PostgreSQL's
+      # `SELECT DISTINCT ON (dtu_id)` — it returns ONE row per device,
+      # the one with the highest `inserted_at` thanks to the `order_by`.
+      # Using `distinct: true` instead (full-row dedup) was a subtle bug:
+      # since every uplink writes a row with a different `(consumption_power,
+      # inserted_at)` tuple, no two rows were duplicates and the query
+      # returned every recent row, so the `Enum.sum/1` below added up
+      # ~N latest readings instead of the latest one. A typical Shelly
+      # uplink every 5–10s meant the dashboard rendered ~7× the true
+      # value (530W on the dashboard vs 76W on the Shelly app).
       latest_readings =
         Repo.all(
           from r in Reading,
             where: r.dtu_id in ^dtu_ids and r.power_type == "consumption",
-            distinct: true,
+            distinct: [r.dtu_id],
             order_by: [r.dtu_id, desc: r.inserted_at]
         )
 

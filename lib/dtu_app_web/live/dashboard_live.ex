@@ -447,6 +447,52 @@ defmodule DtuAppWeb.DashboardLive do
         %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
       end)
 
+    # Consumption overlay: household draw (W) from a paired Shelly
+    # Plus 3EM, plotted alongside the production lines. Sourced from
+    # `list_today_consumption_chart_data/2` (filtered to power_type =
+    # "consumption" rows only), so production rows can never leak into
+    # the consumption series. Rendered as a dashed rose-colored line so
+    # it reads as a separate metric, not another inverter.
+    consumption_chart_points =
+      Devices.list_today_consumption_chart_data(user, dtu_id)
+
+    {consumption_path, consumption_coords} =
+      case consumption_chart_points do
+        [] ->
+          {"", []}
+
+        pts ->
+          path_coords =
+            pts
+            |> Enum.map(fn %{time: time, power: power} ->
+              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+              local_seconds = utc_seconds + tz_offset_seconds
+              local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
+              x = (local_seconds - x_min_seconds) / x_span * 800.0
+              y = 250.0 - power / y_max * 230.0
+              {Float.round(x, 1), Float.round(y, 1), local_seconds, power}
+            end)
+            |> Enum.sort_by(&elem(&1, 0))
+
+          path =
+            case path_coords do
+              [] ->
+                ""
+
+              [{fx, fy, _, _} | rest] ->
+                "M #{fx} #{fy} " <>
+                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
+            end
+
+          coords = Enum.map(path_coords, fn {x, y, t, _} -> {x, y, t} end)
+          {path, coords}
+      end
+
+    consumption_points_data =
+      Enum.map(consumption_coords, fn {_x, y, seconds} ->
+        %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
+      end)
+
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
@@ -461,6 +507,9 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:total_path, total_path)
     |> assign(:total_points_data, total_points_data)
     |> assign(:total_palette, {"emerald", "900"})
+    |> assign(:consumption_path, consumption_path)
+    |> assign(:consumption_points_data, consumption_points_data)
+    |> assign(:consumption_palette, {"rose", "500"})
   end
 
   # Reverse the data-point Y coord back to watts so the tooltip shows
@@ -1827,6 +1876,38 @@ defmodule DtuAppWeb.DashboardLive do
                         data-legend-key="total"
                       />
                     <% end %>
+
+                    <%!-- Consumption overlay (Shelly Plus 3EM household draw).
+                         Drawn after the Total so it sits on top — it's a
+                         separate metric, not another inverter. Rendered
+                         with a dashed stroke so it's visually distinct
+                         from the solid Total line. Hidden when the user
+                         has no Shelly device or no consumption data yet. --%>
+                    <%= if @consumption_path != "" do %>
+                      <% consumption_json =
+                        Jason.encode!(%{
+                          is_consumption: true,
+                          name: gettext("Consumption"),
+                          serial: "",
+                          mppt_index: -2
+                        }) %>
+                      <% consumption_points_json = Jason.encode!(@consumption_points_data) %>
+                      <% {cbase, cshade} = @consumption_palette %>
+                      <% consumption_stroke_hex = tooltip_to_hex(cbase, cshade) %>
+                      <path
+                        d={@consumption_path}
+                        fill="none"
+                        stroke={consumption_stroke_hex}
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-dasharray="6,4"
+                        data-series={consumption_json}
+                        data-points={consumption_points_json}
+                        data-stroke={consumption_stroke_hex}
+                        data-legend-key="consumption"
+                      />
+                    <% end %>
                   </svg>
 
                   <%!-- Legend: Total line first (the headline), then one entry
@@ -1854,6 +1935,23 @@ defmodule DtuAppWeb.DashboardLive do
                           />
                           <span class="text-zinc-700 dark:text-zinc-300">
                             {gettext("Total")}
+                          </span>
+                        </button>
+                      <% end %>
+                      <%= if @consumption_path != "" do %>
+                        <% {cbase, cshade} = @consumption_palette %>
+                        <button
+                          type="button"
+                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                          data-legend-key="consumption"
+                          aria-pressed="true"
+                        >
+                          <span
+                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{cbase}-#{cshade}"}
+                            aria-hidden="true"
+                          />
+                          <span class="text-zinc-700 dark:text-zinc-300">
+                            {gettext("Consumption")}
                           </span>
                         </button>
                       <% end %>
@@ -2039,14 +2137,15 @@ defmodule DtuAppWeb.DashboardLive do
                           const nearest = this.nearest(s.points, time);
                           return { ...s, value: nearest ? nearest.power : null };
                         })
-                        // Total line always sits at the top of the
-                        // tooltip so the headline value is the first
-                        // thing the reader sees; otherwise preserve
-                        // server render order.
+                        // Total and Consumption are headline metrics —
+                        // sort them above the per-inverter lines so the
+                        // first thing the reader sees in the tooltip is
+                        // generation + draw (Total first, Consumption
+                        // second). Otherwise preserve server render order.
                         .sort((a, b) => {
-                          if (a.meta.is_total) return -1;
-                          if (b.meta.is_total) return 1;
-                          return 0;
+                          const aRank = a.meta.is_total ? 0 : a.meta.is_consumption ? 1 : 2;
+                          const bRank = b.meta.is_total ? 0 : b.meta.is_consumption ? 1 : 2;
+                          return aRank - bRank;
                         });
 
                       this.body.innerHTML = this.renderRows(time, rows);
