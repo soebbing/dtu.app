@@ -644,21 +644,32 @@ defmodule DtuApp.Devices do
   rate. `cents_per_kwh` is the integer-cent rate stored on the
   `User` schema; `kwh` is the period's total yield (already rounded
   to one decimal by the per-period `compute_*_period_stats`
-  functions). The product is divided by 100 to give euro cents:
+  functions). The product is the euro-cent savings as an integer
+  (e.g. `250.0 kWh × 32 c/kWh = 8000 c = €80.00`):
 
       compute_savings(250.0, 32)  # 250 kWh at €0.32/kWh
-      # => 80                       # 80 euro-cents (€0.80)
+      # => 8000                     # 8000 euro-cents (€80.00)
 
   Pure data shaping, no DB access. `nil` rate (user hasn't set one
   on `/users/settings`) propagates as `nil` so the dashboard can
   hide the savings card rather than show "€0.00 saved".
+
+  Note: this function deliberately does NOT divide by 100 — the
+  product `kwh × cents_per_kwh` is already in euro cents (e.g.
+  `0.32 €/kWh × 250 kWh = 80 € = 8000 cents`), and `format_savings/1`
+  performs the cents→euros split when it formats the value for the
+  dashboard. Dividing here as well would shrink every card value by
+  100× and collapse typical residential daily yields (single-digit
+  kWh at €0.32/kWh) to a rounded 0 — see the
+  `compute_savings/2 + format_savings/1` describe block in
+  `test/dtu_app/devices_test.exs`.
   """
   @spec compute_savings(float() | nil, pos_integer() | nil) :: pos_integer() | nil
   def compute_savings(nil, _cents), do: nil
   def compute_savings(_kwh, nil), do: nil
 
   def compute_savings(kwh, cents) when is_number(kwh) and is_integer(cents) and cents > 0 do
-    round(kwh * cents / 100)
+    round(kwh * cents)
   end
 
   @doc """

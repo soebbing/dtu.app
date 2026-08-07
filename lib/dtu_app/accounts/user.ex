@@ -20,7 +20,9 @@ defmodule DtuApp.Accounts.User do
     # it. Stored as integer cents (NOT a Decimal) so the savings
     # multiplication is exact: €/kWh in the form is converted to
     # whole cents (e.g. "0.32" → 32), and the dashboard computes
-    # `month_kwh * cents_per_kwh / 100` for the euro amount.
+    # `month_kwh * cents_per_kwh` for the euro-cent amount (which
+    # `Devices.format_savings/1` then formats as €X.XX). See
+    # `DtuApp.Devices.compute_savings/2`.
     field :cents_per_kwh, :integer
 
     timestamps(type: :utc_datetime)

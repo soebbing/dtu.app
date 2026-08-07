@@ -841,6 +841,132 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "compute_savings/2 + format_savings/1" do
+    # Pure data-shaping helpers behind the dashboard's "Saved this
+    # period" card. `compute_savings/2` takes a yield in kWh and a
+    # cents-per-kWh rate and returns integer euro cents; `format_savings/1`
+    # then renders those cents as a `€X.XX` string for the dashboard.
+    #
+    # Regression: the original implementation divided `kwh * cents` by
+    # 100 inside `compute_savings/2`, but `format_savings/1` *also*
+    # divided by 100 (via `div(cents, 100)`), so every card value was
+    # 100× too small. For typical residential yields (single-digit kWh
+    # per day) the `round()` step then collapsed the result to 0 cents,
+    # which the dashboard rendered as "€0.00" — the "always shows 0"
+    # bug reported in the field. The tests below pin the correct units
+    # across the realistic yield / rate combinations the dashboard will
+    # actually see.
+    #
+    # Yield-vs-rate powers covered:
+    #   * Tiny day    (1.5 kWh) @ typical German rate (32c)  → €0.48
+    #   * Small day   (5 kWh)   @ typical German rate (32c)  → €1.60
+    #   * Mid month   (250 kWh) @ typical German rate (32c)  → €80.00
+    #   * Edge: zero yield                                       → €0.00
+    #   * Industrial (1500 kWh)  @ typical German rate (32c)  → €480.00
+    #   * Feed-in tariff  (10 kWh) @ low rate (8c)             → €0.80
+    #   * Premium tariff (10 kWh) @ high rate (45c)            → €4.50
+    #   * High yield    (100 kWh) @ premium rate (50c)         → €50.00
+
+    test "returns nil when kwh is nil so the dashboard hides the card" do
+      assert Devices.compute_savings(nil, 32) == nil
+    end
+
+    test "returns nil when cents is nil so the dashboard hides the card" do
+      # User hasn't set a rate on /users/settings yet. The card must
+      # not render a misleading "€0.00" claim — `nil` makes the
+      # template's `<%= if @savings %>` guard hide the card entirely.
+      assert Devices.compute_savings(5.0, nil) == nil
+    end
+
+    test "tiny day (1.5 kWh) at €0.32/kWh returns 48 cents (€0.48)" do
+      # Pre-fix: round(1.5 * 32 / 100) = round(0.48) = 0 → "€0.00".
+      # Post-fix: round(1.5 * 32) = 48 → "€0.48".
+      assert Devices.compute_savings(1.5, 32) == 48
+      assert Devices.format_savings(48) == "€0.48"
+    end
+
+    test "small day (5 kWh) at €0.32/kWh returns 160 cents (€1.60)" do
+      # A typical cloudy-day residential yield. Pre-fix this rendered
+      # as €0.02 (off by 100x); the user reported "always shows 0"
+      # because the rounded figure was too small to see.
+      assert Devices.compute_savings(5.0, 32) == 160
+      assert Devices.format_savings(160) == "€1.60"
+    end
+
+    test "typical month (250 kWh) at €0.32/kWh returns 8000 cents (€80.00)" do
+      # Pre-fix this rendered as "€0.80" (off by 100x) — exactly the
+      # "always shows 0" symptom for any user with even modest monthly
+      # generation.
+      assert Devices.compute_savings(250.0, 32) == 8_000
+      assert Devices.format_savings(8_000) == "€80.00"
+    end
+
+    test "zero yield returns 0 cents (€0.00)" do
+      # Genuine zero — not a unit-bug round-down. The dashboard should
+      # still show the card (0 is truthy) so the user sees the rate
+      # caption ("at 0.32 €/kWh") even on a no-sun day.
+      assert Devices.compute_savings(0.0, 32) == 0
+      assert Devices.format_savings(0) == "€0.00"
+    end
+
+    test "industrial scale (1500 kWh) at €0.32/kWh returns 48000 cents (€480.00)" do
+      # Higher-power residential / small-commercial installs.
+      assert Devices.compute_savings(1500.0, 32) == 48_000
+      assert Devices.format_savings(48_000) == "€480.00"
+    end
+
+    test "feed-in tariff (10 kWh at €0.08/kWh) returns 80 cents (€0.80)" do
+      # The German Einspeisevergütung (feed-in tariff) is well under
+      # the purchase rate. Pre-fix this rendered as "€0.01" — easy to
+      # mistake for a free/zero card.
+      assert Devices.compute_savings(10.0, 8) == 80
+      assert Devices.format_savings(80) == "€0.80"
+    end
+
+    test "premium purchase tariff (10 kWh at €0.45/kWh) returns 450 cents (€4.50)" do
+      assert Devices.compute_savings(10.0, 45) == 450
+      assert Devices.format_savings(450) == "€4.50"
+    end
+
+    test "high yield at premium rate (100 kWh at €0.50/kWh) returns 5000 cents (€50.00)" do
+      assert Devices.compute_savings(100.0, 50) == 5_000
+      assert Devices.format_savings(5_000) == "€50.00"
+    end
+
+    test "rounds fractional cents to the nearest cent" do
+      # 2.555 kWh × 32 c/kWh = 81.76 c → rounds to 82.
+      assert Devices.compute_savings(2.555, 32) == 82
+      # 2.554 kWh × 32 c/kWh = 81.728 c → rounds to 82.
+      assert Devices.compute_savings(2.554, 32) == 82
+      # 2.553 kWh × 32 c/kWh = 81.696 c → rounds to 82.
+      assert Devices.compute_savings(2.553, 32) == 82
+      # 2.5 kWh × 32 c/kWh = exactly 80 c (no rounding drift).
+      assert Devices.compute_savings(2.5, 32) == 80
+    end
+
+    test "format_savings renders two-decimal euro strings for any non-negative cents" do
+      # Pin the format so a future change to `~b.~2..0b` (e.g. adding
+      # thousands separators) doesn't silently change the dashboard.
+      assert Devices.format_savings(0) == "€0.00"
+      assert Devices.format_savings(1) == "€0.01"
+      assert Devices.format_savings(99) == "€0.99"
+      assert Devices.format_savings(100) == "€1.00"
+      assert Devices.format_savings(101) == "€1.01"
+      assert Devices.format_savings(999) == "€9.99"
+      assert Devices.format_savings(1_000) == "€10.00"
+      assert Devices.format_savings(12_345) == "€123.45"
+    end
+
+    test "format_savings returns €0.00 placeholder for nil" do
+      # The template's `<%= if @savings %>` guard already hides the card
+      # when the assign is nil, so format_savings is only ever called
+      # with an integer in practice. But the helper still accepts nil
+      # and renders a stable placeholder so a future caller (e.g. an
+      # admin tool that wants to show "no data") can rely on it.
+      assert Devices.format_savings(nil) == "€0.00"
+    end
+  end
+
   describe "local_day_utc_range/2" do
     # Translates a user-facing local date into the UTC range that
     # contains the readings for that local day. The chart queries use
