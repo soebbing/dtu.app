@@ -1022,95 +1022,95 @@ msgstr "Économisé sur cette période"
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:32
 #, elixir-autogen, elixir-format
 msgid "A link to confirm your email change has been sent to the new address."
-msgstr ""
+msgstr "Un lien pour confirmer le changement d'adresse e-mail a été envoyé à la nouvelle adresse."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:4
 #, elixir-autogen, elixir-format
 msgid "Account Settings"
-msgstr ""
+msgstr "Paramètres du compte"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:22
 #, elixir-autogen, elixir-format
 msgid "Change Email"
-msgstr ""
+msgstr "Modifier l'adresse e-mail"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:21
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:47
 #, elixir-autogen, elixir-format
 msgid "Changing..."
-msgstr ""
+msgstr "Modification en cours..."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:42
 #, elixir-autogen, elixir-format
 msgid "Confirm new password"
-msgstr ""
+msgstr "Confirmer le nouveau mot de passe"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:11
 #, elixir-autogen, elixir-format
 msgid "Don't have an account?"
-msgstr ""
+msgstr "Vous n'avez pas de compte ?"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:49
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:93
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:15
 #, elixir-autogen, elixir-format
 msgid "Email"
-msgstr ""
+msgstr "E-mail"
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:80
 #, elixir-autogen, elixir-format
 msgid "Email change link is invalid or it has expired."
-msgstr ""
+msgstr "Le lien de modification de l'adresse e-mail est invalide ou a expiré."
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:75
 #, elixir-autogen, elixir-format
 msgid "Email changed successfully."
-msgstr ""
+msgstr "Adresse e-mail modifiée avec succès."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:69
 #, elixir-autogen, elixir-format
 msgid "Energy rate (€/kWh)"
-msgstr ""
+msgstr "Tarif de l'énergie (€/kWh)"
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:61
 #, elixir-autogen, elixir-format
 msgid "If your email is in our system, you will receive instructions for logging in shortly."
-msgstr ""
+msgstr "Si votre adresse e-mail figure dans notre système, vous recevrez sous peu les instructions de connexion."
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:46
 #, elixir-autogen, elixir-format
 msgid "Invalid email or password"
-msgstr ""
+msgstr "Adresse e-mail ou mot de passe invalide"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:68
 #, elixir-autogen, elixir-format
 msgid "Log in and stay logged in"
-msgstr ""
+msgstr "Se connecter et rester connecté"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:99
 #, elixir-autogen, elixir-format
 msgid "Log in with magic link"
-msgstr ""
+msgstr "Se connecter avec un lien magique"
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:89
 #, elixir-autogen, elixir-format
 msgid "Logged out successfully."
-msgstr ""
+msgstr "Déconnexion réussie."
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:82
 #, elixir-autogen, elixir-format
 msgid "Magic link is invalid or it has expired."
-msgstr ""
+msgstr "Le lien magique est invalide ou a expiré."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:5
 #, elixir-autogen, elixir-format
 msgid "Manage your account email address and password settings"
-msgstr ""
+msgstr "Gérez l'adresse e-mail et les paramètres de mot de passe de votre compte"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:34
 #, elixir-autogen, elixir-format
 msgid "New password"
-msgstr ""
+msgstr "Nouveau mot de passe"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:57
 #, elixir-autogen, elixir-format
@@ -1120,64 +1120,64 @@ msgstr "Mot de passe :"
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:48
 #, elixir-autogen, elixir-format
 msgid "Password updated successfully."
-msgstr ""
+msgstr "Mot de passe mis à jour avec succès."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:48
 #, elixir-autogen, elixir-format
 msgid "Save Password"
-msgstr ""
+msgstr "Enregistrer le mot de passe"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:115
-#, elixir-autogen, elixir-format, fuzzy
+#, elixir-autogen, elixir-format
 msgid "Save Settings"
-msgstr "Paramètres"
+msgstr "Enregistrer les paramètres"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:114
-#, elixir-autogen, elixir-format, fuzzy
+#, elixir-autogen, elixir-format
 msgid "Saving..."
 msgstr "Enregistrement..."
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:63
 #, elixir-autogen, elixir-format
 msgid "Settings updated successfully."
-msgstr ""
+msgstr "Paramètres mis à jour avec succès."
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:15
-#, elixir-autogen, elixir-format, fuzzy
+#, elixir-autogen, elixir-format
 msgid "Sign up"
-msgstr "Se connecter"
+msgstr "S'inscrire"
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:30
 #, elixir-autogen, elixir-format
 msgid "The link is invalid or it has expired."
-msgstr ""
+msgstr "Le lien est invalide ou a expiré."
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:29
 #, elixir-autogen, elixir-format
 msgid "To see sent emails, visit"
-msgstr ""
+msgstr "Pour consulter les e-mails envoyés, rendez-vous sur"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:103
 #, elixir-autogen, elixir-format
 msgid "Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card."
-msgstr ""
+msgstr "Utilisé pour calculer les économies réalisées grâce à votre production solaire ce mois-ci. Laissez vide pour masquer la carte des économies."
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:18
 #, elixir-autogen, elixir-format
 msgid "User confirmed successfully."
-msgstr ""
+msgstr "Utilisateur confirmé avec succès."
 
 #: lib/dtu_app_web/controllers/user_session_controller.ex:19
 #: lib/dtu_app_web/controllers/user_session_controller.ex:39
 #: lib/dtu_app_web/controllers/user_session_controller.ex:77
 #, elixir-autogen, elixir-format
 msgid "Welcome back!"
-msgstr ""
+msgstr "Bon retour !"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:27
 #, elixir-autogen, elixir-format
 msgid "You are running the local mail adapter."
-msgstr ""
+msgstr "Vous utilisez l'adaptateur de messagerie local."
 
 #: lib/dtu_app_web/user_auth.ex:214
 #, elixir-autogen, elixir-format
@@ -1192,7 +1192,7 @@ msgstr ""
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:9
 #, elixir-autogen, elixir-format
 msgid "You need to reauthenticate to perform sensitive actions on your account."
-msgstr ""
+msgstr "Vous devez vous réauthentifier pour effectuer des actions sensibles sur votre compte."
 
 #: lib/dtu_app_web/components/offline_banner.ex:43
 #, elixir-autogen, elixir-format
@@ -1202,17 +1202,17 @@ msgstr ""
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:16
 #, elixir-autogen, elixir-format
 msgid "for an account now."
-msgstr ""
+msgstr "pour créer un compte."
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:76
 #, elixir-autogen, elixir-format
 msgid "or passwordless magic link"
-msgstr ""
+msgstr "ou lien magique sans mot de passe"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:30
 #, elixir-autogen, elixir-format
 msgid "the mailbox page"
-msgstr ""
+msgstr "la page de la boîte aux lettres"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:1503
 #, elixir-autogen, elixir-format
