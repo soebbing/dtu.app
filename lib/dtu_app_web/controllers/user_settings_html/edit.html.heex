@@ -66,12 +66,33 @@
       max="100"
       label="Energy rate (€/kWh)"
       value={
-        case Ecto.Changeset.fetch_field(@settings_changeset, :cents_per_kwh) do
-          {:changes, cents} when is_integer(cents) ->
-            :erlang.float_to_binary(cents / 100.0, decimals: 2)
+        # Prefill the input with the user's stored €/kWh rate.
+        #
+        # `fetch_field/2` returns the changeset's `:changes` value if
+        # present, otherwise the `:data` value. On a fresh GET the
+        # settings_changeset/2 always puts something in `:changes`
+        # (the empty-input branch produces `cents = nil`), so it never
+        # falls back to `:data` and the input renders empty even
+        # though the user has a stored rate. Read `:data` first
+        # (the user's actual stored value), then fall back to
+        # `:changes` for the post-failed-POST case where the user has
+        # typed something. Treat any `nil` (cleared field) as empty.
+        cents =
+          case @settings_changeset do
+            %Ecto.Changeset{data: %DtuApp.Accounts.User{cents_per_kwh: cents}}
+            when is_integer(cents) ->
+              cents
 
-          _ ->
-            ""
+            _ ->
+              case Ecto.Changeset.fetch_field(@settings_changeset, :cents_per_kwh) do
+                {_, cents} when is_integer(cents) -> cents
+                _ -> nil
+              end
+          end
+
+        case cents do
+          c when is_integer(c) -> :erlang.float_to_binary(c / 100.0, decimals: 2)
+          _ -> ""
         end
       }
       placeholder="0.32"
