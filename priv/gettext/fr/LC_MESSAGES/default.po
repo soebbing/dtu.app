@@ -1113,9 +1113,9 @@ msgid "New password"
 msgstr ""
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:57
-#, elixir-autogen, elixir-format, fuzzy
+#, elixir-autogen, elixir-format
 msgid "Password"
-msgstr "Mot de passe MQTT :"
+msgstr "Mot de passe :"
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:48
 #, elixir-autogen, elixir-format
