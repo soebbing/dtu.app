@@ -525,7 +525,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
           {:ok, db_reading} ->
             Logger.debug(
               "[Telemetry] Saved Shelly reading for DTU #{device_info.id} " <>
-                "consumption_power=#{inspect(db_reading.consumption_power)}"
+                "consumption_power=#{inspect(db_reading.consumption_power)} " <>
+                "consumption_energy_total=#{inspect(db_reading.consumption_energy_total)}"
             )
 
             Phoenix.PubSub.broadcast(
@@ -544,6 +545,20 @@ defmodule DtuApp.MqttBroker.Telemetry do
             {:noreply, state}
         end
 
+      {:ignored, :unknown_topic} ->
+        # Log at warn (not debug) because the most common cause is a Shelly
+        # whose MQTT prefix doesn't match the device's base_topic here
+        # (the Shelly default is `shellyplus3em-XXXXXXXXXXXX`). The user
+        # sees the device as online (last_seen_at gets touched on the
+        # uplink) but no values land on the dashboard — exactly this case.
+        Logger.warning(
+          "[Telemetry] Shelly uplink on topic #{inspect(topic_str)} did not match " <>
+            "the device's base_topic #{inspect(device_info.base_topic)} — " <>
+            "is the device's MQTT prefix set correctly?"
+        )
+
+        {:noreply, state}
+
       {:ignored, reason} ->
         Logger.debug("[Telemetry] Shelly parse skipped: #{inspect(reason)}")
         {:noreply, state}
@@ -554,15 +569,41 @@ defmodule DtuApp.MqttBroker.Telemetry do
     case String.split(topic_str, "/") do
       # `online` retained LWT — we don't act on it explicitly; the broker's
       # disconnect path + `last_seen_at` updates already cover liveness.
+      # Topic matches when the device's `base_topic` is the single prefix
+      # segment OR the first two segments of a multi-segment prefix.
       [binary_base, "online"] when binary_base == base_topic ->
         {:ignored, :online_lwt}
 
-      # `status/em:0` carries the consolidated meter status. JSON keys:
-      #   total_act_power      — net instantaneous power (W, signed)
-      #   total_act_energy     — lifetime energy counter (Wh)
-      #   a/b/c_act_power      — per-phase active power (W)
-      #   a/b/c_act_energy     — per-phase daily energy counter (Wh)
+      [b1, b2, "online"] when b1 <> "/" <> b2 == base_topic ->
+        {:ignored, :online_lwt}
+
+      # `status/em:0` carries the consolidated meter status. Real Shelly
+      # payload keys (per the EM component API):
+      #   total_act_power                 — net instantaneous power (W, signed)
+      #   a/b/c_act_power                 — per-phase active power (W)
+      #   a_voltage, a_current, a_freq,   — per-phase electrical telemetry
+      #     a_pf
+      #   a_energy, b_energy, c_energy    — per-phase NESTED energy objects:
+      #     a_energy.total                 — lifetime Wh counter
+      #     a_energy.by_minute             — minute-resolution Wh array
+      #     a_energy.minute_ts             — minute array timestamp
+      # We deliberately drop voltage / current / freq / pf — the dashboard
+      # doesn't render them yet, and persisting them would just cost DB space.
+      #
+      # The topic's prefix must match the device's `base_topic`. We accept
+      # both single-segment prefixes (`shellies`) and multi-segment prefixes
+      # (`shellies/shellyplus3em`) by matching either the full prefix as one
+      # segment or as two concatenated segments joined by a "/".
       [binary_base, "status", "em:0"] when binary_base == base_topic ->
+        case Jason.decode(payload) do
+          {:ok, json} when is_map(json) ->
+            {:reading, shelly_json_to_pairs(json)}
+
+          _ ->
+            {:ignored, :bad_json}
+        end
+
+      [b1, b2, "status", "em:0"] when b1 <> "/" <> b2 == base_topic ->
         case Jason.decode(payload) do
           {:ok, json} when is_map(json) ->
             {:reading, shelly_json_to_pairs(json)}
@@ -577,21 +618,27 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   # Map a Shelly `em:0` JSON payload into the {metric_atom, value} pairs
-  # the consumption-side reading cares about. We deliberately drop
-  # voltage, current, freq, pf — the dashboard doesn't render them
-  # yet, and persisting them would just cost DB space.
+  # the consumption-side reading cares about.
+  #
+  # The previous version tried to sum flat `a_act_energy`, `b_act_energy`,
+  # `c_act_energy` keys — those names are from the OLD Shelly 3EM (Gen1)
+  # and don't exist in the Gen3+ payload at all. The real Gen3+ layout
+  # nests each phase's energy under `a_energy.total` / `b_energy.total` /
+  # `c_energy.total`, and there is no separate *daily* counter — Shelly
+  # publishes a lifetime `total` only. So we populate:
+  #
+  #   * consumption_power           from total_act_power
+  #   * consumption_energy_total   from sum(a_energy.total, b_energy.total,
+  #                                       c_energy.total)
+  #
+  # The dashboard's "Today's Consumption" is computed in SQL from
+  # `MAX(consumption_energy_total) - MIN(consumption_energy_total)` over the
+  # day — see `get_consumption_daily_stats/2`.
   defp shelly_json_to_pairs(json) do
     pairs =
       [
         {:consumption_power, shelly_total_act_power(json)},
-        # `total_act_energy` is a lifetime Wh counter; the dashboard's
-        # "Today's Consumption" card wants the daily counter instead,
-        # so we don't populate `consumption_energy_total` here — that
-        # field exists for a future card. The daily counter
-        # `consumption_energy_day` is the per-phase sum, since the
-        # 3EM doesn't expose a dedicated daily counter on `em:0`.
-        {:consumption_energy_day,
-         shelly_sum_phase(json, ["a_act_energy", "b_act_energy", "c_act_energy"])}
+        {:consumption_energy_total, shelly_sum_phase_energy(json)}
       ]
 
     Enum.reject(pairs, fn {_k, v} -> is_nil(v) end)
@@ -599,7 +646,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   # Sum per-phase active power into a single household figure. The
   # 3EM's `total_act_power` is documented as the sum, but we keep the
-  # implementation defensive against missing fields.
+  # implementation defensive against missing fields (some firmwares
+  # have reported only the per-phase fields during early-access previews).
   defp shelly_total_act_power(json) do
     case cast_float(json["total_act_power"]) do
       nil -> shelly_sum_phase(json, ["a_act_power", "b_act_power", "c_act_power"])
@@ -612,6 +660,28 @@ defmodule DtuApp.MqttBroker.Telemetry do
     |> Enum.map(&cast_float(json[&1]))
     |> Enum.reject(&is_nil/1)
     |> Enum.sum()
+  end
+
+  # Sum the per-phase `*.energy.total` lifetime counters. Each phase's
+  # energy object is itself a map with `total` (Wh), `by_minute` (array),
+  # and `minute_ts` (int). The 3EM doesn't expose a daily counter, so the
+  # lifetime total is the closest thing we have — the dashboard computes
+  # "Today's Consumption" by differencing the first and last reading of
+  # the day.
+  #
+  # Returns `nil` if no phase has a populated `.total` (e.g. a freshly-
+  # reset Shelly that hasn't accrued any energy yet). The caller filters
+  # nil pairs out of the saved row.
+  defp shelly_sum_phase_energy(json) do
+    sum =
+      Enum.reduce(["a_energy", "b_energy", "c_energy"], 0.0, fn key, acc ->
+        case json[key] do
+          %{"total" => t} when not is_nil(t) -> acc + cast_float(t)
+          _ -> acc
+        end
+      end)
+
+    if sum == 0.0, do: nil, else: sum
   end
 
   # --- Shared parsing helpers -------------------------------------------------

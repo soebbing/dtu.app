@@ -609,6 +609,208 @@ defmodule DtuApp.MqttBrokerTest do
     end
   end
 
+  describe "Shelly Plus 3EM (Gen3+) payload parsing" do
+    # The 3EM publishes a single JSON object on `{base}/status/em:0`
+    # carrying the EM component's status. Real-world fields (per the
+    # EM component API):
+    #   total_act_power       — net instantaneous power (W, signed)
+    #   a/b/c_act_power       — per-phase active power (W)
+    #   a_energy              — nested object: {total, by_minute, minute_ts}
+    #   ... voltage / current / freq / pf (not persisted)
+    #
+    # A naive first-cut parser would expect `a_act_energy` / `b_act_energy`
+    # / `c_act_energy` (the OLD Shelly 3EM Gen1 flat layout) — those keys
+    # don't exist on a Gen3+ payload, so the parser silently dropped them
+    # and the dashboard's "Current Consumption" / "Today's Consumption"
+    # stayed at 0. The tests below pin the correct Gen3+ layout so the
+    # regression doesn't reappear.
+
+    test "parses total_act_power + per-phase a_energy.total into consumption rows",
+         %{user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-1",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      # Real-world Shelly Plus 3EM payload shape (status/em:0). Note the
+      # nested energy objects, NOT the flat a_act_energy of the Gen1 device.
+      payload =
+        Jason.encode!(%{
+          "id" => 0,
+          "a_current" => 4.029,
+          "a_voltage" => 236.1,
+          "a_act_power" => 951.2,
+          "a_aprt_power" => 951.9,
+          "a_pf" => 1.0,
+          "a_freq" => 50,
+          "a_errors" => [],
+          "a_flags" => [],
+          "b_current" => 4.027,
+          "b_voltage" => 236.201,
+          "b_act_power" => -951.1,
+          "b_aprt_power" => 951.8,
+          "b_pf" => 1.0,
+          "b_freq" => 50,
+          "b_errors" => [],
+          "b_flags" => [],
+          "c_current" => 3.03,
+          "c_voltage" => 236.402,
+          "c_act_power" => 715.4,
+          "c_aprt_power" => 716.2,
+          "c_pf" => 1.0,
+          "c_freq" => 50,
+          "c_errors" => [],
+          "c_flags" => [],
+          "n_current" => 11.029,
+          "total_current" => 11.083,
+          "total_act_power" => 715.5,
+          "total_aprt_power" => 716.7,
+          "user_calibrated_phase" => [],
+          "errors" => []
+        })
+
+      # Shelly Plus 3EM firmware 1.0+ reports energy on a separate
+      # EMData component (`emdata` topic), but our subscription is on
+      # `status/em:0` only — the EMData component payload is the
+      # standard shape with nested energy objects per phase.
+      payload_with_energy =
+        Jason.encode!(%{
+          "id" => 0,
+          "a_current" => 4.029,
+          "a_voltage" => 236.1,
+          "a_act_power" => 951.2,
+          "a_energy" => %{"total" => 1500.0, "by_minute" => [], "minute_ts" => 1_700_000_000},
+          "b_current" => 4.027,
+          "b_voltage" => 236.201,
+          "b_act_power" => -951.1,
+          "b_energy" => %{"total" => 1500.0, "by_minute" => [], "minute_ts" => 1_700_000_000},
+          "c_current" => 3.03,
+          "c_voltage" => 236.402,
+          "c_act_power" => 715.4,
+          "c_energy" => %{"total" => 1500.0, "by_minute" => [], "minute_ts" => 1_700_000_000},
+          "n_current" => 11.029,
+          "total_current" => 11.083,
+          "total_act_power" => 715.5
+        })
+
+      topic = "shellies/shellyplus3em/status/em:0"
+
+      # First uplink — power only, no energy objects (matches the
+      # documented case where `status/em:0` is published without the
+      # per-phase energy fields yet).
+      msg1 = {:uplink, "client_shelly", device_info, topic, payload}
+      {:noreply, _} = Telemetry.handle_info(msg1, %{buffers: %{}})
+
+      [reading1] = Devices.list_recent_readings(user, dtu.id)
+      assert reading1.power_type == "consumption"
+      assert reading1.inverter_serial == "em:0"
+      assert reading1.mppt_index == 0
+      assert reading1.consumption_power == 715.5
+      # Energy objects absent — consumption_energy_total stays nil.
+      assert reading1.consumption_energy_total == nil
+
+      # Second uplink — full payload with nested energy objects. The
+      # three `*.energy.total` fields sum to 1500 × 3 = 4500 Wh.
+      msg2 = {:uplink, "client_shelly", device_info, topic, payload_with_energy}
+      {:noreply, _} = Telemetry.handle_info(msg2, %{buffers: %{}})
+
+      # list_recent_readings/3 orders by desc inserted_at, so
+      # [reading_newer, reading_older] = [second uplink, first uplink].
+      [reading_newer, _reading_older] = Devices.list_recent_readings(user, dtu.id, 2)
+      assert reading_newer.consumption_power == 715.5
+      assert reading_newer.consumption_energy_total == 4500.0
+    end
+
+    test "uplink on a non-matching base_topic logs a warning and writes no row",
+         %{user: user} do
+      # Reproduces the "device shows as online but no values on the
+      # dashboard" symptom: Shelly's default MQTT prefix is the device
+      # ID (e.g. `shellyplus3em-XXXXXXXXXXXX`), so the topic the device
+      # actually publishes on won't match the app's base_topic unless the
+      # user explicitly set the prefix on the Shelly's web UI.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-2",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      # Topic the device *actually* publishes on (Shelly default, not
+      # the app's expected base_topic).
+      msg = {:uplink, "client_shelly", device_info, "shellyplus3em-aabbcc/status/em:0", "{}"}
+
+      # Capture logs at warn level — the unknown_topic clause now
+      # logs a warn so the operator can see the topic mismatch.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+        end)
+
+      assert log =~ "did not match"
+      assert log =~ "base_topic"
+      assert log =~ "MQTT prefix"
+
+      # No row written — exactly the "online but no values" symptom
+      # the user reported.
+      assert Devices.list_recent_readings(user, dtu.id) == []
+    end
+
+    test "/online retained LWT does not write a row but still touches last_seen_at",
+         %{user: user} do
+      # Documents the LWT semantics: the broker still records the
+      # device as online (last_seen_at touched) but we don't insert
+      # any reading — the regular uplink path is what populates
+      # consumption_* fields.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-3",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      before = DtuApp.Repo.reload!(dtu).last_seen_at
+
+      msg = {:uplink, "client_shelly", device_info, "shellies/shellyplus3em/online", "true"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      assert Devices.list_recent_readings(user, dtu.id) == []
+      after_seen = DtuApp.Repo.reload!(dtu).last_seen_at
+      assert DateTime.compare(after_seen, before) in [:gt, :eq]
+    end
+  end
+
   describe "last_seen_at touch path — :dtu_seen broadcast" do
     # Online status is **derived** from `last_seen_at` (see
     # `DtuApp.Devices.Dtu.online?/2`). `last_seen_at` is touched on every

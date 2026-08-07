@@ -567,11 +567,14 @@ defmodule DtuApp.Devices do
   fresh reading is anything in the last two minutes (matching the
   cutoff used by `get_daily_stats/3`).
 
-  `today_consumption` is MAX(consumption_energy_day) summed across
-  the user's Shelly devices for today. `consumption_energy_day`
-  arrives from Shelly in Wh (same unit as OpenDTU's `yield_day`,
-  but for the *consumed* side), so the result is divided by 1000
-  to kWh to match the unit on the dashboard.
+  `today_consumption` is computed by differencing the first and last
+  `consumption_energy_total` values for each device within today's
+  UTC window — Shelly Plus 3EM only publishes a lifetime Wh counter
+  on `a_energy.total` / `b_energy.total` / `c_energy.total`, with no
+  dedicated daily counter, so the dashboard can only know "today's
+  consumption" by subtracting the morning's baseline from the
+  latest value. The total is in Wh; we divide by 1000 to kWh to
+  match the unit on the dashboard.
 
   `peak_consumption` mirrors `peak_power`: the higher of (a) the
   live fresh reading, (b) the highest 5-minute bucket mean.
@@ -606,27 +609,42 @@ defmodule DtuApp.Devices do
       today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
 
-      # Shelly reports `consumption_energy_total` as a lifetime
-      # counter (Wh) and `consumption_energy_day` as a daily counter
-      # (Wh). The daily counter resets at Shelly's local midnight,
-      # so MAX() within today's window gives the freshest value per
-      # device. Sum across devices for the household total.
-      today_consumption_per_device =
+      # Shelly Plus 3EM publishes a lifetime Wh counter
+      # (`consumption_energy_total`) on every uplink — there's no
+      # dedicated daily counter. So "today's consumption" is the
+      # difference between the latest and the earliest reading of
+      # the day, per device. We do the per-device diff in SQL via
+      # MIN/MAX subqueries; the per-device deltas are summed
+      # across devices for the household total.
+      #
+      # A brand-new device that hasn't accrued any energy yet (or
+      # one whose first reading of the day happens to equal its
+      # last) returns 0.0. That matches the convention used by
+      # `compute_savings/2` etc.
+      first_last_per_device =
         Repo.all(
           from r in Reading,
             where:
               r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
             group_by: r.dtu_id,
-            select: %{dtu_id: r.dtu_id, max_day: max(r.consumption_energy_day)}
+            select: %{
+              dtu_id: r.dtu_id,
+              first_total: min(r.consumption_energy_total),
+              last_total: max(r.consumption_energy_total)
+            }
         )
 
       today_consumption =
-        today_consumption_per_device
+        first_last_per_device
         |> Enum.map(fn row ->
-          case row.max_day do
-            nil -> 0.0
-            v -> v
+          # nil can leak in if every reading for a device has
+          # `consumption_energy_total: nil` (e.g. a freshly-reset Shelly
+          # that hasn't accumulated any energy yet).
+          case {row.first_total, row.last_total} do
+            {nil, _} -> 0.0
+            {_, nil} -> 0.0
+            {first, last} -> max(last - first, 0.0)
           end
         end)
         |> Enum.sum()
@@ -648,7 +666,7 @@ defmodule DtuApp.Devices do
 
       %{
         current_consumption: Float.round(current_consumption * 1.0, 1),
-        # Shelly `consumption_energy_day` is in Wh; dashboard shows kWh.
+        # Lifetime `total` is in Wh; dashboard shows kWh.
         today_consumption: Float.round(today_consumption / 1000, 1),
         peak_consumption: Float.round(peak_consumption * 1.0, 1)
       }
