@@ -47,6 +47,11 @@ defmodule DtuAppWeb.DashboardLive do
       # from the user schema here so the LiveView re-render on every
       # reading picks up the same value without a re-read.
       |> assign(:cents_per_kwh, user.cents_per_kwh)
+      |> assign(:consumption_stats, %{
+        current_consumption: 0.0,
+        today_consumption: 0.0,
+        peak_consumption: 0.0
+      })
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
@@ -926,12 +931,20 @@ defmodule DtuAppWeb.DashboardLive do
     # template (`<%= if @savings %>`).
     cents = socket.assigns.cents_per_kwh
 
+    # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
+    # meter: current household draw (W), today's consumed energy
+    # (kWh), and peak demand. Computed once per dashboard refresh and
+    # shared across all branches since consumption is independent of
+    # the production time_range/granularity.
+    consumption_stats = Devices.get_consumption_daily_stats(user, dtu_id)
+
     case time_range do
       "today" ->
         stats = Devices.get_daily_stats(user, dtu_id)
 
         socket
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
@@ -958,6 +971,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
@@ -993,6 +1007,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, monday)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1029,6 +1044,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, first_day)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1073,6 +1089,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, Date.new!(year, 1, 1))
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1522,6 +1539,64 @@ defmodule DtuAppWeb.DashboardLive do
                             )
                         )}
                       </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            <% end %>
+
+            <%!-- Consumption cards: only visible when the user has paired a
+                 Shelly Plus 3EM (Gen3+) energy meter. The helpers return
+                 zeros when no consumption rows exist, so the conditional
+                 guards keep the slots empty for users without a Shelly
+                 device. --%>
+            <%= if @consumption_stats.current_consumption > 0 do %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                      <.icon name="hero-bolt" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Current Consumption")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-current-consumption"
+                          >
+                            {Devices.format_number(@consumption_stats.current_consumption, 0, @locale)} W
+                          </div>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            <% end %>
+            <%= if @consumption_stats.today_consumption > 0 do %>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                      <.icon name="hero-bolt" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Today's Consumption")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-today-consumption"
+                          >
+                            {Devices.format_number(@consumption_stats.today_consumption, 1, @locale)} kWh
+                          </div>
+                        </dd>
+                      </dl>
                     </div>
                   </div>
                 </div>

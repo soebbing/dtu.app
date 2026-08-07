@@ -325,6 +325,67 @@ defmodule DtuApp.Devices do
     list_day_chart_data(user, utc_start, ~U[9999-12-31 23:59:59Z], dtu_id)
   end
 
+  @doc """
+  Same shape as `list_today_chart_data/2`, but only for
+  `power_type = :consumption` rows — i.e. the household's drawn power
+  published by a paired Shelly Plus 3EM (Gen3+) energy meter. Each
+  Shelly device is a single series (one meter), so the buckets
+  collapse to one point per 5-minute window per device.
+  """
+  def list_today_consumption_chart_data(%User{} = user, dtu_id \\ nil) do
+    today_utc = Date.utc_today()
+    {utc_start, _} = local_day_utc_range(today_utc, 0)
+
+    list_consumption_chart_data(user, utc_start, ~U[9999-12-31 23:59:59Z], dtu_id)
+  end
+
+  def list_consumption_chart_data(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      []
+    else
+      readings =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            select: %{
+              inserted_at: r.inserted_at,
+              consumption_power: r.consumption_power,
+              dtu_id: r.dtu_id
+            }
+        )
+
+      if readings == [] do
+        []
+      else
+        readings
+        |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
+        |> Enum.flat_map(fn {bucket, bucket_readings} ->
+          time = DateTime.from_unix!(bucket * 300)
+
+          # One chart series per (dtu_id) — a Shelly device is a single
+          # physical meter even if it publishes per-phase fields; we sum
+          # across phases upstream and store a single `total_act_power`
+          # in `consumption_power`. So the bucket mean is the
+          # household's average drawn watts in that window, per device.
+          bucket_readings
+          |> Enum.group_by(fn r -> r.dtu_id end)
+          |> Enum.map(fn {dtu_id, series_readings} ->
+            powers = Enum.map(series_readings, fn r -> r.consumption_power || 0.0 end)
+            power = Enum.sum(powers) / length(series_readings)
+
+            %{time: time, series: {dtu_id, "em:0", 0, nil}, power: power}
+          end)
+        end)
+        |> Enum.sort_by(& &1.time)
+      end
+    end
+  end
+
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
   def get_daily_stats(%User{} = user, dtu_id \\ nil) do
     get_daily_stats(user, dtu_id, Date.utc_today())
@@ -489,6 +550,107 @@ defmodule DtuApp.Devices do
               peak_power: Float.round(Map.get(per_series_peak, series, 0.0), 1)
             }
           end)
+      }
+    end
+  end
+
+  @doc """
+  Consumption-side mirror of `get_daily_stats/2`. Reads only
+  `power_type = :consumption` rows (Shelly Plus 3EM telemetry) and
+  returns the same `{current_consumption, today_consumption,
+  peak_consumption}` shape so the dashboard can render the
+  "Current Consumption" / "Today's Consumption" stat cards next
+  to the existing production cards.
+
+  `current_consumption` is the latest fresh reading's
+  `consumption_power` summed across the user's Shelly devices. A
+  fresh reading is anything in the last two minutes (matching the
+  cutoff used by `get_daily_stats/3`).
+
+  `today_consumption` is MAX(consumption_energy_day) summed across
+  the user's Shelly devices for today. `consumption_energy_day`
+  arrives from Shelly in Wh (same unit as OpenDTU's `yield_day`,
+  but for the *consumed* side), so the result is divided by 1000
+  to kWh to match the unit on the dashboard.
+
+  `peak_consumption` mirrors `peak_power`: the higher of (a) the
+  live fresh reading, (b) the highest 5-minute bucket mean.
+
+  Returns the same zero defaults as `get_daily_stats/2` when the
+  user has no devices.
+  """
+  def get_consumption_daily_stats(%User{} = user, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      %{current_consumption: 0.0, today_consumption: 0.0, peak_consumption: 0.0}
+    else
+      two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
+
+      # Latest reading per (dtu_id) — Shelly only publishes one
+      # meter (em:0) per device, so we don't key by inverter_serial.
+      latest_readings =
+        Repo.all(
+          from r in Reading,
+            where: r.dtu_id in ^dtu_ids and r.power_type == "consumption",
+            distinct: true,
+            order_by: [r.dtu_id, desc: r.inserted_at]
+        )
+
+      current_consumption =
+        latest_readings
+        |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
+        |> Enum.map(&(&1.consumption_power || 0.0))
+        |> Enum.sum()
+
+      today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+      today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
+
+      # Shelly reports `consumption_energy_total` as a lifetime
+      # counter (Wh) and `consumption_energy_day` as a daily counter
+      # (Wh). The daily counter resets at Shelly's local midnight,
+      # so MAX() within today's window gives the freshest value per
+      # device. Sum across devices for the household total.
+      today_consumption_per_device =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
+            group_by: r.dtu_id,
+            select: %{dtu_id: r.dtu_id, max_day: max(r.consumption_energy_day)}
+        )
+
+      today_consumption =
+        today_consumption_per_device
+        |> Enum.map(fn row ->
+          case row.max_day do
+            nil -> 0.0
+            v -> v
+          end
+        end)
+        |> Enum.sum()
+
+      # Bucket max for the peak: same convention as production —
+      # the live reading wins when it exceeds the bucket max.
+      bucket_max =
+        case list_today_consumption_chart_data(user, dtu_id) do
+          [] ->
+            0.0
+
+          points ->
+            points
+            |> Enum.map(& &1.power)
+            |> Enum.max(fn -> 0.0 end)
+        end
+
+      peak_consumption = max(current_consumption, bucket_max)
+
+      %{
+        current_consumption: Float.round(current_consumption * 1.0, 1),
+        # Shelly `consumption_energy_day` is in Wh; dashboard shows kWh.
+        today_consumption: Float.round(today_consumption / 1000, 1),
+        peak_consumption: Float.round(peak_consumption * 1.0, 1)
       }
     end
   end
