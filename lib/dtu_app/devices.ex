@@ -747,6 +747,87 @@ defmodule DtuApp.Devices do
     <<head::binary-size(head_bytes), sep::binary-size(sep_bytes), last_three::binary>>
   end
 
+  @doc """
+  Format a unit-less number for display in the dashboard. The
+  dashboard's stat cards (`Current Power`, `Today's Total Yield`,
+  `Peak Power`, etc.) and chart Y-axis labels need a locale-aware
+  number without a trailing unit — `format_savings/1` doesn't fit
+  because it always appends ` €`. The convention is the same as
+  `format_savings/1`:
+
+  | locale | format           | example 1234.5 |
+  | ------ | ---------------- | --------------- |
+  | `en`   | `1,234.5`        | English         |
+  | `de`   | `1.234,5`        | German          |
+  | `fr`   | `1 234,5`        | French (NBSP)   |
+  | _other_| falls back to `en` | —               |
+
+  `decimals` controls precision (default `1` to match the kWh stat
+  cards, which read better as `1.3 kWh` than `1 kWh`). Pass
+  `decimals: 0` for integer-only output — the W (watts) stat cards
+  use this so `350.0 W` reads as `350 W` (the underlying value is
+  already rounded to one decimal upstream; rendering the trailing
+  `.0` would just be visual noise).
+
+  Returns `"—"` (em-dash) for `nil` so the template can render a
+  stable placeholder without a conditional.
+
+  `format_number/1` and `format_number/2` read the current Gettext
+  locale — the dashboard calls them from a request-scoped LiveView
+  process, so the user's selected language is picked up automatically.
+  `format_number/3` is the explicit-locale form for tests and any
+  future caller that needs to format for a locale other than the
+  current request.
+  """
+  @spec format_number(number() | nil) :: String.t()
+  def format_number(value), do: format_number(value, 1, Gettext.get_locale(DtuAppWeb.Gettext))
+
+  @spec format_number(number() | nil, non_neg_integer()) :: String.t()
+  def format_number(value, decimals),
+    do: format_number(value, decimals, Gettext.get_locale(DtuAppWeb.Gettext))
+
+  @spec format_number(number() | nil, non_neg_integer(), String.t()) :: String.t()
+  def format_number(nil, _decimals, _locale), do: "—"
+
+  def format_number(value, decimals, locale)
+      when is_number(value) and is_integer(decimals) and decimals >= 0 do
+    {whole_int, frac_str, sign} = split_value(value, decimals)
+    {sep_t, sep_d} = locale_separators(locale)
+    formatted_whole = insert_thousands_separator(Integer.to_string(whole_int), sep_t)
+
+    case decimals do
+      0 -> "#{sign}#{formatted_whole}"
+      _ -> "#{sign}#{formatted_whole}#{sep_d}#{frac_str}"
+    end
+  end
+
+  # Round to `decimals` digits after the point, then split into
+  # (whole, fractional-string, sign). `Integer.to_string(whole)` is
+  # later fed into `insert_thousands_separator/2` so the locale-aware
+  # separator can be inserted.
+  @spec split_value(number(), non_neg_integer()) :: {integer(), String.t(), String.t()}
+  defp split_value(value, decimals) do
+    sign = if value < 0, do: "-", else: ""
+    rounded = Float.round(abs(value) * 1.0, decimals)
+    scaled = round(rounded * :math.pow(10, decimals))
+    scale = round(:math.pow(10, decimals))
+    whole = div(scaled, scale)
+    frac = rem(scaled, scale) |> Integer.to_string() |> String.pad_leading(decimals, "0")
+    {whole, frac, sign}
+  end
+
+  # Per-locale {thousands_separator, decimal_separator} tuple. Falls
+  # back to English for any unknown locale so a stale Gettext backend
+  # (e.g. a new language without a project-side translation yet) still
+  # produces a readable, machine-parseable number rather than `?`.
+  @spec locale_separators(String.t()) :: {String.t(), String.t()}
+  defp locale_separators("de"), do: {".", ","}
+  # French typography (DIN 5008 / AFNOR): non-breaking space (U+00A0)
+  # as thousands separator. A regular space would let a line break
+  # split the number — the NBSP keeps the digits glued together.
+  defp locale_separators("fr"), do: {"\u00A0", ","}
+  defp locale_separators(_), do: {",", "."}
+
   # --- Helpers ----------------------------------------------------------------
 
   # Pick the right "power" field for a row depending on its MPPT index.

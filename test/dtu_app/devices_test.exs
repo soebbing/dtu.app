@@ -1039,4 +1039,119 @@ defmodule DtuApp.DevicesTest do
                Devices.local_day_utc_range(~D[2026-07-31], -36_000)
     end
   end
+
+  describe "format_number/3 — locale-aware unit-less number formatting" do
+    # The dashboard's stat cards (`Current Power`, `Today's Total Yield`,
+    # `Peak Power`, etc.) and chart Y-axis labels need a locale-aware
+    # number without a trailing unit — `format_savings/1` doesn't fit
+    # because it always appends ` €`. The convention is the same as
+    # `format_savings/1`: en uses comma+dot, de uses dot+comma, fr
+    # uses NBSP+comma. These tests pin the convention across the
+    # values the dashboard will actually render, including the
+    # integer-precision watts cards (`decimals: 0`) and the
+    # one-decimal kWh cards.
+
+    test "en: comma as thousands separator, dot as decimal, default 1 decimal" do
+      # Zero with explicit decimals: the helper always emits the decimal
+      # portion (the dashboard's "0.0 kWh" / "0,0 kWh" / "0,0 kWh"
+      # values are stable across renders). The dashboard wraps these
+      # in a <div>, not a math display, so trailing-zero precision is
+      # intentional — it signals "we measured a real zero, not a
+      # missing value" (which is rendered as "—" by the nil clause).
+      assert Devices.format_number(0.0, 1, "en") == "0.0"
+      assert Devices.format_number(12.3, 1, "en") == "12.3"
+      # Thousands boundary.
+      assert Devices.format_number(1234.5, 1, "en") == "1,234.5"
+      assert Devices.format_number(1_234_567.89, 2, "en") == "1,234,567.89"
+      # Small fractions round (half-up via Erlang's `round/1`).
+      assert Devices.format_number(0.05, 1, "en") == "0.1"
+      assert Devices.format_number(0.04, 1, "en") == "0.0"
+    end
+
+    test "en: 0 decimals produces an integer string with no trailing separator" do
+      # The W (watts) stat cards use `decimals: 0` so a 800 W reading
+      # renders as "800" rather than "800.0" — visual noise, not
+      # information. The thousands separator is preserved.
+      assert Devices.format_number(0, 0, "en") == "0"
+      assert Devices.format_number(800, 0, "en") == "800"
+      # Use 1234.4 (not 1234.5) to avoid the half-up rounding boundary
+      # — Erlang's `round/1` rounds 0.5 away from zero, so 1234.5
+      # becomes 1235, not 1234. 1234.4 stays at 1234.
+      assert Devices.format_number(1234.4, 0, "en") == "1,234"
+      assert Devices.format_number(12_345, 0, "en") == "12,345"
+    end
+
+    test "de: dot as thousands separator, comma as decimal" do
+      # German format: 1.234,5
+      assert Devices.format_number(0.0, 1, "de") == "0,0"
+      assert Devices.format_number(12.3, 1, "de") == "12,3"
+      assert Devices.format_number(1234.5, 1, "de") == "1.234,5"
+      assert Devices.format_number(1_234_567.89, 2, "de") == "1.234.567,89"
+    end
+
+    test "de: 0 decimals uses dot separator, no decimal separator" do
+      assert Devices.format_number(0, 0, "de") == "0"
+      assert Devices.format_number(800, 0, "de") == "800"
+      assert Devices.format_number(1234.4, 0, "de") == "1.234"
+      assert Devices.format_number(12_345, 0, "de") == "12.345"
+    end
+
+    test "fr: non-breaking space (U+00A0) as thousands separator, comma as decimal" do
+      # French typography (DIN 5008 / AFNOR): non-breaking space so
+      # line breaks don't split the digits. Visible chars: 1 234,5.
+      thousand_sep = "\u00A0"
+
+      assert Devices.format_number(0.0, 1, "fr") == "0,0"
+      assert Devices.format_number(12.3, 1, "fr") == "12,3"
+      assert Devices.format_number(1234.5, 1, "fr") == "1#{thousand_sep}234,5"
+
+      assert Devices.format_number(1_234_567.89, 2, "fr") ==
+               "1#{thousand_sep}234#{thousand_sep}567,89"
+    end
+
+    test "fr: 0 decimals uses NBSP separator" do
+      thousand_sep = "\u00A0"
+      assert Devices.format_number(1234.4, 0, "fr") == "1#{thousand_sep}234"
+      assert Devices.format_number(12_345, 0, "fr") == "12#{thousand_sep}345"
+    end
+
+    test "unknown locale falls back to en" do
+      # A stale Gettext backend (e.g. a new language without a project-
+      # side translation yet) must still produce a readable, machine-
+      # parseable number rather than `?` or empty string.
+      assert Devices.format_number(1234.5, 1, "es") == "1,234.5"
+      assert Devices.format_number(1234.5, 1, "") == "1,234.5"
+    end
+
+    test "negative values render with a leading minus" do
+      # Power is unsigned in practice, but the helper is generic over
+      # `number()` so it must handle negatives. The minus goes BEFORE
+      # the formatted whole (not after the sign of the decimal part),
+      # which matches how every locale prints negative numbers. Use
+      # -1234.7 (not -1234.5) so the half-up rounding boundary doesn't
+      # tip the expected value.
+      assert Devices.format_number(-12.3, 1, "en") == "-12.3"
+      assert Devices.format_number(-1234.4, 1, "de") == "-1.234,4"
+      assert Devices.format_number(-1234.4, 0, "fr") == "-1\u00A0234"
+    end
+
+    test "nil renders the em-dash placeholder" do
+      # Stable placeholder so the template doesn't need a conditional.
+      assert Devices.format_number(nil, 1, "en") == "—"
+      assert Devices.format_number(nil, 0, "de") == "—"
+    end
+
+    test "format_number/1 reads the current Gettext locale (en by default)" do
+      # The dashboard-callable form, mirroring `format_savings/1`.
+      # The test process is set to en by default, so the comma/dot
+      # convention must be applied.
+      assert Devices.format_number(1234.5) == "1,234.5"
+    end
+
+    test "format_number/2 with explicit decimals reads the current Gettext locale" do
+      # 1234.4 (not 1234.5) to avoid half-up rounding.
+      assert Devices.format_number(1234.4, 0) == "1,234"
+      assert Devices.format_number(1234.567, 2) == "1,234.57"
+    end
+  end
 end
