@@ -10,11 +10,20 @@ defmodule DtuApp.Devices.Reading do
   # `inverter_name` carries the human-friendly label from the device
   # edit page or the AhoyDTU topic (OpenDTU realtime doesn't ship a
   # name, so OpenDTU rows keep it null until the user edits the device).
+  #
+  # `power_type` distinguishes what a row means. `:production` is the
+  # original OpenDTU/AhoyDTU semantic — `ac_power` is the inverter's AC
+  # *output* in watts. `:consumption` is the Shelly Plus 3EM semantic —
+  # `consumption_power` is the household's drawn power in watts
+  # (negative on net export). The two never share a column, so the
+  # dashboard branches on `power_type` to keep totals separate.
   @primary_key false
   schema "readings" do
     field :inverter_serial, :string, primary_key: true
     field :mppt_index, :integer, primary_key: true, default: 0
     field :inverter_name, :string
+    field :power_type, :string, default: "production"
+
     field :ac_power, :float
     field :dc_power, :float
     field :yield_day, :float
@@ -24,11 +33,19 @@ defmodule DtuApp.Devices.Reading do
     field :producing, :boolean
     field :reachable, :boolean
 
+    # Shelly Plus 3EM (Gen3+) fields. Only populated when
+    # `power_type = :consumption`; production rows leave them nil.
+    field :consumption_power, :float
+    field :consumption_energy_day, :float
+    field :consumption_energy_total, :float
+
     field :inserted_at, :utc_datetime_usec, primary_key: true
 
     belongs_to :dtu, DtuApp.Devices.Dtu, define_field: false
     field :dtu_id, :id, primary_key: true
   end
+
+  @power_types [:production, :consumption]
 
   @doc false
   def changeset(reading, attrs) do
@@ -37,6 +54,7 @@ defmodule DtuApp.Devices.Reading do
       :inverter_serial,
       :mppt_index,
       :inverter_name,
+      :power_type,
       :ac_power,
       :dc_power,
       :yield_day,
@@ -45,10 +63,14 @@ defmodule DtuApp.Devices.Reading do
       :temperature,
       :producing,
       :reachable,
+      :consumption_power,
+      :consumption_energy_day,
+      :consumption_energy_total,
       :dtu_id,
       :inserted_at
     ])
     |> validate_required([:inverter_serial, :dtu_id])
+    |> validate_inclusion(:power_type, @power_types)
     # `readings` has no auto-managed timestamps; default the hypertable time
     # column to "now" when the caller didn't supply one.
     |> maybe_default_inserted_at()

@@ -47,6 +47,11 @@ defmodule DtuAppWeb.DashboardLive do
       # from the user schema here so the LiveView re-render on every
       # reading picks up the same value without a re-read.
       |> assign(:cents_per_kwh, user.cents_per_kwh)
+      |> assign(:consumption_stats, %{
+        current_consumption: 0.0,
+        today_consumption: 0.0,
+        peak_consumption: 0.0
+      })
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
@@ -926,12 +931,20 @@ defmodule DtuAppWeb.DashboardLive do
     # template (`<%= if @savings %>`).
     cents = socket.assigns.cents_per_kwh
 
+    # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
+    # meter: current household draw (W), today's consumed energy
+    # (kWh), and peak demand. Computed once per dashboard refresh and
+    # shared across all branches since consumption is independent of
+    # the production time_range/granularity.
+    consumption_stats = Devices.get_consumption_daily_stats(user, dtu_id)
+
     case time_range do
       "today" ->
         stats = Devices.get_daily_stats(user, dtu_id)
 
         socket
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
@@ -958,6 +971,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
@@ -993,6 +1007,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, monday)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1029,6 +1044,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, first_day)
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1073,6 +1089,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:selected_period, Date.new!(year, 1, 1))
         |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)

@@ -10,7 +10,7 @@ defmodule DtuApp.Devices.Dtu do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @kinds [:opendtu, :ahoydtu]
+  @kinds [:opendtu, :ahoydtu, :shelly3em]
 
   schema "dtus" do
     field :name, :string
@@ -102,11 +102,15 @@ defmodule DtuApp.Devices.Dtu do
       get_change(changeset, :kind) == :opendtu ->
         put_change(changeset, :base_topic, "solar")
 
+      get_change(changeset, :kind) == :shelly3em ->
+        put_change(changeset, :base_topic, "shellies/shellyplus3em")
+
       true ->
         if is_nil(get_field(changeset, :base_topic)) do
           case get_field(changeset, :kind) do
             :ahoydtu -> put_change(changeset, :base_topic, "inverter")
             :opendtu -> put_change(changeset, :base_topic, "solar")
+            :shelly3em -> put_change(changeset, :base_topic, "shellies/shellyplus3em")
             _ -> changeset
           end
         else
