@@ -86,7 +86,11 @@
         type="select"
         label={gettext("Firmware")}
         prompt={gettext("Select firmware")}
-        options={[{"OpenDTU", "opendtu"}, {"AhoyDTU", "ahoydtu"}]}
+        options={[
+          {"OpenDTU", "opendtu"},
+          {"AhoyDTU", "ahoydtu"},
+          {"Shelly Plus 3EM (Gen3+)", "shelly3em"}
+        ]}
       />
 
       <%= if @live_action == :edit do %>
@@ -336,6 +340,33 @@
               {gettext("Ensure MQTT is enabled, save and reboot the DTU.")}
             </li>
           </ul>
+        </div>
+
+        <%!-- Shelly Plus 3EM (Gen3+) publishes telemetry on a single JSON
+             topic rather than the per-field scalar topics OpenDTU and
+             AhoyDTU use. Surface that here so users know what to expect
+             in the broker's MQTT view, and remind them that Shelly's
+             default MQTT prefix is the device ID, which usually doesn't
+             match the Base Topic shown above. --%>
+        <div
+          :if={@created_device.kind == :shelly3em}
+          class="border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs text-zinc-500 dark:text-zinc-400 space-y-1"
+        >
+          <p class="font-medium text-zinc-700 dark:text-zinc-300">
+            {gettext("Shelly-specific notes:")}
+          </p>
+          <p>
+            {gettext(
+              "Telemetry is published as a single JSON object on the topic %{topic}. Shelly's default MQTT prefix is the device ID (e.g. shellyplus3em-XXXXXXXXXXXX), so set the device's prefix to %{custom_topic} to match the Base Topic shown above.",
+              topic: "#{@created_device.base_topic}/status/em:0",
+              custom_topic: @created_device.base_topic
+            )}
+          </p>
+          <p>
+            {gettext(
+              "Once connected, the dashboard's consumption cards (\"Current Consumption\", \"Today's Consumption\") appear within a few seconds."
+            )}
+          </p>
         </div>
 
         <div class="border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
