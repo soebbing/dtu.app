@@ -45,7 +45,7 @@ defmodule DtuApp.Devices.Reading do
     field :dtu_id, :id, primary_key: true
   end
 
-  @power_types [:production, :consumption]
+  @power_types ~w[production consumption]
 
   @doc false
   def changeset(reading, attrs) do
