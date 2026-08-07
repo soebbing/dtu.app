@@ -1154,4 +1154,178 @@ defmodule DtuApp.DevicesTest do
       assert Devices.format_number(1234.567, 2) == "1,234.57"
     end
   end
+
+  describe "get_consumption_daily_stats/2 — current_consumption" do
+    # `current_consumption` is the latest fresh reading's `consumption_power`
+    # summed across the user's Shelly devices, freshness = 2 minutes.
+    #
+    # The early-cut used `distinct: true` (full-row dedup) instead of
+    # `distinct: [r.dtu_id]` (DISTINCT ON dtu_id). Since every uplink
+    # writes a row with a fresh `(consumption_power, inserted_at)` tuple,
+    # no two rows were duplicates — the query returned every recent row,
+    # and `Enum.sum/1` added them all up. A Shelly publishing every 5–10s
+    # meant the dashboard rendered ~7× the true value (e.g. 530 W on the
+    # dashboard vs 76 W on the Shelly app). The regression test below
+    # pins the corrected behavior: exactly the latest reading per device.
+
+    test "returns 0 when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      stats = Devices.get_consumption_daily_stats(user)
+      assert stats.current_consumption == 0.0
+      assert stats.today_consumption == 0.0
+      assert stats.peak_consumption == 0.0
+    end
+
+    test "current_consumption is the latest fresh reading per device (not the sum across uplinks)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # Seven uplinks spread across the last 70 s, all reading 100 W.
+      # Pre-fix the dashboard summed all seven into `current_consumption: 700 W`.
+      # Post-fix (distinct on dtu_id) the latest wins — 100 W.
+      # We give each row a unique microsecond offset so the composite PK
+      # doesn't collide with the bump_on_pk_collision retry budget.
+      for {offset, idx} <- Enum.with_index([70, 60, 50, 40, 30, 20, 10]) do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 100.0,
+            # Distinct microsecond offsets per row — microseconds beyond
+            # second-precision are guaranteed unique per idx.
+            inserted_at: DateTime.add(now, -(offset * 1_000_000 + idx * 1), :microsecond)
+          })
+      end
+
+      # Plus one fresher reading at 5 s with the real 76 W — this is
+      # the one that should win.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          inserted_at: DateTime.add(now, -5, :second)
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+
+      # Regression: would have been 76 + 100×7 = 776 W pre-fix.
+      assert_in_delta stats.current_consumption, 76.0, 0.1
+    end
+
+    test "current_consumption sums across multiple Shelly devices" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu1 =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em-1"
+        })
+
+      dtu2 =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em-2"
+        })
+
+      now = DateTime.utc_now()
+
+      for {dtu, watts} <- [{dtu1, 200.0}, {dtu2, 350.0}] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: watts,
+            inserted_at: now
+          })
+      end
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert_in_delta stats.current_consumption, 550.0, 0.1
+    end
+
+    test "current_consumption only includes fresh readings (within 2 minutes)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # 800 W — too old (3 minutes), excluded from current_consumption.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 800.0,
+          inserted_at: DateTime.add(now, -180, :second)
+        })
+
+      # 100 W — fresh, should win.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 100.0,
+          inserted_at: DateTime.add(now, -30, :second)
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert_in_delta stats.current_consumption, 100.0, 0.1
+    end
+
+    test "production rows are excluded from current_consumption" do
+      # OpenDTU / AhoyDTU rows have power_type = "production" — they must
+      # not contaminate the Shelly consumption sum. Pins the power_type
+      # filter in the helper so a future schema change doesn't drop it.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # 999 W production row — must be filtered out.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 999.0,
+          inserted_at: now
+        })
+
+      # 42 W consumption row — should be the only contributor.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 42.0,
+          inserted_at: now
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert_in_delta stats.current_consumption, 42.0, 0.1
+    end
+  end
 end
