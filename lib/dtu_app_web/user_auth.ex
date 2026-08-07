@@ -3,6 +3,10 @@ defmodule DtuAppWeb.UserAuth do
 
   import Plug.Conn
   import Phoenix.Controller
+  # Imported explicitly — the `:verified_routes` macro doesn't pull
+  # in Gettext, but the auth plugs render error flashes that need
+  # to be translatable.
+  use Gettext, backend: DtuAppWeb.Gettext
 
   alias DtuApp.Accounts
   alias DtuApp.Accounts.Scope
@@ -177,7 +181,7 @@ defmodule DtuAppWeb.UserAuth do
       conn
     else
       conn
-      |> put_flash(:error, "You must re-authenticate to access this page.")
+      |> put_flash(:error, gettext("You must re-authenticate to access this page."))
       |> maybe_store_return_to()
       |> redirect(to: ~p"/users/log-in")
       |> halt()
@@ -207,7 +211,7 @@ defmodule DtuAppWeb.UserAuth do
       conn
     else
       conn
-      |> put_flash(:error, "You must log in to access this page.")
+      |> put_flash(:error, gettext("You must log in to access this page."))
       |> maybe_store_return_to()
       |> redirect(to: ~p"/users/log-in")
       |> halt()

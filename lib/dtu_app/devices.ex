@@ -680,14 +680,71 @@ defmodule DtuApp.Devices do
   digit-savings totals, and the dashboard's "Saved this month"
   card is already in a compact stat-card layout). Returns "€0.00"
   for `nil` so the template can render a stable placeholder.
+
+  `format_savings/1` reads the current Gettext locale and uses the
+  matching number-formatting convention (English `1,234.56 €`,
+  German `1.234,56 €`, French `1 234,56 €`). The dashboard calls
+  `format_savings/1` from a locale-aware context, so the appropriate
+  number format is selected automatically. `format_savings/2` is
+  the explicit-locale form for tests and any future caller that
+  needs to format for a locale other than the current request.
+
+  ## Locales
+
+  | locale | format           | example 1234.56 |
+  | ------ | ---------------- | --------------- |
+  | `en`   | `1,234.56 €`     | English         |
+  | `de`   | `1.234,56 €`     | German          |
+  | `fr`   | `1 234,56 €`     | French (NBSP)   |
+  | _other_| falls back to `en` | —               |
+
+  Returns "€0.00" / locale equivalent for `nil`.
   """
   @spec format_savings(pos_integer() | nil) :: String.t()
-  def format_savings(nil), do: "€0.00"
+  def format_savings(cents), do: format_savings(cents, Gettext.get_locale(DtuAppWeb.Gettext))
 
-  def format_savings(cents) when is_integer(cents) and cents >= 0 do
-    euros = div(cents, 100)
-    remainder = rem(cents, 100)
-    :io_lib.format("€~b.~2..0b", [euros, remainder]) |> IO.iodata_to_binary()
+  @spec format_savings(pos_integer() | nil, String.t()) :: String.t()
+  def format_savings(nil, _locale), do: format_savings(0, "en")
+
+  def format_savings(cents, locale) when is_integer(cents) and cents >= 0 do
+    # Build the whole and fractional parts separately. Doing it via a
+    # single `:erlang.float_to_binary(cents/100)` would lose the
+    # magnitude (e.g. 12_345/100 → "123.45" — there's no way to
+    # recover that 12345 cents came from 5 digits, so a thousands
+    # separator becomes impossible to add).
+    whole = Integer.to_string(div(cents, 100))
+    frac = cents |> rem(100) |> Integer.to_string() |> String.pad_leading(2, "0")
+
+    formatted =
+      case locale do
+        # German: dot as thousand separator, comma as decimal, symbol after.
+        "de" -> "#{insert_thousands_separator(whole, ".")},#{frac} €"
+        # French: non-breaking space (U+00A0) as thousand separator per
+        # French/European typographic convention (DIN 5008 / AFNOR).
+        "fr" -> "#{insert_thousands_separator(whole, " ")},#{frac} €"
+        # English: comma as thousand separator, dot as decimal.
+        "en" -> "#{insert_thousands_separator(whole, ",")}.#{frac} €"
+        _ -> "#{insert_thousands_separator(whole, ",")}.#{frac} €"
+      end
+
+    formatted
+  end
+
+  # Insert a thousands separator every three digits from the right.
+  # The separator is passed as a UTF-8 binary ("," "." or NBSP) so a
+  # multibyte separator like U+00A0 round-trips correctly through the
+  # recursion — `<<sep, last_three::binary>>` would only append the
+  # first byte. We split out the separator's byte length and glue
+  # the result back together with explicit byte-counts instead.
+  defp insert_thousands_separator(whole, _sep) when byte_size(whole) <= 3, do: whole
+
+  defp insert_thousands_separator(whole, sep) do
+    {head, last_three} = String.split_at(whole, -3)
+    head = insert_thousands_separator(head, sep)
+
+    sep_bytes = byte_size(sep)
+    head_bytes = byte_size(head)
+    <<head::binary-size(head_bytes), sep::binary-size(sep_bytes), last_three::binary>>
   end
 
   # --- Helpers ----------------------------------------------------------------

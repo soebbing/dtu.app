@@ -882,7 +882,7 @@ defmodule DtuApp.DevicesTest do
       # Pre-fix: round(1.5 * 32 / 100) = round(0.48) = 0 → "€0.00".
       # Post-fix: round(1.5 * 32) = 48 → "€0.48".
       assert Devices.compute_savings(1.5, 32) == 48
-      assert Devices.format_savings(48) == "€0.48"
+      assert Devices.format_savings(48, "en") == "0.48 €"
     end
 
     test "small day (5 kWh) at €0.32/kWh returns 160 cents (€1.60)" do
@@ -890,7 +890,7 @@ defmodule DtuApp.DevicesTest do
       # as €0.02 (off by 100x); the user reported "always shows 0"
       # because the rounded figure was too small to see.
       assert Devices.compute_savings(5.0, 32) == 160
-      assert Devices.format_savings(160) == "€1.60"
+      assert Devices.format_savings(160, "en") == "1.60 €"
     end
 
     test "typical month (250 kWh) at €0.32/kWh returns 8000 cents (€80.00)" do
@@ -898,7 +898,7 @@ defmodule DtuApp.DevicesTest do
       # "always shows 0" symptom for any user with even modest monthly
       # generation.
       assert Devices.compute_savings(250.0, 32) == 8_000
-      assert Devices.format_savings(8_000) == "€80.00"
+      assert Devices.format_savings(8_000, "en") == "80.00 €"
     end
 
     test "zero yield returns 0 cents (€0.00)" do
@@ -906,13 +906,13 @@ defmodule DtuApp.DevicesTest do
       # still show the card (0 is truthy) so the user sees the rate
       # caption ("at 0.32 €/kWh") even on a no-sun day.
       assert Devices.compute_savings(0.0, 32) == 0
-      assert Devices.format_savings(0) == "€0.00"
+      assert Devices.format_savings(0, "en") == "0.00 €"
     end
 
     test "industrial scale (1500 kWh) at €0.32/kWh returns 48000 cents (€480.00)" do
       # Higher-power residential / small-commercial installs.
       assert Devices.compute_savings(1500.0, 32) == 48_000
-      assert Devices.format_savings(48_000) == "€480.00"
+      assert Devices.format_savings(48_000, "en") == "480.00 €"
     end
 
     test "feed-in tariff (10 kWh at €0.08/kWh) returns 80 cents (€0.80)" do
@@ -920,17 +920,17 @@ defmodule DtuApp.DevicesTest do
       # the purchase rate. Pre-fix this rendered as "€0.01" — easy to
       # mistake for a free/zero card.
       assert Devices.compute_savings(10.0, 8) == 80
-      assert Devices.format_savings(80) == "€0.80"
+      assert Devices.format_savings(80, "en") == "0.80 €"
     end
 
     test "premium purchase tariff (10 kWh at €0.45/kWh) returns 450 cents (€4.50)" do
       assert Devices.compute_savings(10.0, 45) == 450
-      assert Devices.format_savings(450) == "€4.50"
+      assert Devices.format_savings(450, "en") == "4.50 €"
     end
 
     test "high yield at premium rate (100 kWh at €0.50/kWh) returns 5000 cents (€50.00)" do
       assert Devices.compute_savings(100.0, 50) == 5_000
-      assert Devices.format_savings(5_000) == "€50.00"
+      assert Devices.format_savings(5_000, "en") == "50.00 €"
     end
 
     test "rounds fractional cents to the nearest cent" do
@@ -944,26 +944,65 @@ defmodule DtuApp.DevicesTest do
       assert Devices.compute_savings(2.5, 32) == 80
     end
 
-    test "format_savings renders two-decimal euro strings for any non-negative cents" do
-      # Pin the format so a future change to `~b.~2..0b` (e.g. adding
-      # thousands separators) doesn't silently change the dashboard.
-      assert Devices.format_savings(0) == "€0.00"
-      assert Devices.format_savings(1) == "€0.01"
-      assert Devices.format_savings(99) == "€0.99"
-      assert Devices.format_savings(100) == "€1.00"
-      assert Devices.format_savings(101) == "€1.01"
-      assert Devices.format_savings(999) == "€9.99"
-      assert Devices.format_savings(1_000) == "€10.00"
-      assert Devices.format_savings(12_345) == "€123.45"
+    test "format_savings renders two-decimal strings in en (comma + dot)" do
+      # Pin the en format so the dashboard cards stay stable. The
+      # locale-aware format_savings/2 picks decimal point and thousands
+      # separator by locale; en uses comma thousand, dot decimal, with
+      # the euro symbol after the number per common European writing.
+      assert Devices.format_savings(0, "en") == "0.00 €"
+      assert Devices.format_savings(1, "en") == "0.01 €"
+      assert Devices.format_savings(99, "en") == "0.99 €"
+      assert Devices.format_savings(100, "en") == "1.00 €"
+      assert Devices.format_savings(101, "en") == "1.01 €"
+      assert Devices.format_savings(999, "en") == "9.99 €"
+      # Four-digit euro values (100_000 c = €1000) — trigger
+      # a separator (3 digits past thousands wouldn't need one).
+      assert Devices.format_savings(100_000, "en") == "1,000.00 €"
+      # Five-digit euro values (1_000_000 c = €10,000) — one separator.
+      assert Devices.format_savings(1_000_000, "en") == "10,000.00 €"
+      # Six-digit euro values (1_234_567 c = €12,345.67) — most
+      # complete separator example.
+      assert Devices.format_savings(1_234_567, "en") == "12,345.67 €"
     end
 
-    test "format_savings returns €0.00 placeholder for nil" do
+    test "format_savings renders de format with dot thousand + comma decimal + € after" do
+      # German format: 1.234,56 €
+      assert Devices.format_savings(0, "de") == "0,00 €"
+      # 123_456 c = €1234.56 → "1.234,56 €"
+      assert Devices.format_savings(123_456, "de") == "1.234,56 €"
+      # 1_234_567 c = €12345.67 → "12.345,67 €"
+      assert Devices.format_savings(1_234_567, "de") == "12.345,67 €"
+    end
+
+    test "format_savings renders fr format with non-breaking-space thousand + comma decimal + € after" do
+      # French typography (DIN 5008 / AFNOR): non-breaking space (U+00A0) as
+      # thousands separator, comma as decimal. The byte length of the result
+      # would be longer than the visible character count by 1 per separator.
+      # (nbsp = 0xC2 0xA0 = 2 bytes; visible = 1 grapheme.)
+      thousand_sep = " "
+
+      assert Devices.format_savings(0, "fr") == "0,00 €"
+      # Verify NBSP (not regular space) is the separator.
+      assert Devices.format_savings(123_456, "fr") == "1#{thousand_sep}234,56 €"
+      assert Devices.format_savings(1_234_567, "fr") == "12#{thousand_sep}345,67 €"
+    end
+
+    test "format_savings/1 picks up the current Gettext locale (en by default)" do
+      # `format_savings/1` is the dashboard-callable form; it reads the
+      # current locale via `Gettext.get_locale/1` and uses the matching
+      # number-formatting convention. The test locale is "en" by
+      # default, so the comma/dot convention must be applied.
+      # 1_234_567 cents = €12,345.67.
+      assert Devices.format_savings(1_234_567) == "12,345.67 €"
+    end
+
+    test "format_savings returns 0.00 € placeholder for nil" do
       # The template's `<%= if @savings %>` guard already hides the card
       # when the assign is nil, so format_savings is only ever called
       # with an integer in practice. But the helper still accepts nil
       # and renders a stable placeholder so a future caller (e.g. an
       # admin tool that wants to show "no data") can rely on it.
-      assert Devices.format_savings(nil) == "€0.00"
+      assert Devices.format_savings(nil) == "0.00 €"
     end
   end
 

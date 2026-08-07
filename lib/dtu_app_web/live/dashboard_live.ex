@@ -1500,10 +1500,17 @@ defmodule DtuAppWeb.DashboardLive do
                         </dd>
                       </dl>
                       <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
-                        {gettext("at %{rate} €/kWh",
+                        {gettext("at %{rate}",
+                          # The energy rate for this user, formatted
+                          # via the same locale-aware helper that
+                          # powers the headline amount. The rate is
+                          # rendered without a trailing `€/kWh` unit
+                          # because the dashboard puts the unit on the
+                          # savings card once, near the headline; this
+                          # caption slot just shows the number.
                           rate:
                             if(is_integer(@cents_per_kwh),
-                              do: :erlang.float_to_binary(@cents_per_kwh / 100.0, decimals: 2),
+                              do: Devices.format_savings(@cents_per_kwh),
                               else: "—"
                             )
                         )}
