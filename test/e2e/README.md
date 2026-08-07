@@ -19,6 +19,14 @@ and a seeded database.
   bug where a multi-MPPT DTU showed 0 W while producing), and the chart
   legend's per-MPPT lines actually draw instead of staying flat at the
   X-axis.
+- `dashboard_savings_card.spec.js` — the "Saved this period" card: hidden
+  when the user hasn't set an energy rate, non-zero at €0.32/kWh and
+  €0.08/kWh with the seeded daily yield, scales with the configured rate,
+  and disappears again when the rate is cleared. Regression for the
+  "savings card always shows 0" unit-confusion bug.
+- `settings_kwh_price.spec.js` — the energy-rate (kWh price) field on
+  `/users/settings`: persists a valid value, clears the field without
+  surfacing Ecto's "is invalid" error, and rejects out-of-range values.
 
 ## Running them
 
