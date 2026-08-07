@@ -35,6 +35,13 @@ defmodule DtuAppWeb.DashboardLive do
       # connected, and `handle_info({:set_timezone, ...})` updates this
       # assign + re-renders.
       |> assign(:user_tz_offset_seconds, 0)
+      # Locale for stat-card / chart-axis number formatting. Picked up by
+      # `Devices.format_number/2` and `Devices.format_savings/1` so a
+      # German user sees `1.234,5 kWh` and a French user sees
+      # `1 234,5 kWh` instead of the locale-agnostic `1234.5 kWh`. Captured
+      # once at mount; the user's locale doesn't change mid-session, so
+      # the assign is read-only after this point.
+      |> assign(:locale, Gettext.get_locale(DtuAppWeb.Gettext))
       # Energy rate for the "Saved today" card. The user sets this on
       # `/users/settings`; if it's nil the savings card is hidden. Read
       # from the user schema here so the LiveView re-render on every
@@ -1289,7 +1296,7 @@ defmodule DtuAppWeb.DashboardLive do
                             class="text-3xl font-semibold text-zinc-900 dark:text-white"
                             id="stat-current-power"
                           >
-                            {@stats.current_power} W
+                            {Devices.format_number(@stats.current_power, 0, @locale)} W
                           </div>
                           <%= if @stats.current_power > 0 do %>
                             <span class="flex h-2 w-2 relative" id="pulse-current-power">
@@ -1321,7 +1328,7 @@ defmodule DtuAppWeb.DashboardLive do
                             class="text-3xl font-semibold text-zinc-900 dark:text-white"
                             id="stat-total-yield"
                           >
-                            {@stats.total_yield} kWh
+                            {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
                           </div>
                         </dd>
                       </dl>
@@ -1350,7 +1357,7 @@ defmodule DtuAppWeb.DashboardLive do
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
                               id="stat-today-yield"
                             >
-                              {@stats.today_yield} kWh
+                              {Devices.format_number(@stats.today_yield, 1, @locale)} kWh
                             </div>
                           </dd>
                         </dl>
@@ -1375,7 +1382,7 @@ defmodule DtuAppWeb.DashboardLive do
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
                               id="stat-avg-power"
                             >
-                              {@stats.avg_power} W
+                              {Devices.format_number(@stats.avg_power, 0, @locale)} W
                             </div>
                           </dd>
                         </dl>
@@ -1400,7 +1407,7 @@ defmodule DtuAppWeb.DashboardLive do
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
                               id="stat-avg-yield"
                             >
-                              {@stats.avg_yield} kWh
+                              {Devices.format_number(@stats.avg_yield, 1, @locale)} kWh
                             </div>
                           </dd>
                         </dl>
@@ -1429,7 +1436,7 @@ defmodule DtuAppWeb.DashboardLive do
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
                               id="stat-peak-power"
                             >
-                              {@stats.peak_power} W
+                              {Devices.format_number(@stats.peak_power, 0, @locale)} W
                             </div>
                           </dd>
                         </dl>
@@ -1454,7 +1461,7 @@ defmodule DtuAppWeb.DashboardLive do
                               class="text-2xl font-semibold text-zinc-900 dark:text-white"
                               id="stat-peak-yield"
                             >
-                              {@stats.peak_val} kWh
+                              {Devices.format_number(@stats.peak_val, 1, @locale)} kWh
                             </div>
                             <%= if @stats.peak_date do %>
                               <div
@@ -1616,9 +1623,11 @@ defmodule DtuAppWeb.DashboardLive do
                     />
 
                     <!-- Y-Axis Labels -->
-                    <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">{@y_max} W</text>
+                    <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
+                      {Devices.format_number(@y_max, 1, @locale)} W
+                    </text>
                     <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">
-                      {div(round(@y_max), 2)} W
+                      {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
                     </text>
                     <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
 
@@ -2110,10 +2119,10 @@ defmodule DtuAppWeb.DashboardLive do
 
                     <!-- Y-Axis Labels -->
                     <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
-                      {@y_max} kWh
+                      {Devices.format_number(@y_max, 1, @locale)} kWh
                     </text>
                     <text x="5" y="128" class="text-[10px] font-medium fill-zinc-400">
-                      {Float.round(@y_max / 2, 2)} kWh
+                      {Devices.format_number(Float.round(@y_max / 2, 2), 1, @locale)} kWh
                     </text>
                     <text x="5" y="215" class="text-[10px] font-medium fill-zinc-400">0 kWh</text>
 
@@ -2136,7 +2145,7 @@ defmodule DtuAppWeb.DashboardLive do
                           text-anchor="middle"
                           class="text-[9px] font-bold fill-zinc-800 dark:fill-white opacity-0 group-hover:opacity-100 transition-opacity duration-150 pointer-events-none"
                         >
-                          {bar.value}
+                          {Devices.format_number(bar.value, 1, @locale)}
                         </text>
                         <!-- X label -->
                         <text

@@ -123,12 +123,14 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
 
       html = view |> element("#history-date-input") |> render_change(%{date: d1_str})
       assert html =~ "1.0 kWh"
-      assert html =~ "100.0 W"
+      # W stat cards use `decimals: 0` so the integer renders without
+      # a trailing ".0" (100 W not 100.0 W).
+      assert html =~ "100 W"
 
       # Pick d2 via the calendar input.
       html = view |> element("#history-date-input") |> render_change(%{date: d2_str})
       assert html =~ "5.0 kWh"
-      assert html =~ "500.0 W"
+      assert html =~ "500 W"
 
       # The prev/next stepper moves one day at a time (d2 -> d1).
       html = view |> element("#btn-history-prev") |> render_click()
