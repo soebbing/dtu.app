@@ -29,7 +29,7 @@ defmodule DtuAppWeb.UserSettingsController do
         conn
         |> put_flash(
           :info,
-          "A link to confirm your email change has been sent to the new address."
+          gettext("A link to confirm your email change has been sent to the new address.")
         )
         |> redirect(to: ~p"/users/settings")
 
@@ -45,7 +45,7 @@ defmodule DtuAppWeb.UserSettingsController do
     case Accounts.update_user_password(user, user_params) do
       {:ok, {user, _}} ->
         conn
-        |> put_flash(:info, "Password updated successfully.")
+        |> put_flash(:info, gettext("Password updated successfully."))
         |> put_session(:user_return_to, ~p"/users/settings")
         |> UserAuth.log_in_user(user)
 
@@ -60,7 +60,7 @@ defmodule DtuAppWeb.UserSettingsController do
     case Accounts.update_user_settings(user, params) do
       {:ok, _user} ->
         conn
-        |> put_flash(:info, "Settings updated successfully.")
+        |> put_flash(:info, gettext("Settings updated successfully."))
         |> redirect(to: ~p"/users/settings")
 
       {:error, changeset} ->
@@ -72,12 +72,12 @@ defmodule DtuAppWeb.UserSettingsController do
     case Accounts.update_user_email(conn.assigns.current_scope.user, token) do
       {:ok, _user} ->
         conn
-        |> put_flash(:info, "Email changed successfully.")
+        |> put_flash(:info, gettext("Email changed successfully."))
         |> redirect(to: ~p"/users/settings")
 
       {:error, _} ->
         conn
-        |> put_flash(:error, "Email change link is invalid or it has expired.")
+        |> put_flash(:error, gettext("Email change link is invalid or it has expired."))
         |> redirect(to: ~p"/users/settings")
     end
   end

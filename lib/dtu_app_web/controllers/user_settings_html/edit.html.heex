@@ -1,8 +1,8 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
   <div class="text-center">
     <.header>
-      Account Settings
-      <:subtitle>Manage your account email address and password settings</:subtitle>
+      {gettext("Account Settings")}
+      <:subtitle>{gettext("Manage your account email address and password settings")}</:subtitle>
     </.header>
   </div>
 
@@ -12,13 +12,15 @@
     <.input
       field={f[:email]}
       type="email"
-      label="Email"
+      label={gettext("Email")}
       autocomplete="username"
       spellcheck="false"
       required
     />
 
-    <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
+    <.button variant="primary" phx-disable-with={gettext("Changing...")}>
+      {gettext("Change Email")}
+    </.button>
   </.form>
 
   <div class="divider" />
@@ -29,7 +31,7 @@
     <.input
       field={f[:password]}
       type="password"
-      label="New password"
+      label={gettext("New password")}
       autocomplete="new-password"
       spellcheck="false"
       required
@@ -37,13 +39,13 @@
     <.input
       field={f[:password_confirmation]}
       type="password"
-      label="Confirm new password"
+      label={gettext("Confirm new password")}
       autocomplete="new-password"
       spellcheck="false"
       required
     />
-    <.button variant="primary" phx-disable-with="Changing...">
-      Save Password
+    <.button variant="primary" phx-disable-with={gettext("Changing...")}>
+      {gettext("Save Password")}
     </.button>
   </.form>
 
@@ -64,7 +66,7 @@
       step="0.01"
       min="0.01"
       max="100"
-      label="Energy rate (€/kWh)"
+      label={gettext("Energy rate (€/kWh)")}
       value={
         # Prefill the input with the user's stored €/kWh rate.
         #
@@ -98,7 +100,9 @@
       placeholder="0.32"
     />
     <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-      Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card.
+      {gettext(
+        "Used to calculate how much your solar production saved you this month. Leave empty to hide the savings card."
+      )}
     </p>
 
     <%= if error = Keyword.get(@settings_changeset.errors, :cents_per_kwh) do %>
@@ -107,6 +111,8 @@
       </p>
     <% end %>
 
-    <.button variant="primary" phx-disable-with="Saving...">Save Settings</.button>
+    <.button variant="primary" phx-disable-with={gettext("Saving...")}>
+      {gettext("Save Settings")}
+    </.button>
   </.form>
 </Layouts.app>

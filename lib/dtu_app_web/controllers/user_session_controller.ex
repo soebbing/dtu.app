@@ -15,8 +15,8 @@ defmodule DtuAppWeb.UserSessionController do
   def create(conn, %{"user" => %{"token" => token} = user_params} = params) do
     info =
       case params do
-        %{"_action" => "confirmed"} -> "User confirmed successfully."
-        _ -> "Welcome back!"
+        %{"_action" => "confirmed"} -> gettext("User confirmed successfully.")
+        _ -> gettext("Welcome back!")
       end
 
     case Accounts.login_user_by_magic_link(token) do
@@ -27,7 +27,7 @@ defmodule DtuAppWeb.UserSessionController do
 
       {:error, :not_found} ->
         conn
-        |> put_flash(:error, "The link is invalid or it has expired.")
+        |> put_flash(:error, gettext("The link is invalid or it has expired."))
         |> render(:new, form: Phoenix.Component.to_form(%{}, as: "user"))
     end
   end
@@ -36,14 +36,14 @@ defmodule DtuAppWeb.UserSessionController do
   def create(conn, %{"user" => %{"email" => email, "password" => password} = user_params}) do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       conn
-      |> put_flash(:info, "Welcome back!")
+      |> put_flash(:info, gettext("Welcome back!"))
       |> UserAuth.log_in_user(user, user_params)
     else
       form = Phoenix.Component.to_form(user_params, as: "user")
 
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       conn
-      |> put_flash(:error, "Invalid email or password")
+      |> put_flash(:error, gettext("Invalid email or password"))
       |> render(:new, form: form)
     end
   end
@@ -58,7 +58,9 @@ defmodule DtuAppWeb.UserSessionController do
     end
 
     info =
-      "If your email is in our system, you will receive instructions for logging in shortly."
+      gettext(
+        "If your email is in our system, you will receive instructions for logging in shortly."
+      )
 
     conn
     |> put_flash(:info, info)
@@ -72,19 +74,19 @@ defmodule DtuAppWeb.UserSessionController do
     case Accounts.login_user_by_magic_link(token) do
       {:ok, {user, _expired_tokens}} ->
         conn
-        |> put_flash(:info, "Welcome back!")
+        |> put_flash(:info, gettext("Welcome back!"))
         |> UserAuth.log_in_user(user, %{"remember_me" => "true"})
 
       {:error, :not_found} ->
         conn
-        |> put_flash(:error, "Magic link is invalid or it has expired.")
+        |> put_flash(:error, gettext("Magic link is invalid or it has expired."))
         |> redirect(to: ~p"/users/log-in")
     end
   end
 
   def delete(conn, _params) do
     conn
-    |> put_flash(:info, "Logged out successfully.")
+    |> put_flash(:info, gettext("Logged out successfully."))
     |> UserAuth.log_out_user()
   end
 end
