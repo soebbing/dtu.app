@@ -13,6 +13,37 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
       assert response =~ "Settings"
     end
 
+    test "prefills the €/kWh input with the user's stored rate", %{conn: conn, user: user} do
+      # Set a rate via the public API, then GET the page. The input
+      # must render with the stored value (e.g. "0.32" for 32 cents).
+      # The previous template only matched `{:changes, _}`, which is
+      # never populated on a fresh GET — so the field rendered empty
+      # every time, making the user wonder if their saved value had
+      # actually stuck.
+      {:ok, _} = Accounts.update_user_settings(user, %{"euros_per_kwh" => "0.32"})
+
+      conn = get(conn, ~p"/users/settings")
+      response = html_response(conn, 200)
+
+      # The exact regex is `<input ... value="0.32" ...>` (the
+      # template uses `:erlang.float_to_binary/2` with `decimals: 2`
+      # for stable formatting). Match the input by id and check its
+      # rendered value attribute.
+      assert response =~ ~r/<input[^>]*\bid="euros_per_kwh"[^>]*\bvalue="0\.32"/
+    end
+
+    test "leaves the €/kWh input empty when the user has no stored rate", %{conn: conn} do
+      # The seed/fixture user has cents_per_kwh == nil. The GET must
+      # render an input with an empty `value=""` attribute (the
+      # placeholder "0.32" stays visible, but no actual stored value
+      # is shown).
+      conn = get(conn, ~p"/users/settings")
+      response = html_response(conn, 200)
+
+      assert response =~ ~r/<input[^>]*\bid="euros_per_kwh"[^>]*\bvalue=""/,
+             "expected the empty-value input attribute when user has no rate"
+    end
+
     test "redirects if user is not logged in" do
       conn = build_conn()
       conn = get(conn, ~p"/users/settings")

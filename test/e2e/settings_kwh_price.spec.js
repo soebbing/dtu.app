@@ -2,22 +2,37 @@ const { test, expect } = require('@playwright/test');
 
 // E2E coverage for the energy-rate (kWh price) field on `/users/settings`.
 //
-// This is a regression test for the bug where ANY value entered into
-// the "Energy rate (€/kWh)" field surfaced "invalid value" on submit.
-// Root cause: an empty form submission landed on the Ecto cast
-// `{"is invalid", [type: :integer, validation: :cast]}` error because
-// the settings_changeset/2 hard-coded the `:invalid` atom for the
-// empty / non-numeric branch. The fix maps empty / non-numeric input
-// to `nil`, so the field is silently cleared and the dashboard hides
-// the savings card.
+// Two regressions are guarded here:
+//   * Surfaces "invalid value" on every submit. Root cause: an
+//     empty form submission landed on the Ecto cast
+//     `{"is invalid", [type: :integer, validation: :cast]}` error
+//     because the settings_changeset/2 hard-coded the `:invalid`
+//     atom for the empty / non-numeric branch. The fix maps empty
+//     / non-numeric input to `nil`, so the field is silently
+//     cleared.
+//   * Never shows the currently stored value. The settings
+//     template only matched `Ecto.Changeset.fetch_field/2`'s
+//     `:changes` arm; on a fresh GET the settings_changeset/2
+//     helper always sets a change (even when the user submits
+//     nothing), so `fetch_field/2` returned `{:changes, nil}` and
+//     the input rendered empty forever. The fix reads `:data`
+//     first so the user's actual stored rate pre-renders.
 //
 // What we exercise here:
-//   1. Typing a valid €/kWh and saving persists the value and shows
-//      the success flash.
-//   2. Clearing the field and saving does NOT surface "invalid value" —
-//      it shows the success flash and the value is cleared.
-//   3. Pasting a non-numeric value (e.g. "abc") and saving also does
-//      NOT surface "invalid value" — it clears the field silently.
+//   1. Typing a valid €/kWh and saving persists the value and
+//      shows the success flash.
+//   2. Clearing the field and saving does NOT surface "invalid
+//      value" — it shows the success flash and the value is
+//      cleared.
+//   3. After saving, navigating away and back, the field
+//      prefills with the stored rate (the prefill fix).
+//   4. After clearing the stored rate, navigating away and back,
+//      the field is empty.
+//
+// The dashboard's "savings block hidden when rate is nil"
+// behavior is exercised separately by
+// `dashboard_savings_card.spec.js` (it has its own login flow
+// and per-test rate-reset setup).
 //
 // Assumes the app is running on :4000 against a database seeded with
 // `mix run priv/repo/seeds.exs` (test@example.com / password123456).
@@ -100,13 +115,55 @@ test.describe('Acceptance Tests: Energy rate (kWh price) on /users/settings', ()
 
     // After successful save the page is back on /users/settings with
     // the success flash visible. The flash text is the source-of-
-    // truth message; we don't assert the field's persisted value
-    // because the settings form's value-rendering only repopulates
-    // from the changeset's `changes` key (not `data`), and a fresh
-    // GET that hasn't yet re-cast the form will render an empty
-    // input — a separate template concern, not the bug under test.
+    // truth message for "did my save stick?" — see the prefill
+    // tests below for what the input field looks like after a
+    // round-trip.
     const flash = await getSuccessFlash(page);
     expect(flash.toLowerCase()).toContain('settings updated');
+  });
+
+  test('page reloads with the stored €/kWh value prefilled', async ({ page }) => {
+    // Pre-fix: the settings template only matched
+    // `Ecto.Changeset.fetch_field/2`'s `:changes` arm, which the
+    // settings_changeset/2 helper always populates (even on a GET
+    // with no params — the empty-input branch produces
+    // `cents = nil`). That meant `fetch_field/2` returned
+    // `{:changes, nil}` and the input rendered empty forever.
+    //
+    // Save a rate, navigate away (so we definitely rebuild the
+    // changeset from a fresh GET), navigate back — the field
+    // must show the stored value.
+    await navigateToSettings(page);
+    await fillEnergyRateAndSubmit(page, '0.45');
+
+    await page.goto('/dashboard');
+    await expect(page).toHaveURL(/\/dashboard/, { timeout: 10000 });
+    await waitForPageStable(page);
+
+    await navigateToSettings(page);
+
+    await expect(page.locator('#euros_per_kwh')).toHaveValue('0.45');
+  });
+
+  test('clearing the stored rate leaves the input empty on reload', async ({ page }) => {
+    // Companion to the "prefilled" test: clearing the rate and
+    // navigating away then back must render an empty input. The
+    // empty-input branch of the settings_changeset/2 maps to nil,
+    // the field is cleared in the DB, and the template renders an
+    // empty `value=""` attribute (the "0.32" placeholder stays
+    // visible). Confirms the round-trip.
+    await navigateToSettings(page);
+    await fillEnergyRateAndSubmit(page, '0.55');
+    await expect(page.locator('#euros_per_kwh')).toHaveValue('0.55');
+
+    // Now clear it.
+    await fillEnergyRateAndSubmit(page, '');
+
+    await page.goto('/dashboard');
+    await waitForPageStable(page);
+    await navigateToSettings(page);
+
+    await expect(page.locator('#euros_per_kwh')).toHaveValue('');
   });
 
   test('clearing the field does NOT show "is invalid" — it clears the rate', async ({ page }) => {
