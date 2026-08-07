@@ -129,8 +129,15 @@ test.describe('Acceptance Tests: Dashboard "Saved this period" card', () => {
 
     const text = await getSavingsCardText(page);
     expect(text).not.toBeNull();
-    // Match the format helper's output: "€X.YY".
-    expect(text.trim()).toMatch(/^€\d+\.\d{2}$/);
+    // Match the locale-aware format helper's output: "X.XX €" with an
+    // optional thousands separator (`,` in en, `.` in de, NBSP in fr).
+    // Pre-fix the test asserted `^€\d+\.\d{2}$`; post-fix the symbol
+    // is at the end so German and French formats also match. The
+    // optional `(?:[,. ]\d{3})*` group accepts the thousands
+    // separator; the decimal must be `.` (matches en/de formats); the
+    // en-thousands-sep `,` and de-thousands-sep `.` and fr-thousands
+    // -sep space are all covered.
+    expect(text.trim()).toMatch(/^-?\d{1,3}(?:[,. ]\d{3})*\.\d{2} €$/);
 
     // Pre-fix, the same yield + rate would render as "€0.0X" with X
     // typically 0-2 (e.g. €0.01 for a 4 kWh day). Make sure we're not
@@ -188,7 +195,7 @@ test.describe('Acceptance Tests: Dashboard "Saved this period" card', () => {
 
     const text = await getSavingsCardText(page);
     expect(text).not.toBeNull();
-    expect(text.trim()).toMatch(/^€\d+\.\d{2}$/);
+    expect(text.trim()).toMatch(/^-?\d{1,3}(?:[,. ]\d{3})*\.\d{2} €$/);
 
     // At 3-4 kWh × €0.08/kWh = €0.24-€0.32. Pre-fix this would round
     // to "€0.01" or "€0.00"; post-fix the user sees a real euro
