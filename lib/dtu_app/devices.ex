@@ -683,6 +683,283 @@ defmodule DtuApp.Devices do
     end
   end
 
+  @doc """
+  Period-aware consumption stats — mirrors `get_daily_stats/3` /
+  `compute_day_period_stats/2` / `compute_range_period_stats/2` for the
+  consumption side. Returns one map shape per time_range so the
+  dashboard can render the same row of three stat cards regardless of
+  whether the user is on Today/Day (current/today/peak) or on a
+  Week/Month/Year view (period total / period peak / peak date).
+
+  All numerics are in the units the dashboard renders:
+
+    * `current_consumption`        — W (whole-number, mirrors Current Power)
+    * `today_consumption`          — kWh (1 decimal place)
+    * `peak_consumption`           — W (whole-number)
+    * `period_total_consumption`   — kWh (1 decimal place)
+    * `period_peak_consumption`    — W (whole-number)
+    * `peak_date`                  — Date.t() | nil
+
+  Shelly Plus 3EM only publishes a lifetime `consumption_energy_total`
+  Wh counter, so for week/month/year views we use the same per-day
+  MAX-of-the-day delta approach as `get_consumption_daily_stats/2`
+  (sum of `last_total - first_total` per day, summed across devices).
+
+  Returns zero defaults when the user has no devices.
+  """
+  def get_consumption_period_stats(%User{} = user, dtu_id, time_range, selected_period) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      zero_period_stats()
+    else
+      today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+
+      case time_range do
+        "today" ->
+          # Live view: mirror the existing `get_consumption_daily_stats/2`
+          # for the today-consumption side, and compute peak across today's
+          # consumption chart buckets.
+          today = get_consumption_daily_stats(user, dtu_id)
+
+          %{
+            current_consumption: today.current_consumption,
+            today_consumption: today.today_consumption,
+            peak_consumption: today.peak_consumption,
+            period_total_consumption: today.today_consumption,
+            period_peak_consumption: today.peak_consumption,
+            peak_date: Date.utc_today()
+          }
+
+        "day" ->
+          # Single-day historical view: same shape as today.
+          {_date_utc, date_local} = resolve_consumption_period_date(selected_period, today_start)
+          {utc_start, utc_end} = local_day_utc_range(date_local, 0)
+
+          today = get_consumption_daily_stats(user, dtu_id)
+          period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
+          period_peak = compute_consumption_peak_w(user, dtu_ids, utc_start, utc_end)
+
+          %{
+            current_consumption: today.current_consumption,
+            today_consumption: today.today_consumption,
+            peak_consumption: period_peak,
+            period_total_consumption: period_total,
+            period_peak_consumption: period_peak,
+            peak_date: date_local
+          }
+
+        "week" ->
+          {monday, sunday} = week_range(selected_period, today_start)
+
+          {utc_start, utc_end} =
+            {elem(local_day_utc_range(monday, 0), 0), elem(local_day_utc_range(sunday, 0), 1)}
+
+          period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, utc_start, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
+
+        "month" ->
+          {first_day, last_day} = month_range(selected_period, today_start)
+
+          {utc_start, utc_end} =
+            {elem(local_day_utc_range(first_day, 0), 0),
+             elem(local_day_utc_range(last_day, 0), 1)}
+
+          period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, utc_start, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
+
+        "year" ->
+          year = year_value(selected_period)
+          start_date = Date.new!(year, 1, 1)
+          end_date = Date.new!(year, 12, 31)
+
+          {utc_start, utc_end} =
+            {elem(local_day_utc_range(start_date, 0), 0),
+             elem(local_day_utc_range(end_date, 0), 1)}
+
+          period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, utc_start, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
+      end
+    end
+  end
+
+  defp zero_period_stats do
+    %{
+      current_consumption: 0.0,
+      today_consumption: 0.0,
+      peak_consumption: 0.0,
+      period_total_consumption: 0.0,
+      period_peak_consumption: 0.0,
+      peak_date: nil
+    }
+  end
+
+  # Sum of per-device-per-day "last_total - first_total" Wh deltas across a UTC
+  # window, returned in kWh. Each row carries a lifetime Wh counter;
+  # grouping by `(dtu_id, date)` and taking the difference between the
+  # earliest and latest reading of each day gives the energy consumed on
+  # that day. Summing across days and devices yields the household total.
+  #
+  # Grouping by date is critical — without it, MIN/MAX across a multi-day
+  # window would collapse to a single global delta that includes the
+  # lifetime counter's natural growth between days (e.g. 7 AM Monday →
+  # 7 AM Tuesday could span thousands of Wh even though only 24 h passed).
+  # nil-handling mirrors `get_consumption_daily_stats/2`.
+  defp compute_consumption_total_kwh(_user, dtu_ids, utc_start, utc_end) do
+    rows =
+      Repo.all(
+        from r in Reading,
+          where:
+            r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+          group_by: [r.dtu_id, fragment("?::date", r.inserted_at)],
+          select: %{
+            dtu_id: r.dtu_id,
+            first_total: min(r.consumption_energy_total),
+            last_total: max(r.consumption_energy_total)
+          }
+      )
+
+    rows
+    |> Enum.map(fn row ->
+      case {row.first_total, row.last_total} do
+        {nil, _} -> 0.0
+        {_, nil} -> 0.0
+        {first, last} -> max(last - first, 0.0)
+      end
+    end)
+    |> Enum.sum()
+    |> Kernel./(1000)
+    |> Float.round(1)
+  end
+
+  # Peak household demand (W) across a UTC window — MAX of the
+  # 5-minute-bucket-mean consumption chart points. Returns 0.0 when
+  # the window has no consumption rows.
+  defp compute_consumption_peak_w(user, dtu_ids, utc_start, utc_end) do
+    pts =
+      list_consumption_chart_data(user, utc_start, utc_end)
+      |> Enum.filter(fn pt -> elem(pt.series, 0) in dtu_ids end)
+
+    case pts do
+      [] -> 0.0
+      list -> list |> Enum.map(& &1.power) |> Enum.max(fn -> 0.0 end)
+    end
+    |> Float.round(1)
+  end
+
+  # Per-day peak (W) across a UTC window — returns the {date, peak_w}
+  # of the day with the highest single-day maximum, or {nil, 0.0}
+  # if no data. Used for week/month/year views so the dashboard can
+  # highlight which day was the peak.
+  defp compute_consumption_peak_day(_user, dtu_ids, utc_start, utc_end) do
+    rows =
+      Repo.all(
+        from r in Reading,
+          where:
+            r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end and
+              not is_nil(r.consumption_power),
+          group_by: fragment("?::date", r.inserted_at),
+          select: %{
+            date: fragment("?::date", r.inserted_at),
+            peak_w: max(r.consumption_power)
+          }
+      )
+
+    case rows do
+      [] ->
+        {nil, 0.0}
+
+      list ->
+        top = Enum.max_by(list, fn r -> r.peak_w || 0.0 end)
+        date = top.date
+        peak_w = top.peak_w || 0.0
+
+        normalized_date =
+          case date do
+            %Date{} = d -> d
+            str when is_binary(str) -> Date.from_iso8601!(str)
+            nil -> nil
+          end
+
+        {normalized_date, Float.round(peak_w, 1)}
+    end
+  end
+
+  # Resolve the local Date for a consumption-period stats query. The
+  # dashboard passes `selected_period` which can be `nil` (today) or
+  # a `%Date{}` for historical views.
+  defp resolve_consumption_period_date(nil, today_utc_start) do
+    {today_utc_start, Date.utc_today()}
+  end
+
+  defp resolve_consumption_period_date(%Date{} = d, _today_utc_start), do: {d, d}
+
+  defp resolve_consumption_period_date(_other, today_utc_start),
+    do: {today_utc_start, Date.utc_today()}
+
+  # Mon..Sun range for the week view, anchored on the most recent
+  # week with data (or this week if `selected_period` is `nil`).
+  defp week_range(nil, today_utc_start) do
+    week_range(
+      Date.utc_today() |> Date.add(-(Date.day_of_week(Date.utc_today()) - 1)),
+      today_utc_start
+    )
+  end
+
+  defp week_range(%Date{} = d, _today_utc_start) do
+    monday = Date.add(d, -(Date.day_of_week(d) - 1))
+    sunday = Date.add(monday, 6)
+    {monday, sunday}
+  end
+
+  # First..last day of the month, anchored on the month of the
+  # provided Date (or this month if `nil`).
+  defp month_range(nil, _today_utc_start) do
+    today = Date.utc_today()
+    first = Date.new!(today.year, today.month, 1)
+    {first, Date.end_of_month(first)}
+  end
+
+  defp month_range(%Date{} = d, _today_utc_start) do
+    first = Date.new!(d.year, d.month, 1)
+    {first, Date.end_of_month(first)}
+  end
+
+  # Integer year for the year view, anchored on the year of the
+  # provided Date (or this year if `nil`).
+  defp year_value(nil), do: Date.utc_today().year
+  defp year_value(%Date{} = d), do: d.year
+  defp year_value(y) when is_integer(y), do: y
+
   @doc "List selectable dates containing telemetry readings."
   def list_selectable_dates(%User{} = user, dtu_id \\ nil) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
