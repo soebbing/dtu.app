@@ -386,6 +386,224 @@ defmodule DtuApp.Devices do
     end
   end
 
+  @doc """
+  Net flow chart series — production minus consumption, bucketed into
+  the same 5-minute windows used by `list_day_chart_data/4` and
+  `list_consumption_chart_data/4`. Net flow is the most actionable
+  single number on a solar dashboard: positive means the home is
+  exporting (selling to the grid), negative means importing (buying).
+
+  Both sides must be present for a meaningful series — without a Shelly,
+  the household draw is unknown and the dashboard falls back to the
+  pure-production view. Without an inverter, there's nothing to net
+  against. The dashboard hides the net-flow chart and stat cards
+  unless both kinds are present (`@net_flow_active`).
+
+  The series is built by:
+    1. Fetching all readings (production + consumption) in the UTC
+       window — one SQL query, no per-power-type round-trip.
+    2. Grouping by 5-minute bucket.
+    3. Summing production (`ac_power` for mppt_index = 0, `dc_power`
+       otherwise — same `chart_power_for_mppt/1` selection the
+       production chart uses) and consumption (`consumption_power`)
+       separately per bucket.
+    4. Returning `%{time, power}` per bucket, where `power` is
+       `production - consumption`. A positive value means export;
+       negative means import.
+
+  Returns `[]` when the user has no devices or no readings in the
+  window — the dashboard hides the net-flow row.
+  """
+  @spec list_net_chart_data(User.t(), DateTime.t(), DateTime.t(), integer() | nil) :: [
+          %{time: DateTime.t(), power: float()}
+        ]
+  def list_net_chart_data(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      []
+    else
+      # One query for both production and consumption rows; the
+      # `power_type` discriminator routes them to the right bucket.
+      # `chart_power_for_mppt/1` picks `ac_power` for mppt_index = 0
+      # (the AC aggregate row OpenDTU/AhoyDTU emit on `realtime/data`)
+      # and `dc_power` for the per-MPPT rows — matching the production
+      # chart's per-series power selection.
+      readings =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            select: %{
+              inserted_at: r.inserted_at,
+              ac_power: r.ac_power,
+              dc_power: r.dc_power,
+              mppt_index: r.mppt_index,
+              consumption_power: r.consumption_power,
+              power_type: r.power_type
+            }
+        )
+
+      if readings == [] do
+        []
+      else
+        readings
+        |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
+        |> Enum.map(fn {bucket, bucket_readings} ->
+          time = DateTime.from_unix!(bucket * 300)
+
+          production_w =
+            bucket_readings
+            |> Enum.filter(fn r -> r.power_type == "production" end)
+            |> Enum.map(fn r -> chart_power_for_mppt(r) end)
+            |> Enum.sum()
+
+          consumption_w =
+            bucket_readings
+            |> Enum.filter(fn r -> r.power_type == "consumption" end)
+            |> Enum.map(fn r -> r.consumption_power || 0.0 end)
+            |> Enum.sum()
+
+          # Net = production - consumption. A positive number means
+          # the home is exporting (selling to the grid); a negative
+          # number means it's importing (buying).
+          net = production_w - consumption_w
+
+          # We also keep the count of consumption rows in the bucket
+          # so the filter below can drop buckets where no Shelly
+          # uplink landed — without it, the net-flow curve would equal
+          # the Total line (production - 0 = production) and just be a
+          # duplicate. The dashboard's UI guard (`@net_path != ""`)
+          # hides the row entirely when no bucket survives.
+          has_consumption =
+            consumption_w > 0 or
+              Enum.any?(bucket_readings, fn r -> r.power_type == "consumption" end)
+
+          {has_consumption, %{time: time, power: net}}
+        end)
+        |> Enum.filter(fn {has_consumption, _point} -> has_consumption end)
+        |> Enum.map(fn {_has, point} -> point end)
+        |> Enum.sort_by(& &1.time)
+      end
+    end
+  end
+
+  @doc """
+  Net flow stat snapshot — mirrors `get_daily_stats/3` /
+  `get_consumption_daily_stats/2` for the difference between the two.
+
+  Returns:
+    * `current_net_flow`   — W, fresh (last 2 min). Positive = exporting,
+      negative = importing. `production - consumption` summed across
+      the user's devices.
+    * `today_net_export`   — kWh, total energy exported today (the sum
+      of positive net-flow buckets, in kWh).
+    * `today_net_import`   — kWh, total energy imported today (the sum
+      of negative net-flow buckets, in absolute kWh).
+    * `peak_export` / `peak_import` — W, largest single-bucket export /
+      import in the day, used for the dashboard's headline.
+
+  Returns zero defaults when the user has no devices or no readings.
+  """
+  @spec get_net_flow_stats(User.t(), integer() | nil) :: %{
+          current_net_flow: float(),
+          today_net_export: float(),
+          today_net_import: float(),
+          peak_export: float(),
+          peak_import: float()
+        }
+  def get_net_flow_stats(%User{} = user, dtu_id \\ nil) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      %{
+        current_net_flow: 0.0,
+        today_net_export: 0.0,
+        today_net_import: 0.0,
+        peak_export: 0.0,
+        peak_import: 0.0
+      }
+    else
+      today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+      today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
+      two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
+
+      points = list_net_chart_data(user, today_start, today_end, dtu_id)
+
+      if points == [] do
+        %{
+          current_net_flow: 0.0,
+          today_net_export: 0.0,
+          today_net_import: 0.0,
+          peak_export: 0.0,
+          peak_import: 0.0
+        }
+      else
+        # Convert the bucket-mean power (W) into energy (Wh) by
+        # multiplying by the bucket duration (5 min = 1/12 h).
+        bucket_h = 5.0 / 60.0
+        net_per_bucket = Enum.map(points, fn p -> p.power * bucket_h end)
+
+        # Exports are positive bucket-hours; imports are negative.
+        # We sum the absolute values on each side to express
+        # `today_net_export` and `today_net_import` in Wh, then convert
+        # to kWh at the end.
+        exported_wh =
+          net_per_bucket
+          |> Enum.filter(&(&1 > 0.0))
+          |> Enum.sum()
+
+        imported_wh =
+          net_per_bucket
+          |> Enum.filter(&(&1 < 0.0))
+          |> Enum.map(&abs/1)
+          |> Enum.sum()
+
+        # Peak export = largest single positive bucket; peak import =
+        # largest single negative bucket (as a positive W).
+        peak_export = Enum.max(Enum.map(points, & &1.power), fn -> 0.0 end)
+        peak_import = Enum.max(Enum.map(points, fn p -> abs(p.power) end), fn -> 0.0 end)
+
+        # Live net flow: take the freshest reading's `production_power -
+        # consumption_power` rather than relying on the bucket mean
+        # (which lags a few minutes when the bucket hasn't filled).
+        latest_readings =
+          Repo.all(
+            from r in Reading,
+              where: r.dtu_id in ^dtu_ids,
+              distinct: [r.dtu_id, r.power_type],
+              order_by: [r.dtu_id, r.power_type, desc: r.inserted_at]
+          )
+
+        # `distinct: [r.dtu_id, r.power_type]` gives one row per
+        # (dtu_id, power_type) — production and consumption latest.
+        {production_now, consumption_now} =
+          Enum.reduce(latest_readings, {0.0, 0.0}, fn r, {p, c} ->
+            fresh? = DateTime.after?(r.inserted_at, two_minutes_ago)
+
+            cond do
+              not fresh? -> {p, c}
+              r.power_type == "production" -> {p + chart_power_for_mppt(r), c}
+              r.power_type == "consumption" -> {p, c + (r.consumption_power || 0.0)}
+              true -> {p, c}
+            end
+          end)
+
+        current_net_flow = production_now - consumption_now
+
+        %{
+          current_net_flow: Float.round(current_net_flow * 1.0, 1),
+          today_net_export: Float.round(exported_wh / 1000, 2),
+          today_net_import: Float.round(imported_wh / 1000, 2),
+          peak_export: Float.round(peak_export * 1.0, 1),
+          peak_import: Float.round(peak_import * 1.0, 1)
+        }
+      end
+    end
+  end
+
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
   def get_daily_stats(%User{} = user, dtu_id \\ nil) do
     get_daily_stats(user, dtu_id, Date.utc_today())
