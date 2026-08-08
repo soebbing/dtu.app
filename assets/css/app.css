@@ -31,18 +31,30 @@
 
 /* PWA standalone mode: keep the navbar clear of the iOS status bar / notch.
    The viewport uses `viewport-fit=cover` and `apple-mobile-web-app-status-bar-style`
-   is `black-translucent`, so the status bar overlays the page. We use
-   `max()` so the navbar still has a real top distance in PWA mode on devices
-   that report `safe-area-inset-top: 0` (non-notched iPhones, Android PWAs,
-   desktop PWA installs). The minimum is 1.5rem (24px) — enough to clear the
-   iOS status bar on a non-notched iPhone (20-22pt status bar) with a small
-   breathing margin, without being so large that it makes the navbar look
-   weird on devices with a tall safe area (there the env() value wins).
-   The rule doesn't apply at all in a regular browser tab, where the OS
-   chrome already provides the safe area. */
-@media (display-mode: standalone), (display-mode: window-controls-overlay) {
+   is `black-translucent`, so the iOS status bar overlays the page rather than
+   pushing content down. We must add top padding equal to the device's
+   safe-area-inset-top so the navbar isn't hidden behind the time / battery
+   indicators on notched iPhones (47pt) or the home indicator (34pt).
+
+   `@supports (padding-top: env(safe-area-inset-top))` is the standard,
+   reliable way to apply the safe-area rule only in browsers that understand
+   `env()`. We previously gated on `@media (display-mode: standalone)` —
+   that's unreliable on iOS Safari, which sometimes doesn't match the media
+   query right after launching from a Home Screen icon, even though the
+   manifest declares `display: standalone`. `@supports` flips the gate:
+   if the browser can parse `env()`, it gets the padding; if it can't, the
+   rule is skipped entirely (so desktop browsers without iOS-style safe
+   areas stay at 0 padding).
+
+   `env(safe-area-inset-top, 1.5rem)`:
+   - Notched iPhone (Pro, Pro Max, 14/15/16): ~47px, wins over the fallback.
+   - iPhone SE (no notch) or older device: ~22-44px.
+   - Older browser that parses `env()` but doesn't expose the env var:
+     falls back to 1.5rem (~24px) — enough to clear the status bar
+     even when iOS reports a slightly smaller inset. */
+@supports (padding-top: env(safe-area-inset-top)) {
   header.sticky {
-    padding-top: max(env(safe-area-inset-top, 0px), 1.5rem);
+    padding-top: env(safe-area-inset-top, 1.5rem);
   }
 }
 
