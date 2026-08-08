@@ -509,7 +509,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:total_palette, {"emerald", "900"})
     |> assign(:consumption_path, consumption_path)
     |> assign(:consumption_points_data, consumption_points_data)
-    |> assign(:consumption_palette, {"rose", "500"})
+    |> assign(:consumption_palette, {"rose", "600"})
   end
 
   # Reverse the data-point Y coord back to watts so the tooltip shows
@@ -701,7 +701,23 @@ defmodule DtuAppWeb.DashboardLive do
     {"teal", "800"} => "#115e59",
     {"teal", "900"} => "#134e4a"
   }
-  defp tooltip_to_hex(base, shade), do: Map.fetch!(@tailwind_colors, {base, shade})
+  @doc """
+  Resolve a Tailwind (`base`, `shade`) pair to a hex color, falling back
+  to a neutral grey when the pair isn't in `@tailwind_colors`. The map
+  only ships 400/600/800/900 shades — picking a 500 from habit was a
+  silent crash that 500'd the whole dashboard for users with a paired
+  Shelly. The grey fallback keeps the chart readable even when the
+  palette is misconfigured.
+
+  Public so the regression test in `test/dtu_app_web/live/dashboard_live_test.exs`
+  can pin both the happy-path and the missing-shade fallback.
+  """
+  def tooltip_to_hex(base, shade) do
+    case Map.fetch(@tailwind_colors, {base, shade}) do
+      {:ok, hex} -> hex
+      :error -> "#6b7280"
+    end
+  end
 
   # MPPT-specific shades were used when the chart plotted per-MPPT
   # lines (`mppt_index = 0` was the AC aggregate, 1+ were per-string

@@ -590,6 +590,62 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "Total legend button should appear before per-series legend buttons " <>
                "(Total at #{total_button_offset}, series at #{series_button_offset})"
     end
+
+    test "consumption series renders without crashing when a Shelly is paired",
+         %{conn: conn, user: user} do
+      # Regression: PR #62 introduced a consumption overlay on the chart
+      # that calls `tooltip_to_hex/2` with `{"rose", "500"}` — but
+      # `@tailwind_colors` only ships 400/600/800/900 shades, so the call
+      # crashed with `KeyError` and the entire dashboard 500'd for users
+      # with a paired Shelly. The fix: use `{"rose", "600"}` (matches the
+      # map and the `text-rose-600` Tailwind class used in the consumption
+      # stat cards), and harden `tooltip_to_hex/2` to fall back to a neutral
+      # grey when the pair is missing. This test pins both.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-palette-test",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # One fresh consumption row so `consumption_chart_points` has data.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          inserted_at: now
+        })
+
+      # The render must succeed — pre-fix this 500'd with KeyError on
+      # `{"rose", "500"}`.
+      assert {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The consumption overlay should be present: a `<path>` tagged with
+      # `data-legend-key="consumption"` and a rose-colored stroke.
+      assert html =~ ~r/data-legend-key="consumption"/
+      assert html =~ ~r/stroke="#e11d48"/, "expected rose-600 stroke on the consumption path"
+
+      # And the legend entry should also be present.
+      assert html =~ ~r/data-legend-key="consumption"[^>]*>[^<]*<span[^>]*legend-swatch/
+    end
+
+    test "tooltip_to_hex falls back to a neutral grey when the palette is missing",
+         %{conn: _conn, user: _user} do
+      # Pins the defensive fallback added alongside the rose-500 fix so
+      # a future palette typo (or a future Tailwind shade removal) doesn't
+      # 500 the dashboard again. We invoke the private helper through
+      # `apply/3` so we can hit the `{:error, _}` branch without exposing
+      # the function publicly.
+      assert DtuAppWeb.DashboardLive.tooltip_to_hex("rose", "500") == "#6b7280"
+      # And the happy path still works for the shades that ARE in the map.
+      assert DtuAppWeb.DashboardLive.tooltip_to_hex("rose", "600") == "#e11d48"
+      assert DtuAppWeb.DashboardLive.tooltip_to_hex("emerald", "900") == "#064e3b"
+    end
   end
 
   describe "Online badge staleness" do
