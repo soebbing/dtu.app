@@ -254,6 +254,13 @@ defmodule DtuAppWeb.DashboardLive do
     # /devices page if they need MPPT-level detail.
     chart_points = Enum.filter(all_chart_points, fn pt -> pt.series |> elem(2) == 0 end)
 
+    # Pull the consumption series upfront so `y_max` below can include
+    # its peak — otherwise a heavy-load evening (Shelly reporting e.g.
+    # 1500 W draw on a 600 W solar day) would clip the consumption line
+    # off-screen above the chart.
+    consumption_chart_points =
+      Devices.list_today_consumption_chart_data(user, dtu_id)
+
     max_power =
       chart_points
       |> Enum.map(& &1.power)
@@ -271,11 +278,22 @@ defmodule DtuAppWeb.DashboardLive do
       |> Enum.map(fn {_time, pts} -> Enum.sum(Enum.map(pts, & &1.power)) end)
       |> Enum.max(fn -> 0.0 end)
 
+    # Consumption peak — the highest bucket-mean household draw on
+    # today/day. We compare against (max per-series production,
+    # max Total production) so the Y-axis covers whatever's largest on
+    # the chart. Without this, the consumption path renders off-screen
+    # above the chart whenever the household draw exceeds solar peak
+    # (common in winter / evenings).
+    consumption_max_power =
+      consumption_chart_points
+      |> Enum.map(& &1.power)
+      |> Enum.max(fn -> 0.0 end)
+
     # Scale max power to next multiple of 100, taking the larger of
-    # the per-series peak and the Total peak so the headline curve
-    # stays inside the chart area.
+    # the per-series peak, the Total peak, and the consumption peak so
+    # the headline curve stays inside the chart area.
     y_max =
-      [max_power, total_max_power]
+      [max_power, total_max_power, consumption_max_power]
       |> Enum.max()
       |> Float.ceil()
       |> Kernel./(100)
@@ -448,14 +466,12 @@ defmodule DtuAppWeb.DashboardLive do
       end)
 
     # Consumption overlay: household draw (W) from a paired Shelly
-    # Plus 3EM, plotted alongside the production lines. Sourced from
-    # `list_today_consumption_chart_data/2` (filtered to power_type =
-    # "consumption" rows only), so production rows can never leak into
-    # the consumption series. Rendered as a dashed rose-colored line so
-    # it reads as a separate metric, not another inverter.
-    consumption_chart_points =
-      Devices.list_today_consumption_chart_data(user, dtu_id)
-
+    # Plus 3EM, plotted alongside the production lines. The consumption
+    # chart points are bound earlier in this function (just below the
+    # production points) so `y_max` can include the consumption peak
+    # and the consumption path stays inside the chart area. Rendered
+    # as a dashed rose-colored line so it reads as a separate metric,
+    # not another inverter.
     {consumption_path, consumption_coords} =
       case consumption_chart_points do
         [] ->
