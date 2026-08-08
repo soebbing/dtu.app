@@ -97,7 +97,8 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
       d1_str = Date.to_iso8601(d1)
       d2_str = Date.to_iso8601(d2)
 
-      # Wh fixtures; the dashboard renders the converted kWh value.
+      # Wh fixtures; the dashboard renders the converted kWh value in
+      # the day view's "Daily Yield" stat card.
       {:ok, _r1} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
@@ -122,9 +123,10 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
       view |> element("#form-granularity") |> render_change(%{granularity: "day"})
 
       html = view |> element("#history-date-input") |> render_change(%{date: d1_str})
+      # Daily Yield for d1 is 1000 Wh → "1.0 kWh". The chart's data-points
+      # embed the bucket power (`100 W`) so it appears in the chart even
+      # though the "Current Generation" stat card was removed.
       assert html =~ "1.0 kWh"
-      # W stat cards use `decimals: 0` so the integer renders without
-      # a trailing ".0" (100 W not 100.0 W).
       assert html =~ "100 W"
 
       # Pick d2 via the calendar input.

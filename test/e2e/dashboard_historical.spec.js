@@ -49,11 +49,10 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Live (Today) view is the default landing state.
     await expect(page.locator('#quick-range-switcher #btn-range-today')).toBeVisible();
 
-    // First verify we're in live mode by checking the stat-current-power exists
-    await expect(page.locator('#stat-current-power')).toBeVisible();
-
-    // Live stat cards: current power, today's yield, peak power.
-    await expect(page.locator('#stat-current-power')).toContainText(/W/);
+    // Live stat cards: today's yield + peak power. The "Current
+    // Generation" W card was removed (it duplicated the chart's headline
+    // curve); the household-draw W is now in the "Power consumption"
+    // area below.
     await expect(page.locator('#stat-today-yield')).toContainText(/kWh/);
     await expect(page.locator('#stat-peak-power')).toContainText(/W/);
 
@@ -71,34 +70,17 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Wait for the select value to actually change
     await expect(selectElement).toHaveValue('day');
 
-    // Add debugging to see what's happening with LiveView
-    const debugInfo = await page.evaluate(() => {
-      const currentPower = document.querySelector('#stat-current-power');
-      const totalYield = document.querySelector('#stat-total-yield');
-      return {
-        currentPowerExists: currentPower !== null,
-        totalYieldExists: totalYield !== null,
-        selectValue: (document.querySelector('#select-granularity')).value
-      };
-    });
-
-    console.log('After selecting day granularity:', debugInfo);
-
-    // Wait for LiveView to process the change - the stat card should transition
-    // Use a more permissive approach with retries
+    // Wait for LiveView to swap the first slot from "Total Yield" (day)
+    // into the layout. The "Current Generation" W card is gone, so we
+    // no longer poll for its absence here.
     let attempts = 0;
     const maxAttempts = 10;
     while (attempts < maxAttempts) {
       const state = await page.evaluate(() => {
-        const currentPower = document.querySelector('#stat-current-power');
-        const totalYield = document.querySelector('#stat-total-yield');
-        return {
-          currentPowerExists: currentPower !== null,
-          totalYieldExists: totalYield !== null
-        };
+        return document.querySelector('#stat-total-yield') !== null;
       });
 
-      if (!state.currentPowerExists && state.totalYieldExists) {
+      if (state) {
         break; // Success! The transition happened
       }
 
@@ -106,8 +88,8 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
       await page.waitForTimeout(1000);
     }
 
-    // Day view replaces the live "Current Generation" card with "Total Yield",
-    // and the middle card becomes "Average Power".
+    // Day view: first slot is "Total Yield", middle is "Average Power",
+    // right is "Peak Power".
     await expect(page.locator('#stat-total-yield')).toBeVisible();
     await expect(page.locator('#stat-avg-power')).toBeVisible();
     await expect(page.locator('#stat-peak-power')).toBeVisible();
@@ -116,19 +98,15 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Return to the live Today view via the quick-range tab.
     await page.locator('#btn-range-today').click();
 
-    // Wait for the transition back to live view with same retry approach
+    // Wait for the transition back to live view: Total Yield disappears
+    // (it's only rendered on the historical day view).
     attempts = 0;
     while (attempts < maxAttempts) {
       const state = await page.evaluate(() => {
-        const currentPower = document.querySelector('#stat-current-power');
-        const totalYield = document.querySelector('#stat-total-yield');
-        return {
-          currentPowerExists: currentPower !== null,
-          totalYieldExists: totalYield !== null
-        };
+        return document.querySelector('#stat-total-yield') === null;
       });
 
-      if (state.currentPowerExists && !state.totalYieldExists) {
+      if (state) {
         break; // Success! The transition happened
       }
 
@@ -136,20 +114,24 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
       await page.waitForTimeout(1000);
     }
 
-    // Now verify the live stat cards are visible
-    await expect(page.locator('#stat-current-power')).toBeVisible();
+    // Live stat cards: today's yield + peak power (the "Current Generation"
+    // W card was removed in this branch's commit).
+    await expect(page.locator('#stat-today-yield')).toBeVisible();
+    await expect(page.locator('#stat-peak-power')).toBeVisible();
   });
 
   test('Week / Month / Year granularities show Daily/Monthly aggregate stats', async ({ page }) => {
     for (const gran of ['week', 'month', 'year']) {
       await page.locator('#select-granularity').selectOption(gran);
 
-      // Wait for the transition to historical mode with retry approach
+      // Wait for the transition to historical mode. The "Current
+      // Generation" card was removed, so we can't poll for its absence
+      // any more; instead we wait for the Total Yield card to appear.
       let attempts = 0;
       const maxAttempts = 10;
       while (attempts < maxAttempts) {
         const state = await page.evaluate(() => {
-          return document.querySelector('#stat-current-power') === null;
+          return document.querySelector('#stat-total-yield') !== null;
         });
         if (state) break;
         attempts++;
