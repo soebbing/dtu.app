@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { waitForLiveSocketConnected } = require('./_helpers');
 
 // E2E coverage for the WIP dashboard historical features:
 //   - seeded telemetry renders the Today production curve + stat cards
@@ -43,6 +44,12 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     await logIn(page);
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 10000 });
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
+    // The granularity <select> fires `phx-change` which only reaches the
+    // server once the LiveView WebSocket is connected. On CI the socket
+    // can take noticeably longer to connect than the local CI browser
+    // busy-loop, so wait for it before any test starts interacting with
+    // phx-bound controls. See `_helpers.js` for the why.
+    await waitForLiveSocketConnected(page);
   });
 
   test('Today view renders the seeded production curve and live stat cards', async ({ page }) => {
