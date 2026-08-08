@@ -17,11 +17,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "PV Power Dashboard"
+      assert html =~ "Current Generation"
+      # W stat cards render with `decimals: 0` (350 W not 350.0 W);
       # kWh stat cards render with `decimals: 1` (1.3 kWh not 1 kWh).
-      # The "Current Generation" card used to live in the production
-      # stats grid but was removed (the live AC aggregate duplicates the
-      # chart's headline curve); only the "Today's Total Yield" card
-      # remains in that slot.
+      assert html =~ "0 W"
       assert html =~ "0.0 kWh"
       assert html =~ "No power readings logged for this day."
     end
@@ -34,6 +33,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "PV-Power-Dashboard"
+      assert html =~ "Aktuelle Erzeugung"
     end
 
     test "renders dashboard in French when accept-language is French", %{conn: conn, user: user} do
@@ -44,6 +44,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "Tableau de bord de puissance photovoltaïque"
+      assert html =~ "Génération actuelle"
     end
 
     test "stat card numbers use locale-aware separators (German user gets comma decimal)",
@@ -78,6 +79,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # German-style comma decimal, dot thousands separator.
       assert html =~ "1,3 kWh"
+      assert html =~ "350 W"
 
       refute html =~ "1.3 kWh",
              "German user should see the comma decimal '1,3 kWh', not '1.3 kWh'"
@@ -128,10 +130,8 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, view, html} = live(conn, ~p"/dashboard")
 
-      # The production stats row no longer renders the "Current Generation"
-      # W card (the live AC aggregate duplicates the chart's headline
-      # curve), so the only W on the page initially is the chart's
-      # y-axis "0 W" baseline.
+      # Initially 0 W (W stat cards use `decimals: 0` so the integer
+      # renders without a trailing ".0").
       assert html =~ "0 W"
       assert html =~ "Dashboard Inverter"
 
@@ -154,11 +154,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
         {:reading, "client_1", %{dtu_id: dtu.id}}
       )
 
-      # Today's Total Yield is rounded to one decimal place, so
-      # 1_250 Wh (1.25 kWh) renders as "1.3 kWh". The 350 W
-      # figure now only appears in the chart's tooltip / y-axis, not
-      # in any card, so we no longer assert it here.
+      # Assert the view received the update and shows 350 W (the W stat
+      # card uses `decimals: 0` so the integer renders without a trailing
+      # ".0"). Today's Total Yield is rounded to one decimal place, so
+      # 1_250 Wh (1.25 kWh) renders as "1.3 kWh".
       html = render(view)
+      assert html =~ "350 W"
       assert html =~ "1.3 kWh"
       assert html =~ "solar-chart-svg"
     end
@@ -200,17 +201,15 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert has_element?(view, "#btn-select-dtu-#{dtu1.id}")
       assert has_element?(view, "#btn-select-dtu-#{dtu2.id}")
 
-      # The "Current Generation" stat card was removed; only "Today's
-      # Total Yield" remains in the production stats row. Pin that
-      # here so a regression that re-adds the card fails loudly.
+      assert element(view, "#stat-current-power") |> render() =~ "300 W"
       assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
-      refute has_element?(view, "#stat-current-power")
 
       # 2. Click "DTU One" and verify stats filter down to DTU One's values
       view
       |> element("#btn-select-dtu-#{dtu1.id}")
       |> render_click()
 
+      assert element(view, "#stat-current-power") |> render() =~ "100 W"
       assert element(view, "#stat-today-yield") |> render() =~ "1.0 kWh"
 
       # 3. Click "DTU Two" and verify stats filter down to DTU Two's values
@@ -218,6 +217,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       |> element("#btn-select-dtu-#{dtu2.id}")
       |> render_click()
 
+      assert element(view, "#stat-current-power") |> render() =~ "200 W"
       assert element(view, "#stat-today-yield") |> render() =~ "2.0 kWh"
 
       # 4. Click "Total" again and verify totals are displayed
@@ -225,6 +225,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       |> element("#btn-select-total")
       |> render_click()
 
+      assert element(view, "#stat-current-power") |> render() =~ "300 W"
       assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
     end
 
