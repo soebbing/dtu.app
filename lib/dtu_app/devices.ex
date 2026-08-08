@@ -403,13 +403,37 @@ defmodule DtuApp.Devices do
     1. Fetching all readings (production + consumption) in the UTC
        window — one SQL query, no per-power-type round-trip.
     2. Grouping by 5-minute bucket.
-    3. Summing production (`ac_power` for mppt_index = 0, `dc_power`
-       otherwise — same `chart_power_for_mppt/1` selection the
-       production chart uses) and consumption (`consumption_power`)
-       separately per bucket.
+    3. Within each bucket, computing the **bucket mean** per device on
+       each side: the AC aggregate row (`mppt_index = 0`) is the
+       inverter's true AC output (per-MPPT DC rows are excluded — they
+       duplicate the AC output and would double-count the inverter),
+       and each Shelly device contributes its `consumption_power` mean
+       across all uplinks in the bucket. The per-device means are then
+       summed across devices so a 2-MPPT Hoymiles (1 row per bucket)
+       and a Shelly (~10 rows per bucket) both contribute a single
+       house-wide figure to the net.
     4. Returning `%{time, power}` per bucket, where `power` is
        `production - consumption`. A positive value means export;
        negative means import.
+
+  ## Why per-device mean instead of sum?
+
+  Summing every raw row in the bucket produces wildly wrong numbers:
+
+    * **Production** — a multi-MPPT Hoymiles publishes the AC total
+      on `realtime/data` *and* per-string DC on `[serial]/[1-N]/power`.
+      Summing all rows double- or triples the inverter's actual AC
+      output.
+    * **Consumption** — a Shelly Plus 3EM publishes ~10× per 5-min
+      window (every 30s). Summing every reading reports 10× the true
+      household draw (e.g. `76 W` on the Shelly app rendered as
+      `760 W` on the dashboard — exactly the "factor of 10" users
+      reported).
+
+  Averaging per device collapses each side to a single number in the
+  same units (W) before the subtraction, mirroring what
+  `list_day_chart_data/4` and `list_consumption_chart_data/4` already
+  do for their chart buckets.
 
   Returns `[]` when the user has no devices or no readings in the
   window — the dashboard hides the net-flow row.
@@ -426,10 +450,6 @@ defmodule DtuApp.Devices do
     else
       # One query for both production and consumption rows; the
       # `power_type` discriminator routes them to the right bucket.
-      # `chart_power_for_mppt/1` picks `ac_power` for mppt_index = 0
-      # (the AC aggregate row OpenDTU/AhoyDTU emit on `realtime/data`)
-      # and `dc_power` for the per-MPPT rows — matching the production
-      # chart's per-series power selection.
       readings =
         Repo.all(
           from r in Reading,
@@ -438,6 +458,8 @@ defmodule DtuApp.Devices do
                 r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
             select: %{
               inserted_at: r.inserted_at,
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
               ac_power: r.ac_power,
               dc_power: r.dc_power,
               mppt_index: r.mppt_index,
@@ -451,44 +473,68 @@ defmodule DtuApp.Devices do
       else
         readings
         |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
-        |> Enum.map(fn {bucket, bucket_readings} ->
+        |> Enum.flat_map(fn {bucket, bucket_readings} ->
           time = DateTime.from_unix!(bucket * 300)
 
+          # Production side: the AC aggregate row (`mppt_index = 0`)
+          # is the inverter's actual AC output. Per-MPPT DC rows
+          # duplicate the AC figure (DC inputs that the firmware
+          # already summed into the AC total), so they're excluded
+          # from the net-flow calculation entirely. This mirrors what
+          # `get_daily_stats/3`'s `current_power` does and what the
+          # production chart's "Total" line renders.
           production_w =
             bucket_readings
-            |> Enum.filter(fn r -> r.power_type == "production" end)
-            |> Enum.map(fn r -> chart_power_for_mppt(r) end)
+            |> Enum.filter(fn r -> r.power_type == "production" and r.mppt_index == 0 end)
+            |> Enum.group_by(fn r -> {r.dtu_id, r.inverter_serial} end)
+            |> Enum.map(fn {_series, series_readings} ->
+              powers = Enum.map(series_readings, & &1.ac_power)
+              mean_power(powers)
+            end)
             |> Enum.sum()
 
+          # Consumption side: a Shelly Plus 3EM publishes ~10× per
+          # 5-min bucket. We average per device so the household draw
+          # reflects the true mean drawn power in the window, then sum
+          # across devices (multi-Shelly households are possible
+          # though rare).
           consumption_w =
             bucket_readings
             |> Enum.filter(fn r -> r.power_type == "consumption" end)
-            |> Enum.map(fn r -> r.consumption_power || 0.0 end)
+            |> Enum.group_by(fn r -> r.dtu_id end)
+            |> Enum.map(fn {_dtu_id, series_readings} ->
+              powers = Enum.map(series_readings, fn r -> r.consumption_power || 0.0 end)
+              mean_power(powers)
+            end)
             |> Enum.sum()
 
-          # Net = production - consumption. A positive number means
-          # the home is exporting (selling to the grid); a negative
-          # number means it's importing (buying).
-          net = production_w - consumption_w
-
-          # We also keep the count of consumption rows in the bucket
-          # so the filter below can drop buckets where no Shelly
-          # uplink landed — without it, the net-flow curve would equal
-          # the Total line (production - 0 = production) and just be a
-          # duplicate. The dashboard's UI guard (`@net_path != ""`)
-          # hides the row entirely when no bucket survives.
+          # Drop buckets where no Shelly uplink landed — without this
+          # guard, the net-flow curve would equal the Total line
+          # (production - 0 = production) and just be a duplicate.
+          # The dashboard's UI guard (`@net_path != ""`) hides the
+          # row entirely when no bucket survives.
           has_consumption =
-            consumption_w > 0 or
-              Enum.any?(bucket_readings, fn r -> r.power_type == "consumption" end)
+            consumption_w > 0 or Enum.any?(bucket_readings, &(&1.power_type == "consumption"))
 
-          {has_consumption, %{time: time, power: net}}
+          if has_consumption do
+            [%{time: time, power: production_w - consumption_w}]
+          else
+            []
+          end
         end)
-        |> Enum.filter(fn {has_consumption, _point} -> has_consumption end)
-        |> Enum.map(fn {_has, point} -> point end)
         |> Enum.sort_by(& &1.time)
       end
     end
   end
+
+  # Mean of a non-empty list of floats. Returns 0.0 for an empty list
+  # so a half-wired inverter (or a Shelly whose first reading of the
+  # day hasn't arrived yet) doesn't blow up the net-flow arithmetic
+  # with a division-by-zero. Callers filter to non-empty lists before
+  # calling, but the empty-list guard keeps the helper safe to use
+  # unconditionally.
+  defp mean_power([]), do: 0.0
+  defp mean_power(powers), do: Enum.sum(powers) / length(powers)
 
   @doc """
   Net flow stat snapshot — mirrors `get_daily_stats/3` /
@@ -497,7 +543,10 @@ defmodule DtuApp.Devices do
   Returns:
     * `current_net_flow`   — W, fresh (last 2 min). Positive = exporting,
       negative = importing. `production - consumption` summed across
-      the user's devices.
+      the user's devices, computed from the latest reading per
+      `(dtu_id, power_type)` pair (so a Shelly publishing every 30s
+      isn't summed 10× like the bucket paths used to — see
+      `list_net_chart_data/4` for the matching per-bucket fix).
     * `today_net_export`   — kWh, total energy exported today (the sum
       of positive net-flow buckets, in kWh).
     * `today_net_import`   — kWh, total energy imported today (the sum
