@@ -4,6 +4,37 @@ defmodule DtuApp.DevicesTest do
   alias DtuApp.Devices
   alias DtuApp.DevicesFixtures
 
+  # Build a DateTime anchored on today's UTC date with the given HH:MM:SS.
+  # Used by the net-flow regression tests so all readings fall inside
+  # today's UTC window without needing per-test anchor dates.
+  defp net_bucket_at(time_str) do
+    [h, m, s] =
+      time_str
+      |> String.split(":")
+      |> Enum.map(&String.to_integer/1)
+
+    today = Date.utc_today()
+    {:ok, dt} = DateTime.new(today, Time.new!(h, m, s))
+    DateTime.truncate(dt, :microsecond)
+  end
+
+  # Insert a Shelly Plus 3EM consumption reading for the given DTU.
+  # `idx` is folded into the microsecond offset so multiple readings
+  # in the same bucket don't collide on the composite PK
+  # (`bump_on_pk_collision` would otherwise retry 1000 µs before the
+  # next insert gets through).
+  defp shelly_consumption_row(dtu_id, watts, inserted_at, idx) do
+    {:ok, _} =
+      Devices.create_reading(%{
+        dtu_id: dtu_id,
+        inverter_serial: "em:0",
+        mppt_index: 0,
+        power_type: "consumption",
+        consumption_power: watts,
+        inserted_at: DateTime.add(inserted_at, idx * 1, :microsecond)
+      })
+  end
+
   describe "get_daily_stats/2 — today_yield" do
     test "returns 0 when the user has no DTUs" do
       user = DtuApp.AccountsFixtures.user_fixture()
@@ -1562,6 +1593,438 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.peak_consumption, 76.0, 0.1
       # peak_date stays at today.
       assert stats.peak_date == today
+    end
+  end
+
+  describe "list_net_chart_data/4 — net flow bucketing (regression)" do
+    # Customer-reported bug: a home with a 2-MPPT Hoymiles inverter (or
+    # any multi-MPPT inverter) + a Shelly Plus 3EM saw the dashboard
+    # "Exported today" stat roughly 10× higher than reality, while
+    # "Imported today" was correspondingly wrong. Two distinct over-
+    # counts compounded into the net-flow value:
+    #
+    #   * Production side: each bucket summed `ac_power` for the AC
+    #     aggregate row AND `dc_power` for every per-MPPT row — for a
+    #     2-MPPT Hoymiles producing 500 W AC, the bucket read
+    #     `500 + 250 + 250 = 1000 W` (≈2× over-count).
+    #   * Consumption side: a Shelly publishes ~10× per 5-min window.
+    #     Each reading was summed, so `76 W` from the Shelly app rendered
+    #     as `760 W` on the dashboard (≈10× over-count — the "factor of
+    #     10" the user reported).
+    #
+    # Fix: average per device on each side. Per-MPPT DC rows are
+    # excluded entirely from the production total (the AC aggregate row
+    # is the inverter's true AC output); consumption averages per Shelly
+    # device and sums across devices.
+    #
+    # The tests below pin the corrected behaviour. Each reading lands in
+    # the same 5-min bucket so the chart emits a single net-flow point.
+
+    test "averages consumption across the bucket (Shelly 10× over-count regression)" do
+      # 10 Shelly uplinks in the same 5-min bucket, all reading 100 W.
+      # Pre-fix this reported 1000 W for the consumption side of the net.
+      # Post-fix the per-device mean = 100 W (matching the Shelly app).
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      bucket = net_bucket_at("12:00:00")
+
+      # 10 consumption uplinks spaced ~3s apart, all reading 100 W.
+      for idx <- 0..9 do
+        shelly_consumption_row(shelly.id, 100.0, DateTime.add(bucket, idx * 3, :second), idx)
+      end
+
+      # One production row in the same bucket — 100 W. With identical
+      # production and consumption, the net should be 0 W (not the
+      # pre-fix -900 W).
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: bucket
+        })
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      assert length(points) == 1
+      [point] = points
+      # 100 W production − 100 W (mean of 10× 100 W Shelly) = 0 W.
+      # Pre-fix: 100 W production − 1000 W (sum of 10× 100 W Shelly) = −900 W.
+      assert_in_delta point.power, 0.0, 0.1
+    end
+
+    test "excludes per-MPPT DC rows from the production total (multi-MPPT over-count)" do
+      # A 2-MPPT Hoymiles publishes:
+      #   * one AC aggregate row (mppt_index = 0) carrying the true AC
+      #     output on `realtime/data`
+      #   * one DC row per MPPT on `[serial]/[1-N]/power` carrying per-
+      #     string DC inputs that the firmware has already summed into
+      #     the AC total.
+      # Pre-fix all three rows were summed: 500 + 250 + 250 = 1000 W.
+      # Post-fix only the AC aggregate row counts: 500 W.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket = net_bucket_at("12:00:00")
+
+      # 500 W AC aggregate — the inverter's true AC output.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: bucket
+        })
+
+      # 250 W per-MPPT rows — duplicates of the AC output, must NOT count.
+      for mppt <- [1, 2] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: inverter.id,
+            inverter_serial: "INV-1",
+            inverter_name: "Roof",
+            mppt_index: mppt,
+            dc_power: 250.0,
+            ac_power: nil,
+            inserted_at: bucket
+          })
+      end
+
+      # One Shelly reading of 100 W — the household draw.
+      shelly_consumption_row(shelly.id, 100.0, bucket, 0)
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      assert length(points) == 1
+      [point] = points
+      # 500 W AC − 100 W (single Shelly mean) = +400 W (exporting).
+      # Pre-fix: 1000 W (AC + DC + DC) − 100 W = +900 W (≈2.25× too high).
+      assert_in_delta point.power, 400.0, 0.1
+    end
+
+    test "exporting bucket: production exceeds consumption with multiple Shelly uplinks" do
+      # Pre-fix a 500 W inverter vs. 10× 50 W Shelly readings reported
+      # 500 − 500 = 0 W (the user thinks they're break-even). Post-fix
+      # the same scenario reports 500 − 50 = 450 W (exporting), matching
+      # what a person on the inverter side would expect.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket = net_bucket_at("12:00:00")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: bucket
+        })
+
+      for idx <- 0..9 do
+        shelly_consumption_row(shelly.id, 50.0, DateTime.add(bucket, idx * 3, :second), idx)
+      end
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      [point] = points
+      # 500 − mean(10× 50) = 500 − 50 = 450 W export.
+      assert_in_delta point.power, 450.0, 0.1
+    end
+
+    test "importing bucket: consumption exceeds production with multiple Shelly uplinks" do
+      # Symmetric to the exporting case — a 100 W inverter against a
+      # 10× 100 W Shelly (a kettle running, say) should read -900 W
+      # import, not the pre-fix 100 − 1000 = -900 (coincidentally
+      # numerically identical in this case, but with a different bucket
+      # value composition). Pin the post-fix expected = (100 W
+      # production) − (mean of 10× 100 W Shelly = 100 W) = 0 W, and
+      # bump the inverter to 0 W so the case is unambiguously an
+      # importing bucket post-fix.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket = net_bucket_at("12:00:00")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 50.0,
+          inserted_at: bucket
+        })
+
+      # 10 × 200 W Shelly — household drawing 200 W mean. Pre-fix this
+      # read 50 − 2000 = -1950 W. Post-fix: 50 − 200 = -150 W import.
+      for idx <- 0..9 do
+        shelly_consumption_row(shelly.id, 200.0, DateTime.add(bucket, idx * 3, :second), idx)
+      end
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      [point] = points
+      assert_in_delta point.power, -150.0, 0.1
+    end
+
+    test "drops buckets with no Shelly readings (no net-flow curve at all)" do
+      # Without a Shelly row in the bucket, the bucket's net would be
+      # `production - 0 = production` — identical to the Total line.
+      # The dashboard hides the net-flow row entirely when no bucket
+      # survives (`@net_path != ""`).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      bucket = net_bucket_at("12:00:00")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: bucket
+        })
+
+      assert Devices.list_net_chart_data(
+               user,
+               Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+               Date.utc_today() |> DateTime.new!(~T[23:59:59])
+             ) == []
+    end
+
+    test "averages consumption across multiple Shelly devices" do
+      # Multi-Shelly household: each device's per-bucket mean is summed
+      # across devices. Pre-fix the sum-of-all-readings approach would
+      # add up ~20× the true household draw (two Shellys, ~10 readings
+      # each per bucket).
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      dtu1 =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em-1"
+        })
+
+      dtu2 =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em-2"
+        })
+
+      bucket = net_bucket_at("12:00:00")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          inverter_name: "Roof",
+          mppt_index: 0,
+          ac_power: 1000.0,
+          inserted_at: bucket
+        })
+
+      for idx <- 0..9 do
+        shelly_consumption_row(dtu1.id, 200.0, DateTime.add(bucket, idx * 3, :second), idx)
+      end
+
+      for idx <- 0..9 do
+        shelly_consumption_row(dtu2.id, 300.0, DateTime.add(bucket, idx * 3, :second), idx)
+      end
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      [point] = points
+      # 1000 W production − (mean Shelly 1 = 200 W) − (mean Shelly 2 = 300 W) = 500 W export.
+      assert_in_delta point.power, 500.0, 0.1
+    end
+  end
+
+  describe "get_net_flow_stats/2 — exported/imported today (regression)" do
+    # The kWh exports/imports come from `list_net_chart_data/4` via
+    # `bucket_h = 5/60 h`. Pin the end-to-end day-total math so the
+    # dashboard's "Exported today" / "Imported today" cards reflect the
+    # corrected per-bucket values.
+
+    test "today_net_export = bucket_W × (5/60) h summed over positive buckets (corrected)" do
+      # One bucket: 500 W production, 100 W Shelly (single reading) →
+      # net = +400 W. Converted to Wh: 400 × (5/60) = 33.333 Wh
+      # = 0.0333 kWh ≈ 0.03 kWh.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket_time =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: bucket_time
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 100.0,
+          inserted_at: bucket_time
+        })
+
+      stats = Devices.get_net_flow_stats(user)
+      # `today_net_export` is rounded to 2 decimal places (kWh), so a
+      # value like `0.03333…` renders as `0.03`. Tolerance accounts for
+      # the post-rounding granularity.
+      assert_in_delta stats.today_net_export, 400.0 * 5.0 / 60.0 / 1000.0, 0.01
+      assert stats.today_net_import == 0.0
+    end
+
+    test "today_net_import uses abs(net) for the negative buckets (corrected)" do
+      # 100 W production, 10 × 100 W Shelly readings in the same bucket.
+      # Corrected net = 100 − 100 = 0 (no import). Pre-fix the same data
+      # gave 100 − 1000 = -900 W → 75 Wh import (0.075 kWh). Pin the
+      # corrected value of 0 kWh import here.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket_time =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: bucket_time
+        })
+
+      for idx <- 0..9 do
+        shelly_consumption_row(shelly.id, 100.0, bucket_time, idx)
+      end
+
+      stats = Devices.get_net_flow_stats(user)
+      assert stats.today_net_export == 0.0
+      assert stats.today_net_import == 0.0
+    end
+
+    test "peak_export / peak_import are the bucket-max W values (not the inflated sums)" do
+      # Pre-fix the per-bucket W value was the inflated sum (10× Shelly
+      # reading = 1000 W); peak_import therefore read 1000 W. Post-fix
+      # the per-bucket value is the corrected mean (100 W), so
+      # peak_import = 100 W.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket_time =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: bucket_time
+        })
+
+      for idx <- 0..9 do
+        shelly_consumption_row(shelly.id, 100.0, bucket_time, idx)
+      end
+
+      stats = Devices.get_net_flow_stats(user)
+      # Corrected peak_import: max over buckets of abs(bucket-net) = |100 - 100| = 0 W.
+      # Pre-fix: 100 - 1000 = -900 → 900 W.
+      assert_in_delta stats.peak_import, 0.0, 0.1
+      assert_in_delta stats.peak_export, 0.0, 0.1
     end
   end
 end
