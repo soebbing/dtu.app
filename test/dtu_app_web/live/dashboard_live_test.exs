@@ -362,13 +362,20 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # each carries a hex `stroke=` attribute. Skip the area-fill
       # path (it doesn't carry data-series). Per-MPPT DC rows are
       # filtered out by the server (see `assign_line_chart_data/5`),
-      # so two inverters + one Total = three paths.
+      # so two inverters + one Total = three paths. When the test
+      # also seeds a Shelly consumption row, the net-flow overlay
+      # adds a fourth path (production minus consumption).
       path_tags =
         Regex.scan(~r/<path\b[^>]*data-series="[^"]+"[^>]*>/, html)
         |> Enum.map(fn [tag | _] -> tag end)
 
-      assert length(path_tags) == 3,
-             "expected 2 inverter paths + 1 Total path, got #{length(path_tags)}"
+      has_consumption = html =~ ~r/data-legend-key="consumption"/
+      expected = if has_consumption, do: 4, else: 3
+      suffix = if has_consumption, do: " + 1 Net flow", else: ""
+
+      assert length(path_tags) == expected,
+             "expected #{expected} paths (2 inverter + 1 Total#{suffix}), " <>
+               "got #{length(path_tags)}"
 
       Enum.each(path_tags, fn tag ->
         assert Regex.match?(~r/stroke="#[0-9a-fA-F]{6}"/, tag),

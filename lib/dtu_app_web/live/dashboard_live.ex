@@ -52,6 +52,13 @@ defmodule DtuAppWeb.DashboardLive do
         today_consumption: 0.0,
         peak_consumption: 0.0
       })
+      |> assign(:net_flow_stats, %{
+        current_net_flow: 0.0,
+        today_net_export: 0.0,
+        today_net_import: 0.0,
+        peak_export: 0.0,
+        peak_import: 0.0
+      })
       |> assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
@@ -191,14 +198,49 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   @impl true
-  def handle_info({:dtu_connected, _client_id, _device_id}, socket) do
+  def handle_info({:dtu_connected, _client_id, device_id}, socket) do
     user = socket.assigns.current_scope.user
+
+    # Notify the user when a DTU comes back online — the `:dtu_connected`
+    # event only fires after a `:dtu_disconnected` (i.e. on reconnect),
+    # so this is the right hook for the "back online" half of the
+    # connection-state notification. Gated on `notify_dtu_connection`
+    # so users who didn't opt in stay silent.
+    if user.notify_dtu_connection and is_integer(device_id) do
+      case Enum.find(socket.assigns.devices, fn d -> d.id == device_id end) do
+        nil ->
+          :ok
+
+        %Devices.Dtu{name: name} = _device ->
+          broadcast_dtu_connection(user.id, name, :back_online)
+      end
+    end
+
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
   @impl true
-  def handle_info({:dtu_disconnected, _client_id, _device_id}, socket) do
+  def handle_info({:dtu_disconnected, _client_id, device_id}, socket) do
     user = socket.assigns.current_scope.user
+
+    # Only fire the "went offline" notification if the DTU was *recently*
+    # online — `last_seen_at` was touched within the past 5 min (the
+    # online-badge threshold). Without that guard, the very first MQTT
+    # disconnect after a deploy would fire on a DTU that was already
+    # offline before the server restarted, spamming the user.
+    if user.notify_dtu_connection and is_integer(device_id) do
+      case Enum.find(socket.assigns.devices, fn d -> d.id == device_id end) do
+        nil ->
+          :ok
+
+        %Devices.Dtu{name: name, last_seen_at: last_seen_at} = _device ->
+          if last_seen_at &&
+               DateTime.after?(last_seen_at, DateTime.add(DtuApp.Time.utc_now(), -300, :second)) do
+            broadcast_dtu_connection(user.id, name, :went_offline)
+          end
+      end
+    end
+
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
@@ -213,9 +255,6 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, assign(socket, :devices, Devices.list_devices(user))}
   end
 
-  # Timezone push from the `.ChartTooltip` colocated JS hook (or a test
-  # via `Phoenix.PubSub.broadcast/2`). Invalid payloads are silently
-  # ignored so a malformed client payload can't crash the dashboard.
   @impl true
   def handle_info({:set_timezone, offset_seconds}, socket)
       when is_integer(offset_seconds) do
@@ -236,6 +275,30 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
+  end
+
+  # Push a connection-state notification to the user's notifications topic.
+  # The NotificationsLive LiveView is subscribed there; its JS hook
+  # dedups by tag before creating the browser `new Notification(...)`.
+  defp broadcast_dtu_connection(user_id, name, status)
+       when is_integer(user_id) and is_binary(name) do
+    {title, body} =
+      case status do
+        :went_offline ->
+          {gettext("DTU went offline"),
+           gettext("Your inverter %{name} has been offline for at least 5 minutes.", name: name)}
+
+        :back_online ->
+          {gettext("DTU back online"),
+           gettext("Your inverter %{name} is publishing telemetry again.", name: name)}
+      end
+
+    DtuApp.Notifications.broadcast(user_id, %{
+      event: "dtu_connection",
+      title: title,
+      body: body,
+      tag: "dtu:#{name}"
+    })
   end
 
   # Helper to construct SVG line chart coordinates and range.
@@ -509,6 +572,58 @@ defmodule DtuAppWeb.DashboardLive do
         %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
       end)
 
+    # Net flow overlay — production minus consumption, plotted on the
+    # same axes. Net flow uses the full y-range (can go both positive
+    # for export and negative for import), so we compute its path with
+    # `y = 250.0 - power / y_max * 115.0` (half the height) and offset
+    # the zero line at `y = 250.0 - 115.0 = 135.0`. The full SVG
+    # height is 230 (20px top padding, 250px bottom); a centered
+    # zero line at y=135 lets the curve swing ±115 in both directions.
+    {net_utc_start, net_utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
+    net_chart_points = Devices.list_net_chart_data(user, net_utc_start, net_utc_end, dtu_id)
+
+    {net_path, net_coords, net_points_data} =
+      case net_chart_points do
+        [] ->
+          {"", [], []}
+
+        pts ->
+          path_coords =
+            pts
+            |> Enum.map(fn %{time: time, power: power} ->
+              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+              local_seconds = utc_seconds + tz_offset_seconds
+              local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
+              x = (local_seconds - x_min_seconds) / x_span * 800.0
+              # Center the zero line at y=135; positive values plot upward,
+              # negative plot downward (since `250 - power/y_max * 115`
+              # increases as power decreases — i.e. negative power pushes
+              # y downward).
+              y = 135.0 - power / max(y_max, 1.0) * 115.0
+              {Float.round(x, 1), Float.round(y, 1), local_seconds, power}
+            end)
+            |> Enum.sort_by(&elem(&1, 0))
+
+          path =
+            case path_coords do
+              [] ->
+                ""
+
+              [{fx, fy, _, _} | rest] ->
+                "M #{fx} #{fy} " <>
+                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
+            end
+
+          coords = Enum.map(path_coords, fn {x, y, t, _} -> {x, y, t} end)
+
+          points_data =
+            Enum.map(path_coords, fn {_x, _y, seconds, power} ->
+              %{time: seconds, power: power}
+            end)
+
+          {path, coords, points_data}
+      end
+
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
@@ -526,6 +641,10 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:consumption_path, consumption_path)
     |> assign(:consumption_points_data, consumption_points_data)
     |> assign(:consumption_palette, {"rose", "600"})
+    |> assign(:net_path, net_path)
+    |> assign(:net_coords, net_coords)
+    |> assign(:net_points_data, net_points_data)
+    |> assign(:net_palette, {"indigo", "500"})
   end
 
   # Reverse the data-point Y coord back to watts so the tooltip shows
@@ -1027,6 +1146,13 @@ defmodule DtuAppWeb.DashboardLive do
     consumption_period_stats =
       Devices.get_consumption_period_stats(user, dtu_id, time_range, selected_period)
 
+    # Net flow (production minus consumption) — the headline value
+    # for a solar dashboard ("am I net-exporting or net-importing?").
+    # Only meaningful when both an inverter AND a Shelly are paired;
+    # otherwise the helper returns all-zeros and the dashboard's
+    # `net_flow_active` guard hides the row.
+    net_flow_stats = Devices.get_net_flow_stats(user, dtu_id)
+
     case time_range do
       "today" ->
         stats = Devices.get_daily_stats(user, dtu_id)
@@ -1035,6 +1161,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
@@ -1063,6 +1190,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
@@ -1100,6 +1228,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1138,6 +1267,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1184,6 +1314,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1922,6 +2053,150 @@ defmodule DtuAppWeb.DashboardLive do
             </div>
           <% end %>
 
+          <%!-- Net flow row: only visible when the user has BOTH an inverter
+               (production) and a Shelly (consumption). Net flow = production
+               minus consumption — positive means exporting to the grid,
+               negative means importing. Mirrors the layout of the
+               production and consumption rows above. --%>
+          <%= if @net_flow_stats.current_net_flow != 0.0 or
+                 @net_flow_stats.today_net_export > 0.0 or
+                 @net_flow_stats.today_net_import > 0.0 do %>
+            <div class="space-y-2 pt-2">
+              <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                {gettext("Net flow")}
+              </h2>
+              <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class={
+                        "p-3 rounded-md " <>
+                        if @net_flow_stats.current_net_flow >= 0 do
+                          "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400"
+                        else
+                          "bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400"
+                        end
+                      }>
+                        <.icon name="hero-arrows-right-left" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {if @net_flow_stats.current_net_flow >= 0,
+                              do: gettext("Net export"),
+                              else: gettext("Net import")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-net-flow"
+                            >
+                              {Devices.format_number(
+                                abs(@net_flow_stats.current_net_flow),
+                                0,
+                                @locale
+                              )} W
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                        <.icon name="hero-arrow-up-right" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Exported today")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-net-export"
+                            >
+                              {Devices.format_number(
+                                @net_flow_stats.today_net_export,
+                                2,
+                                @locale
+                              )} kWh
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                        <.icon name="hero-arrow-down-left" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Imported today")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-net-import"
+                            >
+                              {Devices.format_number(
+                                @net_flow_stats.today_net_import,
+                                2,
+                                @locale
+                              )} kWh
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                        <.icon name="hero-chart-bar" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Peak power")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-net-peak"
+                            >
+                              {Devices.format_number(
+                                max(
+                                  @net_flow_stats.peak_export,
+                                  @net_flow_stats.peak_import
+                                ),
+                                0,
+                                @locale
+                              )} W
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% end %>
+
           <!-- Chart Panel -->
           <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
             <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4" id="chart-title">
@@ -2177,6 +2452,51 @@ defmodule DtuAppWeb.DashboardLive do
                         data-legend-key="consumption"
                       />
                     <% end %>
+
+                    <%!-- Net flow overlay (production minus consumption). Drawn
+                         last so it sits on top of every other series. The
+                         SVG's vertical center (y=135) is the zero line —
+                         positive values (export) plot upward, negative
+                         values (import) plot downward. Hidden when the
+                         user hasn't paired both an inverter and a Shelly. --%>
+                    <%= if @net_path != "" do %>
+                      <% net_json =
+                        Jason.encode!(%{
+                          is_net: true,
+                          name: gettext("Net flow"),
+                          serial: "",
+                          mppt_index: -3
+                        }) %>
+                      <% net_points_json = Jason.encode!(@net_points_data) %>
+                      <% {nbase, nshade} = @net_palette %>
+                      <% net_stroke_hex = tooltip_to_hex(nbase, nshade) %>
+                      <path
+                        d={@net_path}
+                        fill="none"
+                        stroke={net_stroke_hex}
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        data-series={net_json}
+                        data-points={net_points_json}
+                        data-stroke={net_stroke_hex}
+                        data-legend-key="net"
+                      />
+                      <%!-- Zero line for the net flow axis (visual anchor so
+                           users can see at a glance whether the curve is
+                           in export or import territory). --%>
+                      <line
+                        x1="0"
+                        y1="135"
+                        x2="800"
+                        y2="135"
+                        stroke="#a1a1aa"
+                        class="dark:stroke-zinc-500"
+                        stroke-width="1"
+                        stroke-dasharray="2,2"
+                        pointer-events="none"
+                      />
+                    <% end %>
                   </svg>
 
                   <%!-- Legend: Total line first (the headline), then one entry
@@ -2221,6 +2541,23 @@ defmodule DtuAppWeb.DashboardLive do
                           />
                           <span class="text-zinc-700 dark:text-zinc-300">
                             {gettext("Consumption")}
+                          </span>
+                        </button>
+                      <% end %>
+                      <%= if @net_path != "" do %>
+                        <% {nbase, nshade} = @net_palette %>
+                        <button
+                          type="button"
+                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                          data-legend-key="net"
+                          aria-pressed="true"
+                        >
+                          <span
+                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{nbase}-#{nshade}"}
+                            aria-hidden="true"
+                          />
+                          <span class="text-zinc-700 dark:text-zinc-300">
+                            {gettext("Net flow")}
                           </span>
                         </button>
                       <% end %>
@@ -2406,15 +2743,15 @@ defmodule DtuAppWeb.DashboardLive do
                           const nearest = this.nearest(s.points, time);
                           return { ...s, value: nearest ? nearest.power : null };
                         })
-                        // Total and Consumption are headline metrics —
-                        // sort them above the per-inverter lines so the
-                        // first thing the reader sees in the tooltip is
-                        // generation + draw (Total first, Consumption
-                        // second). Otherwise preserve server render order.
+                        // Total, Consumption, and Net flow are headline
+                        // metrics — sort them above the per-inverter lines
+                        // so the first thing the reader sees in the tooltip
+                        // is generation, draw, and net flow (in that
+                        // order). Otherwise preserve server render order.
                         .sort((a, b) => {
-                          const aRank = a.meta.is_total ? 0 : a.meta.is_consumption ? 1 : 2;
-                          const bRank = b.meta.is_total ? 0 : b.meta.is_consumption ? 1 : 2;
-                          return aRank - bRank;
+                          const rank = (m) =>
+                            m.is_total ? 0 : m.is_consumption ? 1 : m.is_net ? 2 : 3;
+                          return rank(a.meta) - rank(b.meta);
                         });
 
                       this.body.innerHTML = this.renderRows(time, rows);
@@ -2458,10 +2795,13 @@ defmodule DtuAppWeb.DashboardLive do
                       // Per-MPPT lines were collapsed into the
                       // inverter's AC row on the server (see the
                       // `Enum.filter` in `assign_line_chart_data/5`),
-                      // so the tooltip only ever sees the Total
-                      // pseudo-series or one row per inverter. No
-                      // `MPPT N` / `(AC)` suffix is needed.
+                      // so the tooltip only ever sees the Total /
+                      // Consumption / Net-flow pseudo-series or one
+                      // row per inverter. No `MPPT N` / `(AC)` suffix
+                      // is needed.
                       if (meta.is_total) return meta.name || "Total";
+                      if (meta.is_consumption) return meta.name || "Consumption";
+                      if (meta.is_net) return meta.name || "Net flow";
                       return meta.name || meta.serial || "";
                     },
 

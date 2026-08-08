@@ -67,6 +67,25 @@ defmodule DtuAppWeb.NotificationsLive do
     end
   end
 
+  @impl true
+  def handle_event("test_notification", _payload, socket) do
+    # Fire a synthetic notification to the user's own notifications topic
+    # so the JS hook (already subscribed in mount/3) can render it via
+    # `new Notification(...)`. Bypasses the DTU-state and opt-in checks
+    # so a user who just enabled notifications can verify their setup
+    # works without waiting for an inverter to actually go offline.
+    user = socket.assigns.current_scope.user
+
+    Notifications.broadcast(user.id, %{
+      event: "test",
+      title: gettext("Test notification"),
+      body: gettext("If you can read this, browser notifications are working."),
+      tag: "test"
+    })
+
+    {:noreply, put_flash(socket, :info, gettext("Test notification sent."))}
+  end
+
   defp assign_form(socket, %Ecto.Changeset{} = changeset) do
     assign(socket, :form, to_form(changeset, as: :user))
   end
@@ -230,6 +249,31 @@ defmodule DtuAppWeb.NotificationsLive do
             </.button>
           </div>
         </.form>
+
+        <!-- Test notification: only show when the browser has actually
+             granted permission, so the click is guaranteed to fire a real
+             system notification (rather than silently failing). -->
+        <%= if Map.get(@notification_state, "state") == "granted" do %>
+          <div class="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-6 space-y-2">
+            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">
+              {gettext("Test notification")}
+            </h2>
+            <p class="text-sm text-zinc-500 dark:text-zinc-400">
+              {gettext(
+                "Send a one-off test notification to verify the browser is set up correctly. It should appear within a second or two."
+              )}
+            </p>
+            <button
+              id="btn-test-notification"
+              type="button"
+              phx-click="test_notification"
+              class="inline-flex items-center gap-2 rounded-lg bg-zinc-900 hover:bg-zinc-700 dark:bg-zinc-100 dark:hover:bg-zinc-300 px-4 py-2 text-sm font-semibold text-white dark:text-zinc-950 transition"
+            >
+              <.icon name="hero-bell-alert" class="h-4 w-4" />
+              {gettext("Send test notification")}
+            </button>
+          </div>
+        <% end %>
       </div>
     </Layouts.app>
     """
