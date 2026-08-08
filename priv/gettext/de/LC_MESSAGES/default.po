@@ -88,7 +88,7 @@ msgstr "Ein DTU (Datenübertragungseinheit) liest Ihren Solar-Wechselrichter aus
 "Echtzeit-Erzeugung zu sehen — funktioniert mit OpenDTU- und"
 "AhoyDTU-Firmware."
 
-#: lib/dtu_app_web/live/notifications_live.ex:217
+#: lib/dtu_app_web/live/notifications_live.ex:218
 #, elixir-autogen, elixir-format
 msgid "A notification whenever an inverter goes offline or comes back online. The notification names the inverter."
 msgstr "Eine Benachrichtigung, wenn ein Wechselrichter die Verbindung verliert oder"
@@ -154,7 +154,7 @@ msgstr "Sind Sie sicher, dass Sie %{name} löschen möchten? Diese Aktion kann n
 msgid "Attempting to reconnect"
 msgstr "Versuche, die Verbindung wiederherzustellen"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1620
+#: lib/dtu_app_web/live/dashboard_live.ex:1595
 #, elixir-autogen, elixir-format
 msgid "Average Power"
 msgstr "Durchschnittliche Leistung"
@@ -170,7 +170,7 @@ msgstr "Unterstützt durch indexoptimierte Datenbanktabellen und Schemavalidieru
 msgid "Base Topic:"
 msgstr "Basis-Thema:"
 
-#: lib/dtu_app_web/live/notifications_live.ex:144
+#: lib/dtu_app_web/live/notifications_live.ex:145
 #, elixir-autogen, elixir-format
 msgid "Browsers must be installed as a PWA to deliver notifications. Add this site to your home screen / applications folder and reopen it from there."
 msgstr "Browser müssen als PWA installiert sein, um Benachrichtigungen zu liefern."
@@ -183,7 +183,7 @@ msgstr "Browser müssen als PWA installiert sein, um Benachrichtigungen zu liefe
 msgid "Cancel"
 msgstr "Abbrechen"
 
-#: lib/dtu_app_web/live/notifications_live.ex:187
+#: lib/dtu_app_web/live/notifications_live.ex:188
 #, elixir-autogen, elixir-format
 msgid "Checking browser capabilities…"
 msgstr "Browser-Funktionen werden geprüft…"
@@ -193,7 +193,7 @@ msgstr "Browser-Funktionen werden geprüft…"
 msgid "Choose date"
 msgstr "Datum wählen"
 
-#: lib/dtu_app_web/live/notifications_live.ex:166
+#: lib/dtu_app_web/live/notifications_live.ex:167
 #, elixir-autogen, elixir-format
 msgid "Click the button below; your browser will ask whether to allow notifications for this PWA."
 msgstr "Klicken Sie auf die Schaltfläche unten; Ihr Browser wird fragen, ob er"
@@ -253,11 +253,6 @@ msgstr "Erstellen Sie ein sicheres, privates Konto. Verwalten Sie eine oder mehr
 msgid "Credentials and base topics are defined securely by the system on creation. Read-only tokens are displayed for easy input into your hardware configuration."
 msgstr "Zugangsdaten und Basis-Themen werden bei der Erstellung vom System sicher definiert. Schreibgeschützte Tokens werden zur einfachen Eingabe in Ihre Hardware-Konfiguration angezeigt."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1534
-#, elixir-autogen, elixir-format
-msgid "Current Generation"
-msgstr "Aktuelle Erzeugung"
-
 #: lib/dtu_app_web/components/layouts/root.html.heex:277
 #, elixir-autogen, elixir-format
 msgid "Currently-running release"
@@ -289,17 +284,17 @@ msgstr "DTU aktualisiert"
 msgid "DTUs"
 msgstr "DTUs"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1645
+#: lib/dtu_app_web/live/dashboard_live.ex:1620
 #, elixir-autogen, elixir-format
 msgid "Daily Average Yield"
 msgstr "Täglicher Durchschnittsertrag"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2209
+#: lib/dtu_app_web/live/dashboard_live.ex:2184
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for Week starting %{period} (kWh)"
 msgstr "Tägliche Erträge für Woche ab %{period} (kWh)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2211
+#: lib/dtu_app_web/live/dashboard_live.ex:2186
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for month of %{month_year} (kWh)"
 msgstr "Tägliche Erträge für den Monat %{month_year} (kWh)"
@@ -319,7 +314,7 @@ msgstr "Tag"
 msgid "Delete DTU"
 msgstr "DTU löschen"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2953
+#: lib/dtu_app_web/live/dashboard_live.ex:2928
 #, elixir-autogen, elixir-format
 msgid "Device Connection Status"
 msgstr "Geräteverbindungsstatus"
@@ -344,12 +339,12 @@ msgstr "Bearbeiten"
 msgid "Edit DTU"
 msgstr "DTU bearbeiten"
 
-#: lib/dtu_app_web/live/notifications_live.ex:176
+#: lib/dtu_app_web/live/notifications_live.ex:177
 #, elixir-autogen, elixir-format
 msgid "Enable notifications"
 msgstr "Benachrichtigungen aktivieren"
 
-#: lib/dtu_app_web/live/notifications_live.ex:232
+#: lib/dtu_app_web/live/notifications_live.ex:233
 #, elixir-autogen, elixir-format
 msgid "End-of-day summary"
 msgstr "Tageszusammenfassung"
@@ -413,14 +408,14 @@ msgid "Information provided in accordance with § 5 TMG (Germany) and applicable
 msgstr "Angaben gemäß § 5 TMG (Deutschland) und geltenden"
 "EU-Verbraucherschutzvorschriften."
 
-#: lib/dtu_app_web/live/notifications_live.ex:150
+#: lib/dtu_app_web/live/notifications_live.ex:151
 #, elixir-autogen, elixir-format
 msgid "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission."
 msgstr "Installieren Sie diese Site zuerst als PWA (Browser-Menü → Zum"
 "Startbildschirm hinzufügen / App installieren). Sobald dies geschehen ist,"
 "fordert die Schaltfläche unten die Benachrichtigungsberechtigung an."
 
-#: lib/dtu_app_web/live/notifications_live.ex:214
+#: lib/dtu_app_web/live/notifications_live.ex:215
 #, elixir-autogen, elixir-format
 msgid "Inverter connection state"
 msgstr "Verbindungsstatus des Wechselrichters"
@@ -430,7 +425,7 @@ msgstr "Verbindungsstatus des Wechselrichters"
 msgid "Isolated Multi-Tenancy"
 msgstr "Isolierte Mandantenfähigkeit"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2981
+#: lib/dtu_app_web/live/dashboard_live.ex:2956
 #, elixir-autogen, elixir-format
 msgid "Last seen:"
 msgstr "Zuletzt gesehen:"
@@ -512,7 +507,7 @@ msgstr "Geräte verwalten"
 msgid "Month"
 msgstr "Monat"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2216
+#: lib/dtu_app_web/live/dashboard_live.ex:2191
 #, elixir-autogen, elixir-format
 msgid "Monthly Yields for %{year} (kWh)"
 msgstr "Monatliche Erträge für %{year} (kWh)"
@@ -542,12 +537,12 @@ msgstr "Noch keine DTUs vorhanden. Fügen Sie eine hinzu, um Telemetriedaten zu 
 msgid "No historical data for this period."
 msgstr "Keine historischen Daten für diesen Zeitraum."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2228
+#: lib/dtu_app_web/live/dashboard_live.ex:2203
 #, elixir-autogen, elixir-format
 msgid "No power readings logged for this day."
 msgstr "Keine Leistungsmesswerte für diesen Tag protokolliert."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2856
+#: lib/dtu_app_web/live/dashboard_live.ex:2831
 #, elixir-autogen, elixir-format
 msgid "No yield records logged for this period."
 msgstr "Keine Ertragsdatensätze für diesen Zeitraum protokolliert."
@@ -560,24 +555,24 @@ msgstr "Benachrichtigungseinstellungen gespeichert."
 #: lib/dtu_app_web/components/layouts/root.html.heex:132
 #: lib/dtu_app_web/components/layouts/root.html.heex:207
 #: lib/dtu_app_web/live/notifications_live.ex:35
-#: lib/dtu_app_web/live/notifications_live.ex:123
+#: lib/dtu_app_web/live/notifications_live.ex:124
 #, elixir-autogen, elixir-format
 msgid "Notifications"
 msgstr "Benachrichtigungen"
 
-#: lib/dtu_app_web/live/notifications_live.ex:163
+#: lib/dtu_app_web/live/notifications_live.ex:164
 #, elixir-autogen, elixir-format
 msgid "Notifications are available, but not yet enabled."
 msgstr "Benachrichtigungen sind verfügbar, aber noch nicht aktiviert."
 
-#: lib/dtu_app_web/live/notifications_live.ex:156
+#: lib/dtu_app_web/live/notifications_live.ex:157
 #, elixir-autogen, elixir-format
 msgid "Notifications are blocked in your browser settings. Open your browser's site settings and allow notifications for this PWA, then reload this page."
 msgstr "Benachrichtigungen sind in Ihren Browser-Einstellungen blockiert. Öffnen Sie"
 "die Site-Einstellungen Ihres Browsers und erlauben Sie Benachrichtigungen"
 "für diese PWA, und laden Sie diese Seite neu."
 
-#: lib/dtu_app_web/live/notifications_live.ex:181
+#: lib/dtu_app_web/live/notifications_live.ex:182
 #, elixir-autogen, elixir-format
 msgid "Notifications are enabled. Pick what you'd like to be notified about below."
 msgstr "Benachrichtigungen sind aktiviert. Wählen Sie unten aus, worüber Sie"
@@ -626,12 +621,12 @@ msgstr "Passwörter werden mit Argon2id gespeichert. Sitzungen werden mit einem"
 "Passwörter mit der Option, TLS über einen Reverse-Proxy (z. B. Traefik) vor"
 "dem Broker hinzuzufügen."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1674
+#: lib/dtu_app_web/live/dashboard_live.ex:1649
 #, elixir-autogen, elixir-format
 msgid "Peak Power"
 msgstr "Spitzenleistung"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1699
+#: lib/dtu_app_web/live/dashboard_live.ex:1674
 #, elixir-autogen, elixir-format
 msgid "Peak Yield Day"
 msgstr "Spitzenertragstag"
@@ -658,7 +653,7 @@ msgstr "Datenschutz"
 msgid "Privacy Policy"
 msgstr "Datenschutzerklärung"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2207
+#: lib/dtu_app_web/live/dashboard_live.ex:2182
 #, elixir-autogen, elixir-format
 msgid "Production Curve for %{period} (Watts)"
 msgstr "Erzeugungskurve für %{period} (Watt)"
@@ -678,7 +673,7 @@ msgstr "Echtzeit-Solar-Telemetriesystem"
 msgid "Real-time and historic generation stats for your solar converter system."
 msgstr "Echtzeit- und historische Erzeugungsdaten für Ihr Solarkonvertersystem."
 
-#: lib/dtu_app_web/live/notifications_live.ex:126
+#: lib/dtu_app_web/live/notifications_live.ex:127
 #, elixir-autogen, elixir-format
 msgid "Receive alerts in your browser when your inverters change state or the day's production wraps up. Notifications only fire when this site is installed as a PWA."
 msgstr "Erhalten Sie Benachrichtigungen in Ihrem Browser, wenn sich der Status Ihrer"
@@ -713,13 +708,13 @@ msgstr "Verantwortlich für den Inhalt"
 msgid "Save"
 msgstr "Speichern"
 
-#: lib/dtu_app_web/live/notifications_live.ex:247
+#: lib/dtu_app_web/live/notifications_live.ex:248
 #, elixir-autogen, elixir-format
 msgid "Save preferences"
 msgstr "Einstellungen speichern"
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:126
-#: lib/dtu_app_web/live/notifications_live.ex:245
+#: lib/dtu_app_web/live/notifications_live.ex:246
 #, elixir-autogen, elixir-format
 msgid "Saving…"
 msgstr "Wird gespeichert..."
@@ -833,18 +828,18 @@ msgstr "Um mit dem Senden von Telemetriedaten zu beginnen, konfigurieren Sie Ihr
 msgid "Today"
 msgstr "Heute"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2205
+#: lib/dtu_app_web/live/dashboard_live.ex:2180
 #, elixir-autogen, elixir-format
 msgid "Today's Production Curve (Watts)"
 msgstr "Heutige Erzeugungskurve (Watt)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1595
+#: lib/dtu_app_web/live/dashboard_live.ex:1570
 #, elixir-autogen, elixir-format
 msgid "Today's Total Yield"
 msgstr "Heutiger Gesamtertrag"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2403
-#: lib/dtu_app_web/live/dashboard_live.ex:2526
+#: lib/dtu_app_web/live/dashboard_live.ex:2378
+#: lib/dtu_app_web/live/dashboard_live.ex:2501
 #, elixir-autogen, elixir-format
 msgid "Total"
 msgstr "Gesamt"
@@ -854,7 +849,7 @@ msgstr "Gesamt"
 msgid "Total (All DTUs)"
 msgstr "Gesamt (Alle DTUs)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1566
+#: lib/dtu_app_web/live/dashboard_live.ex:1541
 #, elixir-autogen, elixir-format
 msgid "Total Yield"
 msgstr "Gesamtertrag"
@@ -909,7 +904,7 @@ msgstr "Willkommen! Verbinden wir Ihre erste DTU"
 msgid "What happens next"
 msgstr "Was passiert als Nächstes"
 
-#: lib/dtu_app_web/live/notifications_live.ex:203
+#: lib/dtu_app_web/live/notifications_live.ex:204
 #, elixir-autogen, elixir-format
 msgid "What to notify about"
 msgstr "Benachrichtigungen über"
@@ -924,7 +919,7 @@ msgstr "Wenn der E-Mail-Versand aktiviert ist, ruft die App einen Drittanbieter 
 "diesem Open-Source-Projekt ist Resend; Sie können mit einem anderen Anbieter"
 "selbst hosten oder den E-Mail-Versand vollständig deaktivieren."
 
-#: lib/dtu_app_web/live/notifications_live.ex:235
+#: lib/dtu_app_web/live/notifications_live.ex:236
 #, elixir-autogen, elixir-format
 msgid "When the sun goes down, get today's total yield compared to yesterday and the peak power from today compared to yesterday, if yesterday's data is available."
 msgstr "Erhalten Sie bei Sonnenuntergang den heutigen Gesamtertrag im Vergleich zu"
@@ -992,30 +987,30 @@ msgstr "dtu.app ist ein selbstgehostetes Telemetrie-Dashboard für"
 msgid "just now"
 msgstr "gerade eben"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2990
+#: lib/dtu_app_web/live/dashboard_live.ex:2965
 #, elixir-autogen, elixir-format
 msgid "never"
 msgstr "nie"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2976
+#: lib/dtu_app_web/live/dashboard_live.ex:2951
 #: lib/dtu_app_web/live/device_live/index.html.heex:39
 #, elixir-autogen, elixir-format
 msgid "offline"
 msgstr "offline"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1713
-#: lib/dtu_app_web/live/dashboard_live.ex:2042
+#: lib/dtu_app_web/live/dashboard_live.ex:1688
+#: lib/dtu_app_web/live/dashboard_live.ex:2017
 #, elixir-autogen, elixir-format
 msgid "on %{date}"
 msgstr "am %{date}"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2976
+#: lib/dtu_app_web/live/dashboard_live.ex:2951
 #: lib/dtu_app_web/live/device_live/index.html.heex:39
 #, elixir-autogen, elixir-format
 msgid "online"
 msgstr "online"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1740
+#: lib/dtu_app_web/live/dashboard_live.ex:1715
 #, elixir-autogen, elixir-format
 msgid "Saved this period"
 msgstr "In diesem Zeitraum gespart"
@@ -1215,20 +1210,20 @@ msgstr "oder passwortloser Magic-Link"
 msgid "the mailbox page"
 msgstr "die Mailbox-Seite"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1752
+#: lib/dtu_app_web/live/dashboard_live.ex:1727
 #, elixir-autogen, elixir-format
 msgid "at %{rate}"
 msgstr "zu %{rate}"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1788
-#: lib/dtu_app_web/live/dashboard_live.ex:1862
+#: lib/dtu_app_web/live/dashboard_live.ex:1763
+#: lib/dtu_app_web/live/dashboard_live.ex:1837
 #, elixir-autogen, elixir-format
 msgid "Current Consumption"
 msgstr "Aktueller Verbrauch"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1814
-#: lib/dtu_app_web/live/dashboard_live.ex:1928
-#: lib/dtu_app_web/live/dashboard_live.ex:1960
+#: lib/dtu_app_web/live/dashboard_live.ex:1789
+#: lib/dtu_app_web/live/dashboard_live.ex:1903
+#: lib/dtu_app_web/live/dashboard_live.ex:1935
 #, elixir-autogen, elixir-format
 msgid "Today's Consumption"
 msgstr "Heutiger Verbrauch"
@@ -1248,106 +1243,106 @@ msgstr "Shelly-spezifische Hinweise:"
 msgid "Telemetry is published as a single JSON object on the topic %{topic}. Shelly's default MQTT prefix is the device ID (e.g. shellyplus3em-XXXXXXXXXXXX), so set the device's prefix to %{custom_topic} to match the Base Topic shown above."
 msgstr "Die Telemetrie wird als einzelnes JSON-Objekt auf dem Topic %{topic} veröffentlicht. Das MQTT-Präfix der Shelly ist standardmäßig die Geräte-ID (z. B. shellyplus3em-XXXXXXXXXXXX), also setzen Sie das Präfix des Geräts auf %{custom_topic}, damit es mit dem oben angezeigten Basis-Thema übereinstimmt."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2434
-#: lib/dtu_app_web/live/dashboard_live.ex:2543
+#: lib/dtu_app_web/live/dashboard_live.ex:2409
+#: lib/dtu_app_web/live/dashboard_live.ex:2518
 #, elixir-autogen, elixir-format
 msgid "Consumption"
 msgstr "Verbrauch"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1993
+#: lib/dtu_app_web/live/dashboard_live.ex:1968
 #, elixir-autogen, elixir-format
 msgid "Peak Power Consumed"
 msgstr "Maximale Verbrauchsleistung"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2024
+#: lib/dtu_app_web/live/dashboard_live.ex:1999
 #, elixir-autogen, elixir-format
 msgid "Peak Power Day"
 msgstr "Spitzenverbrauchstag"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1845
+#: lib/dtu_app_web/live/dashboard_live.ex:1820
 #, elixir-autogen, elixir-format
 msgid "Power consumption"
 msgstr "Stromverbrauch"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1894
+#: lib/dtu_app_web/live/dashboard_live.ex:1869
 #, elixir-autogen, elixir-format
 msgid "Total Consumption"
 msgstr "Gesamtverbrauch"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2116
+#: lib/dtu_app_web/live/dashboard_live.ex:2091
 #, elixir-autogen, elixir-format
 msgid "Exported today"
 msgstr "Heute exportiert"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2145
+#: lib/dtu_app_web/live/dashboard_live.ex:2120
 #, elixir-autogen, elixir-format
 msgid "Imported today"
 msgstr "Heute importiert"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2086
+#: lib/dtu_app_web/live/dashboard_live.ex:2061
 #, elixir-autogen, elixir-format
 msgid "Net export"
 msgstr "Netto-Export"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2066
-#: lib/dtu_app_web/live/dashboard_live.ex:2466
-#: lib/dtu_app_web/live/dashboard_live.ex:2560
+#: lib/dtu_app_web/live/dashboard_live.ex:2041
+#: lib/dtu_app_web/live/dashboard_live.ex:2441
+#: lib/dtu_app_web/live/dashboard_live.ex:2535
 #, elixir-autogen, elixir-format
 msgid "Net flow"
 msgstr "Netto-Verbrauch"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2087
+#: lib/dtu_app_web/live/dashboard_live.ex:2062
 #, elixir-autogen, elixir-format
 msgid "Net import"
 msgstr "Netto-Import"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2174
+#: lib/dtu_app_web/live/dashboard_live.ex:2149
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak power"
 msgstr "Spitzenleistung"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:256
+#: lib/dtu_app_web/live/dashboard_live.ex:292
 #, elixir-autogen, elixir-format
 msgid "DTU back online"
 msgstr "DTU wieder online"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:252
+#: lib/dtu_app_web/live/dashboard_live.ex:288
 #, elixir-autogen, elixir-format
 msgid "DTU went offline"
 msgstr "DTU ist offline"
 
-#: lib/dtu_app_web/live/notifications_live.ex:81
+#: lib/dtu_app_web/live/notifications_live.ex:82
 #, elixir-autogen, elixir-format
 msgid "If you can read this, browser notifications are working."
 msgstr "Wenn Sie dies lesen können, funktionieren die Browser-Benachrichtungen."
 
-#: lib/dtu_app_web/live/notifications_live.ex:261
+#: lib/dtu_app_web/live/notifications_live.ex:262
 #, elixir-autogen, elixir-format
 msgid "Send a one-off test notification to verify the browser is set up correctly. It should appear within a second or two."
 msgstr "Senden Sie eine einmalige Test-Benachrichtigung, um zu prüfen, ob der Browser korrekt eingerichtet ist. Sie sollte innerhalb von ein bis zwei Sekunden erscheinen."
 
-#: lib/dtu_app_web/live/notifications_live.ex:272
+#: lib/dtu_app_web/live/notifications_live.ex:273
 #, elixir-autogen, elixir-format
 msgid "Send test notification"
 msgstr "Test-Benachrichtigung senden"
 
-#: lib/dtu_app_web/live/notifications_live.ex:80
-#: lib/dtu_app_web/live/notifications_live.ex:258
+#: lib/dtu_app_web/live/notifications_live.ex:81
+#: lib/dtu_app_web/live/notifications_live.ex:259
 #, elixir-autogen, elixir-format
 msgid "Test notification"
 msgstr "Test-Benachrichtigung"
 
-#: lib/dtu_app_web/live/notifications_live.ex:85
+#: lib/dtu_app_web/live/notifications_live.ex:86
 #, elixir-autogen, elixir-format
 msgid "Test notification sent."
 msgstr "Test-Benachrichtigung gesendet."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:253
+#: lib/dtu_app_web/live/dashboard_live.ex:289
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} has been offline for at least 5 minutes."
 msgstr "Ihr Wechselrichter %{name} ist seit mindestens 5 Minuten offline."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:257
+#: lib/dtu_app_web/live/dashboard_live.ex:293
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr "Ihr Wechselrichter %{name} überträgt wieder Telemetriedaten."
