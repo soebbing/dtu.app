@@ -11,8 +11,10 @@ const { test, expect } = require('@playwright/test');
 // Historical context: a customer with a DTU that polled multiple
 // inverters, each exposing one or two MPPT strings, reported two
 // symptoms on the live system:
-//   1. "Current Generation" displayed 0 W even though the production
-//      curve clearly showed the system producing.
+//   1. The "Current Generation" stat (now removed from the dashboard)
+//      displayed 0 W even though the production curve clearly showed
+//      the system producing. The underlying `current_power` query was
+//      still wrong and is fixed below.
 //   2. The chart legend listed every (inverter, MPPT) pair, but the
 //      per-MPPT lines were drawn flat at the X-axis.
 //
@@ -77,22 +79,16 @@ test.describe('Acceptance Tests: Multi-Inverter Chart', () => {
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
   });
 
-  test('Garage Array DTU shows non-zero Current Generation when multiple inverters are producing', async ({ page }) => {
+  test('Garage Array DTU shows non-zero today yield when multiple inverters are producing', async ({ page }) => {
     // The seeded Garage Array has two inverters and three MPPTs in total.
     // Select it via the DTU switcher so the dashboard filters down to
     // only its readings.
     await selectDtuAndWait(page, '#dtu-switcher button:has-text("Garage Array")', 3);
 
-    // Stat: Current Generation must be non-zero. Pre-fix, this stat
-    // summed `ac_power` over the latest reading per inverter, but the
-    // latest row per inverter happened to be a per-MPPT row with nil
-    // `ac_power`, so the displayed value was 0 W.
-    const currentPowerText = await page.locator('#stat-current-power').textContent();
-    const currentPower = parseFloat(currentPowerText.replace(/[^0-9.]/g, ''));
-    expect(currentPower).toBeGreaterThan(0);
-
-    // Today's yield must also be > 0 since the sine-arc seed runs
-    // 06:00–19:00.
+    // The "Current Generation" W stat card was removed (it duplicated
+    // the chart's headline curve). Today's yield must be > 0 since the
+    // sine-arc seed runs 06:00–19:00 and the underlying `current_power`
+    // query is still correct (multi-MPPT regression from earlier PRs).
     const todayYieldText = await page.locator('#stat-today-yield').textContent();
     const todayYield = parseFloat(todayYieldText.replace(/[^0-9.]/g, ''));
     expect(todayYield).toBeGreaterThan(0);
