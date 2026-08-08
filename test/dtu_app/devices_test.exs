@@ -1328,4 +1328,240 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.current_consumption, 42.0, 0.1
     end
   end
+
+  describe "get_consumption_period_stats/4 — period-aware consumption stats" do
+    # Mirrors `compute_day_period_stats/2` and `compute_range_period_stats/2`
+    # for the consumption side. The dashboard renders three new cards
+    # (Current / Today's / Peak, or Total / Peak / Peak-day for historical
+    # views) when a Shelly is paired. The shape is period-aware so the
+    # same render function can pick the right field per view.
+    #
+    # Tests below pin the corner cases the LiveView cares about: the
+    # today view derives everything from `get_consumption_daily_stats/2`,
+    # the day view is a one-day window over consumption_energy_total
+    # deltas, and the week/month/year views aggregate the daily deltas.
+
+    test "returns all zeros when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      stats = Devices.get_consumption_period_stats(user, nil, "today", nil)
+      assert stats.current_consumption == 0.0
+      assert stats.today_consumption == 0.0
+      assert stats.peak_consumption == 0.0
+      assert stats.period_total_consumption == 0.0
+      assert stats.period_peak_consumption == 0.0
+      assert stats.peak_date == nil
+    end
+
+    test "today view mirrors get_consumption_daily_stats/2 (current/today/peak)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # Fresh reading — wins current_consumption. We insert this FIRST
+      # so the bumped-on-collision path isn't triggered; the older
+      # reading below is then placed in a *different* 5-min bucket so
+      # the bucket-max-vs-live-current comparison picks the older one.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          consumption_energy_total: 1_234_567.0,
+          inserted_at: now
+        })
+
+      # An older reading — 10 minutes back so it falls in its own
+      # 5-min bucket from the fresh reading. This bucket's mean is just
+      # 200 W (it's the only reading in that bucket), so the chart's
+      # `bucket_max = 200`, exceeding the live `current_consumption = 76`.
+      # `peak_consumption = max(76, 200) = 200`.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 200.0,
+          consumption_energy_total: 1_232_000.0,
+          inserted_at: DateTime.add(now, -600, :second)
+        })
+
+      stats = Devices.get_consumption_period_stats(user, device.id, "today", nil)
+
+      assert_in_delta stats.current_consumption, 76.0, 0.1
+
+      # today_consumption: latest_total - earliest_total = 1_234_567 - 1_232_000 = 2567 Wh = 2.567 kWh ≈ 2.6 kWh
+      assert_in_delta stats.today_consumption, 2.6, 0.1
+      # Peak across today's buckets (200 W from the older reading).
+      assert_in_delta stats.peak_consumption, 200.0, 0.1
+      # The mirror fields also carry the same values.
+      assert_in_delta stats.period_total_consumption, 2.6, 0.1
+      assert_in_delta stats.period_peak_consumption, 200.0, 0.1
+      assert stats.peak_date == Date.utc_today()
+    end
+
+    test "day view with explicit selected_period computes the day-local totals" do
+      # Pins the day view's "Total Consumption" card: a closed-day window
+      # for the lifetime-counter delta. Reading the counter at midnight
+      # and again at 23:59 should produce ~24 kWh consumed.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      target_date = ~D[2026-07-15]
+
+      # 5 kWh consumed over the day: 12_345_678 Wh at start of day,
+      # 12_370_678 Wh at end of day.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 250.0,
+          consumption_energy_total: 12_345_678.0,
+          inserted_at: DateTime.new!(target_date, ~T[00:01:00])
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 300.0,
+          consumption_energy_total: 12_370_678.0,
+          inserted_at: DateTime.new!(target_date, ~T[23:30:00])
+        })
+
+      stats = Devices.get_consumption_period_stats(user, device.id, "day", target_date)
+
+      # 12_370_678 - 12_345_678 = 25_000 Wh = 25.0 kWh
+      assert_in_delta stats.period_total_consumption, 25.0, 0.1
+      # Peak across the day's consumption points — both are fresh, so
+      # the higher (300 W) wins.
+      assert_in_delta stats.period_peak_consumption, 300.0, 0.1
+      assert stats.peak_date == target_date
+    end
+
+    test "week view computes period_total across multiple days via lifetime-counter deltas" do
+      # Three days of readings: each day has its own first/last
+      # consumption_energy_total, and the period_total sums the
+      # per-day deltas.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      # Week starts Monday 2026-07-13, ends Sunday 2026-07-19.
+      week_start = ~D[2026-07-13]
+      week_end = ~D[2026-07-19]
+
+      # Each day: morning reading (low counter) + evening reading
+      # (higher counter). The deltas across the week sum to (3000 +
+      # 4000 + 5000) Wh = 12.0 kWh.
+      for {date, morning, evening} <- [
+            {~D[2026-07-13], 1_000_000.0, 1_003_000.0},
+            {~D[2026-07-15], 2_000_000.0, 2_004_000.0},
+            {~D[2026-07-17], 3_000_000.0, 3_005_000.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 100.0,
+            consumption_energy_total: morning,
+            inserted_at: DateTime.new!(date, ~T[06:00:00])
+          })
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 150.0,
+            consumption_energy_total: evening,
+            inserted_at: DateTime.new!(date, ~T[18:00:00])
+          })
+      end
+
+      stats =
+        Devices.get_consumption_period_stats(user, device.id, "week", week_start)
+
+      # 3000 + 4000 + 5000 = 12_000 Wh = 12.0 kWh
+      assert_in_delta stats.period_total_consumption, 12.0, 0.1
+      # peak_per_day: 2026-07-15 was 150 W (highest single reading across
+      # the week).
+      assert_in_delta stats.period_peak_consumption, 150.0, 0.1
+      assert stats.peak_date == ~D[2026-07-15]
+    end
+
+    test "production rows are excluded from the period totals" do
+      # Even if a device's consumption logs are contaminated by a stray
+      # production row (e.g. a Shelly publishing on the same topic as
+      # an OpenDTU), the helper must filter to power_type = "consumption".
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+      today = Date.utc_today()
+
+      # 9999 W production row (a rogue emission that would skew the
+      # current/today/peak sums by ~10× if not filtered). Distinct
+      # microsecond offset so it doesn't collide with the next row's PK.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 9999.0,
+          inserted_at: DateTime.add(now, -10, :second)
+        })
+
+      # 76 W consumption reading.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          consumption_energy_total: 1_000.0,
+          inserted_at: now
+        })
+
+      stats = Devices.get_consumption_period_stats(user, device.id, "today", nil)
+
+      # 76 W (the production 9999 W is filtered out).
+      assert_in_delta stats.current_consumption, 76.0, 0.1
+      # Peak is also from the consumption row.
+      assert_in_delta stats.peak_consumption, 76.0, 0.1
+      # peak_date stays at today.
+      assert stats.peak_date == today
+    end
+  end
 end

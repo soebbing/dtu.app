@@ -1003,6 +1003,14 @@ defmodule DtuAppWeb.DashboardLive do
     # the production time_range/granularity.
     consumption_stats = Devices.get_consumption_daily_stats(user, dtu_id)
 
+    # Period-aware consumption stats — same shape as `@stats` for the
+    # production side: today/day views get current/today/peak, week/
+    # month/year views get period total / period peak / peak date.
+    # Drives the dedicated "Power consumption" stat-card row that
+    # mirrors the production row when a Shelly is paired.
+    consumption_period_stats =
+      Devices.get_consumption_period_stats(user, dtu_id, time_range, selected_period)
+
     case time_range do
       "today" ->
         stats = Devices.get_daily_stats(user, dtu_id)
@@ -1010,6 +1018,7 @@ defmodule DtuAppWeb.DashboardLive do
         socket
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
@@ -1037,6 +1046,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:selected_period, date)
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :line)
         |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
@@ -1073,6 +1083,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:selected_period, monday)
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1110,6 +1121,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:selected_period, first_day)
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1155,6 +1167,7 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:selected_period, Date.new!(year, 1, 1))
         |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
@@ -1668,6 +1681,230 @@ defmodule DtuAppWeb.DashboardLive do
               </div>
             <% end %>
           </div>
+
+          <%!-- Power consumption row: mirrors the production row's three
+               cards (current / today / peak) but populated from a paired
+               Shelly Plus 3EM (Gen3+) energy meter. Only rendered when the
+               user actually has consumption data — a user without a
+               Shelly device sees nothing here, exactly the same as a user
+               without an inverter (the production row renders empty too).
+               Rose color scheme matches the existing Current/Today's
+               Consumption cards above for visual consistency. --%>
+          <%= if @consumption_period_stats.current_consumption > 0
+                 or @consumption_period_stats.period_total_consumption > 0
+                 or @consumption_period_stats.peak_consumption > 0 do %>
+            <div class="space-y-2 pt-2">
+              <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                {gettext("Power consumption")}
+              </h2>
+              <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+                <%= if @live or @time_range == "day" do %>
+                  <%!-- Current consumption (W) — same shape as
+                       "Current Generation" on the production side. Today /
+                       Day views only — historical views don't have a
+                       "current" reading by definition. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-bolt" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Current Consumption")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-current-consumption-period"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.current_consumption,
+                                  0,
+                                  @locale
+                                )} W
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% else %>
+                  <%!-- Total consumption placeholder: keeps the 3-column grid
+                       layout aligned with the production row above on
+                       historical views. Filled with the period total. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-bolt" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Total Consumption")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-period-total-consumption"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.period_total_consumption,
+                                  1,
+                                  @locale
+                                )} kWh
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% end %>
+
+                <%= if @live do %>
+                  <%!-- Today's total consumption (kWh) — mirrors
+                       "Today's Total Yield" on the production side. Live
+                       view only. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-sun" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Today's Consumption")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-today-consumption-period"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.today_consumption,
+                                  1,
+                                  @locale
+                                )} kWh
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% else %>
+                  <%!-- Week/Month/Year: show todays consumption within
+                       the period only if its been a partial period, else
+                       mirror the production-side avg slot. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-sun" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Today's Consumption")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-today-consumption-period-historical"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.today_consumption,
+                                  1,
+                                  @locale
+                                )} kWh
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% end %>
+
+                <%= if @live or @time_range == "day" do %>
+                  <%!-- Peak power consumed in the period (W) — mirrors
+                       "Peak Power" on the production side. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-chart-bar" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Peak Power Consumed")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-peak-consumption"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.peak_consumption,
+                                  0,
+                                  @locale
+                                )} W
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% else %>
+                  <%!-- Week/Month/Year: peak-power day. Mirrors the
+                       production-side Peak Yield Day slot. --%>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                          <.icon name="hero-fire" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Peak Power Day")}
+                            </dt>
+                            <dd class="flex flex-col">
+                              <div
+                                class="text-2xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-peak-consumption-day"
+                              >
+                                {Devices.format_number(
+                                  @consumption_period_stats.period_peak_consumption,
+                                  0,
+                                  @locale
+                                )} W
+                              </div>
+                              <%= if @consumption_period_stats.peak_date do %>
+                                <div
+                                  class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5"
+                                  id="stat-peak-consumption-day-date"
+                                >
+                                  {gettext("on %{date}", date: @consumption_period_stats.peak_date)}
+                                </div>
+                              <% end %>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
 
           <!-- Chart Panel -->
           <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
