@@ -634,6 +634,72 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~r/data-legend-key="consumption"[^>]*>[^<]*<span[^>]*legend-swatch/
     end
 
+    test "y_max covers the consumption peak so the consumption line stays inside the chart",
+         %{conn: conn, user: user} do
+      # Regression: `assign_line_chart_data/5`'s `y_max` was computed from
+      # production-only data (max per-series power, max Total per-bucket
+      # sum). A household with a Shelly reporting 1500 W consumption on
+      # a 200 W solar day would render the consumption line off-screen
+      # above the chart because 1500 > y_max.
+      #
+      # Fix: the chart pulls `list_today_consumption_chart_data/2` and
+      # includes its peak in the `y_max` computation, so the Y-axis
+      # covers whatever is largest on the chart. Test pins this by
+      # creating a Shelly with a consumption reading that's far above
+      # the solar peak, then asserting the rendered Y-axis label
+      # contains the consumption value (rounded up to the next 100 W
+      # by the existing `Float.ceil()` rounding step).
+      solar =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "solar-y-max-test",
+          base_topic: "solar/y-max-test"
+        })
+
+      shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-y-max-test",
+          base_topic: "shellies/shellyplus3em-y-max-test"
+        })
+
+      today = Date.utc_today()
+
+      # 200 W solar reading at noon — the production peak.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: solar.id,
+          inverter_serial: "INV-S",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 200.0,
+          inserted_at: DateTime.new!(today, Time.new!(12, 0, 0)) |> Map.put(:microsecond, {0, 6})
+        })
+
+      # 1500 W consumption reading at 19:00 (dinner-time heavy load).
+      # 1500 W is ~7.5x the solar peak, so the consumption line would
+      # render off-screen above the chart without the fix.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 1500.0,
+          inserted_at: DateTime.new!(today, Time.new!(19, 0, 0)) |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The Y-axis top label is the consumption peak rounded up to the
+      # next multiple of 100 — `1500` becomes `1500` (already a
+      # multiple of 100). The existing format renders it as `1,500 W`
+      # in en (or `1.500 W` / `1 500 W` depending on locale). The
+      # dashboard's default locale in test mode is en.
+      assert html =~ "1,500 W",
+             "expected the Y-axis top label to scale up to consumption peak (~1,500 W), got: #{html}"
+    end
+
     test "tooltip_to_hex falls back to a neutral grey when the palette is missing",
          %{conn: _conn, user: _user} do
       # Pins the defensive fallback added alongside the rose-500 fix so
