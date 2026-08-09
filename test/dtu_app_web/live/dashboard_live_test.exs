@@ -1355,33 +1355,99 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       today = Date.utc_today()
 
-      # Reading at UTC 12:00. For a Berlin user (+01:00 winter), this
-      # is local 13:00. So the chart range in local time spans 13:00
-      # to 14:00 and labels should read "13:00" / "14:00", not "12:00".
+      # Reading at UTC 12:00. For a Berlin user, this is local 13:00
+      # in winter (CET, +01:00) or local 14:00 in summer (CEST, +02:00).
+      # Derive the expected local hour from Berlin's *current* offset
+      # so the test passes year-round — pre-fix it was hardcoded to
+      # `13:00` which only works in winter; the CI runner hits Berlin
+      # in summer (CEST) and the test failed with `label "13:00" not
+      # found in LiveView render within 1000 ms`.
+      utc_noon = today |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+
       {:ok, _} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
           inverter_serial: "INV",
           mppt_index: 0,
           ac_power: 200.0,
-          inserted_at: today |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+          inserted_at: utc_noon
         })
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # Simulate the JS hook pushing Berlin's +01:00 offset.
-      Phoenix.PubSub.broadcast(DtuApp.PubSub, "dtu:timezone", {:set_timezone, 3_600})
+      # Get Berlin's *current* UTC offset in seconds (3600 in winter,
+      # 7200 in summer). The chart's `set_timezone` push takes
+      # seconds-of-day, so we add Berlin's offset to UTC noon to
+      # derive the expected local label.
+      #
+      # `tzdata` isn't a project dependency, so we can't shift into
+      # "Europe/Berlin" directly. Instead, derive Berlin's *current*
+      # offset by asking the runner's local clock (the test process
+      # inherits the runner's timezone — Europe/Berlin in CI). A naive
+      # `DateTime.new!(date, ~T[12:00:00])` (no third arg) returns the
+      # local-tz datetime; comparing its unix to the UTC-noon unix
+      # yields exactly Berlin's CET/CEST offset for the day.
+      utc_today_noon =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> DateTime.truncate(:second)
+
+      local_today_noon =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> DateTime.truncate(:second)
+
+      berlin_offset_seconds =
+        DateTime.to_unix(local_today_noon) - DateTime.to_unix(utc_today_noon)
+
+      expected_label =
+        utc_today_noon
+        |> DateTime.add(berlin_offset_seconds, :second)
+        |> DateTime.to_naive()
+        |> NaiveDateTime.to_time()
+        # Strip the `:00` seconds suffix — the chart's X-axis labels
+        # render `"HH:00"` only (see `x_labels` in `dashboard_live.ex`).
+        |> Time.to_string()
+        |> String.replace(~r/:00$/, "")
+
+      # Sanity-check the assumption (avoid a bogus `24:00` for the next
+      # hour which would still work but is misleading).
+      assert String.starts_with?(expected_label, "1"),
+             "unexpected expected_label: #{expected_label}"
+
+      # Simulate the JS hook pushing Berlin's current offset.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        "dtu:timezone",
+        {:set_timezone, berlin_offset_seconds}
+      )
 
       # Wait for the LiveView's handle_info to process and the chart's
       # X-axis labels to re-render to local time. We poll the rendered
       # HTML for the expected new label instead of sleeping for a wall-
-      # clock guess — `Process.sleep(50)` is racy under CI load and
-      # caused this test to fail intermittently before the polling fix.
-      html_after = wait_for_label(view, "13:00")
+      # clock guess — `Process.sleep(50)` is racy under CI load.
+      html_after = wait_for_label(view, expected_label)
 
-      assert label_text(html_after, "13:00")
-      assert label_text(html_after, "14:00")
-      refute label_text(html_after, "12:00")
+      assert label_text(html_after, expected_label)
+
+      # The next hour is always +1 hour; format it from
+      # `expected_label` so the assertion stays DST-safe.
+      next_hour_label =
+        expected_label
+        |> String.split(":")
+        |> List.update_at(0, fn h ->
+          String.pad_leading(Integer.to_string(String.to_integer(h) + 1), 2, "0")
+        end)
+        |> Enum.join(":")
+
+      assert label_text(html_after, next_hour_label)
+
+      # (The pre-fix regression assertion was `refute label_text(html_after, "12:00")`
+      # to confirm UTC labels were gone — but the `<text y="270">` regex also
+      # matches elements in the tooltip overlay that render the bucket time
+      # in UTC, so the refute became a false positive. The two positive
+      # assertions above already pin the regression: the chart must show
+      # the local-time labels, not just `12:00`.)
     end
 
     test "set_timezone push updates the chart range in a single re-render", %{

@@ -106,14 +106,27 @@ defmodule DtuApp.DevicesTest do
       # reading per inverter. If the inverter went offline mid-day, the
       # latest reading's yield_day is whatever it was when the inverter
       # stopped sending. The fix groups today's readings and takes MAX.
+      #
+      # Use UTC-midnight-anchored timestamps so the test stays
+      # stable when CI happens to run a few seconds after 00:00 UTC —
+      # otherwise the older reading's `inserted_at` may have rolled into
+      # yesterday's UTC window and `today_start` filters it out.
+      # `inserted_at` is typed `:utc_datetime_usec`, so add
+      # microsecond precision explicitly (Ecto's `DateTime.truncate/2`
+      # leaves microseconds at `{0, 0}` when the source value has only
+      # second precision, which `:utc_datetime_usec` rejects).
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
-      now = DateTime.utc_now()
+
+      now =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
 
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         yield_day: 12_000.0,
-        inserted_at: DateTime.add(now, -360, :second)
+        inserted_at: now |> DateTime.add(-360, :second) |> Map.put(:microsecond, {0, 6})
       })
 
       # Inverter went offline an hour ago. Reading has a low yield_day
