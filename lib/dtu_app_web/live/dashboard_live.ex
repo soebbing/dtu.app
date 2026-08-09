@@ -390,6 +390,14 @@ defmodule DtuAppWeb.DashboardLive do
     consumption_chart_points =
       Devices.list_today_consumption_chart_data(user, dtu_id)
 
+    # Net-flow chart points (production minus consumption, sign-flipped
+    # in the path below) — fetched up front so we can size the Y-axis
+    # negative bound before computing the production/consumption paths.
+    # Without this we'd render export peaks below the chart's bottom
+    # edge, exactly the bug this fix targets.
+    {net_utc_start, net_utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
+    net_chart_points = Devices.list_net_chart_data(user, net_utc_start, net_utc_end, dtu_id)
+
     max_power =
       chart_points
       |> Enum.map(& &1.power)
@@ -430,6 +438,76 @@ defmodule DtuAppWeb.DashboardLive do
       |> Kernel.*(100)
       |> max(100.0)
 
+    # Negative Y-axis bound: the chart's lower edge should extend down
+    # to the most-negative net-flow display value (i.e. -max_export),
+    # rounded DOWN to the next multiple of 100 so the export peak
+    # never sits flush against the chart's bottom edge. Without this
+    # guard a 432 W export peak would clip to ~432 W below the zero
+    # line on a chart whose lower bound is implicitly 0.
+    #
+    # `display_power` here is the *sign-flipped* net value (positive
+    # for import, negative for export) — the same convention the path
+    # uses below — so the most-negative display_power equals
+    # -max_export. We only extend the axis when the user actually has
+    # net data and a non-zero export peak; without that, the chart
+    # stays positive-only (the previous behaviour).
+    y_min =
+      case net_chart_points do
+        [] ->
+          0.0
+
+        pts ->
+          most_negative_display =
+            pts
+            |> Enum.map(fn p -> -p.power end)
+            |> Enum.min(fn -> 0.0 end)
+
+          # Round DOWN to the next lower 100. A -432 W peak → -500 W
+          # (next lower multiple of 100). A -50 W peak → -100 W so
+          # even small export dips stay inside the chart area.
+          if most_negative_display < 0.0 do
+            most_negative_display
+            |> Float.floor()
+            |> Kernel./(100)
+            |> Float.floor()
+            |> Kernel.*(100)
+          else
+            0.0
+          end
+      end
+
+    # Net path's Y mapping depends on the unified [y_min, y_max] range.
+    # When y_min == 0 (no net data / no export), the zero line sits
+    # halfway down the chart at the original `zero_y_default` — this
+    # preserves the pre-fix layout for inverter-only / Shelly-only
+    # users where the net path doesn't render anyway.
+    # When y_min < 0, the zero line shifts UP proportionally to
+    # `y_max / (y_max + |y_min|)` of the chart area, leaving room for
+    # the export peak in the lower half. The net path is then plotted
+    # against this asymmetric two-sided scale.
+    chart_top_y = 20.0
+    chart_bottom_y = 250.0
+    zero_y_default = 135.0
+
+    {zero_y, lower_height} =
+      cond do
+        y_min < 0.0 ->
+          total_range = y_max + abs(y_min)
+
+          {chart_top_y + y_max / total_range * (chart_bottom_y - chart_top_y), abs(y_min)}
+
+        true ->
+          {zero_y_default, 0.0}
+      end
+
+    # Pixel-per-watt scale factors for the unified Y-axis. Positive
+    # values (production, consumption, total) use the upper-half
+    # scale; the net path's negative display values use the lower-
+    # half scale (only set when y_min < 0; defaults to 0 when the
+    # chart stays positive-only).
+    pixels_per_watt_positive = (zero_y - chart_top_y) / y_max
+    pixels_per_watt_negative = (chart_bottom_y - zero_y) / max(lower_height, 1.0)
+
     # Chart dimensions: width 800, height 250 (with 20px top padding).
     # X range is dynamic: zoomed to data when present, full day (00:00–
     # 24:00) when empty. See `chart_time_range/2` below.
@@ -453,7 +531,11 @@ defmodule DtuAppWeb.DashboardLive do
             local_seconds = utc_seconds + tz_offset_seconds
             local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
             x = (local_seconds - x_min_seconds) / x_span * 800.0
-            y = 250.0 - power / y_max * 230.0
+            # Positive watts use the upper-half pixel-per-watt scale
+            # (above the zero line). When `y_min` is 0 the zero line
+            # sits at y=135 by default and this collapses to the
+            # original `250 - power/y_max * 230` formula.
+            y = zero_y - power * pixels_per_watt_positive
             {Float.round(x, 1), Float.round(y, 1), local_seconds}
           end)
           |> Enum.sort_by(&elem(&1, 0))
@@ -533,7 +615,7 @@ defmodule DtuAppWeb.DashboardLive do
       Enum.map(series_points, fn {series, coords} ->
         {series,
          Enum.map(coords, fn {_x, y, seconds} ->
-           %{time: seconds, power: power_at_from_coord(y, y_max)}
+           %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
          end)}
       end)
       |> Map.new()
@@ -564,7 +646,7 @@ defmodule DtuAppWeb.DashboardLive do
           local_seconds = rem(utc_seconds + tz_offset_seconds + 86_400 * 4, 86_400)
           x = (local_seconds - x_min_seconds) / x_span * 800.0
           total_power = pts |> Enum.map(& &1.power) |> Enum.sum()
-          y = 250.0 - total_power / y_max * 230.0
+          y = zero_y - total_power * pixels_per_watt_positive
           {Float.round(x, 1), Float.round(y, 1), local_seconds, total_power}
         end)
         |> Enum.sort_by(&elem(&1, 0))
@@ -591,7 +673,7 @@ defmodule DtuAppWeb.DashboardLive do
     # both uniformly.
     total_points_data =
       Enum.map(total_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
+        %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
       end)
 
     # Consumption overlay: household draw (W) from a paired Shelly
@@ -614,7 +696,7 @@ defmodule DtuAppWeb.DashboardLive do
               local_seconds = utc_seconds + tz_offset_seconds
               local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
               x = (local_seconds - x_min_seconds) / x_span * 800.0
-              y = 250.0 - power / y_max * 230.0
+              y = zero_y - power * pixels_per_watt_positive
               {Float.round(x, 1), Float.round(y, 1), local_seconds, power}
             end)
             |> Enum.sort_by(&elem(&1, 0))
@@ -635,7 +717,7 @@ defmodule DtuAppWeb.DashboardLive do
 
     consumption_points_data =
       Enum.map(consumption_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: round((250.0 - y) / 230.0 * y_max)}
+        %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
       end)
 
     # Net flow overlay — production minus consumption, plotted on the
@@ -662,9 +744,15 @@ defmodule DtuAppWeb.DashboardLive do
     # zero line itself is rendered as a separate <line> below the
     # net path so users see at a glance which side of zero a point
     # is on.
-    {net_utc_start, net_utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-    net_chart_points = Devices.list_net_chart_data(user, net_utc_start, net_utc_end, dtu_id)
-
+    #
+    # `net_chart_points` is fetched up front (just below the production
+    # chart_points binding) so the Y-axis scale can include the most-
+    # negative export value before the per-series paths are computed.
+    # `display_power = -power` flips the raw sign so export (positive
+    # raw) becomes a negative display value below the zero line; the
+    # Y mapping uses the unified [y_min, y_max] scale so the export
+    # peak always sits inside the chart area, never clipping below
+    # the bottom edge.
     {net_path, net_coords, net_points_data} =
       case net_chart_points do
         [] ->
@@ -683,7 +771,24 @@ defmodule DtuAppWeb.DashboardLive do
               # block comment above for the full sign-convention
               # rationale.
               display_power = -power
-              y = 135.0 - display_power / max(y_max, 1.0) * 115.0
+              # Use the unified [y_min, y_max] Y-axis: positive
+              # display values (import) plot above `zero_y` against
+              # the upper-half scale; negative display values (export)
+              # plot below `zero_y` against the lower-half scale. The
+              # export peak therefore sits inside the chart even when
+              # the export magnitude is a fraction of the production
+              # peak — the original centered-115-px formula clipped
+              # export values that exceeded 50% of `y_max` past the
+              # chart's bottom edge.
+              y =
+                cond do
+                  display_power >= 0 ->
+                    zero_y - display_power * pixels_per_watt_positive
+
+                  true ->
+                    zero_y + abs(display_power) * pixels_per_watt_negative
+                end
+
               {Float.round(x, 1), Float.round(y, 1), local_seconds, display_power}
             end)
             |> Enum.sort_by(&elem(&1, 0))
@@ -711,6 +816,8 @@ defmodule DtuAppWeb.DashboardLive do
     socket
     |> assign(:chart_points, chart_points)
     |> assign(:y_max, y_max)
+    |> assign(:y_min, y_min)
+    |> assign(:zero_y, zero_y)
     |> assign(:series_paths, series_paths)
     |> assign(:series_palette, series_palette)
     |> assign(:series_legend, series_legend)
@@ -731,11 +838,14 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:net_palette, {"indigo", "500"})
   end
 
-  # Reverse the data-point Y coord back to watts so the tooltip shows
-  # real values, not SVG units. (The X coord is no longer round-tripped
-  # through float math — `series_points_data` carries the bucket time
-  # directly so we don't lose seconds of precision.)
-  defp power_at_from_coord(y, y_max), do: round((250.0 - y) / 230.0 * y_max)
+  # Reverse the per-series / total / consumption Y coord back to watts
+  # against the unified Y-axis. When the chart extends below zero
+  # (`y_min < 0`), the zero line sits at `zero_y` instead of the
+  # default y=135, so the reverse mapping must use the upper-half
+  # scale (`zero_y - 20` pixels over `y_max` W) — the same factor
+  # the forward mapping uses.
+  defp power_at_from_unified_y(y, zero_y, y_max),
+    do: round((zero_y - y) / max(zero_y - 20.0, 1.0) * y_max)
 
   # Compute the chart's X-axis time range (in LOCAL seconds-of-day,
   # so the labels read in the user's timezone).
@@ -2347,62 +2457,123 @@ defmodule DtuAppWeb.DashboardLive do
                     data-x-min-seconds={@x_min_seconds}
                     data-x-max-seconds={@x_max_seconds}
                   >
-                    <!-- Grid Lines -->
+                    <!-- Grid Lines. The chart's Y-axis spans [y_min, y_max]
+                         when net flow extends below zero; otherwise it
+                         stays positive-only with the zero line at
+                         y=135. We render 5 evenly-spaced horizontal
+                         grid lines (top, 3/4, zero, 1/4, bottom) plus
+                         a heavier baseline at y=250. The zero line is
+                         dashed so it reads as the reference. -->
+                    {chart_grid_top = 20.0}
+                    {chart_grid_bottom = 250.0}
+                    <% chart_mid_pos = (chart_grid_top + @zero_y) / 2 %>
+                    <% chart_mid_neg = (@zero_y + chart_grid_bottom) / 2 %>
                     <line
                       x1="0"
-                      y1="20"
+                      y1={chart_grid_top}
                       x2="800"
-                      y2="20"
+                      y2={chart_grid_top}
                       stroke="#f4f4f5"
                       class="dark:stroke-zinc-700"
                       stroke-width="1"
                     />
+                    <%= if @y_min < 0.0 do %>
+                      <line
+                        x1="0"
+                        y1={chart_mid_pos}
+                        x2="800"
+                        y2={chart_mid_pos}
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                      />
+                      <line
+                        x1="0"
+                        y1={@zero_y}
+                        x2="800"
+                        y2={@zero_y}
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                        stroke-dasharray="4"
+                      />
+                      <line
+                        x1="0"
+                        y1={chart_mid_neg}
+                        x2="800"
+                        y2={chart_mid_neg}
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                      />
+                    <% else %>
+                      <line
+                        x1="0"
+                        y1="77.5"
+                        x2="800"
+                        y2="77.5"
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                      />
+                      <line
+                        x1="0"
+                        y1="135"
+                        x2="800"
+                        y2="135"
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                        stroke-dasharray="4"
+                      />
+                      <line
+                        x1="0"
+                        y1="192.5"
+                        x2="800"
+                        y2="192.5"
+                        stroke="#f4f4f5"
+                        class="dark:stroke-zinc-700"
+                        stroke-width="1"
+                      />
+                    <% end %>
                     <line
                       x1="0"
-                      y1="77.5"
+                      y1={chart_grid_bottom}
                       x2="800"
-                      y2="77.5"
-                      stroke="#f4f4f5"
-                      class="dark:stroke-zinc-700"
-                      stroke-width="1"
-                    />
-                    <line
-                      x1="0"
-                      y1="135"
-                      x2="800"
-                      y2="135"
-                      stroke="#f4f4f5"
-                      class="dark:stroke-zinc-700"
-                      stroke-width="1"
-                      stroke-dasharray="4"
-                    />
-                    <line
-                      x1="0"
-                      y1="192.5"
-                      x2="800"
-                      y2="192.5"
-                      stroke="#f4f4f5"
-                      class="dark:stroke-zinc-700"
-                      stroke-width="1"
-                    />
-                    <line
-                      x1="0"
-                      y1="250"
-                      x2="800"
-                      y2="250"
+                      y2={chart_grid_bottom}
                       stroke="#e4e4e7"
                       class="dark:stroke-zinc-600"
                       stroke-width="1.5"
                     />
 
-                    <!-- Y-Axis Labels -->
+                    <!-- Y-Axis Labels. When the chart extends below zero
+                         (`y_min < 0`), the bottom label shows the negative
+                         bound and the middle label sits at the zero line
+                         (`@zero_y`). The top label is unchanged. -->
                     <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
                       {Devices.format_number(@y_max, 1, @locale)} W
                     </text>
-                    <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">
-                      {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
-                    </text>
-                    <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
+                    <%= if @y_min < 0.0 do %>
+                      <text
+                        x="5"
+                        y={@zero_y + 12}
+                        class="text-[10px] font-medium fill-zinc-400"
+                      >
+                        0 W
+                      </text>
+                      <text
+                        x="5"
+                        y="245"
+                        class="text-[10px] font-medium fill-zinc-400"
+                      >
+                        {Devices.format_number(@y_min, 0, @locale)} W
+                      </text>
+                    <% else %>
+                      <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">
+                        {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
+                      </text>
+                      <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
+                    <% end %>
 
                     <!-- X-Axis Labels (Time slots). Dynamically positioned to
                          fit the chart's X-axis range — full day (00:00–
@@ -2587,20 +2758,26 @@ defmodule DtuAppWeb.DashboardLive do
                         data-stroke={net_stroke_hex}
                         data-legend-key="net"
                       />
-                      <%!-- Zero line for the net flow axis (visual anchor so
-                           users can see at a glance whether the curve is
-                           in export or import territory). --%>
-                      <line
-                        x1="0"
-                        y1="135"
-                        x2="800"
-                        y2="135"
-                        stroke="#a1a1aa"
-                        class="dark:stroke-zinc-500"
-                        stroke-width="1"
-                        stroke-dasharray="2,2"
-                        pointer-events="none"
-                      />
+                      <%!-- Zero line for the net flow axis — the dashed
+                           grid line at @zero_y already marks this
+                           position when `y_min < 0`, so we only render
+                           the dedicated (slightly darker) reference
+                           line when the chart is positive-only (no net
+                           flow below zero). The two would otherwise
+                           stack on top of each other. --%>
+                      <%= if @y_min >= 0.0 do %>
+                        <line
+                          x1="0"
+                          y1="135"
+                          x2="800"
+                          y2="135"
+                          stroke="#a1a1aa"
+                          class="dark:stroke-zinc-500"
+                          stroke-width="1"
+                          stroke-dasharray="2,2"
+                          pointer-events="none"
+                        />
+                      <% end %>
                     <% end %>
                   </svg>
 
