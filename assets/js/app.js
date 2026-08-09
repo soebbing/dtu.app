@@ -168,15 +168,36 @@ liveSocket.connect()
 window.liveSocket = liveSocket
 
 // PWA: Register Service Worker
+//
+// In production Phoenix serves a fingerprinted filename
+// (`/service-worker-<digest>.js`); in dev it serves the bare
+// `/service-worker.js`. Read the URL from `cache_manifest.json` so
+// we always pick up the right path and don't trip on a stale hard-
+// coded one after the next `mix phx.digest`.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/service-worker.js')
-      .then((registration) => {
+    const register = async () => {
+      let swUrl = '/service-worker.js'
+
+      try {
+        const response = await fetch('/cache_manifest.json', {cache: 'no-store'})
+        if (response.ok) {
+          const manifest = await response.json()
+          swUrl = '/' + (manifest.latest && manifest.latest['service-worker.js']) || swUrl
+        }
+      } catch (_error) {
+        // Fall through to the unhashed path in dev.
+      }
+
+      try {
+        const registration = await navigator.serviceWorker.register(swUrl)
         console.log('Service Worker registered with scope:', registration.scope)
-      })
-      .catch((error) => {
+      } catch (error) {
         console.error('Service Worker registration failed:', error)
-      })
+      }
+    }
+
+    register()
   })
 }
 
