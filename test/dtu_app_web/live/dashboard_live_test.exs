@@ -1033,9 +1033,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
   defp extract_xy_coords(d) do
     d
+    # Path segments look like "M 333.3 235.6 " or "L 100.0 50.0 ".
+    # Splitting on the literal "M " / "L " prefixes (each followed by
+    # a space) leaves the trailing "X Y " chunk; trim each chunk's
+    # trailing whitespace before parsing so a 3-element
+    # `["x", "y", ""]` split doesn't fall through the [x, y] guard.
     |> String.split(["M ", "L "], trim: true)
     |> Enum.map(fn segment ->
-      case String.split(segment, " ") do
+      trimmed = String.trim(segment)
+
+      case String.split(trimmed, " ") do
         [x, y] -> {Float.parse(x) |> elem(0), Float.parse(y) |> elem(0)}
         _ -> nil
       end
@@ -1583,6 +1590,201 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       html = render(view)
       assert html =~ "12:00"
+    end
+  end
+
+  describe "Net flow chart sign convention — export plots as negative" do
+    # The chart's net-flow overlay used to plot export (positive net
+    # flow from `list_net_chart_data/4`) ABOVE the zero line and import
+    # (negative net flow) BELOW. Users expected the opposite: export
+    # (power leaving the home toward the grid) should be shown as a
+    # NEGATIVE value on the graph, both visually (below the zero
+    # line) and in the on-hover tooltip readout. The fix is in
+    # `assign_line_chart_data/5`'s net path computation: the raw
+    # `power` is sign-flipped (`display_power = -power`) before being
+    # used for the SVG Y coordinate and embedded in `data-points`, so
+    # the on-chart position and the tooltip value agree.
+
+    defp net_path_d(html) do
+      [[tag]] =
+        Regex.scan(~r/<path[^>]*data-legend-key="net"[^>]*>/, html, capture: :first)
+
+      case Regex.run(~r/\sd="([^"]+)"/, tag, capture: :all_but_first) do
+        [d] -> d
+        _ -> nil
+      end
+    end
+
+    defp net_points(html) do
+      # The path element can emit `data-legend-key` and `data-points`
+      # in either order depending on HEEx attribute ordering — match
+      # both permutations so the test doesn't depend on attribute
+      # order.
+      regexes = [
+        ~r/<path[^>]*data-legend-key="net"[^>]*data-points="(\[[^"]+\])"/,
+        ~r/<path[^>]*data-points="(\[[^"]+\])"[^>]*data-legend-key="net"/
+      ]
+
+      Enum.find_value(regexes, fn regex ->
+        case Regex.scan(regex, html, capture: :all_but_first) do
+          [[points_json] | _] ->
+            unescaped = String.replace(points_json, "&quot;", "\"")
+            Jason.decode(unescaped)
+
+          _ ->
+            nil
+        end
+      end)
+      |> case do
+        {:ok, points} -> points
+        _ -> []
+      end
+    end
+
+    defp seed_net_scenario(user, ac_watts, draw_watts) do
+      inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "net-export-sign-inv",
+          base_topic: "solar/net-export-sign"
+        })
+
+      shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "net-export-sign-shelly",
+          base_topic: "shellies/net-export-sign"
+        })
+
+      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      if ac_watts > 0 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: inverter.id,
+            inverter_serial: "INV-1",
+            mppt_index: 0,
+            power_type: "production",
+            ac_power: ac_watts,
+            inserted_at: bucket
+          })
+      end
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: draw_watts,
+          inserted_at: bucket
+        })
+
+      {inverter, shelly, bucket}
+    end
+
+    test "export bucket plots below the zero line and reports a negative value in data-points",
+         %{conn: conn, user: user} do
+      # 800 W AC aggregate + 100 W household draw → raw net = +700 W
+      # (export). Post-fix this should land at y > 135 (below the
+      # zero line) AND the data-points JSON should carry `power: -700`
+      # so the tooltip's hover readout (e.g. `-700 W`) matches the
+      # on-chart position (below zero). The negative sign on the
+      # export value is the user-facing convention this bugfix
+      # introduces — power leaving the home is treated like negative
+      # household consumption.
+      _ = seed_net_scenario(user, 800.0, 100.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      d = net_path_d(html)
+      assert d != nil, "expected a net path to be rendered for a paired inverter + Shelly"
+
+      coords = extract_xy_coords(d)
+      assert length(coords) >= 1, "expected at least one net-flow coordinate"
+
+      # Every coordinate must sit at y > 135 — i.e. BELOW the zero
+      # line on the SVG canvas. Pre-fix export plotted at y < 135
+      # (above the zero line).
+      Enum.each(coords, fn {_x, y} ->
+        assert y > 135.0,
+               "expected export (negative display value) to plot below the zero line (y > 135), got y=#{y}"
+      end)
+
+      powers = Enum.map(net_points(html), & &1["power"])
+
+      assert powers == [-700],
+             "expected net data-points to carry [-700] for a 700 W export, got #{inspect(powers)}"
+    end
+
+    test "import bucket plots above the zero line and reports a positive value in data-points",
+         %{conn: conn, user: user} do
+      # 100 W AC aggregate + 800 W household draw → raw net = -700 W
+      # (import). Import should plot ABOVE the zero line (y < 135)
+      # and the data-points JSON should carry `power: +700` so the
+      # tooltip's hover readout (e.g. `+700 W` or just `700 W`)
+      # matches the on-chart position.
+      _ = seed_net_scenario(user, 100.0, 800.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      d = net_path_d(html)
+      assert d != nil, "expected a net path to be rendered"
+
+      coords = extract_xy_coords(d)
+      assert length(coords) >= 1
+
+      Enum.each(coords, fn {_x, y} ->
+        assert y < 135.0,
+               "expected import (positive display value) to plot above the zero line (y < 135), got y=#{y}"
+      end)
+
+      powers = Enum.map(net_points(html), & &1["power"])
+
+      assert powers == [700],
+             "expected net data-points to carry [700] for a 700 W import, got #{inspect(powers)}"
+    end
+
+    test "the SVG zero line for the net overlay sits at y=135", %{conn: conn, user: user} do
+      # The zero line is rendered as a dashed <line> just below the
+      # net path. It anchors the chart visually so users can see at a
+      # glance whether a point is in export or import territory.
+      # Pin its coordinates so a future change to the centered Y
+      # doesn't drift the visible reference without anyone noticing.
+      _ = seed_net_scenario(user, 500.0, 50.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Two zero-line <line> elements exist on the chart: a faint one
+      # at y=135 used as a global gridline (rendered before any path)
+      # and the stronger dashed one at the same y used as the net
+      # overlay's reference (rendered right after the net path). We
+      # match either — both must be at y=135. The regex captures the
+      # whole <line .../> tag in a single group so the per-line checks
+      # below have a string to pattern-match on (without the group,
+      # `capture: :all_but_first` returns an empty capture list and
+      # the per-line `=~` calls fail with a FunctionClauseError on
+      # `[]`).
+      matches =
+        Regex.scan(
+          ~r/(<line[^>]*x1="0"[^>]*x2="800"[^>]*y2="135"[^>]*\/?>)/,
+          html,
+          capture: :all_but_first
+        )
+
+      assert matches != [],
+             "expected at least one chart zero line at y=135"
+
+      Enum.each(matches, fn [line_tag] ->
+        # Both y1 and y2 must be 135. Match in either attribute order
+        # (HEEx emits x1/y1 first by template position, but we don't
+        # rely on it).
+        assert line_tag =~ ~r/y1="135"/,
+               "expected line's y1 to be 135, got: #{line_tag}"
+
+        assert line_tag =~ ~r/y2="135"/,
+               "expected line's y2 to be 135, got: #{line_tag}"
+      end)
     end
   end
 
