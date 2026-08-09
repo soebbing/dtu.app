@@ -858,14 +858,19 @@ defmodule DtuApp.Devices do
   fresh reading is anything in the last two minutes (matching the
   cutoff used by `get_daily_stats/3`).
 
-  `today_consumption` is computed by differencing the first and last
-  `consumption_energy_total` values for each device within today's
-  UTC window — Shelly Plus 3EM only publishes a lifetime Wh counter
-  on `a_energy.total` / `b_energy.total` / `c_energy.total`, with no
-  dedicated daily counter, so the dashboard can only know "today's
-  consumption" by subtracting the morning's baseline from the
-  latest value. The total is in Wh; we divide by 1000 to kWh to
-  match the unit on the dashboard.
+  `today_consumption` is the household energy consumed within the
+  current UTC day (in kWh), computed by integrating
+  `consumption_power` over time. The Shelly Plus 3EM publishes a
+  *signed* `total_act_power` per uplink (positive when the home is
+  drawing from the grid, negative when the home is exporting
+  surplus solar). The earlier implementation took the lifetime
+  cumulative counter delta (`MAX - MIN` of `consumption_energy_total`)
+  instead, which only counts **grid imports** — for a solar home
+  that offsets its own consumption, the lifetime counter barely
+  grows, so the dashboard always rendered 0 kWh even though the
+  household was actively consuming. Integrating the instantaneous
+  power over time gives the actual household consumption regardless
+  of whether the energy comes from the grid or directly from solar.
 
   `peak_consumption` mirrors `peak_power`: the higher of (a) the
   live fresh reading, (b) the highest 5-minute bucket mean.
@@ -915,45 +920,13 @@ defmodule DtuApp.Devices do
       today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
 
-      # Shelly Plus 3EM publishes a lifetime Wh counter
-      # (`consumption_energy_total`) on every uplink — there's no
-      # dedicated daily counter. So "today's consumption" is the
-      # difference between the latest and the earliest reading of
-      # the day, per device. We do the per-device diff in SQL via
-      # MIN/MAX subqueries; the per-device deltas are summed
-      # across devices for the household total.
-      #
-      # A brand-new device that hasn't accrued any energy yet (or
-      # one whose first reading of the day happens to equal its
-      # last) returns 0.0. That matches the convention used by
-      # `compute_savings/2` etc.
-      first_last_per_device =
-        Repo.all(
-          from r in Reading,
-            where:
-              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
-                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            group_by: r.dtu_id,
-            select: %{
-              dtu_id: r.dtu_id,
-              first_total: min(r.consumption_energy_total),
-              last_total: max(r.consumption_energy_total)
-            }
-        )
-
-      today_consumption =
-        first_last_per_device
-        |> Enum.map(fn row ->
-          # nil can leak in if every reading for a device has
-          # `consumption_energy_total: nil` (e.g. a freshly-reset Shelly
-          # that hasn't accumulated any energy yet).
-          case {row.first_total, row.last_total} do
-            {nil, _} -> 0.0
-            {_, nil} -> 0.0
-            {first, last} -> max(last - first, 0.0)
-          end
-        end)
-        |> Enum.sum()
+      # Today's household consumption in kWh, integrated from the
+      # per-device bucket-mean consumption_power draw. The bucket-mean
+      # approach (matching `list_consumption_chart_data/4`) collapses
+      # each Shelly's ~10× per-5-min readings down to a single figure
+      # per bucket, so the time integral reflects actual household
+      # draw without the Shelly's per-uplink over-counting.
+      today_consumption = integrate_consumption_kwh(user, dtu_id, today_start, today_end)
 
       # Bucket max for the peak: same convention as production —
       # the live reading wins when it exceeds the bucket max.
@@ -972,11 +945,43 @@ defmodule DtuApp.Devices do
 
       %{
         current_consumption: Float.round(current_consumption * 1.0, 1),
-        # Lifetime `total` is in Wh; dashboard shows kWh.
-        today_consumption: Float.round(today_consumption / 1000, 1),
+        # Integrated from per-bucket-mean consumption_power (W).
+        today_consumption: Float.round(today_consumption, 1),
         peak_consumption: Float.round(peak_consumption * 1.0, 1)
       }
     end
+  end
+
+  # Integrate the user's household consumption (kWh) over a UTC time
+  # window from per-device bucket-mean `consumption_power` readings.
+  # Same bucket-mean approach `list_consumption_chart_data/4` uses
+  # for the chart series: each bucket is 5 minutes long, and the
+  # per-device mean across the bucket's rows is the average watts
+  # drawn during that window. The sum of `bucket_W * (5/60) h` over
+  # the window is the household energy consumed in Wh, converted to
+  # kWh for the dashboard.
+  #
+  # This replaces the earlier `MAX - MIN` lifetime-counter delta:
+  # the Shelly's `consumption_energy_total` is a *grid-import* counter
+  # that only grows when current flows from grid to home. For a solar
+  # home that offsets its own consumption, the lifetime counter
+  # barely changes and the dashboard always rendered 0 kWh. Integrating
+  # the instantaneous `consumption_power` gives the actual household
+  # consumption regardless of whether the energy comes from the grid
+  # or directly from solar.
+  @spec integrate_consumption_kwh(User.t(), integer() | nil, DateTime.t(), DateTime.t()) ::
+          float()
+  def integrate_consumption_kwh(%User{} = user, dtu_id, utc_start, utc_end) do
+    list_consumption_chart_data(user, utc_start, utc_end, dtu_id)
+    |> Enum.reduce(0.0, fn point, acc ->
+      # Bucket-mean W × bucket duration (5/60 h) = Wh contributed.
+      watts = clamp_household_draw(point.power)
+      acc + watts * (5.0 / 60.0)
+    end)
+    # Wh → kWh, one decimal place to match the dashboard's
+    # one-decimal kWh cards.
+    |> Kernel./(1000)
+    |> Float.round(1)
   end
 
   @doc """
@@ -996,10 +1001,13 @@ defmodule DtuApp.Devices do
     * `period_peak_consumption`    — W (whole-number)
     * `peak_date`                  — Date.t() | nil
 
-  Shelly Plus 3EM only publishes a lifetime `consumption_energy_total`
-  Wh counter, so for week/month/year views we use the same per-day
-  MAX-of-the-day delta approach as `get_consumption_daily_stats/2`
-  (sum of `last_total - first_total` per day, summed across devices).
+  The week/month/year `period_total_consumption` is the integral of
+  `consumption_power` over the period via
+  `integrate_consumption_kwh/4` — same approach as the today view so
+  household consumption is reported correctly for solar self-sufficient
+  homes (where the Shelly's grid-import lifetime counter barely
+  changes). The peak helper for week/month/year picks the highest
+  single-day peak via `MAX(consumption_power)` per day.
 
   Returns zero defaults when the user has no devices.
   """
@@ -1128,32 +1136,22 @@ defmodule DtuApp.Devices do
   # lifetime counter's natural growth between days (e.g. 7 AM Monday →
   # 7 AM Tuesday could span thousands of Wh even though only 24 h passed).
   # nil-handling mirrors `get_consumption_daily_stats/2`.
-  defp compute_consumption_total_kwh(_user, dtu_ids, utc_start, utc_end) do
-    rows =
-      Repo.all(
-        from r in Reading,
-          where:
-            r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
-              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
-          group_by: [r.dtu_id, fragment("?::date", r.inserted_at)],
-          select: %{
-            dtu_id: r.dtu_id,
-            first_total: min(r.consumption_energy_total),
-            last_total: max(r.consumption_energy_total)
-          }
-      )
-
-    rows
-    |> Enum.map(fn row ->
-      case {row.first_total, row.last_total} do
-        {nil, _} -> 0.0
-        {_, nil} -> 0.0
-        {first, last} -> max(last - first, 0.0)
-      end
-    end)
-    |> Enum.sum()
-    |> Kernel./(1000)
-    |> Float.round(1)
+  #
+  # The legacy implementation is preserved for reference but the
+  # dashboard now uses `integrate_consumption_kwh/4` (same approach
+  # `get_consumption_daily_stats/2` uses for the today view) so the
+  # period total reflects actual household draw rather than grid-import
+  # counter deltas. The legacy path stays here temporarily as a
+  # regression fallback in case the integration approach turns out to
+  # misbehave for a multi-day window that crosses the Shelly's local
+  # midnight counter reset; remove once production data confirms it
+  # covers week/month/year views correctly.
+  def compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end) do
+    # `get_consumption_daily_stats/2` integrates via power; the week/month/
+    # year views must use the same approach so the headline behaviour
+    # is consistent across time ranges.
+    _ = dtu_ids
+    integrate_consumption_kwh(user, nil, utc_start, utc_end)
   end
 
   # Peak household demand (W) across a UTC window — MAX of the

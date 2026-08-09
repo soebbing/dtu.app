@@ -1407,10 +1407,32 @@ defmodule DtuApp.DevicesTest do
 
       now = DateTime.utc_now()
 
-      # Fresh reading — wins current_consumption. We insert this FIRST
-      # so the bumped-on-collision path isn't triggered; the older
-      # reading below is then placed in a *different* 5-min bucket so
-      # the bucket-max-vs-live-current comparison picks the older one.
+      # 50 readings, one per 5-min bucket, each at 624 W. Each
+      # reading's `inserted_at` falls in a different bucket (timestamps
+      # 5 min apart, so the bucket key `unix / 300` differs by 1 across
+      # the row). 50 buckets × 624 W × (5/60 h) = 2_600 Wh = 2.6 kWh.
+      # Microsecond offsets keep the composite PK unique.
+      for idx <- 0..49 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 624.0,
+            inserted_at:
+              now
+              |> DateTime.add(-(idx * 300), :second)
+              |> Map.put(:microsecond, {0, 0})
+          })
+      end
+
+      # 76 W reading — fresher, picks the current_consumption card. The
+      # 76 W < 624 W so it doesn't bump the day's peak (which the
+      # 624 W bucket-mean already wins). Insert 1 µs after `now` so
+      # the PK doesn't collide with the previous reading in the same
+      # second (the schema's `bump_on_pk_collision` retries would
+      # otherwise race here).
       {:ok, _} =
         Devices.create_reading(%{
           dtu_id: device.id,
@@ -1418,44 +1440,36 @@ defmodule DtuApp.DevicesTest do
           mppt_index: 0,
           power_type: "consumption",
           consumption_power: 76.0,
-          consumption_energy_total: 1_234_567.0,
-          inserted_at: now
-        })
-
-      # An older reading — 10 minutes back so it falls in its own
-      # 5-min bucket from the fresh reading. This bucket's mean is just
-      # 200 W (it's the only reading in that bucket), so the chart's
-      # `bucket_max = 200`, exceeding the live `current_consumption = 76`.
-      # `peak_consumption = max(76, 200) = 200`.
-      {:ok, _} =
-        Devices.create_reading(%{
-          dtu_id: device.id,
-          inverter_serial: "em:0",
-          mppt_index: 0,
-          power_type: "consumption",
-          consumption_power: 200.0,
-          consumption_energy_total: 1_232_000.0,
-          inserted_at: DateTime.add(now, -600, :second)
+          inserted_at: now |> Map.put(:microsecond, {1, 0})
         })
 
       stats = Devices.get_consumption_period_stats(user, device.id, "today", nil)
 
       assert_in_delta stats.current_consumption, 76.0, 0.1
 
-      # today_consumption: latest_total - earliest_total = 1_234_567 - 1_232_000 = 2567 Wh = 2.567 kWh ≈ 2.6 kWh
+      # today_consumption: 50 buckets × 624 W × (5/60 h) = 2_600 Wh =
+      # 2.6 kWh. The integration replaces the old
+      # `consumption_energy_total` lifetime-counter delta, which only
+      # grew on grid imports and stayed 0 for solar self-sufficient
+      # homes.
       assert_in_delta stats.today_consumption, 2.6, 0.1
-      # Peak across today's buckets (200 W from the older reading).
-      assert_in_delta stats.peak_consumption, 200.0, 0.1
+      # Peak across today's buckets (624 W from the 50-reading bucket).
+      assert_in_delta stats.peak_consumption, 624.0, 0.1
       # The mirror fields also carry the same values.
       assert_in_delta stats.period_total_consumption, 2.6, 0.1
-      assert_in_delta stats.period_peak_consumption, 200.0, 0.1
+      assert_in_delta stats.period_peak_consumption, 624.0, 0.1
       assert stats.peak_date == Date.utc_today()
     end
 
     test "day view with explicit selected_period computes the day-local totals" do
-      # Pins the day view's "Total Consumption" card: a closed-day window
-      # for the lifetime-counter delta. Reading the counter at midnight
-      # and again at 23:59 should produce ~24 kWh consumed.
+      # Pins the day view's "Total Consumption" card: a closed-day
+      # window for the bucket-mean consumption_power integration.
+      # The legacy implementation took the lifetime-counter delta
+      # (`MAX - MIN` of `consumption_energy_total`), which only grew
+      # on grid imports and stayed 0 for solar self-sufficient homes.
+      # The new approach integrates the bucket-mean consumption_power
+      # over time so household consumption is reported correctly
+      # regardless of solar self-sufficiency.
       user = DtuApp.AccountsFixtures.user_fixture()
 
       device =
@@ -1466,19 +1480,27 @@ defmodule DtuApp.DevicesTest do
 
       target_date = ~D[2026-07-15]
 
-      # 5 kWh consumed over the day: 12_345_678 Wh at start of day,
-      # 12_370_678 Wh at end of day.
-      {:ok, _} =
-        Devices.create_reading(%{
-          dtu_id: device.id,
-          inverter_serial: "em:0",
-          mppt_index: 0,
-          power_type: "consumption",
-          consumption_power: 250.0,
-          consumption_energy_total: 12_345_678.0,
-          inserted_at: DateTime.new!(target_date, ~T[00:01:00])
-        })
+      # 60 readings, one per 5-min bucket, each at 5000 W. Each
+      # reading is in its own 5-min bucket (timestamps 5 min apart)
+      # so the bucket mean equals the single reading. 60 buckets ×
+      # 5000 W × (5/60 h) = 25_000 Wh = 25.0 kWh.
+      for idx <- 0..59 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 5000.0,
+            inserted_at:
+              DateTime.new!(target_date, ~T[00:00:00])
+              |> DateTime.add(idx * 300, :second)
+              |> Map.put(:microsecond, {0, idx})
+          })
+      end
 
+      # A 300 W reading that the helper should pick as the day's peak
+      # (lower than 5000 W so it doesn't dominate the bucket mean).
       {:ok, _} =
         Devices.create_reading(%{
           dtu_id: device.id,
@@ -1486,24 +1508,28 @@ defmodule DtuApp.DevicesTest do
           mppt_index: 0,
           power_type: "consumption",
           consumption_power: 300.0,
-          consumption_energy_total: 12_370_678.0,
-          inserted_at: DateTime.new!(target_date, ~T[23:30:00])
+          inserted_at: DateTime.new!(target_date, ~T[23:55:00])
         })
 
       stats = Devices.get_consumption_period_stats(user, device.id, "day", target_date)
 
-      # 12_370_678 - 12_345_678 = 25_000 Wh = 25.0 kWh
+      # 60 × 5000 W × (5/60 h) = 25_000 Wh = 25.0 kWh
       assert_in_delta stats.period_total_consumption, 25.0, 0.1
-      # Peak across the day's consumption points — both are fresh, so
-      # the higher (300 W) wins.
-      assert_in_delta stats.period_peak_consumption, 300.0, 0.1
+      # Peak across the day's consumption points — the 5000 W bucket
+      # mean dominates over the single 300 W reading.
+      assert_in_delta stats.period_peak_consumption, 5000.0, 0.1
       assert stats.peak_date == target_date
     end
 
-    test "week view computes period_total across multiple days via lifetime-counter deltas" do
-      # Three days of readings: each day has its own first/last
-      # consumption_energy_total, and the period_total sums the
-      # per-day deltas.
+    test "week view integrates period_total across multiple days via consumption_power" do
+      # Three days of readings, each with 12 × 5-min buckets. The
+      # bucket-mean consumption_power integration across the week
+      # sums the per-bucket Wh contributions. The legacy implementation
+      # took per-day lifetime-counter deltas which only grew on grid
+      # imports — for a solar self-sufficient home the dashboard
+      # always rendered 0 kWh. The new approach integrates the
+      # bucket-mean consumption_power over time so household
+      # consumption is reported correctly.
       user = DtuApp.AccountsFixtures.user_fixture()
 
       device =
@@ -1514,48 +1540,50 @@ defmodule DtuApp.DevicesTest do
 
       # Week starts Monday 2026-07-13, ends Sunday 2026-07-19.
       week_start = ~D[2026-07-13]
-      week_end = ~D[2026-07-19]
+      _week_end = ~D[2026-07-19]
 
-      # Each day: morning reading (low counter) + evening reading
-      # (higher counter). The deltas across the week sum to (3000 +
-      # 4000 + 5000) Wh = 12.0 kWh.
-      for {date, morning, evening} <- [
-            {~D[2026-07-13], 1_000_000.0, 1_003_000.0},
-            {~D[2026-07-15], 2_000_000.0, 2_004_000.0},
-            {~D[2026-07-17], 3_000_000.0, 3_005_000.0}
+      # Three days, each with 12 buckets at 1000 W:
+      #   12 buckets × 1000 W × (5/60 h) = 1000 Wh = 1.0 kWh per day
+      #   3 days × 1.0 kWh = 3.0 kWh per week
+      # Pick per-bucket power so each day's peak rounds cleanly to
+      # a known value. Day 1: peak 1000 W. Day 2: peak 1500 W.
+      # Day 3: peak 2000 W.
+      for {date, peak_w} <- [
+            {~D[2026-07-13], 1000.0},
+            {~D[2026-07-15], 1500.0},
+            {~D[2026-07-17], 2000.0}
           ] do
-        {:ok, _} =
-          Devices.create_reading(%{
-            dtu_id: device.id,
-            inverter_serial: "em:0",
-            mppt_index: 0,
-            power_type: "consumption",
-            consumption_power: 100.0,
-            consumption_energy_total: morning,
-            inserted_at: DateTime.new!(date, ~T[06:00:00])
-          })
-
-        {:ok, _} =
-          Devices.create_reading(%{
-            dtu_id: device.id,
-            inverter_serial: "em:0",
-            mppt_index: 0,
-            power_type: "consumption",
-            consumption_power: 150.0,
-            consumption_energy_total: evening,
-            inserted_at: DateTime.new!(date, ~T[18:00:00])
-          })
+        # 12 readings per day, one per 5-min bucket. Microsecond
+        # offsets keep the composite PK unique.
+        for idx <- 0..11 do
+          {:ok, _} =
+            Devices.create_reading(%{
+              dtu_id: device.id,
+              inverter_serial: "em:0",
+              mppt_index: 0,
+              power_type: "consumption",
+              consumption_power: peak_w,
+              inserted_at:
+                DateTime.new!(date, ~T[00:00:00])
+                |> DateTime.add(idx * 300, :second)
+                |> Map.put(:microsecond, {0, idx})
+            })
+        end
       end
 
       stats =
         Devices.get_consumption_period_stats(user, device.id, "week", week_start)
 
-      # 3000 + 4000 + 5000 = 12_000 Wh = 12.0 kWh
-      assert_in_delta stats.period_total_consumption, 12.0, 0.1
-      # peak_per_day: 2026-07-15 was 150 W (highest single reading across
-      # the week).
-      assert_in_delta stats.period_peak_consumption, 150.0, 0.1
-      assert stats.peak_date == ~D[2026-07-15]
+      # 3 days × 12 buckets × peak_W × (5/60 h):
+      #   12 × 1000 × 1/12 = 1000 Wh = 1.0 kWh (day 1)
+      #   12 × 1500 × 1/12 = 1500 Wh = 1.5 kWh (day 2)
+      #   12 × 2000 × 1/12 = 2000 Wh = 2.0 kWh (day 3)
+      #   total = 4.5 kWh
+      assert_in_delta stats.period_total_consumption, 4.5, 0.1
+      # The 2026-07-17 day (peak 2000 W) wins the per-day peak. The
+      # peak helper returns the maximum single-day peak.
+      assert_in_delta stats.period_peak_consumption, 2000.0, 0.1
+      assert stats.peak_date == ~D[2026-07-17]
     end
 
     test "production rows are excluded from the period totals" do
@@ -1606,6 +1634,114 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.peak_consumption, 76.0, 0.1
       # peak_date stays at today.
       assert stats.peak_date == today
+    end
+  end
+
+  describe "consumption stats — solar self-sufficient home (regression)" do
+    # User-reported bug: a Shelly Plus 3EM paired with a solar inverter
+    # saw the dashboard's "Today's Consumption" card always read 0.0 kWh
+    # even though the household was actively consuming energy. The cause:
+    # `get_consumption_daily_stats/2` derived today's kWh from the
+    # Shelly's lifetime `consumption_energy_total` counter delta
+    # (`MAX - MIN`). That counter only grows when current flows from
+    # the grid into the home — for a solar self-sufficient home (or any
+    # home exporting more than it imports), the lifetime counter barely
+    # changes and the dashboard always rendered 0 kWh. The fix
+    # integrates the per-bucket-mean `consumption_power` over time
+    # instead, which reports actual household draw regardless of
+    # whether the energy came from the grid or directly from solar.
+    test "today_consumption integrates bucket-mean consumption_power over time" do
+      # 12 readings, one per 5-min bucket, each at 1000 W. Spans 60
+      # minutes. Bucket-mean × (5/60 h) = 83.33 Wh per bucket × 12
+      # buckets = 1000 Wh = 1.0 kWh.
+      # `consumption_energy_total` stays at nil — this is the bug shape:
+      # the legacy lifetime-counter delta would have returned 0.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      # Anchor the 12 readings inside today's UTC window regardless of
+      # when the test runs. The day window is [00:00 UTC, 23:59:59 UTC];
+      # anchor at 12:00 UTC so the 12 readings (each 5 minutes apart,
+      # 55 minutes total) all land between 12:00 and 12:55 UTC — well
+      # inside today.
+      anchor =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      for idx <- 0..11 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 1000.0,
+            # nil — never set. Simulates a freshly-reset Shelly or a
+            # firmware that doesn't populate the energy_total field.
+            consumption_energy_total: nil,
+            inserted_at: DateTime.add(anchor, idx * 300, :second)
+          })
+      end
+
+      stats = Devices.get_consumption_daily_stats(user)
+
+      # Without the fix: today_consumption = 0.0 (lifetime counter is
+      # nil across all rows, so MIN/MAX → NULL → 0.0).
+      # With the fix: today_consumption = 12 buckets × 1000 W × (5/60 h)
+      # = 1000 Wh = 1.0 kWh.
+      assert_in_delta stats.today_consumption, 1.0, 0.1
+      assert_in_delta stats.current_consumption, 0.0, 0.1
+    end
+
+    test "today_consumption clamps negative consumption_power to zero (solar export)" do
+      # A Shelly reporting `total_act_power = -300 W` (the home is
+      # net-exporting 300 W through the meter) should not contribute a
+      # negative Wh to today's consumption. Pre-clamp the bucket
+      # integration would have subtracted 300 W × (5/60 h) = -25 Wh
+      # from today's total — exactly the same bug as the chart's "Net
+      # flow cap at +production" guard (see `clamp_household_draw/1`).
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      # Anchor the readings inside today's UTC window.
+      anchor =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      for idx <- 0..2 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            # Negative — typical for a home exporting surplus solar.
+            # The clamp converts each reading to 0 W, so the integration
+            # is 0 Wh per bucket (not -25 Wh).
+            consumption_power: -300.0,
+            inserted_at: DateTime.add(anchor, idx * 300, :second)
+          })
+      end
+
+      stats = Devices.get_consumption_daily_stats(user)
+
+      # All 3 buckets clamp to 0 W → today_consumption = 0.0 kWh.
+      assert_in_delta stats.today_consumption, 0.0, 0.0
+      # current_consumption is 0 because the only fresh readings are
+      # negative (all older than 2 minutes), and clamp pushes them to 0.
+      assert_in_delta stats.current_consumption, 0.0, 0.1
     end
   end
 
