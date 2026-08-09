@@ -23,7 +23,19 @@ const Notifications = {
   },
 
   handleNotify(e) {
-    const payload = (e.detail || {})[0]
+    // The LiveView server-push pipeline does
+    //   `dispatchEvent(window, "phx:notify", { detail: payload })`
+    // — so `e.detail` IS the payload object, not an array of
+    // payloads. Pre-fix this read `(e.detail || {})[0]`, which on a
+    // plain object returned the first enumerable KEY as a string
+    // (e.g. "event" for the test payload). The next check
+    // `typeof payload !== "object"` then returned immediately,
+    // silently swallowing every notification. The "Test
+    // notification sent" flash the user saw was the server-side
+    // `:info` flash from `handle_event("test_notification", ...)`,
+    // not the JS hook firing — the hook was never reached past
+    // this line.
+    const payload = e.detail || {}
     if (!payload || typeof payload !== "object") return
     if (typeof window.Notification === "undefined") return
     if (window.Notification.permission !== "granted") return

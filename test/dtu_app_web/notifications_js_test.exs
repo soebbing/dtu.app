@@ -10,7 +10,7 @@ defmodule DtuAppWeb.NotificationsJsTest do
   tests below read the source file as text and assert the
   invariants that keep the user-visible flow working.
 
-  Two regressions these tests guard:
+  Three regressions these tests guard:
 
     1. The "test" event must NOT be deduped. The `/notifications`
        page exposes a "Send test notification" button the user
@@ -28,6 +28,16 @@ defmodule DtuAppWeb.NotificationsJsTest do
        "Test notification" / "If you can read this..." message.
        Same root cause affected the dashboard's
        `dtu_connection` events.
+
+    3. The `handleNotify` hook must read the payload via
+       `e.detail` (the object), not `e.detail[0]` (the first
+       enumerable key as a string). Pre-fix, the hook read
+       `(e.detail || {})[0]` which on a plain object returned the
+       first key like `"event"`. The next
+       `typeof payload !== "object"` guard then short-circuited
+       the whole handler, so no system notification ever fired
+       since the hook was first written. This is the bug that
+       survived PR #73.
 
   The tests are substring/regex matches against the source on
   disk. Same pattern as `PwaSafeAreaTest` and `ServiceWorkerTest`
@@ -71,6 +81,52 @@ defmodule DtuAppWeb.NotificationsJsTest do
                ~r/if\s*\(\s*payload\.event\s*!==\s*["']test["']\s*\)\s*\{[\s\S]*?storageMark/s,
              "expected `storageMark` to be gated by the `event !== 'test'` " <>
                "check so the test event skips dedup entirely."
+    end
+  end
+
+  describe "handleNotify — payload extraction (regression for the silent-swallow bug)" do
+    # LiveView's server-push pipeline does
+    # `dispatchEvent(window, "phx:notify", { detail: payload })`,
+    # so `e.detail` IS the payload object — not an array of
+    # payloads. Pre-fix the hook read `(e.detail || {})[0]`, which
+    # on a plain object returned the first enumerable KEY as a
+    # string (e.g. `"event"` for the test payload). The next
+    # guard `typeof payload !== "object"` then short-circuited the
+    # whole handler, so no system notification ever fired — the
+    # user only saw the server-side `:info` flash from
+    # `handle_event("test_notification", ...)`.
+    #
+    # The fix is one line: `e.detail` (not `e.detail[0]`). These
+    # tests pin both the corrected extraction AND the absence of
+    # the buggy `e.detail[0]` pattern, so a future refactor that
+    # re-introduces the bug fails the test loudly.
+
+    test "extracts payload via `e.detail` (not `e.detail[0]`)", %{source: source} do
+      assert source =~ ~r/const\s+payload\s*=\s*e\.detail\s*\|\|\s*\{\s*\}\s*$/m,
+             "expected `handleNotify` to extract the payload via `e.detail` " <>
+               "(LiveView's `dispatchEvent` puts the payload there directly). " <>
+               "Pre-fix the code read `e.detail[0]` which returned the first " <>
+               "enumerable key as a string and the next `typeof payload !== " <>
+               "'object'` guard then silently returned."
+    end
+
+    test "does not read `e.detail[0]` (the broken array-style extraction)", %{source: source} do
+      refute source =~ ~r/e\.detail\s*\[\s*0\s*\]/,
+             "`e.detail[0]` reads the first enumerable KEY on a plain object " <>
+               "(e.g. \"event\" for the test payload) as a string. The next " <>
+               "`typeof payload !== 'object'` guard then silently returns. " <>
+               "This is the bug that prevented any system notification " <>
+               "from firing since the hook was first written."
+    end
+
+    test "the bundled app.js also drops the e.detail[0] bug", %{bundled: bundled} do
+      if bundled == "" do
+        IO.puts("bundle not built — skipping (priv/static/assets/js/app.js missing)")
+      else
+        refute bundled =~ ~r/e\.detail\s*\[\s*0\s*\]/,
+               "expected the minified bundle to drop the e.detail[0] bug. " <>
+                 "Re-run `mix esbuild dtu_app` to refresh the bundle."
+      end
     end
   end
 
