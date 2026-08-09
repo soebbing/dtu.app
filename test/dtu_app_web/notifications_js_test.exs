@@ -10,7 +10,7 @@ defmodule DtuAppWeb.NotificationsJsTest do
   tests below read the source file as text and assert the
   invariants that keep the user-visible flow working.
 
-  Three regressions these tests guard:
+  Four regressions these tests guard:
 
     1. The "test" event must NOT be deduped. The `/notifications`
        page exposes a "Send test notification" button the user
@@ -38,6 +38,16 @@ defmodule DtuAppWeb.NotificationsJsTest do
        the whole handler, so no system notification ever fired
        since the hook was first written. This is the bug that
        survived PR #73.
+
+    4. The hook must log every interesting state transition
+       (event received, payload extracted, permission check,
+       dedup hit, Notification result) under a `[Notifications]`
+       console tag. This hook has had three silent failures in a
+       row. Without diagnostic logging, the only way to find the
+       next bug is to add logging after the fact, push, and ask
+       the user to retest. Logging at the source means the user
+       can see in DevTools exactly which guard short-circuited
+       the click and report back the concrete error.
 
   The tests are substring/regex matches against the source on
   disk. Same pattern as `PwaSafeAreaTest` and `ServiceWorkerTest`
@@ -110,8 +120,20 @@ defmodule DtuAppWeb.NotificationsJsTest do
                "'object'` guard then silently returned."
     end
 
-    test "does not read `e.detail[0]` (the broken array-style extraction)", %{source: source} do
-      refute source =~ ~r/e\.detail\s*\[\s*0\s*\]/,
+    test "does not read `e.detail[0]` in code (the broken array-style extraction)", %{
+      source: source
+    } do
+      # Strip `//` and `/* */` comments so the regression guard only
+      # catches *code* references to `e.detail[0]`. The moddoc and
+      # the bug-history comment in the source both mention
+      # `e.detail[0]` by name — those should not trigger the
+      # regression guard, only actual `obj[0]` reads on `e.detail`.
+      code_only =
+        source
+        |> String.replace(~r/\/\*[\s\S]*?\*\//, "")
+        |> String.replace(~r|\/\/[^\n]*|, "")
+
+      refute code_only =~ ~r/e\.detail\s*\[\s*0\s*\]/,
              "`e.detail[0]` reads the first enumerable KEY on a plain object " <>
                "(e.g. \"event\" for the test payload) as a string. The next " <>
                "`typeof payload !== 'object'` guard then silently returns. " <>
@@ -119,10 +141,12 @@ defmodule DtuAppWeb.NotificationsJsTest do
                "from firing since the hook was first written."
     end
 
-    test "the bundled app.js also drops the e.detail[0] bug", %{bundled: bundled} do
+    test "the bundled app.js also drops the e.detail[0] bug (in code)", %{bundled: bundled} do
       if bundled == "" do
         IO.puts("bundle not built — skipping (priv/static/assets/js/app.js missing)")
       else
+        # The minified bundle has no comments to strip — it should
+        # not contain `e.detail[0]` at all.
         refute bundled =~ ~r/e\.detail\s*\[\s*0\s*\]/,
                "expected the minified bundle to drop the e.detail[0] bug. " <>
                  "Re-run `mix esbuild dtu_app` to refresh the bundle."
@@ -231,6 +255,105 @@ defmodule DtuAppWeb.NotificationsJsTest do
                "expected the bundled app.js to contain the `if (event !== 'test')` " <>
                  "guard. Run `mix esbuild dtu_app` to refresh the bundle."
       end
+    end
+  end
+
+  describe "diagnostic logging — required to debug future notification issues" do
+    # This hook has had three silent failures in a row (e.detail[0]
+    # extraction, missing formatPayload branches, missing dedup
+    # bypass). Without `console.log`s the user has no way to tell
+    # whether the event reached the hook, whether the payload is
+    # well-formed, or whether the dedup branch swallowed the event.
+    # Open DevTools → Console to see the live trace.
+    test "logs the phx:notify event with the [Notifications] tag", %{source: source} do
+      assert source =~ ~r/console\.log\(\s*["']\[Notifications\]\s*phx:notify\s*received/,
+             "expected handleNotify to log the incoming event for diagnostic " <>
+               "tracing. Without it the user has no way to see whether the " <>
+               "event reached the hook at all."
+    end
+
+    test "logs the extracted payload", %{source: source} do
+      assert source =~ ~r/console\.log\(\s*["']\[Notifications\]\s*payload\s*extracted/,
+             "expected handleNotify to log the payload after extraction. " <>
+               "Pin whether the e.detail extraction is returning the right object."
+    end
+
+    test "logs the permission state when it isn't granted", %{source: source} do
+      assert source =~
+               ~r/console\.warn\(\s*\n?\s*["']\[Notifications\]\s*aborting:\s*Notification\.permission/,
+             "expected handleNotify to log Notification.permission when the " <>
+               "permission check fails. The user needs this to distinguish " <>
+               "between 'permission denied' and 'hook didn't fire'."
+    end
+
+    test "logs the dedup-hit reason", %{source: source} do
+      assert source =~ ~r/console\.log\(\s*["']\[Notifications\]\s*aborting:\s*dedup\s*hit/,
+             "expected handleNotify to log dedup hits. Pin whether the test " <>
+               "event was eaten by the dedup branch (which it shouldn't be)."
+    end
+
+    test "logs the new Notification result", %{source: source} do
+      assert source =~ ~r/console\.log\(\s*["']\[Notifications\]\s*Notification\s*created\s*OK/,
+             "expected handleNotify to log the result of new Notification(). " <>
+               "Pin whether the browser actually accepted the call."
+    end
+  end
+
+  describe "iOS detection (PWA must be Add to Home Screen to receive notifications)" do
+    # iOS Safari + Firefox-iOS gate the Web Notifications API behind
+    # the "Add to Home Screen" PWA install. A regular browser tab
+    # has the API *defined* but `new Notification()` no-ops, and
+    # `Notification.permission` is unreliable. Without this
+    # detection the user sees the in-app flash and assumes the
+    # server is broken — when in fact they just need to install
+    # the PWA.
+    test "defines an isIOS() helper on the hook", %{source: source} do
+      assert source =~ ~r/isIOS\(\)\s*\{/,
+             "expected the hook to expose an isIOS() helper so the " <>
+               "diagnostic output can warn iOS users specifically."
+    end
+
+    test "isIOS() matches iPad / iPhone / iPod user agents", %{source: source} do
+      assert source =~ ~r/iPad\|iPhone\|iPod/,
+             "expected isIOS() to detect iPad / iPhone / iPod user agents."
+    end
+
+    test "isIOS() also matches iPad-on-macOS (MacIntel + multi-touch)", %{source: source} do
+      # iPad running macOS in compatibility mode reports
+      # `navigator.platform === "MacIntel"` with multiple touch
+      # points. The dual-flag check catches that.
+      assert source =~
+               ~r/navigator\.platform\s*===\s*["']MacIntel["']\s*&&\s*navigator\.maxTouchPoints/,
+             "expected isIOS() to also catch iPad-on-macOS via the " <>
+               "MacIntel + maxTouchPoints heuristic."
+    end
+
+    test "defines an isInstalledPWA() helper on the hook", %{source: source} do
+      # `display-mode: standalone` is the cross-browser check; the
+      # `navigator.standalone === true` fallback covers older
+      # iOS Safari which doesn't support the media query.
+      assert source =~
+               ~r/isInstalledPWA\(\)\s*\{[\s\S]*?matchMedia\(\s*["']\(display-mode:\s*standalone\)["']\)/,
+             "expected isInstalledPWA() to detect a PWA via " <>
+               "`display-mode: standalone`."
+
+      assert source =~ ~r/navigator\.standalone\s*===\s*true/,
+             "expected isInstalledPWA() to also check navigator.standalone " <>
+               "for iOS Safari which doesn't support the display-mode " <>
+               "media query in older versions."
+    end
+
+    test "logs an iOS-specific warning when the user is on iOS without the PWA installed", %{
+      source: source
+    } do
+      assert source =~ ~r/isIOS\(\)\s*&&\s*!this\.isInstalledPWA\(\)/,
+             "expected the hook to gate the iOS warning on (iOS && !installed) " <>
+               "so non-iOS users don't see it."
+
+      assert source =~ ~r/console\.warn\([\s\S]*?iOS[\s\S]*?installed via Add to Home Screen/,
+             "expected the iOS warning to mention 'Add to Home Screen' so the " <>
+               "user knows what to do. Without that hint they wouldn't know the " <>
+               "OS-level notifications API is gated behind the home-screen install."
     end
   end
 end

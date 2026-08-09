@@ -22,6 +22,28 @@ const Notifications = {
     window.removeEventListener("phx:notify", this.handleNotify)
   },
 
+  // iOS (Safari + Firefox-iOS) gates the Web Notifications API
+  // behind "Add to Home Screen" install. In a regular Safari tab
+  // the API is *defined* but `new Notification()` silently no-ops.
+  // The server-side `Notification.permission` check passes but
+  // nothing fires — the user sees the in-app flash but no OS
+  // notification. Detecting this case in the diagnostic output
+  // saves the user from wondering why the click "did nothing".
+  isIOS() {
+    if (typeof navigator === "undefined") return false
+    return /iPad|iPhone|iPod/.test(navigator.userAgent || "") ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  },
+
+  isInstalledPWA() {
+    if (typeof window === "undefined") return false
+    const standalone =
+      window.matchMedia && window.matchMedia("(display-mode: standalone)").matches
+    const iosStandalone =
+      window.navigator && window.navigator.standalone === true
+    return Boolean(standalone || iosStandalone)
+  },
+
   handleNotify(e) {
     // The LiveView server-push pipeline does
     //   `dispatchEvent(window, "phx:notify", { detail: payload })`
@@ -35,10 +57,51 @@ const Notifications = {
     // `:info` flash from `handle_event("test_notification", ...)`,
     // not the JS hook firing — the hook was never reached past
     // this line.
+    //
+    // Diagnostic logging is intentionally verbose: this hook has
+    // had three subtle bugs in a row (e.detail[0] extraction,
+    // missing formatPayload branches, missing dedup bypass).
+    // Without `console.log`s the user has no way to tell whether
+    // the event reached the hook at all, whether the payload is
+    // well-formed, or whether the dedup branch swallowed the
+    // event. Open DevTools → Console to see the live trace.
+    if (typeof window !== "undefined" && window.console) {
+      console.log("[Notifications] phx:notify received:", e)
+    }
     const payload = e.detail || {}
-    if (!payload || typeof payload !== "object") return
-    if (typeof window.Notification === "undefined") return
-    if (window.Notification.permission !== "granted") return
+    if (typeof window !== "undefined" && window.console) {
+      console.log("[Notifications] payload extracted:", payload)
+      if (this.isIOS() && !this.isInstalledPWA()) {
+        console.warn(
+          "[Notifications] you appear to be on iOS and the PWA is NOT " +
+            "installed via Add to Home Screen. iOS gates the Web " +
+            "Notification API behind the home-screen-installed PWA. " +
+            "Open the home-screen app (not the browser tab) and try again."
+        )
+      }
+    }
+    if (!payload || typeof payload !== "object") {
+      if (typeof window !== "undefined" && window.console) {
+        console.warn("[Notifications] aborting: payload missing or not an object", payload)
+      }
+      return
+    }
+    if (typeof window.Notification === "undefined") {
+      if (typeof window !== "undefined" && window.console) {
+        console.warn("[Notifications] aborting: window.Notification undefined (browser doesn't support Notifications)")
+      }
+      return
+    }
+    if (window.Notification.permission !== "granted") {
+      if (typeof window !== "undefined" && window.console) {
+        console.warn(
+          "[Notifications] aborting: Notification.permission =",
+          window.Notification.permission,
+          "(expected 'granted')"
+        )
+      }
+      return
+    }
 
     const userId = this.el.dataset.userId || "0"
 
@@ -49,11 +112,19 @@ const Notifications = {
     // clicks, silently swallowing every click after the first.
     if (payload.event !== "test") {
       const dedupKey = computeDedupKey(userId, payload)
-      if (storageHas(dedupKey)) return
+      if (storageHas(dedupKey)) {
+        if (typeof window !== "undefined" && window.console) {
+          console.log("[Notifications] aborting: dedup hit for key", dedupKey)
+        }
+        return
+      }
       storageMark(dedupKey)
     }
 
     const {title, body, tag} = formatPayload(payload)
+    if (typeof window !== "undefined" && window.console) {
+      console.log("[Notifications] firing Notification:", {title, body, tag})
+    }
     try {
       const n = new window.Notification(title, {
         body: body,
@@ -61,6 +132,9 @@ const Notifications = {
         icon: "/images/icon-192.png",
         renotify: true
       })
+      if (typeof window !== "undefined" && window.console) {
+        console.log("[Notifications] Notification created OK:", n)
+      }
       n.onclick = () => {
         try {
           window.focus()
@@ -68,10 +142,10 @@ const Notifications = {
           // ignore: page may not be focused
         }
       }
-    } catch (_err) {
-      // Some browsers throw on `new Notification(...)` when the
-      // permission is revoked between the check and the call.
-      // Swallow — the next push_event will retry.
+    } catch (err) {
+      if (typeof window !== "undefined" && window.console) {
+        console.error("[Notifications] new Notification threw:", err)
+      }
     }
   }
 }
