@@ -375,7 +375,15 @@ defmodule DtuApp.Devices do
           bucket_readings
           |> Enum.group_by(fn r -> r.dtu_id end)
           |> Enum.map(fn {dtu_id, series_readings} ->
-            powers = Enum.map(series_readings, fn r -> r.consumption_power || 0.0 end)
+            # `clamp_household_draw/1` filters the Shelly's signed
+            # `total_act_power` to ≥ 0 W so the consumption overlay
+            # never dips below the X-axis when the home is net-
+            # exporting. The net-flow arithmetic still subtracts the
+            # clamped value (see `list_net_chart_data/4`), keeping
+            # "net export" bounded above by total solar production.
+            powers =
+              Enum.map(series_readings, fn r -> clamp_household_draw(r.consumption_power) end)
+
             power = Enum.sum(powers) / length(series_readings)
 
             %{time: time, series: {dtu_id, "em:0", 0, nil}, power: power}
@@ -503,7 +511,16 @@ defmodule DtuApp.Devices do
             |> Enum.filter(fn r -> r.power_type == "consumption" end)
             |> Enum.group_by(fn r -> r.dtu_id end)
             |> Enum.map(fn {_dtu_id, series_readings} ->
-              powers = Enum.map(series_readings, fn r -> r.consumption_power || 0.0 end)
+              # Clamp to household draw (≥ 0 W). When the Shelly sees
+              # reverse flow (solar surplus), `total_act_power` goes
+              # negative — without the clamp, `production_w -
+              # consumption_w` would inflate the "Net export" figure
+              # past total production. With the clamp, household draw
+              # is treated as 0 W during net-export windows and the
+              # net-flow curve caps at +production.
+              powers =
+                Enum.map(series_readings, fn r -> clamp_household_draw(r.consumption_power) end)
+
               mean_power(powers)
             end)
             |> Enum.sum()
@@ -635,7 +652,14 @@ defmodule DtuApp.Devices do
             cond do
               not fresh? -> {p, c}
               r.power_type == "production" -> {p + chart_power_for_mppt(r), c}
-              r.power_type == "consumption" -> {p, c + (r.consumption_power || 0.0)}
+              # Clamp the Shelly's signed `total_act_power` to the
+              # household-draw reading the dashboard reports as
+              # "Current Consumption" (always ≥ 0 W). Without the
+              # clamp, a sunny midday with low draw would render the
+              # "Net export" figure as `production - (-|draw|) =
+              # production + |draw|`, exceeding the inverter's
+              # actual output.
+              r.power_type == "consumption" -> {p, c + clamp_household_draw(r.consumption_power)}
               true -> {p, c}
             end
           end)
@@ -880,7 +904,12 @@ defmodule DtuApp.Devices do
       current_consumption =
         latest_readings
         |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
-        |> Enum.map(&(&1.consumption_power || 0.0))
+        # Clamp each fresh reading to the household-draw reading
+        # (≥ 0 W). The Shelly's `total_act_power` is signed; during
+        # net-export windows it would otherwise show a negative
+        # wattage on the "Current Consumption" card. Multi-device
+        # households sum the clamped values across devices.
+        |> Enum.map(&clamp_household_draw(&1.consumption_power))
         |> Enum.sum()
 
       today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
@@ -1168,7 +1197,11 @@ defmodule DtuApp.Devices do
       list ->
         top = Enum.max_by(list, fn r -> r.peak_w || 0.0 end)
         date = top.date
-        peak_w = top.peak_w || 0.0
+        # The SQL aggregate sees raw `consumption_power`; a Shelly
+        # reporting only reverse-flow (solar surplus) would otherwise
+        # surface a negative per-day peak on the "Peak Demand" card.
+        # Clamp to ≥ 0 W so the card reports household draw.
+        peak_w = clamp_household_draw(top.peak_w)
 
         normalized_date =
           case date do
@@ -1563,6 +1596,31 @@ defmodule DtuApp.Devices do
   defp locale_separators(_), do: {",", "."}
 
   # --- Helpers ----------------------------------------------------------------
+
+  # Clamp `consumption_power` to the household-draw reading the dashboard
+  # expects (≥ 0 W). The Shelly Plus 3EM publishes `total_act_power` as
+  # a SIGNED value — negative when the home is net-exporting (the meter
+  # sees reverse flow), positive when drawing from the grid. The
+  # dashboard, however, treats "consumption" as household draw, which
+  # is intrinsically non-negative. Without this clamp, a sunny midday
+  # with low draw would render the "Current Consumption" stat as a
+  # negative wattage and the consumption overlay would dip below the
+  # chart's X-axis — both confusing. Centralising the clamp here keeps
+  # every helper (`get_consumption_daily_stats/2`,
+  # `list_consumption_chart_data/4`, `list_net_chart_data/4`,
+  # `get_net_flow_stats/2`, the period stats) consistent: callers
+  # don't need to remember to clamp.
+  #
+  # Note: the net-flow arithmetic still subtracts the *clamped* draw,
+  # so the headline "Net export" caps at +production (not
+  # +production + |reverse-flow|). That's the intended behaviour —
+  # the dashboard's net flow answers "how much am I exporting beyond
+  # what my house is using?", which is bounded above by total solar
+  # production.
+  @spec clamp_household_draw(float() | nil) :: float()
+  def clamp_household_draw(nil), do: 0.0
+  def clamp_household_draw(value) when is_number(value) and value < 0.0, do: 0.0
+  def clamp_household_draw(value) when is_number(value), do: value * 1.0
 
   # Pick the right "power" field for a row depending on its MPPT index.
   # AC aggregate rows (`mppt_index = 0` — AhoyDTU ch0 / OpenDTU realtime/data)

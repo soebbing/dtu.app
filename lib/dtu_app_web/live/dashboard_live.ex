@@ -32,7 +32,7 @@ defmodule DtuAppWeb.DashboardLive do
 
     socket =
       socket
-      |> assign(:devices, Devices.list_devices(user))
+      |> refresh_devices(user)
       |> assign(:selected_dtu_id, nil)
       # `live` is true for the auto-refreshing Today view.
       # `granularity` drives the historical stepper (day/week/month/year).
@@ -201,7 +201,8 @@ defmodule DtuAppWeb.DashboardLive do
     # a DTU that wakes up but stays MQTT-connected wouldn't flip from
     # offline to online until the next reconnect.
     socket =
-      assign(socket, :devices, Devices.list_devices(user))
+      socket
+      |> refresh_devices(user)
       |> maybe_reassign_dashboard_data(user, selected_id)
 
     {:noreply, socket}
@@ -226,7 +227,7 @@ defmodule DtuAppWeb.DashboardLive do
       end
     end
 
-    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
+    {:noreply, refresh_devices(socket, user)}
   end
 
   @impl true
@@ -251,7 +252,7 @@ defmodule DtuAppWeb.DashboardLive do
       end
     end
 
-    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
+    {:noreply, refresh_devices(socket, user)}
   end
 
   # Every MQTT uplink (and every CONNECT / DISCONNECT) broadcasts a
@@ -262,7 +263,7 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info({:dtu_seen, _device_id}, socket) do
     user = socket.assigns.current_scope.user
-    {:noreply, assign(socket, :devices, Devices.list_devices(user))}
+    {:noreply, refresh_devices(socket, user)}
   end
 
   @impl true
@@ -327,6 +328,44 @@ defmodule DtuAppWeb.DashboardLive do
       tag: "dtu:#{name}"
     })
   end
+
+  # Re-fetch the user's devices and recompute the scenario flags
+  # (`@has_inverter?`, `@has_shelly?`) that drive the dashboard's
+  # conditional rendering — which stat-card rows appear, whether
+  # the chart plots a production curve, and whether the net-flow
+  # row is shown.
+  #
+  # Called from every handle_info/2 that already updated
+  # `@devices` (a reading, a CONNECT / DISCONNECT, a status tick,
+  # mount/3). Centralising the flag update keeps the four call
+  # sites in sync — adding a new code path that touches
+  # `@devices` only needs to call this helper, not duplicate the
+  # kind-classification logic.
+  #
+  # The classification mirrors `DtuApp.Devices.Dtu`'s `@kinds`
+  # (`:opendtu`, `:ahoydtu`, `:shelly3em`). New kinds added to
+  # the schema should extend `inverter_kinds?/1` /
+  # `shelly_kinds?/1` here — the dashboard's scenario logic is
+  # the single consumer that needs to distinguish them.
+  defp refresh_devices(socket, user) do
+    devices = Devices.list_devices(user)
+
+    socket
+    |> assign(:devices, devices)
+    |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
+    |> assign(:has_shelly?, Enum.any?(devices, &shelly_kind?/1))
+  end
+
+  # Inverter kinds: DTUs that report `ac_power` / `yield_day` and
+  # contribute to the production stats and chart. Currently
+  # OpenDTU and AhoyDTU.
+  defp inverter_kind?(%Devices.Dtu{kind: kind}), do: kind in [:opendtu, :ahoydtu]
+  defp inverter_kind?(_), do: false
+
+  # Shelly kinds: DTUs that publish `consumption_power` from a
+  # paired energy meter. Currently only the Plus 3EM Gen3+.
+  defp shelly_kind?(%Devices.Dtu{kind: :shelly3em}), do: true
+  defp shelly_kind?(_), do: false
 
   # Helper to construct SVG line chart coordinates and range.
   # `local_date` is the user-facing date in the browser's timezone
@@ -1561,8 +1600,18 @@ defmodule DtuAppWeb.DashboardLive do
           </div>
 
           <!-- Stats Grid -->
-          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <%!-- First slot: live view shows "Current Generation" (the
+          <%!--
+            Production row of the stat-card grid: visible only when the user
+            has at least one inverter-kind DTU (`kind in [:opendtu, :ahoydtu]`).
+            A Shelly-only user has no production telemetry, so this row
+            would render four "0 W / 0.0 kWh / €0.00" placeholders that
+            confuse rather than inform. The consumption row beneath still
+            shows their household draw, and the consumption overlay on the
+            chart still plots.
+          --%>
+          <%= if @has_inverter? do %>
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
+              <%!-- First slot: live view shows "Current Generation" (the
                  AC aggregate across all the user's inverters — the
                  headline instantaneous wattage). Historical day view
                  swaps in "Total Yield" (the day's kWh total, which
@@ -1572,198 +1621,31 @@ defmodule DtuAppWeb.DashboardLive do
                  commit — users wanted the live draw to read as "Current
                  Generation" at the top and the consumption area to lead
                  with the kWh figures instead. --%>
-            <%= if @live do %>
-              <!-- Current Power (Today only) -->
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                      <.icon name="hero-bolt" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Current Generation")}
-                        </dt>
-                        <dd class="flex items-baseline space-x-2">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-current-power"
-                          >
-                            {Devices.format_number(@stats.current_power, 0, @locale)} W
-                          </div>
-                          <%= if @stats.current_power > 0 do %>
-                            <span class="flex h-2 w-2 relative" id="pulse-current-power">
-                              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                              <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                            </span>
-                          <% end %>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            <% else %>
-              <!-- Total Yield (Historical day view) -->
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                      <.icon name="hero-bolt" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Total Yield")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-total-yield"
-                          >
-                            {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
-                          </div>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            <% end %>
-
-            <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
-            <%= cond do %>
-              <% @live -> %>
+              <%= if @live do %>
+                <!-- Current Power (Today only) -->
                 <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                   <div class="px-4 py-5 sm:p-6">
                     <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                        <.icon name="hero-sun" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Today's Total Yield")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-today-yield"
-                            >
-                              {Devices.format_number(@stats.today_yield, 1, @locale)} kWh
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% @time_range == "day" -> %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
                         <.icon name="hero-bolt" class="h-6 w-6" />
                       </div>
                       <div class="ml-5 w-0 flex-1">
                         <dl>
                           <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Average Power")}
+                            {gettext("Current Generation")}
                           </dt>
-                          <dd class="flex items-baseline">
+                          <dd class="flex items-baseline space-x-2">
                             <div
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-avg-power"
+                              id="stat-current-power"
                             >
-                              {Devices.format_number(@stats.avg_power, 0, @locale)} W
+                              {Devices.format_number(@stats.current_power, 0, @locale)} W
                             </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% true -> %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                        <.icon name="hero-calculator" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Daily Average Yield")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-avg-yield"
-                            >
-                              {Devices.format_number(@stats.avg_yield, 1, @locale)} kWh
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-            <% end %>
-
-            <!-- Right Card: Peak Power (Today/Day) vs Peak Yield Day (Week/Month/Year) -->
-            <%= cond do %>
-              <% @live or @time_range == "day" -> %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                        <.icon name="hero-chart-bar" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Peak Power")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-peak-power"
-                            >
-                              {Devices.format_number(@stats.peak_power, 0, @locale)} W
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% true -> %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                        <.icon name="hero-fire" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Peak Yield Day")}
-                          </dt>
-                          <dd class="flex flex-col">
-                            <div
-                              class="text-2xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-peak-yield"
-                            >
-                              {Devices.format_number(@stats.peak_val, 1, @locale)} kWh
-                            </div>
-                            <%= if @stats.peak_date do %>
-                              <div
-                                class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5"
-                                id="stat-peak-yield-date"
-                              >
-                                {gettext("on %{date}", date: @stats.peak_date)}
-                              </div>
+                            <%= if @stats.current_power > 0 do %>
+                              <span class="flex h-2 w-2 relative" id="pulse-current-power">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              </span>
                             <% end %>
                           </dd>
                         </dl>
@@ -1771,115 +1653,287 @@ defmodule DtuAppWeb.DashboardLive do
                     </div>
                   </div>
                 </div>
-            <% end %>
+              <% else %>
+                <!-- Total Yield (Historical day view) -->
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Total Yield")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-total-yield"
+                            >
+                              {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
 
-            <%!-- Savings card: visible only when the user has set an energy
+              <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
+              <%= cond do %>
+                <% @live -> %>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                          <.icon name="hero-sun" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Today's Total Yield")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-today-yield"
+                              >
+                                {Devices.format_number(@stats.today_yield, 1, @locale)} kWh
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% @time_range == "day" -> %>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                          <.icon name="hero-bolt" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Average Power")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-avg-power"
+                              >
+                                {Devices.format_number(@stats.avg_power, 0, @locale)} W
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% true -> %>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                          <.icon name="hero-calculator" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Daily Average Yield")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-avg-yield"
+                              >
+                                {Devices.format_number(@stats.avg_yield, 1, @locale)} kWh
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+              <% end %>
+
+              <!-- Right Card: Peak Power (Today/Day) vs Peak Yield Day (Week/Month/Year) -->
+              <%= cond do %>
+                <% @live or @time_range == "day" -> %>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                          <.icon name="hero-chart-bar" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Peak Power")}
+                            </dt>
+                            <dd class="flex items-baseline">
+                              <div
+                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-peak-power"
+                              >
+                                {Devices.format_number(@stats.peak_power, 0, @locale)} W
+                              </div>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                <% true -> %>
+                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                    <div class="px-4 py-5 sm:p-6">
+                      <div class="flex items-center">
+                        <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                          <.icon name="hero-fire" class="h-6 w-6" />
+                        </div>
+                        <div class="ml-5 w-0 flex-1">
+                          <dl>
+                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                              {gettext("Peak Yield Day")}
+                            </dt>
+                            <dd class="flex flex-col">
+                              <div
+                                class="text-2xl font-semibold text-zinc-900 dark:text-white"
+                                id="stat-peak-yield"
+                              >
+                                {Devices.format_number(@stats.peak_val, 1, @locale)} kWh
+                              </div>
+                              <%= if @stats.peak_date do %>
+                                <div
+                                  class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5"
+                                  id="stat-peak-yield-date"
+                                >
+                                  {gettext("on %{date}", date: @stats.peak_date)}
+                                </div>
+                              <% end %>
+                            </dd>
+                          </dl>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+              <% end %>
+
+              <%!-- Savings card: visible only when the user has set an energy
                  rate on /users/settings. Reads @savings (euro cents, an
                  integer assigned by assign_dashboard_data/5 via
                  Devices.compute_savings/2) and formats it as €X.XX. Hidden
                  when nil so a brand-new user without a rate doesn't see a
                  misleading "€0.00 saved" claim. --%>
-            <%= if @savings do %>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                      <.icon name="hero-banknotes" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Saved this period")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-saved"
-                          >
-                            {Devices.format_savings(@savings)}
-                          </div>
-                        </dd>
-                      </dl>
-                      <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
-                        {gettext("at %{rate}",
-                          # The energy rate for this user, formatted
-                          # via the same locale-aware helper that
-                          # powers the headline amount. The rate is
-                          # rendered without a trailing `€/kWh` unit
-                          # because the dashboard puts the unit on the
-                          # savings card once, near the headline; this
-                          # caption slot just shows the number.
-                          rate:
-                            if(is_integer(@cents_per_kwh),
-                              do: Devices.format_savings(@cents_per_kwh),
-                              else: "—"
-                            )
-                        )}
-                      </p>
+              <%= if @savings do %>
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                        <.icon name="hero-banknotes" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Saved this period")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-saved"
+                            >
+                              {Devices.format_savings(@savings)}
+                            </div>
+                          </dd>
+                        </dl>
+                        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+                          {gettext("at %{rate}",
+                            # The energy rate for this user, formatted
+                            # via the same locale-aware helper that
+                            # powers the headline amount. The rate is
+                            # rendered without a trailing `€/kWh` unit
+                            # because the dashboard puts the unit on the
+                            # savings card once, near the headline; this
+                            # caption slot just shows the number.
+                            rate:
+                              if(is_integer(@cents_per_kwh),
+                                do: Devices.format_savings(@cents_per_kwh),
+                                else: "—"
+                              )
+                          )}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            <% end %>
+              <% end %>
 
-            <%!-- Consumption cards: only visible when the user has paired a
+              <%!-- Consumption cards: only visible when the user has paired a
                  Shelly Plus 3EM (Gen3+) energy meter. The helpers return
                  zeros when no consumption rows exist, so the conditional
                  guards keep the slots empty for users without a Shelly
                  device. --%>
-            <%= if @consumption_stats.current_consumption > 0 do %>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                      <.icon name="hero-bolt" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Current Consumption")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-current-consumption"
-                          >
-                            {Devices.format_number(@consumption_stats.current_consumption, 0, @locale)} W
-                          </div>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            <% end %>
-            <%= if @consumption_stats.today_consumption > 0 do %>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                      <.icon name="hero-bolt" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Today's Consumption")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-today-consumption"
-                          >
-                            {Devices.format_number(@consumption_stats.today_consumption, 1, @locale)} kWh
-                          </div>
-                        </dd>
-                      </dl>
+              <%= if @consumption_stats.current_consumption > 0 do %>
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Current Consumption")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-current-consumption"
+                            >
+                              {Devices.format_number(
+                                @consumption_stats.current_consumption,
+                                0,
+                                @locale
+                              )} W
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            <% end %>
-          </div>
+              <% end %>
+              <%= if @consumption_stats.today_consumption > 0 do %>
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Today's Consumption")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-today-consumption"
+                            >
+                              {Devices.format_number(@consumption_stats.today_consumption, 1, @locale)} kWh
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
 
           <%!-- Power consumption row: mirrors the production row's three
                cards (current / today / peak) but populated from a paired
@@ -2081,10 +2135,15 @@ defmodule DtuAppWeb.DashboardLive do
                (production) and a Shelly (consumption). Net flow = production
                minus consumption — positive means exporting to the grid,
                negative means importing. Mirrors the layout of the
-               production and consumption rows above. --%>
-          <%= if @net_flow_stats.current_net_flow != 0.0 or
-                 @net_flow_stats.today_net_export > 0.0 or
-                 @net_flow_stats.today_net_import > 0.0 do %>
+               production and consumption rows above.
+               Without an inverter the headline "Net flow" is meaningless
+               (there's nothing to net against), and `list_net_chart_data/4`
+               would otherwise produce a misleadingly-negative curve equal
+               to `-consumption`. --%>
+          <%= if @has_inverter? and @has_shelly? and
+                 (@net_flow_stats.current_net_flow != 0.0 or
+                    @net_flow_stats.today_net_export > 0.0 or
+                    @net_flow_stats.today_net_import > 0.0) do %>
             <div class="space-y-2 pt-2">
               <h2 class="text-sm font-semibold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
                 {gettext("Net flow")}
@@ -2225,6 +2284,10 @@ defmodule DtuAppWeb.DashboardLive do
           <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
             <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4" id="chart-title">
               <%= cond do %>
+                <% not @has_inverter? and @has_shelly? and @live -> %>
+                  {gettext("Today's Consumption Curve (Watts)")}
+                <% not @has_inverter? and @has_shelly? and @time_range == "day" -> %>
+                  {gettext("Consumption Curve for %{period} (Watts)", period: @selected_period)}
                 <% @live -> %>
                   {gettext("Today's Production Curve (Watts)")}
                 <% @time_range == "day" -> %>
@@ -2483,7 +2546,7 @@ defmodule DtuAppWeb.DashboardLive do
                          positive values (export) plot upward, negative
                          values (import) plot downward. Hidden when the
                          user hasn't paired both an inverter and a Shelly. --%>
-                    <%= if @net_path != "" do %>
+                    <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
                       <% net_json =
                         Jason.encode!(%{
                           is_net: true,
@@ -2529,7 +2592,7 @@ defmodule DtuAppWeb.DashboardLive do
                        keyboard- and screen-reader-accessible; the
                        ChartTooltip hook toggles the matching path's hidden
                        class on click. --%>
-                  <%= if map_size(@series_legend) > 0 or @total_path != "" do %>
+                  <%= if map_size(@series_legend) > 0 or @total_path != "" or @consumption_path != "" do %>
                     <div
                       class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
                       id="chart-legend"
@@ -2568,7 +2631,7 @@ defmodule DtuAppWeb.DashboardLive do
                           </span>
                         </button>
                       <% end %>
-                      <%= if @net_path != "" do %>
+                      <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
                         <% {nbase, nshade} = @net_palette %>
                         <button
                           type="button"

@@ -1714,4 +1714,162 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(phx-hook="Notifications")
     end
   end
+
+  describe "Scenario visibility — DTU-only, Shelly-only, and paired setups" do
+    # The dashboard's rendering depends on which kinds of DTUs the user
+    # has paired. There are three scenarios:
+    #
+    #   * Inverter only (OpenDTU/AhoyDTU): production cards render with
+    #     real values; consumption / net-flow rows are hidden.
+    #   * Shelly only (no inverter): production row is hidden (the user
+    #     has no production telemetry — rendering "Current Generation:
+    #     0 W" placeholders is misleading); consumption cards render;
+    #     net-flow row is hidden because there's nothing to net against.
+    #   * Both: everything renders.
+    #
+    # `Devices.Dtu.@kinds` defines which is which; the dashboard's
+    # `@has_inverter?` / `@has_shelly?` flags drive the conditional
+    # rendering. Tests below pin each scenario.
+
+    test "Shelly-only user does not see production stat cards", %{
+      conn: conn,
+      user: user
+    } do
+      _shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-only",
+          base_topic: "shellies/shellyonly"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Production-only labels are absent.
+      refute html =~ "Current Generation"
+      refute html =~ "Today's Total Yield"
+      refute html =~ "Peak Power"
+      refute html =~ "Saved this period"
+
+      # The Production stat-card slot (the `#stat-current-power` /
+      # `#stat-today-yield` / `#stat-peak-power` elements) is not
+      # rendered at all. Their IDs are only emitted inside the
+      # `<%= if @has_inverter? %>` guard.
+      refute html =~ ~s(id="stat-current-power")
+      refute html =~ ~s(id="stat-today-yield")
+      refute html =~ ~s(id="stat-peak-power")
+      refute html =~ ~s(id="stat-saved")
+
+      # Consumption cards (which the Shelly DOES power) are still
+      # present — assuming at least one fresh reading. Seed one.
+      # (We do it in a follow-up test below.)
+    end
+
+    test "Shelly-only user does not see the Net flow row", %{
+      conn: conn,
+      user: user
+    } do
+      shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-only-netflow",
+          base_topic: "shellies/shellyonly-netflow"
+        })
+
+      # Seed a consumption reading so the consumption cards / overlay
+      # are present (and so the net_flow helper would otherwise have
+      # something to render — making the guard's job more meaningful).
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          inserted_at: DateTime.utc_now()
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Net flow row would render "Net export" / "Imported today" /
+      # "Exported today" / "Net import" labels. With no inverter,
+      # none of them should appear.
+      refute html =~ "Net flow"
+      refute html =~ "Net export"
+      refute html =~ "Net import"
+      refute html =~ "Exported today"
+      refute html =~ "Imported today"
+
+      # The chart's net-flow overlay path uses data-legend-key="net".
+      # Without an inverter the chart hides it.
+      refute html =~ ~s(data-legend-key="net")
+    end
+
+    test "Inverter-only user sees production cards but not net flow row", %{
+      conn: conn,
+      user: user
+    } do
+      _inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "inverter-only",
+          base_topic: "solar/inverter-only"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Production row renders (zero values for a brand-new inverter,
+      # but the slot itself is present and the labels show). HEEx
+      # HTML-escapes the apostrophe in `Today's` to `&#39;`, so match
+      # the escaped form to avoid false negatives.
+      assert html =~ "Current Generation"
+      assert html =~ "Today&#39;s Total Yield"
+      assert html =~ "Peak Power"
+      assert has_element?(_view, "#stat-current-power")
+      assert has_element?(_view, "#stat-today-yield")
+      assert has_element?(_view, "#stat-peak-power")
+
+      # Net flow row is hidden — no Shelly means no net flow.
+      refute html =~ "Net export"
+      refute html =~ "Net import"
+      refute html =~ "Exported today"
+      refute html =~ "Imported today"
+    end
+
+    test "Shelly-only chart title says 'Consumption Curve' instead of 'Production Curve'",
+         %{conn: conn, user: user} do
+      # The chart's <h2> is the user-facing title. When there's no
+      # inverter, the headline curve is the consumption overlay, not
+      # the production lines — the title should reflect that.
+      _shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-only-title",
+          base_topic: "shellies/shellyonly-title"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The Shelly-only branch of the `<%= cond %>` title is selected.
+      # HEEx HTML-escapes the apostrophe, so match the escaped form.
+      assert html =~ "Today&#39;s Consumption Curve (Watts)"
+      refute html =~ "Today&#39;s Production Curve (Watts)"
+    end
+
+    test "Inverter-only chart title says 'Production Curve'", %{
+      conn: conn,
+      user: user
+    } do
+      _inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "inverter-only-title",
+          base_topic: "solar/inverter-only-title"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ "Today&#39;s Production Curve (Watts)"
+      refute html =~ "Today&#39;s Consumption Curve (Watts)"
+    end
+  end
 end

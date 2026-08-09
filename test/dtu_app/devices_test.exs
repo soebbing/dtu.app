@@ -2040,4 +2040,182 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.peak_export, 0.0, 0.1
     end
   end
+
+  describe "clamp_household_draw/1 — Shelly signed total_act_power" do
+    # The Shelly Plus 3EM publishes `total_act_power` as a SIGNED value
+    # — negative when the home is net-exporting (the meter sees reverse
+    # flow), positive when drawing from the grid. The dashboard's
+    # "consumption" is meant to represent household draw, which is
+    # intrinsically ≥ 0. Without clamping, a sunny midday with low
+    # draw would render the "Current Consumption" stat as a negative
+    # wattage and the consumption overlay would dip below the
+    # chart's X-axis. The clamp is centralised in
+    # `Devices.clamp_household_draw/1` and applied everywhere a
+    # `consumption_power` value feeds into a stat or a chart point.
+    # Tests below pin the helper directly and verify each call site.
+    test "clamps negative values to 0" do
+      assert Devices.clamp_household_draw(-150.0) == 0.0
+      assert Devices.clamp_household_draw(-0.5) == 0.0
+    end
+
+    test "passes positive values through unchanged" do
+      assert Devices.clamp_household_draw(0.0) == 0.0
+      assert Devices.clamp_household_draw(76.0) == 76.0
+      assert Devices.clamp_household_draw(1500.0) == 1500.0
+    end
+
+    test "treats nil as 0" do
+      # Reading rows from `DISTINCT ON (dtu_id)` may return rows with
+      # nil `consumption_power` if the Shelly uplink was missing that
+      # field. The clamp must convert that to a usable 0.0.
+      assert Devices.clamp_household_draw(nil) == 0.0
+    end
+  end
+
+  describe "consumption-side stats — negative input is clamped to 0" do
+    # End-to-end pins for the consumption-side helpers
+    # (`get_consumption_daily_stats/2`, the consumption period stats,
+    # the consumption chart series, the consumption half of
+    # `list_net_chart_data/4`, and `get_net_flow_stats/2`'s live
+    # reading). Every helper sees the raw `consumption_power` value;
+    # each one must clamp to ≥ 0 W before summing / plotting / etc.
+
+    test "current_consumption reads 0 when the Shelly reports negative power" do
+      # Sunny midday, low draw: Shelly reports -250 W (house is net-
+      # exporting through the meter). Without the clamp the dashboard
+      # would render "Current Consumption: -250 W" — meaningless.
+      # With the clamp it reads 0 W.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: -250.0,
+          inserted_at: DateTime.add(now, -5, :second)
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert stats.current_consumption == 0.0
+      assert stats.peak_consumption == 0.0
+    end
+
+    test "list_consumption_chart_data/4 clamps negative bucket values to 0" do
+      # The chart overlay must stay above the X-axis even when every
+      # Shelly uplink in a bucket is negative. Two negative readings
+      # in the same bucket produce a mean of -250 W — the chart
+      # bucket should report 0 W (and the consumption line stays
+      # flat at the X-axis baseline for that window).
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      # Two negative readings in the same 5-min bucket (idx keeps PK
+      # microseconds distinct).
+      shelly_consumption_row(device.id, -200.0, bucket, 0)
+      shelly_consumption_row(device.id, -300.0, bucket, 1)
+
+      points =
+        Devices.list_consumption_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      assert length(points) == 1
+      [point] = points
+      # Pre-fix: -250 W (mean). Post-fix: 0 W (mean of clamped values).
+      assert_in_delta point.power, 0.0, 0.1
+    end
+
+    test "list_net_chart_data/4 caps net export at +production (no -consumption inflation)" do
+      # 500 W AC aggregate + Shelly reporting -250 W (net exporting).
+      # Pre-fix the net = 500 - (-250) = 750 W (exceeding total solar).
+      # Post-fix the clamped consumption = 0 W, so net = 500 - 0 = 500 W
+      # — the headline "Net export" caps at +production.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      bucket = net_bucket_at("12:00:00")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: bucket
+        })
+
+      shelly_consumption_row(shelly.id, -250.0, bucket, 0)
+
+      points =
+        Devices.list_net_chart_data(
+          user,
+          Date.utc_today() |> DateTime.new!(~T[00:00:00]),
+          Date.utc_today() |> DateTime.new!(~T[23:59:59])
+        )
+
+      [point] = points
+      assert_in_delta point.power, 500.0, 0.1
+    end
+
+    test "get_net_flow_stats/2 clamps the live consumption reading" do
+      # Live net flow: 800 W AC, Shelly reporting -300 W (exporting).
+      # Pre-fix: current_net_flow = 800 - (-300) = 1100 W (impossible
+      # — the inverter only makes 800 W). Post-fix: current_net_flow
+      # = 800 - 0 = 800 W (the maximum export, matching the inverter's
+      # actual output).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 800.0,
+          inserted_at: now
+        })
+
+      shelly_consumption_row(shelly.id, -300.0, now, 0)
+
+      stats = Devices.get_net_flow_stats(user)
+      assert_in_delta stats.current_net_flow, 800.0, 0.1
+    end
+  end
 end
