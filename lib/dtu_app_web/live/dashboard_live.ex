@@ -639,12 +639,29 @@ defmodule DtuAppWeb.DashboardLive do
       end)
 
     # Net flow overlay — production minus consumption, plotted on the
-    # same axes. Net flow uses the full y-range (can go both positive
-    # for export and negative for import), so we compute its path with
-    # `y = 250.0 - power / y_max * 115.0` (half the height) and offset
-    # the zero line at `y = 250.0 - 115.0 = 135.0`. The full SVG
-    # height is 230 (20px top padding, 250px bottom); a centered
-    # zero line at y=135 lets the curve swing ±115 in both directions.
+    # same axes. The user-facing sign convention flips the raw
+    # `production - consumption` value: power LEAVING the home
+    # (export, positive raw) is shown as a NEGATIVE value on the
+    # graph and power ENTERING the home (import, negative raw) is
+    # shown as POSITIVE. This matches the energy-flow perspective
+    # "the home is exporting negative household consumption" and is
+    # also the same convention the Shelly Plus 3EM uses for its
+    # `total_act_power` field.
+    #
+    # Implementation:
+    #   * `display_power = -power` — flips the sign for both the SVG
+    #     Y coordinate and the JSON embedded in `data-points`. The
+    #     tooltip's hover readout therefore shows the same number the
+    #     user sees on the chart (-300 W for a 300 W export).
+    #   * `y = 135 - display_power / y_max * 115.0` — same Y formula
+    #     the production lines use (negative display_power increases
+    #     y, plotting export below the zero line at y=135).
+    #
+    # The full SVG height is 230 (20px top padding, 250px bottom);
+    # a centered zero line at y=135 lets the curve swing ±115. The
+    # zero line itself is rendered as a separate <line> below the
+    # net path so users see at a glance which side of zero a point
+    # is on.
     {net_utc_start, net_utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
     net_chart_points = Devices.list_net_chart_data(user, net_utc_start, net_utc_end, dtu_id)
 
@@ -661,12 +678,13 @@ defmodule DtuAppWeb.DashboardLive do
               local_seconds = utc_seconds + tz_offset_seconds
               local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
               x = (local_seconds - x_min_seconds) / x_span * 800.0
-              # Center the zero line at y=135; positive values plot upward,
-              # negative plot downward (since `250 - power/y_max * 115`
-              # increases as power decreases — i.e. negative power pushes
-              # y downward).
-              y = 135.0 - power / max(y_max, 1.0) * 115.0
-              {Float.round(x, 1), Float.round(y, 1), local_seconds, power}
+              # Flip the sign: export (raw positive) becomes negative
+              # for display, then plot below the zero line. See the
+              # block comment above for the full sign-convention
+              # rationale.
+              display_power = -power
+              y = 135.0 - display_power / max(y_max, 1.0) * 115.0
+              {Float.round(x, 1), Float.round(y, 1), local_seconds, display_power}
             end)
             |> Enum.sort_by(&elem(&1, 0))
 
@@ -683,8 +701,8 @@ defmodule DtuAppWeb.DashboardLive do
           coords = Enum.map(path_coords, fn {x, y, t, _} -> {x, y, t} end)
 
           points_data =
-            Enum.map(path_coords, fn {_x, _y, seconds, power} ->
-              %{time: seconds, power: power}
+            Enum.map(path_coords, fn {_x, _y, seconds, display_power} ->
+              %{time: seconds, power: display_power}
             end)
 
           {path, coords, points_data}
@@ -2543,8 +2561,8 @@ defmodule DtuAppWeb.DashboardLive do
                     <%!-- Net flow overlay (production minus consumption). Drawn
                          last so it sits on top of every other series. The
                          SVG's vertical center (y=135) is the zero line —
-                         positive values (export) plot upward, negative
-                         values (import) plot downward. Hidden when the
+                         negative values (export) plot downward, positive
+                         values (import) plot upward. Hidden when the
                          user hasn't paired both an inverter and a Shelly. --%>
                     <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
                       <% net_json =
