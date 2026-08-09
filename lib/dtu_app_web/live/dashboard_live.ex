@@ -1520,14 +1520,49 @@ defmodule DtuAppWeb.DashboardLive do
 
           <!-- Stats Grid -->
           <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <%!-- First slot: "Current Generation" was removed on the
-                 live view because it duplicated the chart's headline
-                 curve. The historical "Total Yield" card (day view)
-                 is kept — it's the per-day kWh total the bar chart
-                 doesn't directly show on the day view. The "Current
-                 Consumption" card inside the "Power consumption" area
-                 below still renders the live household draw. --%>
-            <%= unless @live do %>
+            <%!-- First slot: live view shows "Current Generation" (the
+                 AC aggregate across all the user's inverters — the
+                 headline instantaneous wattage). Historical day view
+                 swaps in "Total Yield" (the day's kWh total, which
+                 the line chart doesn't directly show). The matching
+                 "Current Consumption" card inside the "Power consumption"
+                 area below is rendered without its first slot in this
+                 commit — users wanted the live draw to read as "Current
+                 Generation" at the top and the consumption area to lead
+                 with the kWh figures instead. --%>
+            <%= if @live do %>
+              <!-- Current Power (Today only) -->
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                      <.icon name="hero-bolt" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Current Generation")}
+                        </dt>
+                        <dd class="flex items-baseline space-x-2">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-current-power"
+                          >
+                            {Devices.format_number(@stats.current_power, 0, @locale)} W
+                          </div>
+                          <%= if @stats.current_power > 0 do %>
+                            <span class="flex h-2 w-2 relative" id="pulse-current-power">
+                              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                          <% end %>
+                        </dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            <% else %>
               <!-- Total Yield (Historical day view) -->
               <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                 <div class="px-4 py-5 sm:p-6">
@@ -1820,46 +1855,15 @@ defmodule DtuAppWeb.DashboardLive do
                 {gettext("Power consumption")}
               </h2>
               <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-                <%= if @live or @time_range == "day" do %>
-                  <%!-- Current consumption (W) — mirrors the shape of
-                       a current-power stat card. The production-side
-                       "Current Generation" card was removed in the
-                       same change set that kept this one (users wanted
-                       the household draw to remain visible). Today /
-                       Day views only — historical views don't have a
-                       "current" reading by definition. --%>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                          <.icon name="hero-bolt" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Current Consumption")}
-                            </dt>
-                            <dd class="flex items-baseline">
-                              <div
-                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-current-consumption-period"
-                              >
-                                {Devices.format_number(
-                                  @consumption_period_stats.current_consumption,
-                                  0,
-                                  @locale
-                                )} W
-                              </div>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                <% else %>
+                <%= if not (@live or @time_range == "day") do %>
                   <%!-- Total consumption placeholder: keeps the 3-column grid
                        layout aligned with the production row above on
-                       historical views. Filled with the period total. --%>
+                       historical views. Filled with the period total.
+                       On the live / day view this slot is empty — the
+                       household's instantaneous wattage now lives in the
+                       production row's "Current Generation" card (the
+                       net-flow chart and Net flow stat card still
+                       surface the underlying consumption). --%>
                   <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                     <div class="px-4 py-5 sm:p-6">
                       <div class="flex items-center">

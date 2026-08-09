@@ -15,11 +15,10 @@ and a seeded database.
   and chart title, the prev/next stepper hitting the empty state past the data
   horizon, and the DTU switcher filtering between a single device and Total.
 - `dashboard_multi_mppt.spec.js` — the per-inverter / per-MPPT breakdown:
-  the `current_power` aggregate (consumed downstream by the live "Net
-  flow" stat card) reflects the AC aggregate of every polled inverter
-  (the bug where a multi-MPPT DTU showed 0 W while producing), and the
-  chart legend's per-MPPT lines actually draw instead of staying flat
-  at the X-axis.
+  the "Current Generation" stat card reflects the AC aggregate of every
+  polled inverter (the bug where a multi-MPPT DTU showed 0 W while
+  producing), and the chart legend's per-MPPT lines actually draw
+  instead of staying flat at the X-axis.
 - `dashboard_savings_card.spec.js` — the "Saved this period" card: hidden
   when the user hasn't set an energy rate, non-zero at €0.32/kWh and
   €0.08/kWh with the seeded daily yield, scales with the configured rate,

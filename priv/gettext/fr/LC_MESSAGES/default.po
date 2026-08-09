@@ -154,7 +154,7 @@ msgstr "Êtes-vous sûr de vouloir supprimer %{name} ? Cette action est irréver
 msgid "Attempting to reconnect"
 msgstr "Versuche, die Verbindung wiederherzustellen"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1595
+#: lib/dtu_app_web/live/dashboard_live.ex:1630
 #, elixir-autogen, elixir-format
 msgid "Average Power"
 msgstr "Puissance moyenne"
@@ -284,17 +284,17 @@ msgstr "DTU mise à jour"
 msgid "DTUs"
 msgstr "DTU"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1620
+#: lib/dtu_app_web/live/dashboard_live.ex:1655
 #, elixir-autogen, elixir-format
 msgid "Daily Average Yield"
 msgstr "Rendement moyen quotidien"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2184
+#: lib/dtu_app_web/live/dashboard_live.ex:2191
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for Week starting %{period} (kWh)"
 msgstr "Rendements quotidiens pour la semaine commençant le %{period} (kWh)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2186
+#: lib/dtu_app_web/live/dashboard_live.ex:2193
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for month of %{month_year} (kWh)"
 msgstr "Rendements quotidiens pour le mois de %{month_year} (kWh)"
@@ -314,7 +314,7 @@ msgstr "Tag"
 msgid "Delete DTU"
 msgstr "Supprimer la DTU"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2928
+#: lib/dtu_app_web/live/dashboard_live.ex:2935
 #, elixir-autogen, elixir-format
 msgid "Device Connection Status"
 msgstr "Statut de connexion des appareils"
@@ -425,7 +425,7 @@ msgstr "Verbindungsstatus des Wechselrichters"
 msgid "Isolated Multi-Tenancy"
 msgstr "Multi-locataire isolé"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2956
+#: lib/dtu_app_web/live/dashboard_live.ex:2963
 #, elixir-autogen, elixir-format
 msgid "Last seen:"
 msgstr "Dernière fois vu :"
@@ -507,7 +507,7 @@ msgstr "Gérer les appareils"
 msgid "Month"
 msgstr "Monat"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2191
+#: lib/dtu_app_web/live/dashboard_live.ex:2198
 #, elixir-autogen, elixir-format
 msgid "Monthly Yields for %{year} (kWh)"
 msgstr "Rendements mensuels pour %{year} (kWh)"
@@ -537,12 +537,12 @@ msgstr "Aucune DTU pour le moment. Ajoutez-en une pour commencer à recevoir des
 msgid "No historical data for this period."
 msgstr "Keine historischen Daten für diesen Zeitraum."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2203
+#: lib/dtu_app_web/live/dashboard_live.ex:2210
 #, elixir-autogen, elixir-format
 msgid "No power readings logged for this day."
 msgstr "Aucun relevé de puissance enregistré pour ce jour."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2831
+#: lib/dtu_app_web/live/dashboard_live.ex:2838
 #, elixir-autogen, elixir-format
 msgid "No yield records logged for this period."
 msgstr "Aucun enregistrement de rendement pour cette période."
@@ -621,12 +621,12 @@ msgstr "Passwörter werden mit Argon2id gespeichert. Sitzungen werden mit einem"
 "Passwörter mit der Option, TLS über einen Reverse-Proxy (z. B. Traefik) vor"
 "dem Broker hinzuzufügen."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1649
+#: lib/dtu_app_web/live/dashboard_live.ex:1684
 #, elixir-autogen, elixir-format
 msgid "Peak Power"
 msgstr "Puissance de crête"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1674
+#: lib/dtu_app_web/live/dashboard_live.ex:1709
 #, elixir-autogen, elixir-format
 msgid "Peak Yield Day"
 msgstr "Jour de rendement maximal"
@@ -653,7 +653,7 @@ msgstr "Datenschutz"
 msgid "Privacy Policy"
 msgstr "Datenschutzerklärung"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2182
+#: lib/dtu_app_web/live/dashboard_live.ex:2189
 #, elixir-autogen, elixir-format
 msgid "Production Curve for %{period} (Watts)"
 msgstr "Courbe de production pour %{period} (Watts)"
@@ -828,18 +828,18 @@ msgstr "Pour commencer à envoyer des données de télémétrie, configurez votr
 msgid "Today"
 msgstr "Aujourd'hui"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2180
+#: lib/dtu_app_web/live/dashboard_live.ex:2187
 #, elixir-autogen, elixir-format
 msgid "Today's Production Curve (Watts)"
 msgstr "Courbe de production d'aujourd'hui (Watts)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1570
+#: lib/dtu_app_web/live/dashboard_live.ex:1605
 #, elixir-autogen, elixir-format
 msgid "Today's Total Yield"
 msgstr "Rendement total d'aujourd'hui"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2378
-#: lib/dtu_app_web/live/dashboard_live.ex:2501
+#: lib/dtu_app_web/live/dashboard_live.ex:2385
+#: lib/dtu_app_web/live/dashboard_live.ex:2508
 #, elixir-autogen, elixir-format
 msgid "Total"
 msgstr "Total"
@@ -849,7 +849,7 @@ msgstr "Total"
 msgid "Total (All DTUs)"
 msgstr "Total (Toutes les DTU)"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1541
+#: lib/dtu_app_web/live/dashboard_live.ex:1576
 #, elixir-autogen, elixir-format
 msgid "Total Yield"
 msgstr "Rendement total"
@@ -987,30 +987,30 @@ msgstr "dtu.app ist ein selbstgehostetes Telemetrie-Dashboard für"
 msgid "just now"
 msgstr "gerade eben"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2965
+#: lib/dtu_app_web/live/dashboard_live.ex:2972
 #, elixir-autogen, elixir-format
 msgid "never"
 msgstr "jamais"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2951
+#: lib/dtu_app_web/live/dashboard_live.ex:2958
 #: lib/dtu_app_web/live/device_live/index.html.heex:39
 #, elixir-autogen, elixir-format
 msgid "offline"
 msgstr "hors ligne"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1688
-#: lib/dtu_app_web/live/dashboard_live.ex:2017
+#: lib/dtu_app_web/live/dashboard_live.ex:1723
+#: lib/dtu_app_web/live/dashboard_live.ex:2024
 #, elixir-autogen, elixir-format
 msgid "on %{date}"
 msgstr "le %{date}"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2951
+#: lib/dtu_app_web/live/dashboard_live.ex:2958
 #: lib/dtu_app_web/live/device_live/index.html.heex:39
 #, elixir-autogen, elixir-format
 msgid "online"
 msgstr "en ligne"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1715
+#: lib/dtu_app_web/live/dashboard_live.ex:1750
 #, elixir-autogen, elixir-format
 msgid "Saved this period"
 msgstr "Économisé sur cette période"
@@ -1210,20 +1210,19 @@ msgstr "ou lien magique sans mot de passe"
 msgid "the mailbox page"
 msgstr "la page de la boîte aux lettres"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1727
+#: lib/dtu_app_web/live/dashboard_live.ex:1762
 #, elixir-autogen, elixir-format
 msgid "at %{rate}"
 msgstr "à %{rate}"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1763
-#: lib/dtu_app_web/live/dashboard_live.ex:1837
+#: lib/dtu_app_web/live/dashboard_live.ex:1798
 #, elixir-autogen, elixir-format
 msgid "Current Consumption"
 msgstr "Consommation actuelle"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1789
-#: lib/dtu_app_web/live/dashboard_live.ex:1903
-#: lib/dtu_app_web/live/dashboard_live.ex:1935
+#: lib/dtu_app_web/live/dashboard_live.ex:1824
+#: lib/dtu_app_web/live/dashboard_live.ex:1910
+#: lib/dtu_app_web/live/dashboard_live.ex:1942
 #, elixir-autogen, elixir-format
 msgid "Today's Consumption"
 msgstr "Consommation aujourd'hui"
@@ -1243,60 +1242,60 @@ msgstr "Notes spécifiques au Shelly :"
 msgid "Telemetry is published as a single JSON object on the topic %{topic}. Shelly's default MQTT prefix is the device ID (e.g. shellyplus3em-XXXXXXXXXXXX), so set the device's prefix to %{custom_topic} to match the Base Topic shown above."
 msgstr "La télémétrie est publiée sous forme d'un objet JSON unique sur le sujet %{topic}. Le préfixe MQTT par défaut du Shelly est l'identifiant de l'appareil (par ex. shellyplus3em-XXXXXXXXXXXX), donc définissez le préfixe de l'appareil sur %{custom_topic} pour qu'il corresponde au sujet de base affiché ci-dessus."
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2409
-#: lib/dtu_app_web/live/dashboard_live.ex:2518
+#: lib/dtu_app_web/live/dashboard_live.ex:2416
+#: lib/dtu_app_web/live/dashboard_live.ex:2525
 #, elixir-autogen, elixir-format
 msgid "Consumption"
 msgstr "Consommation"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1968
+#: lib/dtu_app_web/live/dashboard_live.ex:1975
 #, elixir-autogen, elixir-format
 msgid "Peak Power Consumed"
 msgstr "Puissance consommée maximale"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1999
+#: lib/dtu_app_web/live/dashboard_live.ex:2006
 #, elixir-autogen, elixir-format
 msgid "Peak Power Day"
 msgstr "Jour de consommation maximale"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1820
+#: lib/dtu_app_web/live/dashboard_live.ex:1855
 #, elixir-autogen, elixir-format
 msgid "Power consumption"
 msgstr "Consommation électrique"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1869
+#: lib/dtu_app_web/live/dashboard_live.ex:1876
 #, elixir-autogen, elixir-format
 msgid "Total Consumption"
 msgstr "Consommation totale"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2091
+#: lib/dtu_app_web/live/dashboard_live.ex:2098
 #, elixir-autogen, elixir-format
 msgid "Exported today"
 msgstr "Exporté aujourd'hui"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2120
+#: lib/dtu_app_web/live/dashboard_live.ex:2127
 #, elixir-autogen, elixir-format
 msgid "Imported today"
 msgstr "Importé aujourd'hui"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2061
+#: lib/dtu_app_web/live/dashboard_live.ex:2068
 #, elixir-autogen, elixir-format
 msgid "Net export"
 msgstr "Export net"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2041
-#: lib/dtu_app_web/live/dashboard_live.ex:2441
-#: lib/dtu_app_web/live/dashboard_live.ex:2535
+#: lib/dtu_app_web/live/dashboard_live.ex:2048
+#: lib/dtu_app_web/live/dashboard_live.ex:2448
+#: lib/dtu_app_web/live/dashboard_live.ex:2542
 #, elixir-autogen, elixir-format
 msgid "Net flow"
 msgstr "Flux net"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2062
+#: lib/dtu_app_web/live/dashboard_live.ex:2069
 #, elixir-autogen, elixir-format
 msgid "Net import"
 msgstr "Import net"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2149
+#: lib/dtu_app_web/live/dashboard_live.ex:2156
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak power"
 msgstr "Puissance de crête"
@@ -1346,3 +1345,8 @@ msgstr "Votre onduleur %{name} est hors ligne depuis au moins 5 minutes."
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr "Votre onduleur %{name} publie à nouveau des données de télémétrie."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:1544
+#, elixir-autogen, elixir-format
+msgid "Current Generation"
+msgstr "Génération actuelle"
