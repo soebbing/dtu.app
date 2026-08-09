@@ -1767,7 +1767,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # `[]`).
       matches =
         Regex.scan(
-          ~r/(<line[^>]*x1="0"[^>]*x2="800"[^>]*y2="135"[^>]*\/?>)/,
+          ~r/(<line[^>]*x1="0"[^>]*x2="800"[^>]*y2="135(?:\.0)?"[^>]*\/?>)/,
           html,
           capture: :all_but_first
         )
@@ -1778,13 +1778,132 @@ defmodule DtuAppWeb.DashboardLiveTest do
       Enum.each(matches, fn [line_tag] ->
         # Both y1 and y2 must be 135. Match in either attribute order
         # (HEEx emits x1/y1 first by template position, but we don't
-        # rely on it).
-        assert line_tag =~ ~r/y1="135"/,
+        # rely on it). The chart's dynamic zero_y is now an Elixir
+        # float, so accept either "135" or "135.0" — the regex above
+        # already matches both forms.
+        assert line_tag =~ ~r/y1="135(?:\.0)?"/,
                "expected line's y1 to be 135, got: #{line_tag}"
 
-        assert line_tag =~ ~r/y2="135"/,
+        assert line_tag =~ ~r/y2="135(?:\.0)?"/,
                "expected line's y2 to be 135, got: #{line_tag}"
       end)
+    end
+  end
+
+  describe "Chart Y-axis — dynamic negative scale" do
+    # The chart's Y-axis used to stop at 0 W — export peaks below the
+    # zero line were clipped off-screen because the per-series / total
+    # paths used the same `y_max` and treated negative values as
+    # off-scale. The fix: extend the chart's Y-axis downward to the
+    # most-negative net flow display value (i.e. -max_export), rounded
+    # DOWN to the next multiple of 100 so the export peak always sits
+    # inside the chart area with a visible margin.
+    #
+    # The chart's Y-axis spans `[y_min, y_max]` once the user has both an
+    # inverter and a Shelly with a non-zero export peak. Without net
+    # flow the chart stays positive-only (the original layout) so
+    # inverter-only / Shelly-only users see no behaviour change.
+
+    defp seed_paired_scenario(user, ac_watts, draw_watts) do
+      inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "neg-y-inv",
+          base_topic: "solar/neg-y"
+        })
+
+      shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "neg-y-shelly",
+          base_topic: "shellies/neg-y"
+        })
+
+      bucket = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: ac_watts,
+          inserted_at: bucket
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: draw_watts,
+          inserted_at: bucket
+        })
+    end
+
+    test "export peak (e.g. -432 W) extends the Y-axis down to the next lower 100", %{
+      conn: conn,
+      user: user
+    } do
+      # 600 W AC + 168 W draw → net = +432 W (export). The Y-axis
+      # bottom should land at -500 W (the next lower multiple of 100
+      # below 432). The bottom Y-axis label reads "-500 W".
+      seed_paired_scenario(user, 600.0, 168.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The chart's bottom Y-axis label is the rounded-down export
+      # peak — pre-fix the chart's bottom label was always "0 W" and
+      # the export peak was rendered below the chart's bottom edge.
+      #
+      # HEEx renders `@y_min` as a float like "-500.0", so match the
+      # integer/decimal form both ways. Use a positive `500` in the
+      # needle so the leading-minus doesn't get escaped by the regex
+      # string parser.
+      assert html =~ ~r/-500(\.0)? W/,
+             "expected Y-axis bottom label to read -500 W (floor(432, 100)), got: #{html}"
+    end
+
+    test "small export dip extends Y-axis to -100 even when -50 would round to 0", %{
+      conn: conn,
+      user: user
+    } do
+      # 200 W AC + 150 W draw → net = +50 W export. With the previous
+      # positive-only Y-axis, the export dip would render at y=135
+      # (the zero line), barely visible. With the negative-Y fix the
+      # chart extends down to -100 W so even small exports sit inside
+      # the chart area.
+      seed_paired_scenario(user, 200.0, 150.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~r/-100(\.0)? W/,
+             "expected Y-axis bottom label to read -100 W for a 50 W export, got: #{html}"
+    end
+
+    test "import-only scenario keeps the Y-axis positive-only (no extension)", %{
+      conn: conn,
+      user: user
+    } do
+      # 100 W AC + 800 W draw → net = -700 W (import, no export).
+      # There's no negative export peak to size the chart against,
+      # so the Y-axis stays positive-only — y_min == 0, the bottom
+      # label is "0 W" (not "-500 W"). Pin this so a future change
+      # doesn't accidentally extend the axis for import-only users.
+      seed_paired_scenario(user, 100.0, 800.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The Y-axis bottom label is still "0 W" (not "-500 W"). Match
+      # both the bare form and the "W" unit form. The label sits at
+      # y=245 in the template (see the bottom label branch when
+      # @y_min >= 0.0), so this would render `-500 W` if the chart
+      # had erroneously extended the axis.
+      assert html =~ "0 W"
+
+      refute html =~ ~r/-500(\.0)? W/,
+             "Y-axis should NOT extend below zero when there's no export peak"
     end
   end
 
