@@ -4,6 +4,7 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuApp.Devices
   alias DtuApp.MqttBroker.Telemetry
   alias DtuApp.MqttBroker.Broker
+  alias DtuApp.Notifications
 
   @timezone_topic "dtu:timezone"
 
@@ -16,6 +17,15 @@ defmodule DtuAppWeb.DashboardLive do
       # Listen for the client-side timezone push (via PubSub from
       # `.ChartTooltip` or from tests).
       Phoenix.PubSub.subscribe(DtuApp.PubSub, @timezone_topic)
+      # Subscribe to the per-user notification topic so this LiveView
+      # receives `:notification` events fired by `broadcast_dtu_connection/3`
+      # (and the future sun-down scheduler). The handle_info clause
+      # below forwards each one to the page's `phx-hook="Notifications"`
+      # sink via `push_event("notify", payload)`. Without this subscribe,
+      # the dashboard would fire events that nobody consumes — the user
+      # only saw notifications when they had the `/notifications` page
+      # open, which is the opposite of the intended behaviour.
+      Notifications.subscribe(socket.assigns.current_scope.user.id)
     end
 
     user = socket.assigns.current_scope.user
@@ -271,6 +281,19 @@ defmodule DtuAppWeb.DashboardLive do
 
   def handle_info({:set_timezone, _other}, socket), do: {:noreply, socket}
 
+  # Forward per-user `:notification` PubSub events (fired by
+  # `broadcast_dtu_connection/3` and the future sun-down scheduler)
+  # to the page's `phx-hook="Notifications"` sink via `push_event/3`.
+  # The Notifications JS hook in `assets/js/notifications.js` then fires
+  # the actual `new Notification(...)` after dedup against localStorage.
+  #
+  # Without this clause the dashboard's subscription (added in
+  # `mount/3`) would crash on the very first `:notification` message.
+  @impl true
+  def handle_info({:notification, payload}, socket) do
+    {:noreply, push_event(socket, "notify", payload)}
+  end
+
   # Catch-all for other messages
   @impl true
   def handle_info(_msg, socket) do
@@ -278,8 +301,12 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   # Push a connection-state notification to the user's notifications topic.
-  # The NotificationsLive LiveView is subscribed there; its JS hook
-  # dedups by tag before creating the browser `new Notification(...)`.
+  # Both `DashboardLive` (mounted on `/dashboard`) and `NotificationsLive`
+  # (mounted on `/notifications`) subscribe in their `mount/3`, and each
+  # page mounts a `phx-hook="Notifications"` sink that fires the
+  # `new Notification(...)` after dedup against localStorage. The dedup
+  # tag (`dtu:<name>`) means a user with both pages open sees one
+  # notification per state change, not two.
   defp broadcast_dtu_connection(user_id, name, status)
        when is_integer(user_id) and is_binary(name) do
     {title, body} =
@@ -1325,6 +1352,21 @@ defmodule DtuAppWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} class="max-w-7xl">
+      <%!--
+        Notifications-firing hook. Mounted here (and on the /notifications
+        page) so the dashboard can fire `new Notification(...)` on `notify`
+        events. The hook is invisible (`hidden`) and only acts as a
+        `phx:notify` event sink. `Notifications.subscribe/1` runs in mount/3
+        and `handle_info({:notification, ...})` forwards each server-side
+        event into `push_event("notify", payload)`.
+      --%>
+      <div
+        id="notifications-firing"
+        phx-hook="Notifications"
+        data-user-id={@current_scope.user.id}
+        hidden
+      >
+      </div>
       <div class="space-y-6 py-4">
         <!-- Title & Action -->
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
