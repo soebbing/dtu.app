@@ -29,9 +29,17 @@ const Notifications = {
     if (window.Notification.permission !== "granted") return
 
     const userId = this.el.dataset.userId || "0"
-    const dedupKey = computeDedupKey(userId, payload)
-    if (storageHas(dedupKey)) return
-    storageMark(dedupKey)
+
+    // The "test" event bypasses dedup entirely — it's a manual
+    // user-driven button click and should always fire so the user
+    // can verify their setup. Pre-fix this fell through to
+    // `JSON.stringify(payload)` which produced a stable key across
+    // clicks, silently swallowing every click after the first.
+    if (payload.event !== "test") {
+      const dedupKey = computeDedupKey(userId, payload)
+      if (storageHas(dedupKey)) return
+      storageMark(dedupKey)
+    }
 
     const {title, body, tag} = formatPayload(payload)
     try {
@@ -57,18 +65,36 @@ const Notifications = {
 }
 
 function computeDedupKey(userId, payload) {
-  // Stable across renders so re-renders don't re-fire.
-  let raw
-  if (payload.event === "sun_down") {
-    raw = `sun_down:${payload.date || todayIso()}`
-  } else if (payload.event === "dtu_offline") {
-    raw = `dtu_offline:${payload.dtu_id}:${payload.inverter_serial}`
-  } else if (payload.event === "dtu_online") {
-    raw = `dtu_online:${payload.dtu_id}:${payload.inverter_serial}`
-  } else {
-    raw = JSON.stringify(payload)
+  // Stable across renders so re-renders don't re-fire. The
+  // "test" event never reaches this function (the caller skips
+  // dedup for it), but the matcher is defensive in case the
+  // caller is changed.
+  if (payload.event === "test") {
+    return `notified:v1:user:${userId}:test:${Date.now()}`
   }
-  return `notified:v1:user:${userId}:${raw}`
+  if (payload.event === "sun_down") {
+    const raw = `sun_down:${payload.date || todayIso()}`
+    return `notified:v1:user:${userId}:${raw}`
+  }
+  if (payload.event === "dtu_offline") {
+    const raw = `dtu_offline:${payload.dtu_id}:${payload.inverter_serial}`
+    return `notified:v1:user:${userId}:${raw}`
+  }
+  if (payload.event === "dtu_online") {
+    const raw = `dtu_online:${payload.dtu_id}:${payload.inverter_serial}`
+    return `notified:v1:user:${userId}:${raw}`
+  }
+  if (payload.event === "dtu_connection") {
+    // The dashboard's broadcast_dtu_connection/3 fires this with a
+    // server-rendered `tag` like "dtu:<name>". Use the server tag
+    // directly so an offline→online→offline cycle in the same day
+    // doesn't get deduped (each transition flips the status field).
+    return `notified:v1:user:${userId}:${payload.tag || "dtu_connection"}:${payload.status || ""}`
+  }
+  // Last-resort: stable JSON of the payload. Stable across re-renders
+  // (so the LiveView doesn't refire the same event on every re-render)
+  // but unique per distinct payload.
+  return `notified:v1:user:${userId}:${payload.tag || "misc"}:${JSON.stringify(payload)}`
 }
 
 function storageHas(key) {
@@ -115,6 +141,24 @@ function formatPayload(payload) {
       title: `${payload.inverter_name || "Inverter"} is back online`,
       body: `Reconnected to ${payload.inverter_name || "(unnamed inverter)"}${payload.dtu_name ? " on " + payload.dtu_name : ""}.`,
       tag: `dtu_online:${payload.dtu_id}:${payload.inverter_serial}`
+    }
+  }
+
+  // For events the server fills with `title` / `body` / `tag` (e.g.
+  // `event: "test"` from the test-notification button, or
+  // `event: "dtu_connection"` from `broadcast_dtu_connection/3`),
+  // trust the server's fields. The dashboard's `dtu_connection`
+  // payload includes a server-rendered `tag` like "dtu:<name>" which
+  // we want the OS notification to use verbatim — `misc:<date>` would
+  // collide with other generic notifications and break OS-level
+  // grouping. Pre-fix this fell through to a hard-coded "dtu.app"
+  // title and a JSON-stringified body, which is what users saw when
+  // they enabled the test button.
+  if (payload.title || payload.body) {
+    return {
+      title: payload.title || "dtu.app",
+      body: payload.body || "",
+      tag: payload.tag || `misc:${todayIso()}`
     }
   }
 
