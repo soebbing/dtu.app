@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# bin/gen-vapid — generate a VAPID keypair and write it into .env
+#
+# Wraps `mix web_push.gen.vapid` (which prints human-readable
+# public_key / private_key lines) and idempotently updates the
+# `VAPID_PUBLIC_KEY=` and `VAPID_PRIVATE_KEY=` lines of an `.env`
+# file. Useful for first-time prod setup and for the regular key
+# rotation that push services eventually require.
+#
+# Usage:
+#   bin/gen-vapid                              # writes to ./.env
+#   bin/gen-vapid --env-file /etc/dtu.app.env # writes to a specific path
+#   bin/gen-vapid --subject mailto:admin@example.com
+#   bin/gen-vapid --force                     # overwrite existing keys
+#
+# Exit codes:
+#   0  success
+#   1  no Elixir/mix available
+#   2  web_push dep not in mix.lock
+#   3  key generation produced unexpected output
+#   4  env file not writable / does not exist
+#   5  refused to overwrite existing keys (use --force)
+#
+# Why a bash wrapper instead of a Mix task?
+#
+#   * Operators can run it on a fresh prod host *before* cloning the
+#     repo — the script just shells out to `mix`, but generates the
+#     keypair via `mix run -e` if the project isn't checked out.
+#   * The script runs in the user's shell environment, not inside
+#     `Application.put_env/3`, so the resulting .env file can be
+#     sourced by docker-compose / systemd / etc. without dragging the
+#     whole runtime along.
+#
+# Why --force?
+#
+#   VAPID keys identify a subscriber base. Rotating them invalidates
+#   every PushManager.subscribe() the browser has ever done for this
+#   domain — users who had notifications enabled will silently stop
+#   receiving them until they re-enable. We refuse to overwrite by
+#   default so a stray `bin/gen-vapid` in a deploy script doesn't
+#   rotate prod keys on every container start.
+
+set -euo pipefail
+
+# Defaults
+ENV_FILE=".env"
+SUBJECT=""
+FORCE=0
+PRINT_ONLY=0
+
+usage() {
+  cat <<'EOF'
+bin/gen-vapid — generate VAPID keys for Web Push and write to .env
+
+Usage:
+  bin/gen-vapid [options]
+
+Options:
+  --env-file PATH    Path to the .env file (default: ./.env)
+  --subject MAILTO   VAPID_SUBJECT value (default: mailto:admin@localhost)
+                     Per RFC 8292 §2 this must be a mailto: or https:// URL.
+  --force            Overwrite existing VAPID_* lines without prompting
+  --print            Print the generated keys but don't write to any file
+  -h, --help         Show this help
+
+Examples:
+  bin/gen-vapid
+  bin/gen-vapid --env-file /etc/dtu.app.env --subject mailto:admin@example.com
+  bin/gen-vapid --print | tee /tmp/vapid.env
+EOF
+}
+
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --env-file) ENV_FILE="$2"; shift 2 ;;
+    --subject) SUBJECT="$2"; shift 2 ;;
+    --force) FORCE=1; shift ;;
+    --print) PRINT_ONLY=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "bin/gen-vapid: unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+# Sanity: need either the project (mix.exs in cwd) or `mix` on PATH
+# for the fallback `mix run -e` path.
+if ! command -v mix >/dev/null 2>&1; then
+  echo "bin/gen-vapid: 'mix' not found on PATH." >&2
+  echo "  Install Elixir (https://elixir-lang.org/install.html) and try again." >&2
+  exit 1
+fi
+
+if ! command -v elixir >/dev/null 2>&1; then
+  echo "bin/gen-vapid: 'elixir' not found on PATH." >&2
+  exit 1
+fi
+
+# Generate the keypair. Prefer `mix web_push.gen.vapid` (the
+# library-blessed task) when the project is available — it formats
+# output nicely. Fall back to `mix run -e` when the operator is
+# running this on a fresh host without the project checked out.
+# The fallback needs `web_push` installed system-wide, which is the
+# usual Elixir dev setup.
+if [[ -f "mix.exs" ]] && [[ -f "mix.lock" ]] && grep -q ':web_push,' mix.lock; then
+  echo "[gen-vapid] using mix web_push.gen.vapid (project-local)"
+  # `mix web_push.gen.vapid` prints BOTH the config block AND the
+  # shell export block. We only want the keys, so we extract them.
+  OUTPUT="$(mix web_push.gen.vapid 2>&1)"
+elif elixir -e 'Code.ensure_loaded?(WebPush.Vapid)' >/dev/null 2>&1; then
+  echo "[gen-vapid] using WebPush.Vapid.generate_keypair/0 (standalone)"
+  OUTPUT="$(mix run -e '
+    %{public_key: pk, private_key: sk} = WebPush.Vapid.generate_keypair()
+    IO.puts("public_key: \"#{pk}\"")
+    IO.puts("private_key: \"#{sk}\"")
+  ' 2>&1)"
+else
+  echo "bin/gen-vapid: web_push library not available." >&2
+  echo "  Either run from inside the project (mix.exs in cwd), or" >&2
+  echo "  add web_push to your global mix install." >&2
+  exit 2
+fi
+
+# Pull the public_key / private_key lines out of the (possibly
+# multi-section) output. The task wraps values in double quotes; we
+# strip those.
+PUBLIC_KEY="$(printf '%s\n' "$OUTPUT" \
+  | sed -n 's/^[[:space:]]*public_key:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  | head -n1)"
+PRIVATE_KEY="$(printf '%s\n' "$OUTPUT" \
+  | sed -n 's/^[[:space:]]*private_key:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  | head -n1)"
+
+# Validate — base64url, no padding. 65 chars public (P-256 uncompressed
+# point), 43 chars private (32 bytes). These are the canonical sizes
+# produced by `WebPush.Vapid.generate_keypair/0`.
+if [[ ! "$PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{87}$ ]] \
+   || [[ ! "$PRIVATE_KEY" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+  echo "bin/gen-vapid: could not parse keypair from mix output." >&2
+  echo "  Expected public_key (~87 chars, base64url) and private_key (~43 chars)." >&2
+  echo "  Got:" >&2
+  echo "    public_key:  ${PUBLIC_KEY:-<missing>}" >&2
+  echo "    private_key: ${PRIVATE_KEY:-<missing>}" >&2
+  echo "  Raw mix output:" >&2
+  printf '%s\n' "$OUTPUT" >&2
+  exit 3
+fi
+
+if [[ -z "$SUBJECT" ]]; then
+  # Default subject: mailto:admin@<PHX_HOST> when available, else
+  # mailto:admin@localhost. Operators on prod must override with
+  # --subject to a real domain they control (RFC 8292 requires this).
+  PHX_HOST="${PHX_HOST:-localhost}"
+  SUBJECT="mailto:admin@${PHX_HOST}"
+fi
+
+echo "[gen-vapid] public_key:  ${PUBLIC_KEY:0:8}…${PUBLIC_KEY: -8}"
+echo "[gen-vapid] private_key: ${PRIVATE_KEY:0:4}…${PRIVATE_KEY: -4}  (kept secret — handle with care)"
+echo "[gen-vapid] subject:     ${SUBJECT}"
+
+if [[ "$PRINT_ONLY" -eq 1 ]]; then
+  cat <<EOF
+VAPID_PUBLIC_KEY=${PUBLIC_KEY}
+VAPID_PRIVATE_KEY=${PRIVATE_KEY}
+VAPID_SUBJECT=${SUBJECT}
+EOF
+  exit 0
+fi
+
+# Refuse to silently overwrite existing keys without --force.
+# VAPID key rotation invalidates every browser PushManager.subscribe()
+# the user has ever made — see comment block at the top of this file.
+if [[ -f "$ENV_FILE" ]]; then
+  if grep -qE '^VAPID_(PUBLIC|PRIVATE)_KEY=[^[:space:]]' "$ENV_FILE"; then
+    if [[ "$FORCE" -ne 1 ]]; then
+      echo "" >&2
+      echo "bin/gen-vapid: ${ENV_FILE} already has VAPID keys set." >&2
+      echo "  Refusing to overwrite — re-running with --force will rotate them." >&2
+      echo "  Note: rotating the keypair invalidates every browser PushManager" >&2
+      echo "  subscription for this origin; users will need to re-enable." >&2
+      exit 5
+    fi
+    echo "[gen-vapid] --force: overwriting existing VAPID_* lines in ${ENV_FILE}"
+  fi
+else
+  if [[ ! -w "$(dirname "$ENV_FILE")" ]]; then
+    echo "bin/gen-vapid: cannot write to ${ENV_FILE} (parent dir not writable)." >&2
+    exit 4
+  fi
+  # Create an empty .env with a top-of-file comment so the user knows
+  # what was just written.
+  : > "$ENV_FILE"
+fi
+
+# Idempotent in-place update via a temp file + mv. We replace each
+# VAPID_* line; if absent, we append (preserving the comment block
+# from .env.example if present).
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+
+# Replace existing VAPID_* lines, keep everything else.
+if [[ -s "$ENV_FILE" ]]; then
+  # Drop existing VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
+  # lines (with any value, including blanks). Preserve everything else.
+  grep -vE '^VAPID_(PUBLIC|PRIVATE)_KEY=' "$ENV_FILE" \
+    | grep -vE '^VAPID_SUBJECT=' > "$TMP" || true
+fi
+
+# Append the new lines.
+{
+  echo "VAPID_PUBLIC_KEY=${PUBLIC_KEY}"
+  echo "VAPID_PRIVATE_KEY=${PRIVATE_KEY}"
+  echo "VAPID_SUBJECT=${SUBJECT}"
+} >> "$TMP"
+
+mv "$TMP" "$ENV_FILE"
+trap - EXIT
+
+echo "[gen-vapid] wrote VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT to ${ENV_FILE}"
+echo "[gen-vapid] next steps:"
+echo "  - source ${ENV_FILE} (or recreate the docker compose stack so it picks them up)"
+echo "  - in production, override --subject with a mailto: or https:// URL on a domain you control"
