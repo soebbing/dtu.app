@@ -2192,5 +2192,67 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "Today&#39;s Production Curve (Watts)"
       refute html =~ "Today&#39;s Consumption Curve (Watts)"
     end
+
+    test "Today's Consumption (kWh) panel is rendered exactly once on the dashboard", %{
+      conn: conn,
+      user: user
+    } do
+      # Regression: PR #76 added a "Today's Consumption" panel as a
+      # top-row card next to the "Current Consumption" card, AND the
+      # dedicated "Power consumption" row immediately below renders
+      # its own "Today's Consumption" card. In the live view the two
+      # cards carried the same kWh number with the same icon and rose
+      # palette, so a Shelly-paired user saw the value twice in a row.
+      # The fix removed the top-row card; the Power-consumption row's
+      # "Today's Consumption" stays as the single source of truth.
+      # This test pins the singular count so the duplicate can't
+      # silently re-appear.
+      _inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dedup-inv",
+          base_topic: "solar/dedup"
+        })
+
+      shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "dedup-shelly",
+          base_topic: "shellies/dedup"
+        })
+
+      # Seed a fresh consumption reading so the consumption-side
+      # cards (and "Today's Consumption" specifically) actually
+      # render. The Power-consumption row uses a separate
+      # period-stats helper which doesn't require the reading to
+      # be fresh.
+      now = DateTime.utc_now()
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 1000.0,
+          inserted_at: now
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The escaped label "Today&#39;s Consumption" appears in the
+      # rendered HTML for the panel. The chart title "Today&#39;s
+      # Consumption Curve (Watts)" also contains the substring
+      # "Today&#39;s Consumption" — count must exclude that case.
+      # Use the unique stat ID (which only the live-view panel carries)
+      # to assert the singular count.
+      assert html =~ ~s(id="stat-today-consumption-period"),
+             "the Power-consumption row's 'Today's Consumption' card should remain"
+
+      # And the live-view panel's distinct ID `stat-today-consumption`
+      # (the top-row card we removed) must NOT be in the HTML.
+      refute html =~ ~s(id="stat-today-consumption\""),
+             "the removed top-row 'Today's Consumption' panel must not re-appear"
+    end
   end
 end

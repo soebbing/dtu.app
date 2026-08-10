@@ -2034,32 +2034,19 @@ defmodule DtuAppWeb.DashboardLive do
                   </div>
                 </div>
               <% end %>
-              <%= if @consumption_stats.today_consumption > 0 do %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Today's Consumption")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-today-consumption"
-                            >
-                              {Devices.format_number(@consumption_stats.today_consumption, 1, @locale)} kWh
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% end %>
+              <%!-- Today's Consumption (kWh) used to render here as a
+                   top-row card mirroring the "Current Consumption" panel
+                   immediately above. PR #76 added the dedicated
+                   "Power consumption" row (Current / Today / Peak)
+                   further down, and PR #80 wired `today_consumption`
+                   to the bucket-mean integration that drives the
+                   dedicated card. The top-row card was therefore
+                   duplicating the same kWh number with the
+                   same icon and rose palette, and the row's
+                   "Current Consumption" already wins the
+                   `current_consumption` card slot — leaving this
+                   top-row card would show two identical "Today's
+                   Consumption" figures at once. Removed. --%>
             </div>
           <% end %>
 
