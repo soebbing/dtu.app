@@ -65,6 +65,16 @@ defmodule DtuApp.MixProject do
       # be declared explicitly here.
       {:gen_smtp, "~> 1.0"},
       {:req, "~> 0.5"},
+      # Web Push (RFC 8030) with VAPID authentication (RFC 8292)
+      # and aes128gcm payload encryption (RFC 8291). Used by
+      # `DtuApp.Push` to send signed/encrypted notifications to
+      # the user's service worker. Requires VAPID env vars at
+      # runtime; see `config/runtime.exs` and `.env.example`.
+      {:web_push, "~> 0.1.0"},
+      # Finch HTTP client — used by `web_push` to POST encrypted
+      # payloads to push services (Mozilla, Google, Apple). Listed
+      # explicitly so we supervise the pool in `DtuApp.Application`.
+      {:finch, "~> 0.19"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},

@@ -16,6 +16,7 @@ defmodule DtuAppWeb.NotificationsLive do
 
   alias DtuApp.Accounts
   alias DtuApp.Notifications
+  alias DtuApp.PushSubscriptions
 
   @impl true
   def mount(_params, _session, socket) do
@@ -29,11 +30,13 @@ defmodule DtuAppWeb.NotificationsLive do
     end
 
     user = socket.assigns.current_scope.user
+    has_subscriptions = PushSubscriptions.list_for_user(user) != []
 
     {:ok,
      socket
      |> assign(:page_title, gettext("Notifications"))
      |> assign(:notification_state, %{"state" => "loading"})
+     |> assign(:has_push_subscriptions, has_subscriptions)
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
 
@@ -44,12 +47,22 @@ defmodule DtuAppWeb.NotificationsLive do
     {:noreply, push_event(socket, "notify", payload)}
   end
 
-  @impl true
   def handle_event("notification_state", params, socket) do
     # The hook on the page sends {"state": "...", "installed": true|false}
     # once on mount and whenever the display-mode or permission state
     # changes. We store it as the assign the template renders.
     {:noreply, assign(socket, :notification_state, params)}
+  end
+
+  # The `PushSubscribe` JS hook sends this once `/push/subscribe`
+  # has returned 200. We only render the "Native push is enabled"
+  # badge after this fires — *before* it, the browser may have
+  # permission but no service-worker subscription (e.g. iOS Safari
+  # ≥ 16.4 granted permission but `PushManager` is undefined), and
+  # we don't want to claim native push is on when it isn't.
+  @impl true
+  def handle_event("push_subscribed", %{"endpoint" => _endpoint}, socket) do
+    {:noreply, assign(socket, :has_push_subscriptions, true)}
   end
 
   def handle_event("save", %{"user" => user_params}, socket) do
@@ -118,6 +131,24 @@ defmodule DtuAppWeb.NotificationsLive do
         hidden
       >
       </div>
+      <%!--
+        Push subscription hook. Owns the PushManager lifecycle
+        (subscribe on grant, persist endpoint to the server). The
+        `NotificationPermission` hook on the panel above dispatches a
+        `push:enable` event on grant, which triggers this hook's
+        auto-subscribe. `data-push="auto"` makes the hook also
+        auto-subscribe on next visit for users who have already
+        granted permission in a prior session — see
+        `assets/js/push_subscribe.js`.
+      --%>
+      <div
+        id="push-subscribe"
+        phx-hook="PushSubscribe"
+        data-user-id={@current_scope.user.id}
+        data-push="auto"
+        hidden
+      >
+      </div>
       <div class="mx-auto max-w-2xl space-y-6 py-8" id="notifications-page">
         <div>
           <h1 class="text-3xl font-extrabold tracking-tight text-zinc-900 dark:text-white">
@@ -182,6 +213,13 @@ defmodule DtuAppWeb.NotificationsLive do
                 {gettext(
                   "Notifications are enabled. Pick what you'd like to be notified about below."
                 )}
+                <%= if @has_push_subscriptions do %>
+                  <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                    {gettext(
+                      "Native push is on for this device — you'll get a system notification even when this site isn't open."
+                    )}
+                  </p>
+                <% end %>
               </div>
             <% _ -> %>
               <div class="rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">

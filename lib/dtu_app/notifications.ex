@@ -6,6 +6,25 @@ defmodule DtuApp.Notifications do
   in `assets/js/notifications.js`) actually fires the browser
   notification, deduplicating per user-device via `localStorage`.
 
+  This module is also the fan-out point for **native Web Push**
+  (VAPID, RFC 8030/8291/8292). When `broadcast/2` fires we:
+
+    1. PubSub-broadcast to the user's open LiveView (in-page hook),
+       so users with the dashboard open get the OS notification via
+       `new Notification(...)`.
+    2. Look the user up, decide whether the event passes their
+       preference gate (`notify_dtu_connection` / `notify_sun_down`),
+       and call `DtuApp.Push.deliver/2` to push the same payload to
+       their service worker via the push service. That delivers the
+       OS banner even when the tab is closed.
+
+  Gating rationale: the in-page hook already de-duplicates by tag
+  in `localStorage`, so a user with the dashboard open doesn't see
+  double banners (the in-page path fires; the OS-level `tag`
+  coalesces repeats that arrive while the in-page path is also
+  running). The two paths are independent and safe to fire
+  simultaneously.
+
   Why per-user topics instead of broadcast? Two reasons:
     1. Privacy: only the user's own LiveView receives their events.
     2. Liveness: the topic is only subscribed while the user's
@@ -13,6 +32,8 @@ defmodule DtuApp.Notifications do
        tab is unnecessary.
   """
 
+  alias DtuApp.Accounts
+  alias DtuApp.Push
   alias Phoenix.PubSub
 
   @pubsub DtuApp.PubSub
@@ -31,11 +52,81 @@ defmodule DtuApp.Notifications do
   end
 
   @doc """
-  Fire a `:notification` event to the user's LiveView. The browser
-  notification itself is created by the JS hook on the page.
+  Fire a `:notification` event to the user's LiveView (in-page
+  notifications) AND, in parallel, dispatch a VAPID-signed push to
+  the user's service worker (native notifications when the tab is
+  closed). Both paths are no-ops if the user has no active
+  subscribers / no subscriptions — the fan-out is graceful.
+
+  Per-event preference gating:
+
+    * `event: "dtu_connection"` is suppressed unless the user has
+      `notify_dtu_connection == true`.
+    * `event: "sun_down"` is suppressed unless the user has
+      `notify_sun_down == true`.
+    * Any other event (the `test` event from the test button,
+      future event types) is delivered unconditionally — the user
+      has already opted in to receiving those by interacting with
+      the corresponding UI.
+
+  Returns `:ok` once the in-page broadcast has been scheduled; the
+  web-push fan-out runs on the calling process and is
+  best-effort. Per-subscription failures are logged inside
+  `DtuApp.Push.deliver/2`.
   """
   @spec broadcast(non_neg_integer(), map()) :: :ok | {:error, term()}
-  def broadcast(user_id, payload) do
+  def broadcast(user_id, payload) when is_integer(user_id) and is_map(payload) do
     PubSub.broadcast(@pubsub, user_topic(user_id), {:notification, payload})
+
+    case safe_get_user(user_id) do
+      nil ->
+        :ok
+
+      user ->
+        if native_push_enabled?(user, payload) do
+          # Spawn so a slow push service (Apple, FCM) can't back up
+          # the caller's mailbox. Failures are logged inside the
+          # dispatcher and never bubble up — broadcast/2's contract
+          # is `:ok | {:error, term()}` for the PubSub side.
+          _ = Task.start(fn -> Push.deliver(user, payload) end)
+        end
+
+        :ok
+    end
   end
+
+  # A user-deleted-before-broadcast race is benign: the in-page
+  # broadcast is a no-op (no LiveView subscribed), and we just
+  # skip the web-push fan-out. `Accounts.get_user!/1` would raise;
+  # we want a quiet `nil` instead.
+  defp safe_get_user(user_id) do
+    Accounts.get_user!(user_id)
+  rescue
+    Ecto.NoResultsError -> nil
+  end
+
+  # Per-event preference gate. See the `@doc` above for the
+  # rationale.
+  defp native_push_enabled?(%DtuApp.Accounts.User{} = user, %{"event" => event}) do
+    cond do
+      event == "dtu_connection" -> user.notify_dtu_connection == true
+      event == "sun_down" -> user.notify_sun_down == true
+      true -> true
+    end
+  end
+
+  # Same gate, but with atom keys (LiveView push_event payloads
+  # default to string-keyed maps, but callers using atom-keyed
+  # payloads also need to work).
+  defp native_push_enabled?(%DtuApp.Accounts.User{} = user, %{event: event}) do
+    cond do
+      event == :dtu_connection -> user.notify_dtu_connection == true
+      event == :sun_down -> user.notify_sun_down == true
+      true -> true
+    end
+  end
+
+  # Unknown payload shape — let everything through; the in-page
+  # path will still render the title/body the caller supplied.
+  defp native_push_enabled?(_user, _payload), do: true
 end

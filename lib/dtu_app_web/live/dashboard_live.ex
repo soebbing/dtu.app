@@ -5,6 +5,7 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuApp.MqttBroker.Telemetry
   alias DtuApp.MqttBroker.Broker
   alias DtuApp.Notifications
+  alias DtuApp.PushSubscriptions
 
   @timezone_topic "dtu:timezone"
 
@@ -30,6 +31,16 @@ defmodule DtuAppWeb.DashboardLive do
 
     user = socket.assigns.current_scope.user
 
+    # True when this user has at least one row in `push_subscriptions`
+    # — i.e. the `PushSubscribe` hook has already POSTed a
+    # `PushSubscription` JSON to the server. Drives a small "Native
+    # push is on" indicator on the page; we read it server-side at
+    # mount rather than waiting for the JS hook to round-trip so the
+    # badge appears immediately on page load (the hook still fires
+    # `push_subscribed` afterwards, which is what the in-page badge
+    # listens for in turn).
+    has_push_subscriptions = PushSubscriptions.list_for_user(user) != []
+
     socket =
       socket
       |> refresh_devices(user)
@@ -40,6 +51,7 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:granularity, "day")
       |> assign(:time_range, "today")
       |> assign(:selected_period, nil)
+      |> assign(:has_push_subscriptions, has_push_subscriptions)
       # Default to UTC (offset 0). The client-side `.SetTimezone`
       # colocated hook pushes the real offset once the WebSocket is
       # connected, and `handle_info({:set_timezone, ...})` updates this
@@ -184,6 +196,24 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:network_connection_type, payload["connection_type"])
       |> assign(:network_last_update, payload["timestamp"])
 
+    {:noreply, socket}
+  end
+
+  # The `PushSubscribe` JS hook (mounted on the dashboard layout, see
+  # `render/1` below) sends this event after a successful POST to
+  # `/push/subscribe`. We only flip `@has_push_subscriptions` to true
+  # — never back to false — because the hook only POSTs when it has
+  # a fresh subscription. A re-render mid-session shouldn't drop the
+  # "Native push is on" badge until the next page load.
+  @impl true
+  def handle_event("push_subscribed", %{"endpoint" => _endpoint}, socket) do
+    {:noreply, assign(socket, :has_push_subscriptions, true)}
+  end
+
+  def handle_event("push_subscribed", _payload, socket) do
+    # Defensive: tolerate an empty/malformed payload (the hook
+    # shouldn't ever send one, but if it did we don't want to crash
+    # the dashboard LiveView).
     {:noreply, socket}
   end
 
@@ -1531,6 +1561,36 @@ defmodule DtuAppWeb.DashboardLive do
         id="notifications-firing"
         phx-hook="Notifications"
         data-user-id={@current_scope.user.id}
+        hidden
+      >
+      </div>
+      <%!--
+        Push-subscribe hook. Owns the PushManager lifecycle on this
+        device — when the user has already granted `Notification`
+        permission in a prior session, this hook auto-subscribes on
+        next visit by POSTing the service worker's PushSubscription
+        JSON to `/push/subscribe`. The dashboard is the highest-
+        traffic authenticated page (it's where most users land after
+        login), so mounting here makes "returning user auto-
+        subscribed" the default behaviour with no extra click.
+
+        `data-push="auto"` is what `assets/js/push_subscribe.js` reads
+        on `mounted()` to enable auto-subscription without waiting for
+        the `push:enable` window event that the notifications page
+        uses. The `NotificationPermission` hook on `/notifications`
+        dispatches `push:enable` after the user clicks "Enable"; on
+        the dashboard there's no permission UI, so we go straight to
+        the auto-subscribe path.
+
+        Idempotency: the controller upserts by `endpoint`, so a
+        returning user landing here fires one extra POST per session
+        and the row count stays stable.
+      --%>
+      <div
+        id="push-subscribe"
+        phx-hook="PushSubscribe"
+        data-user-id={@current_scope.user.id}
+        data-push="auto"
         hidden
       >
       </div>

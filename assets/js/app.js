@@ -35,6 +35,7 @@ import topbar from "../vendor/topbar"
 import {NotificationPermission} from "./notification_permission.js"
 import {Notifications} from "./notifications.js"
 import {OfflineBanner} from "./offline_banner.js"
+import {PushSubscribe} from "./push_subscribe.js"
 
 // Network Status Hook
 const NetworkStatus = {
@@ -149,7 +150,8 @@ const liveSocket = new LiveSocket("/live", Socket, {
     NetworkStatus,
     NotificationPermission,
     Notifications,
-    OfflineBanner
+    OfflineBanner,
+    PushSubscribe
   },
 })
 

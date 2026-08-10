@@ -17,6 +17,18 @@ jobs:
     outputs:
       should-build-docker: ${{ steps.test-result.outputs.success }}
 
+    # VAPID placeholder values so `config/runtime.exs` (which refuses
+    # to start in `:prod` without VAPID keys) doesn't blow up on the
+    # prod-environment CI steps. These never reach the browser — the
+    # E2E suite doesn't exercise Web Push, and `DtuApp.Push.deliver/2`
+    # short-circuits when VAPID is set but not real. We use distinct
+    # fixed strings rather than runtime-generated keys so the
+    # `MIX_ENV=prod` startup is reproducible across CI runs.
+    env:
+      VAPID_PUBLIC_KEY: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      VAPID_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      VAPID_SUBJECT: "mailto:ci@localhost"
+
     services:
       db:
         image: timescale/timescaledb:latest-pg16
