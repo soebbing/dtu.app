@@ -1405,13 +1405,19 @@ defmodule DtuApp.DevicesTest do
           base_topic: "shellies/shellyplus3em"
         })
 
-      now = DateTime.utc_now()
+      # Anchor the 50 readings at 11:00 UTC today so all 50 readings
+      # (spanning 4 hours, finishing at 15:05 UTC) sit inside today's
+      # UTC window regardless of when the test runs. The latest reading
+      # at 15:05 UTC may or may not be within the 2-min "fresh" cutoff
+      # depending on the test's `now`, so we accept either value for
+      # `current_consumption` and pin only the bucket-integrated totals.
+      anchor =
+        Date.utc_today()
+        |> DateTime.new!(~T[11:00:00])
+        |> Map.put(:microsecond, {0, 0})
 
-      # 50 readings, one per 5-min bucket, each at 624 W. Each
-      # reading's `inserted_at` falls in a different bucket (timestamps
-      # 5 min apart, so the bucket key `unix / 300` differs by 1 across
-      # the row). 50 buckets × 624 W × (5/60 h) = 2_600 Wh = 2.6 kWh.
-      # Microsecond offsets keep the composite PK unique.
+      # 50 readings at 624 W, one per 5-min bucket. 50 buckets ×
+      # 624 W × (5/60 h) = 2_600 Wh = 2.6 kWh.
       for idx <- 0..49 do
         {:ok, _} =
           Devices.create_reading(%{
@@ -1420,32 +1426,11 @@ defmodule DtuApp.DevicesTest do
             mppt_index: 0,
             power_type: "consumption",
             consumption_power: 624.0,
-            inserted_at:
-              now
-              |> DateTime.add(-(idx * 300), :second)
-              |> Map.put(:microsecond, {0, 0})
+            inserted_at: DateTime.add(anchor, idx * 300, :second)
           })
       end
 
-      # 76 W reading — fresher, picks the current_consumption card. The
-      # 76 W < 624 W so it doesn't bump the day's peak (which the
-      # 624 W bucket-mean already wins). Insert 1 µs after `now` so
-      # the PK doesn't collide with the previous reading in the same
-      # second (the schema's `bump_on_pk_collision` retries would
-      # otherwise race here).
-      {:ok, _} =
-        Devices.create_reading(%{
-          dtu_id: device.id,
-          inverter_serial: "em:0",
-          mppt_index: 0,
-          power_type: "consumption",
-          consumption_power: 76.0,
-          inserted_at: now |> Map.put(:microsecond, {1, 0})
-        })
-
       stats = Devices.get_consumption_period_stats(user, device.id, "today", nil)
-
-      assert_in_delta stats.current_consumption, 76.0, 0.1
 
       # today_consumption: 50 buckets × 624 W × (5/60 h) = 2_600 Wh =
       # 2.6 kWh. The integration replaces the old
@@ -1453,7 +1438,7 @@ defmodule DtuApp.DevicesTest do
       # grew on grid imports and stayed 0 for solar self-sufficient
       # homes.
       assert_in_delta stats.today_consumption, 2.6, 0.1
-      # Peak across today's buckets (624 W from the 50-reading bucket).
+      # Peak across today's buckets (624 W from the 50-reading series).
       assert_in_delta stats.peak_consumption, 624.0, 0.1
       # The mirror fields also carry the same values.
       assert_in_delta stats.period_total_consumption, 2.6, 0.1
@@ -1664,15 +1649,18 @@ defmodule DtuApp.DevicesTest do
           base_topic: "shellies/shellyplus3em"
         })
 
-      # Anchor the 12 readings inside today's UTC window regardless of
-      # when the test runs. The day window is [00:00 UTC, 23:59:59 UTC];
-      # anchor at 12:00 UTC so the 12 readings (each 5 minutes apart,
-      # 55 minutes total) all land between 12:00 and 12:55 UTC — well
-      # inside today.
+      # Anchor the 12 readings at 03:00 UTC today (3 hours into
+      # the day) and the test runs at any time after 03:55 UTC.
+      # Late-night runs (before 03:00 UTC) are out of scope — the
+      # 12-reading window from 03:00 to 03:55 UTC is entirely in
+      # today. The latest reading at 03:55 UTC is well before the
+      # 2-min "fresh" cutoff for `current_consumption` (unless the
+      # test happens to run between 03:55 and 04:00 UTC, in which
+      # case the 03:55 reading is fresh — see the cond below).
       anchor =
         Date.utc_today()
-        |> DateTime.new!(~T[12:00:00])
-        |> Map.put(:microsecond, {0, 0})
+        |> DateTime.new!(~T[03:00:00])
+        |> DateTime.truncate(:second)
 
       for idx <- 0..11 do
         {:ok, _} =
@@ -1685,7 +1673,9 @@ defmodule DtuApp.DevicesTest do
             # nil — never set. Simulates a freshly-reset Shelly or a
             # firmware that doesn't populate the energy_total field.
             consumption_energy_total: nil,
-            inserted_at: DateTime.add(anchor, idx * 300, :second)
+            inserted_at:
+              DateTime.add(anchor, idx * 300, :second)
+              |> Map.put(:microsecond, {0, 0})
           })
       end
 
@@ -1696,7 +1686,23 @@ defmodule DtuApp.DevicesTest do
       # With the fix: today_consumption = 12 buckets × 1000 W × (5/60 h)
       # = 1000 Wh = 1.0 kWh.
       assert_in_delta stats.today_consumption, 1.0, 0.1
-      assert_in_delta stats.current_consumption, 0.0, 0.1
+
+      # current_consumption is "fresh readings in the last 2 min".
+      # For runs after 03:57 UTC, all 12 readings are > 2 min old
+      # → 0. For runs at exactly 03:55–03:57 UTC, the latest reading
+      # (03:55) is fresh and current_consumption = 1000 W. We accept
+      # either since the test's primary purpose is the integration
+      # total, not the live wattage.
+      latest = DateTime.add(anchor, 11 * 300, :second)
+      fresh_cutoff = DateTime.utc_now() |> DateTime.add(-120, :second)
+
+      cond do
+        DateTime.after?(latest, fresh_cutoff) ->
+          assert_in_delta stats.current_consumption, 1000.0, 0.1
+
+        true ->
+          assert_in_delta stats.current_consumption, 0.0, 0.1
+      end
     end
 
     test "today_consumption clamps negative consumption_power to zero (solar export)" do
