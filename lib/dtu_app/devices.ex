@@ -859,18 +859,23 @@ defmodule DtuApp.Devices do
   cutoff used by `get_daily_stats/3`).
 
   `today_consumption` is the household energy consumed within the
-  current UTC day (in kWh), computed by integrating
+  current UTC day (in kWh), computed by integrating the bucket-mean
   `consumption_power` over time. The Shelly Plus 3EM publishes a
   *signed* `total_act_power` per uplink (positive when the home is
   drawing from the grid, negative when the home is exporting
-  surplus solar). The earlier implementation took the lifetime
-  cumulative counter delta (`MAX - MIN` of `consumption_energy_total`)
-  instead, which only counts **grid imports** — for a solar home
-  that offsets its own consumption, the lifetime counter barely
-  grows, so the dashboard always rendered 0 kWh even though the
-  household was actively consuming. Integrating the instantaneous
-  power over time gives the actual household consumption regardless
-  of whether the energy comes from the grid or directly from solar.
+  surplus solar). The integration sums raw values, floored at 0
+  per-bucket, so a solar home whose self-consumption exceeds grid
+  draw reports non-zero kWh (the bucket-mean × 5/60h gives a real
+  consumption value). A home fully covered by solar with no grid
+  import still reads 0 because the bucket-mean is non-positive.
+
+  Note that the "Today's Consumption" computation is a best
+  approximation: the Shelly meter only sees net grid flow, not
+  direct solar use, so a fully solar self-sufficient home will
+  show zero regardless of household activity. The integration uses
+  the bucket-mean rather than summing raw readings because the
+  Shelly publishes ~10× per 5-min bucket — summing would 10× the
+  result.
 
   `peak_consumption` mirrors `peak_power`: the higher of (a) the
   live fresh reading, (b) the highest 5-minute bucket mean.
@@ -937,7 +942,7 @@ defmodule DtuApp.Devices do
 
           points ->
             points
-            |> Enum.map(& &1.power)
+            |> Enum.map(&max(&1.power, 0.0))
             |> Enum.max(fn -> 0.0 end)
         end
 
@@ -946,7 +951,7 @@ defmodule DtuApp.Devices do
       %{
         current_consumption: Float.round(current_consumption * 1.0, 1),
         # Integrated from per-bucket-mean consumption_power (W).
-        today_consumption: Float.round(today_consumption, 1),
+        today_consumption: Float.round(today_consumption, 2),
         peak_consumption: Float.round(peak_consumption * 1.0, 1)
       }
     end
@@ -969,19 +974,31 @@ defmodule DtuApp.Devices do
   # the instantaneous `consumption_power` gives the actual household
   # consumption regardless of whether the energy comes from the grid
   # or directly from solar.
+  #
+  # Floor each bucket-mean at 0 (negative readings mean solar export;
+  # we count those as zero contribution since the user is consuming
+  # energy from solar directly rather than from the grid — and we
+  # cannot distinguish that from solar-export with no direct use).
+  # Round to 2 decimal places so small continuous loads (e.g. 30 W for
+  # a few hours) don't round down to 0.
   @spec integrate_consumption_kwh(User.t(), integer() | nil, DateTime.t(), DateTime.t()) ::
           float()
   def integrate_consumption_kwh(%User{} = user, dtu_id, utc_start, utc_end) do
     list_consumption_chart_data(user, utc_start, utc_end, dtu_id)
     |> Enum.reduce(0.0, fn point, acc ->
-      # Bucket-mean W × bucket duration (5/60 h) = Wh contributed.
-      watts = clamp_household_draw(point.power)
+      # Floor each bucket-mean at 0 (the Shelly's signed reading means
+      # a negative value indicates grid export, which the household
+      # consumed from solar directly; we approximate this as "no grid
+      # contribution" for the integration). Bucket-mean W × bucket
+      # duration (5/60 h) = Wh contributed.
+      watts = max(point.power, 0.0)
       acc + watts * (5.0 / 60.0)
     end)
-    # Wh → kWh, one decimal place to match the dashboard's
-    # one-decimal kWh cards.
+    # Wh → kWh, two decimal places to give continuous low loads
+    # (e.g. 30 W for an hour = 0.03 kWh) a chance to surface on the
+    # dashboard rather than rounding to 0.
     |> Kernel./(1000)
-    |> Float.round(1)
+    |> Float.round(2)
   end
 
   @doc """
