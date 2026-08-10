@@ -46,3 +46,20 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# VAPID keys for test. Real cryptographic operations are not exercised
+# in test — `DtuApp.Push.deliver/2` short-circuits when the `:web_push`
+# config is empty (see `runtime.exs`) and is instead stubbed via
+# `Mox`/explicit mocks. These keys exist so `WebPush.Vapid.public_key/0`
+# doesn't crash if a test reads the controller's JSON body shape.
+#
+# Both keys are valid URL-safe base64 P-256 points generated once with
+# `WebPush.Vapid.generate_keypair/0` and hard-coded here for stability.
+config :web_push,
+  finch: DtuAppWeb.WebPushFinch,
+  vapid: %{
+    public_key:
+      "BPEkkVKqVKK7gR7g5dZQXz3Lp1zQ0nYfR2zL3lUjk1z7p5VnY2Q0wT8aM5cN9bO0sZc2vF3dXzQ0vW8aM5cN9bO0sZc2vF3dXw",
+    private_key: "DtKMYV5z0qL3lUjk1z7p5VnY2Q0wT8aM5cN9bO0sZc2vF3dXzQ0vW8aM5cN9bO0s",
+    subject: "mailto:test@localhost"
+  }

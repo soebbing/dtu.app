@@ -66,6 +66,18 @@ defmodule DtuAppWeb.Router do
     put "/users/settings", UserSettingsController, :update
     get "/users/settings/confirm-email/:token", UserSettingsController, :confirm_email
 
+    # Web Push (VAPID) subscription endpoints. The browser-side
+    # `PushSubscribe` JS hook hits these to register the service
+    # worker's push subscription with the server. Auth-gated so
+    # only the owner of the session can subscribe / unsubscribe
+    # their own devices. CSRF is enforced via the standard
+    # `X-CSRF-Token` header (the `:protect_from_forgery` plug from
+    # the `:browser` pipeline); the JS hook reads the token from
+    # the `<meta name="csrf-token">` element in the root layout.
+    get "/push/vapid/public_key", PushController, :vapid_public_key
+    post "/push/subscribe", PushController, :subscribe
+    post "/push/unsubscribe", PushController, :unsubscribe
+
     live_session :current_scope,
       on_mount: [{DtuAppWeb.UserAuth, :mount_current_scope}, DtuAppWeb.Plugs.Locale] do
       live "/dashboard", DashboardLive, :index

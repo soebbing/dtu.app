@@ -164,6 +164,65 @@ if config_env() == :prod do
   config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end
 
+# ── Web Push (VAPID) ───────────────────────────────────────────────────────
+# Required for native browser notifications delivered by the service
+# worker when no tab is open. All three VAPID_* vars come from the
+# environment; in :dev a fresh keypair is generated on every boot
+# (logged for convenience) so the developer doesn't have to provision
+# keys just to test the OS-notification path. In :test we skip
+# entirely — push tests can inject a stubbed module.
+vapid_pub = System.get_env("VAPID_PUBLIC_KEY", "")
+vapid_priv = System.get_env("VAPID_PRIVATE_KEY", "")
+vapid_sub = System.get_env("VAPID_SUBJECT", "mailto:admin@localhost")
+
+case config_env() do
+  :test ->
+    # The test environment configures a stub Finch pool and never
+    # sends real push notifications; see `config/test.exs`. Keep the
+    # keys present so the public_key/0 call doesn't blow up if a test
+    # exercises the controller path.
+    :ok
+
+  _ ->
+    {vapid_pub, vapid_priv} =
+      cond do
+        vapid_pub != "" and vapid_priv != "" ->
+          {vapid_pub, vapid_priv}
+
+        config_env() == :prod ->
+          raise """
+          environment variables VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY
+          are missing. Generate a keypair with `mix web_push.gen.vapid`
+          and set both, plus VAPID_SUBJECT, before starting in :prod.
+          """
+
+        true ->
+          # Dev convenience: fresh keypair each boot. The JS-side
+          # `PushManager.subscribe()` call captures the public key at
+          # enable-time, so changing the key on restart invalidates any
+          # in-flight subscription — which is fine for dev. Operators
+          # upgrading from a no-VAPID setup will need to re-enable
+          # notifications on each device once after deploy.
+          %{public_key: pk, private_key: sk} = WebPush.Vapid.generate_keypair()
+
+          require Logger
+
+          Logger.warning(fn ->
+            "[vapid] generated ephemeral dev keypair — set VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY in prod"
+          end)
+
+          {pk, sk}
+      end
+
+    config :web_push,
+      finch: DtuAppWeb.WebPushFinch,
+      vapid: %{
+        public_key: vapid_pub,
+        private_key: vapid_priv,
+        subject: vapid_sub
+      }
+end
+
 # ── Release / git version ──────────────────────────────────────────────────
 # The unobtrusive site footer shows the currently-running release. The
 # release workflow passes RELEASE_VERSION (the git tag, e.g. v2026-07-26-1)

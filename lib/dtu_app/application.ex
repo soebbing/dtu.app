@@ -12,7 +12,15 @@ defmodule DtuApp.Application do
         DtuAppWeb.Telemetry,
         DtuApp.Repo,
         {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
-        {Phoenix.PubSub, name: DtuApp.PubSub}
+        {Phoenix.PubSub, name: DtuApp.PubSub},
+        # Finch HTTP pool dedicated to the `web_push` library. We
+        # supervise our own pool (named `DtuAppWeb.WebPushFinch`) so
+        # push traffic never shares a connection pool with anything
+        # else in the app — a slow push service (FCM, Apple) can
+        # never back up unrelated HTTP work. `config :web_push, finch:
+        # DtuAppWeb.WebPushFinch` (in `runtime.exs`) tells the library
+        # which pool to use.
+        {Finch, name: DtuAppWeb.WebPushFinch}
       ] ++
         mqtt_broker_children() ++
         [

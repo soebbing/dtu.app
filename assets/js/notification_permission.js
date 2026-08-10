@@ -80,8 +80,22 @@ const NotificationPermission = {
     if (typeof window.Notification === "undefined") return
     if (typeof window.Notification.requestPermission !== "function") return
 
-    window.Notification.requestPermission().then(() => {
+    window.Notification.requestPermission().then((permission) => {
       this.pushState()
+      // Once the OS grants notification permission, hand off to
+      // the `PushSubscribe` hook (also mounted on this page) so it
+      // can call `PushManager.subscribe()` and POST the resulting
+      // subscription to the server. Without this dispatch the user
+      // would still get in-page notifications (via the
+      // `Notifications` hook) but no OS banners when the tab is
+      // closed. The event is intentionally a custom `window` event
+      // (not `pushEvent`) so the hook doesn't need a LiveView
+      // round-trip to learn about the permission change.
+      if (permission === "granted") {
+        window.dispatchEvent(
+          new CustomEvent("push:enable", {detail: {permission: permission}})
+        )
+      }
     })
   }
 }

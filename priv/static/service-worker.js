@@ -259,3 +259,116 @@ self.addEventListener("message", (event) => {
     self.skipWaiting();
   }
 });
+
+// ─── Web Push (Option A, Phase 2) ────────────────────────────────────────
+// The server signs payloads with VAPID (`web_push_encrypter`) and the
+// browser delivers them here even when the tab is closed. This is the
+// path that delivers notifications when the user does *not* have the
+// dashboard open — the in-page `assets/js/notifications.js` hook only
+// fires when there's an active LiveView socket.
+//
+// Payload contract (whitelist merge — see below):
+//
+//   { event: "dtu_connection" | "sun_down" | "test" | ...,
+//     title:  String,
+//     body:   String,
+//     tag:    String,        // OS dedup key (see "OS-level dedup")
+//     icon:   String (URL),   // optional, defaults to the PWA icon
+//     url:    String (URL) }  // optional, deep-link for the click handler
+//
+// "OS-level dedup": the `tag` field is what the OS uses to coalesce
+// repeat banners (e.g. a flapping DTU reconnecting every 30s would
+// otherwise spam the user). Without `renotify: true` repeat events
+// with the same tag would *silently replace* the previous banner.
+// The in-page `assets/js/notifications.js` hook has a separate
+// `localStorage` dedup for the page-open case; the two layers don't
+// interact.
+
+self.addEventListener("push", (event) => {
+  // Default payload — never fire a blank banner if the server sent a
+  // malformed body. A misbehaving producer must not silently spam an
+  // empty notification.
+  let payload = {
+    title: "dtu.app",
+    body: "New event from dtu.app",
+    tag: "dtu:generic",
+    icon: "/images/icon-192.png",
+    url: "/dashboard",
+  };
+
+  if (event.data) {
+    try {
+      const incoming = event.data.json();
+
+      // Whitelist merge: only copy string-typed, expected keys from
+      // the server payload. Without this guard, a leaked auth cookie
+      // or other unexpected key would end up in `notification.title`
+      // — the OS shows the title in the system-tray / lock-screen,
+      // so this is the one place we really don't want garbage.
+      if (typeof incoming.title === "string") payload.title = incoming.title;
+      if (typeof incoming.body === "string") payload.body = incoming.body;
+      if (typeof incoming.tag === "string") payload.tag = incoming.tag;
+      if (typeof incoming.url === "string") payload.url = incoming.url;
+      if (typeof incoming.icon === "string") payload.icon = incoming.icon;
+    } catch (parseErr) {
+      console.warn(
+        "[Service Worker] Push payload was not JSON, using defaults:",
+        parseErr,
+      );
+    }
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      tag: payload.tag,
+      icon: payload.icon,
+      // `renotify: true` makes the OS show a fresh banner for each
+      // event with the same tag — without it, repeat events with the
+      // same tag would silently replace the previous banner.
+      renotify: true,
+      // Stash the deep link on the notification object itself so
+      // `notificationclick` can route the user to the right page.
+      data: payload.url,
+    }),
+  );
+});
+
+// Click handler — focus an existing tab if one's already open,
+// otherwise open a new window. This is the path that brings the
+// user back to the dashboard after tapping an OS notification.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const targetUrl =
+    event.notification.data && typeof event.notification.data === "string"
+      ? event.notification.data
+      : "/dashboard";
+
+  event.waitUntil(
+    clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((windowClients) => {
+        // Reuse an existing tab if one's already open. Falls back to
+        // `clients.openWindow` for the cold-start case (no window
+        // open). Non-window clients (shared workers etc.) are skipped.
+        for (const client of windowClients) {
+          if ("focus" in client) {
+            // Best-effort: try to navigate the existing tab. ignore
+            // for non-window clients.
+            try {
+              if ("navigate" in client && client.url !== targetUrl) {
+                client.navigate(targetUrl);
+              }
+            } catch (_navErr) {
+              // ignore: we'll fall through to focus()
+            }
+            return client.focus();
+          }
+        }
+        if (clients.openWindow) {
+          return clients.openWindow(targetUrl);
+        }
+      }),
+  );
+});
