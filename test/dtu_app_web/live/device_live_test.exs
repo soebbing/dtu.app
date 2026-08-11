@@ -571,4 +571,169 @@ defmodule DtuAppWeb.DeviceLiveTest do
              "expected the new error to appear in the expansion panel after :dtu_error broadcast"
     end
   end
+
+  describe "Click a device row to toggle the error panel" do
+    # The manage-device page's main interaction: clicking the device
+    # row's content area toggles the error expansion panel for that
+    # device. Same open/close semantic as the dashboard's deep-link
+    # (`?expand=<id>`) and the close button — the panel state and
+    # the URL's `?expand=<id>` query param stay in sync.
+    #
+    # `phx-click` lives on the row's content area (the flex-1 left
+    # column with the device name + kind + inline error message). Edit
+    # and Remove buttons are nested children — they route their
+    # clicks to themselves and don't fire the row's handler.
+
+    test "clicking a closed row opens the error panel + patches ?expand=<id>",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Clickable",
+          kind: "opendtu",
+          mqtt_username: "clickable"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Some error")
+
+      {:ok, view, _html} = live(conn, ~p"/devices")
+
+      # No panel rendered before the click.
+      refute render(view) =~ "device-error-panel-"
+
+      view
+      |> element("#device-row-content-#{dtu.id}")
+      |> render_click()
+
+      # URL gets the expand param + the panel renders.
+      assert_patch(view, ~p"/devices?expand=#{dtu.id}")
+
+      opened? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "device-error-panel-" do
+            Process.sleep(50)
+            {:cont, false}
+          else
+            {:halt, true}
+          end
+        end)
+
+      assert opened?,
+             "expected the panel to appear after clicking the row"
+    end
+
+    test "clicking a healthy device row opens the panel and shows the 'no errors' empty state",
+         %{conn: conn, user: user} do
+      # The user's request: "Show 'no errors' (translated) when none
+      # exist" — clicking a device that has no error history must
+      # still open the panel, and the panel must render the
+      # translated empty-state message rather than appear empty.
+      dtu =
+        device_fixture(user, %{
+          name: "Healthy but clickable",
+          kind: "opendtu",
+          mqtt_username: "healthy-clickable"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/devices")
+
+      view
+      |> element("#device-row-content-#{dtu.id}")
+      |> render_click()
+
+      assert_patch(view, ~p"/devices?expand=#{dtu.id}")
+
+      # The "no errors recorded" message is the empty-state copy —
+      # the German/French translations live in `default.po` (added
+      # in MR #89, kept in MR #90).
+      found? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "No errors recorded for this DTU yet." do
+            Process.sleep(50)
+            {:cont, false}
+          else
+            {:halt, true}
+          end
+        end)
+
+      assert found?,
+             "expected the 'no errors' empty-state message after clicking a healthy device"
+    end
+
+    test "clicking an open row closes the panel + patches /devices (no expand)",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Toggleable",
+          kind: "opendtu",
+          mqtt_username: "toggleable"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Some error")
+
+      {:ok, view, _html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # Panel is open on mount.
+      assert render(view) =~ "device-error-panel-#{dtu.id}"
+
+      view
+      |> element("#device-row-content-#{dtu.id}")
+      |> render_click()
+
+      # The toggle handler clears `?expand` and the panel disappears.
+      assert_patch(view, ~p"/devices")
+
+      closed? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "device-error-panel-#{dtu.id}" do
+            Process.sleep(50)
+            {:cont, false}
+          else
+            {:halt, true}
+          end
+        end)
+
+      assert closed?,
+             "expected the panel to disappear after clicking the open row"
+    end
+
+    test "clicking the row does NOT trigger the Edit or Remove buttons", %{
+      conn: conn,
+      user: user
+    } do
+      # The Edit and Remove buttons are nested inside the row. Their
+      # own click handlers must take precedence over the row's —
+      # the user clicking Edit should patch to /devices/N/edit, not
+      # toggle the panel. Browsers handle this naturally because
+      # inner elements route the click to themselves first.
+      dtu =
+        device_fixture(user, %{
+          name: "Edit-Clickable",
+          kind: "opendtu",
+          mqtt_username: "edit-clickable"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Some error")
+
+      {:ok, view, _html} = live(conn, ~p"/devices")
+
+      # Click the Edit link — should patch to the edit URL, NOT
+      # open the error panel.
+      view
+      |> element("a[href='/devices/#{dtu.id}/edit']")
+      |> render_click()
+
+      # The LiveView's URL must be the edit URL (not the devices
+      # page with expand=<id>).
+      assert_patch(view, ~p"/devices/#{dtu.id}/edit")
+
+      # And the panel must NOT have opened.
+      refute render(view) =~ "device-error-panel-#{dtu.id}"
+    end
+  end
 end
