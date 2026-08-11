@@ -338,7 +338,16 @@ defmodule DtuApp.Devices do
       from e in DtuError,
         where: e.dtu_id == ^dtu_id,
         group_by: e.message,
-        order_by: [desc: max(e.inserted_at)],
+        # Secondary `desc: max(e.id)` tie-breaks groups whose
+        # `MAX(inserted_at)` collides at the same µs — postgres coalesces
+        # `now()` calls landing inside the same transaction to the same
+        # value, so without the tiebreaker the rollup's order between
+        # same-second groups is non-deterministic. `dtu_errors.id` is a
+        # `bigserial` (monotonically increasing), so `MAX(id)` matches the
+        # most recently inserted row for each group — exactly the
+        # insertion-order tiebreaker the user expects. Can't sort on
+        # `e.id` directly without grouping by it.
+        order_by: [desc: max(e.inserted_at), desc: max(e.id)],
         select: %{
           message: e.message,
           occurrences: count(e.id),
