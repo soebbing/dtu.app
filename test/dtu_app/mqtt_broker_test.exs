@@ -975,6 +975,234 @@ defmodule DtuApp.MqttBrokerTest do
     end
   end
 
+  describe "DTU error surfacing (record_dtu_error/2)" do
+    # Every parser error path (bad JSON, unknown topic, base-topic
+    # mismatch on a Shelly, DB insert failure) must now persist on
+    # `dtus.last_error` and broadcast `:dtu_error` on `dtu:status` so
+    # the dashboard bubble and manage-device fill appear. The tests
+    # below pin each path — they're the regression guard so a future
+    # refactor can't quietly degrade the user-visible indicator.
+
+    test "record_dtu_error/2 persists the message and broadcasts :dtu_error" do
+      user = user_fixture()
+      dtu = device_fixture(user)
+
+      :ok = Telemetry.subscribe_status()
+
+      assert :ok =
+               Telemetry.record_dtu_error(
+                 dtu.id,
+                 "Invalid JSON payload on solar/SN/realtime/data"
+               )
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error == "Invalid JSON payload on solar/SN/realtime/data"
+      assert reloaded.last_error_at
+
+      assert_receive {:dtu_error, device_id}, 1_000
+      assert device_id == dtu.id
+    end
+
+    test "OpenDTU bad JSON uplink records an error" do
+      # Real-world failure mode: an OpenDTU firmware in a transitional
+      # state sends garbage JSON on `realtime/data`. The parser used to
+      # silently drop it; now the bubble should appear on the dashboard.
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-bad-json",
+          base_topic: "solar"
+        })
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      msg = {:uplink, "client_bj", device_info, "solar/SN/realtime/data", "not-json"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error =~ "bad_json"
+      assert reloaded.last_error =~ "solar/SN/realtime/data"
+    end
+
+    test "OpenDTU unknown topic records an error" do
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-unk",
+          base_topic: "solar"
+        })
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      msg = {:uplink, "client_unk", device_info, "garbage/foo/bar", "data"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error =~ "unknown_topic"
+    end
+
+    test "OpenDTU :ac_per_field_redundant does NOT record an error" do
+      # `:ac_per_field_redundant` is the *expected* case for OpenDTU
+      # devices that publish both `realtime/data` and per-field `0/*`
+      # topics — duplicate-path suppression is part of the parser
+      # contract, not an error. Surfacing it would create a useless
+      # bubble on every healthy OpenDTU.
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "opendtu-ok",
+          base_topic: "solar"
+        })
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :opendtu,
+        base_topic: "solar",
+        name: dtu.name
+      }
+
+      msg = {:uplink, "client_dup", device_info, "solar/INV-1/0/power", "200.0"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error == nil
+    end
+
+    test "Shelly non-matching base_topic records an error" do
+      # Companion to the existing "logs a warning and writes no row"
+      # test: the same condition must additionally surface a user-
+      # visible error message on `dtus.last_error`.
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-mismatch",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      # Shelly publishes on its default prefix, not the app's. This is
+      # the "device shows as online but no values" failure mode the user
+      # reported.
+      msg = {:uplink, "client_shelly", device_info, "shellyplus3em-aabbcc/status/em:0", "{}"}
+
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error =~ "Shelly topic mismatch"
+      assert reloaded.last_error =~ "shellies/shellyplus3em"
+    end
+
+    test "Shelly /online LWT does NOT record an error" do
+      # The retained LWT is informational only — the broker's
+      # disconnect path + `last_seen_at` updates already cover
+      # liveness. Surfacing it as an error would produce a bubble on
+      # every healthy Shelly.
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-lwt",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      msg = {:uplink, "client_lwt", device_info, "shellies/shellyplus3em/online", "true"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error == nil
+    end
+
+    test "AhoyDTU unknown topic records an error" do
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-unk",
+          base_topic: "inverter"
+        })
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # `{base}/total/...` is the AhoyDTU fleet-totals path; the parser
+      # intentionally drops it because the dashboard recomputes across
+      # the user's devices. It's still a real "rejected" outcome and
+      # the user-visible error surfaces this — useful when a user has
+      # set a custom prefix expecting it to be picked up.
+      msg = {:uplink, "client_ah", device_info, "inverter/total/P_AC", "150.0"}
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error =~ "AhoyDTU uplink rejected"
+    end
+
+    test "record_dtu_error/2 with non-existent device does not crash" do
+      # The telemetry GenServer must survive a write to a stale device
+      # id (e.g. the row was deleted between the uplink arriving and
+      # us writing). Swallowing the error is the contract — see
+      # `record_dtu_error/2`'s rescue clause.
+      assert :ok = Telemetry.record_dtu_error(99_999_999, "phantom device")
+    end
+
+    test "record_dtu_error/2 with empty / whitespace message is a no-op" do
+      user = user_fixture()
+      dtu = device_fixture(user)
+
+      assert :ok = Telemetry.record_dtu_error(dtu.id, "")
+      assert :ok = Telemetry.record_dtu_error(dtu.id, "   ")
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error == nil
+    end
+  end
+
   describe "Broker.handle_publish/4" do
     alias DtuApp.MqttBroker.Broker
 

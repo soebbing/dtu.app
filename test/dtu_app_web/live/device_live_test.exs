@@ -189,4 +189,142 @@ defmodule DtuAppWeb.DeviceLiveTest do
       refute has_element?(index_live, "#devices-#{device.id}")
     end
   end
+
+  describe "Device error fill on the manage-device list" do
+    # Same DTU error-surfacing feature the dashboard bubble implements,
+    # but on the /devices manage page. The fill makes a misconfigured DTU
+    # unmissable in the list — the rose-tinted background + thicker left
+    # border mirror the delete-confirmation modal's warning style so the
+    # warning vocabulary is consistent across the app.
+
+    test "renders a warning fill on the row when last_error is set", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Misconfigured DTU",
+          kind: "opendtu",
+          mqtt_username: "misconfigured-dtu"
+        })
+
+      :ok =
+        DtuApp.Devices.update_dtu_error(
+          dtu.id,
+          "Shelly topic mismatch (expected shellies/shellyplus3em, got shellyplus3em-aabbcc/status/em:0)"
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/devices")
+
+      # The exact id we target in the e2e test. Without this assertion
+      # a regression that drops the inline message would slip through.
+      assert html =~ ~s(id="dtu-error-message-#{dtu.id}"),
+             "expected the inline error message to appear on the row"
+
+      # The fill is the rose-tinted background on the row itself. The
+      # conditional class on the row's wrapping div is what makes the
+      # fill visible — the test below pins its presence.
+      assert html =~ ~s(id="devices-#{dtu.id}")
+
+      # The body of the message is rendered (truncated via CSS, but the
+      # start is present and visible to a screen reader / first-letter
+      # match). The full message is in the title= attribute.
+      assert html =~ "Shelly topic mismatch"
+    end
+
+    test "does NOT render an error fill for a healthy device", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu = device_fixture(user, %{name: "Healthy", kind: "opendtu"})
+
+      {:ok, _view, html} = live(conn, ~p"/devices")
+
+      # The inline-message selector is the conditional render's gate —
+      # `last_error is nil` ⇒ false ⇒ no element rendered.
+      refute html =~ "dtu-error-message-"
+    end
+
+    test "inline message's title= carries the full error string", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Long Message DTU",
+          kind: "shelly3em",
+          mqtt_username: "long-msg",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      long_message =
+        "Shelly topic mismatch (expected shellies/shellyplus3em, got shellyplus3em-aabbcc/status/em:0) — check the device's MQTT prefix"
+
+      :ok = DtuApp.Devices.update_dtu_error(dtu.id, long_message)
+
+      {:ok, _view, html} = live(conn, ~p"/devices")
+
+      # Locate the inline message by id and check the title= attribute
+      # (the hover hint). HEEx HTML-escapes the apostrophe; the rest
+      # of the message round-trips intact.
+      inline_match =
+        Regex.run(~r/id="dtu-error-message-#{dtu.id}"[^>]*title="([^"]+)"/, html) |> List.last()
+
+      # HEEx also escapes `&`, `<`, `>`, `"` — but our message has none
+      # of those except the apostrophe. Apply the same escape the
+      # test below uses for the bubble's title=.
+      escaped_message = String.replace(long_message, "'", "&#39;")
+
+      assert inline_match == escaped_message,
+             "expected the inline error message's title= to equal the original; got #{inspect(inline_match)}"
+    end
+
+    test "re-renders the fill when :dtu_error broadcasts", %{
+      conn: conn,
+      user: user
+    } do
+      # Pins the LiveView wiring: the manage-device page subscribes to
+      # `dtu:status` in mount/3 and refreshes the device list on
+      # `{:dtu_error, device_id}`, same contract as the dashboard.
+      dtu =
+        device_fixture(user, %{
+          name: "Broadcast Fill DTU",
+          kind: "opendtu",
+          mqtt_username: "broadcast-fill-dtu"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/devices")
+
+      # Healthy state on mount.
+      refute html =~ "dtu-error-message-"
+
+      # Bypass `record_dtu_error` (which writes + broadcasts together)
+      # so the test can split the two operations and assert the LV
+      # re-renders on the second broadcast. In production both happen
+      # back-to-back inside the same function call.
+      :ok = DtuApp.Devices.update_dtu_error(dtu.id, "OpenDTU uplink rejected")
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_error, dtu.id}
+      )
+
+      # Poll for up to 1s for the fill to render.
+      found? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "dtu-error-message-#{dtu.id}" do
+            {:halt, true}
+          else
+            Process.sleep(50)
+            {:cont, false}
+          end
+        end)
+
+      assert found?,
+             "expected the inline error message to appear after :dtu_error broadcast"
+    end
+  end
 end

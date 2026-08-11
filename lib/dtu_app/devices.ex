@@ -192,6 +192,56 @@ defmodule DtuApp.Devices do
     end
   end
 
+  @doc """
+  Record the most recent MQTT-side error for a DTU.
+
+  Writes `last_error` (a short, human-readable summary like
+  `"Invalid JSON payload on topic solar/123/realtime/data"`) and
+  `last_error_at` (DB clock) on the matching row. Read by the dashboard
+  and device-list LiveViews to render an error bubble / fill — so a DTU
+  that has been silently failing to publish for hours no longer looks
+  identical to one that's happy.
+
+  The columns are nullable: a happy device has NULLs and renders
+  nothing. Bumping the columns does NOT clear an older error — the most
+  recent error wins, matching how the rest of the app surfaces state.
+  Returns `:ok | {:error, changeset}`. A `:not_found` is reported as
+  `{:error, :not_found}` so the caller can distinguish "device vanished"
+  from "DB write failed".
+  """
+  @spec update_dtu_error(integer(), String.t()) :: :ok | {:error, term()}
+  def update_dtu_error(dtu_id, message)
+      when is_integer(dtu_id) and is_binary(message) do
+    trimmed = String.trim(message)
+
+    cond do
+      trimmed == "" ->
+        # Treat empty messages as a no-op (consistent with
+        # `update_inverter_name/3`'s handling of whitespace-only
+        # payloads). Returns `:ok` so the caller's pattern match stays
+        # uniform.
+        :ok
+
+      true ->
+        case Repo.get(Dtu, dtu_id) do
+          nil ->
+            {:error, :not_found}
+
+          %Dtu{} = dtu ->
+            dtu
+            |> Ecto.Changeset.change(%{
+              last_error: trimmed,
+              last_error_at: DtuApp.Time.utc_now_usec()
+            })
+            |> Repo.update()
+            |> case do
+              {:ok, _dtu} -> :ok
+              {:error, changeset} -> {:error, changeset}
+            end
+        end
+    end
+  end
+
   @doc "List recent readings for a specific user-owned DTU."
   def list_recent_readings(%User{} = user, dtu_id, limit \\ 100) do
     if owned?(user, dtu_id) do

@@ -93,6 +93,65 @@ defmodule DtuApp.MqttBroker.Telemetry do
   @spec subscribe_status() :: :ok | {:error, term()}
   def subscribe_status, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @status_topic)
 
+  @doc """
+  Record the most recent MQTT-side error for a DTU.
+
+  Called from every parser path that previously logged and forgot
+  (bad JSON, unknown topic, base-topic mismatch on a Shelly, DB-side
+  validation failure, …). Persists the message on `dtus.last_error` /
+  `last_error_at` and broadcasts `:dtu_error` on `dtu:status` so the
+  dashboard and device-list LiveViews can re-render the error bubble /
+  fill on the affected device without waiting for the next uplink.
+
+  Always returns `:ok` — the function swallows DB errors and logs them
+  at warn, matching `touch_last_seen/1`'s "don't crash the telemetry
+  GenServer" contract. A missed error write is acceptable; the next
+  uplink that hits the same condition will retry.
+
+  Empty / whitespace-only messages are no-ops (the caller's content
+  is the only user-visible part of the bubble, so an empty string
+  would produce a useless empty bubble).
+  """
+  @spec record_dtu_error(integer() | nil, String.t()) :: :ok
+  def record_dtu_error(device_id, message) when is_integer(device_id) and is_binary(message) do
+    trimmed = String.trim(message)
+
+    if trimmed == "" do
+      :ok
+    else
+      try do
+        case DtuApp.Devices.update_dtu_error(device_id, trimmed) do
+          :ok ->
+            Phoenix.PubSub.broadcast(
+              DtuApp.PubSub,
+              @status_topic,
+              {:dtu_error, device_id}
+            )
+
+          {:error, :not_found} ->
+            # Device was deleted between the uplink arriving and our
+            # write — silent no-op, the next inbound message will
+            # notice and short-circuit earlier.
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "[Telemetry] record_dtu_error(#{device_id}) DB write failed: #{inspect(reason)}"
+            )
+
+            :ok
+        end
+      rescue
+        e ->
+          Logger.warning("[Telemetry] record_dtu_error(#{device_id}) raised: #{inspect(e)}")
+
+          :ok
+      end
+    end
+  end
+
+  def record_dtu_error(_device_id, _message), do: :ok
+
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
   # --- GenServer --------------------------------------------------------------
@@ -223,11 +282,35 @@ defmodule DtuApp.MqttBroker.Telemetry do
             {:noreply, state}
 
           {:error, reason} ->
+            # `:no_readings` is a benign transient (the first
+            # `realtime/data` uplink hasn't arrived yet) and is logged
+            # at debug only — it doesn't deserve a user-visible error
+            # bubble on every early session start. Any other reason is
+            # a real error.
+            if reason != :no_readings do
+              record_dtu_error(
+                device_info.id,
+                "OpenDTU status patch failed: #{inspect(reason)}"
+              )
+            end
+
             Logger.debug("[Telemetry] OpenDTU status patch skipped: #{inspect(reason)}")
             {:noreply, state}
         end
 
       {:ignored, reason} ->
+        # `:ac_per_field_redundant` is the *expected* case for an OpenDTU
+        # that publishes both `realtime/data` and per-field `0/*`
+        # topics — duplicate-path suppression is part of the parser
+        # contract, not a user-visible error. Every other ignored reason
+        # means the DTU is sending malformed payloads we couldn't parse.
+        if reason != :ac_per_field_redundant do
+          record_dtu_error(
+            device_info.id,
+            "OpenDTU uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
+          )
+        end
+
         Logger.debug("[Telemetry] OpenDTU parse skipped: #{inspect(reason)}")
         {:noreply, state}
     end
@@ -251,6 +334,11 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
       {:error, changeset} ->
         Logger.warning("[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}")
+
+        record_dtu_error(
+          device_info.id,
+          "Failed to save OpenDTU reading: #{inspect(changeset.errors)}"
+        )
 
         {:noreply, state}
     end
@@ -450,13 +538,29 @@ defmodule DtuApp.MqttBroker.Telemetry do
                 "[Telemetry] Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
               )
 
+              record_dtu_error(
+                device_info.id,
+                "Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
+              )
+
               {:noreply, new_state}
           end
         else
           {:noreply, new_state}
         end
 
-      {:error, _reason} ->
+      {:error, reason} ->
+        # AhoyDTU parser uses `{:error, reason}` for everything it
+        # can't recognise (unknown topic, JSON parse failure on a
+        # numeric-layout topic, malformed payload). Surface them all —
+        # `:ignored_topic` is the only reason so far; treat every one
+        # as a real error so the user sees the device as misconfigured
+        # rather than silently dropping values.
+        record_dtu_error(
+          device_info.id,
+          "AhoyDTU uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
+        )
+
         {:noreply, state}
     end
   end
@@ -542,6 +646,11 @@ defmodule DtuApp.MqttBroker.Telemetry do
               "[Telemetry] Failed to save Shelly reading: #{inspect(changeset.errors)}"
             )
 
+            record_dtu_error(
+              device_info.id,
+              "Failed to save Shelly reading: #{inspect(changeset.errors)}"
+            )
+
             {:noreply, state}
         end
 
@@ -557,10 +666,29 @@ defmodule DtuApp.MqttBroker.Telemetry do
             "is the device's MQTT prefix set correctly?"
         )
 
+        record_dtu_error(
+          device_info.id,
+          "Shelly topic mismatch (expected #{inspect(device_info.base_topic)}, " <>
+            "got #{inspect(topic_str)}) — check the device's MQTT prefix"
+        )
+
+        {:noreply, state}
+
+      {:ignored, :online_lwt} ->
+        # The retained LWT from the Shelly is informational only — the
+        # broker's disconnect path + `last_seen_at` updates already
+        # cover liveness, so an LWT landing on this topic is normal,
+        # not an error.
         {:noreply, state}
 
       {:ignored, reason} ->
         Logger.debug("[Telemetry] Shelly parse skipped: #{inspect(reason)}")
+
+        record_dtu_error(
+          device_info.id,
+          "Shelly uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
+        )
+
         {:noreply, state}
     end
   end

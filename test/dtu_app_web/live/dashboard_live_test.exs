@@ -2338,4 +2338,176 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "the removed top-row 'Today's Consumption' panel must not re-appear"
     end
   end
+
+  describe "Device error bubble on the dashboard" do
+    # `dtus.last_error` carries the most recent MQTT-side failure surfaced
+    # by `DtuApp.MqttBroker.Telemetry.record_dtu_error/2`. The dashboard's
+    # device card renders this as a small rose-tinted bubble so a
+    # misconfigured DTU is unmissable — without it the user sees a happy
+    # "online" badge with no values, which is the exact "device shows
+    # as online but no values" symptom reported in the user feedback.
+
+    test "renders an error bubble on the device card when last_error is set", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Sick DTU",
+          kind: "opendtu",
+          mqtt_username: "sick-dtu"
+        })
+
+      # Persist a last_error directly via the writer (same path the
+      # telemetry pipeline takes for parser-side failures). We don't
+      # drive a whole uplink through here because Telemetry's parser is
+      # covered by `mqtt_broker_test.exs` already; the dashboard's
+      # render is what we're pinning.
+      :ok =
+        DtuApp.Devices.update_dtu_error(dtu.id, "Invalid JSON payload on solar/SN/realtime/data")
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The bubble carries the exact id we target in the JS hook and
+      # in the e2e test. Without this assertion a regression that
+      # silently drops the conditional render would slip through.
+      assert html =~ ~s(id="dtu-error-bubble-#{dtu.id}"),
+             "expected the error bubble to be rendered on the dashboard"
+
+      # The message is the user-visible body of the bubble.
+      assert html =~ "Invalid JSON payload on solar/SN/realtime/data"
+
+      # The title attribute carries the full message for hover text.
+      assert html =~ ~s(title="Invalid JSON payload on solar/SN/realtime/data")
+    end
+
+    test "does NOT render an error bubble on a healthy device", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Healthy DTU",
+          kind: "opendtu",
+          mqtt_username: "healthy-dtu"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # No error bubble when last_error is nil — the conditional render
+      # is false. No bubble elements should appear at all.
+      refute html =~ "dtu-error-bubble-"
+    end
+
+    test "bubble title carries the full error message (hover text)", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Long Error DTU",
+          kind: "shelly3em",
+          mqtt_username: "long-error",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      long_message =
+        "Shelly topic mismatch (expected shellies/shellyplus3em, got shellyplus3em-aabbcc/status/em:0) — check the device's MQTT prefix"
+
+      :ok = DtuApp.Devices.update_dtu_error(dtu.id, long_message)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The bubble's body uses CSS `truncate` so the rendered text in
+      # the inner <span> may be cut by the browser at viewport width.
+      # The full message MUST round-trip through the title= attribute so
+      # a user hovering the bubble sees the complete string. We locate
+      # the bubble by id and check the title= substring inside it.
+      bubble_id = "dtu-error-bubble-#{dtu.id}"
+      bubble_match = Regex.run(~r/id="#{bubble_id}"[^>]*title="([^"]+)"/, html)
+      bubble_match_alt = Regex.run(~r/title="([^"]+)"[^>]*id="#{bubble_id}"/, html)
+
+      title_match =
+        case {bubble_match, bubble_match_alt} do
+          {[_, t | _], _} -> t
+          {_, [_, t | _]} -> t
+          _ -> nil
+        end
+
+      # HEEx HTML-escapes the apostrophe in the message to `&#39;` when
+      # rendering the title= attribute; the rest of the message
+      # round-trips intact. Compare against the escaped form so the test
+      # matches the live render rather than the HEEx quoting rules.
+      escaped_message = String.replace(long_message, "'", "&#39;")
+
+      assert title_match == escaped_message,
+             "expected the bubble's title= to equal the original message; got #{inspect(title_match)}"
+    end
+
+    test "re-renders the bubble when :dtu_error broadcasts", %{
+      conn: conn,
+      user: user
+    } do
+      # Pins the LiveView wiring: when the telemetry GenServer broadcasts
+      # `{:dtu_error, device_id}` on `dtu:status`, the dashboard's
+      # `:dtu_error` handler re-reads the device list and the bubble
+      # appears on the next render — without waiting for the next MQTT
+      # uplink.
+      dtu =
+        device_fixture(user, %{
+          name: "Broadcast DTU",
+          kind: "opendtu",
+          mqtt_username: "broadcast-dtu"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # Healthy state on mount.
+      refute html =~ "dtu-error-bubble-"
+
+      # Simulate the telemetry GenServer's broadcast. We use a small
+      # send-then-render poll so a re-render in flight doesn't race
+      # a bare `render/1` — the same race-resistance strategy the
+      # chart-label-shift tests use further up.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_error, dtu.id}
+      )
+
+      # After the broadcast, the writer must run and the bubble appear.
+      # The DB write goes through `update_dtu_error/2`; the matching
+      # test in `mqtt_broker_test.exs` runs that path end-to-end.
+      :ok = DtuApp.Devices.update_dtu_error(dtu.id, "Shelly topic mismatch")
+
+      # A second broadcast (this time hitting the dashboard's handle_info)
+      # is needed for the LiveView to re-render and pick up the new
+      # state. In production both writes + broadcasts are issued by
+      # `record_dtu_error/2` in a single pass; here we split them so
+      # the test exercises each leg independently.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_error, dtu.id}
+      )
+
+      # Poll for up to 1s for the bubble to render. `reduce_while`
+      # gives us a clean early-exit on the first hit, no `break`
+      # keyword required.
+      found? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "dtu-error-bubble-#{dtu.id}" do
+            {:halt, true}
+          else
+            Process.sleep(50)
+            {:cont, false}
+          end
+        end)
+
+      assert found?,
+             "expected the bubble to appear on the dashboard after :dtu_error broadcast"
+    end
+  end
 end
