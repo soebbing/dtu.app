@@ -87,6 +87,74 @@
         </button>
       </div>
     </div>
+
+    <%!-- Expansion panel: one element per device, conditionally
+         rendered when the device's id matches `@expanded_dtu_id`
+         (the value of the `?expand=<id>` query param). Sits as a
+         sibling of the row above rather than inside it so the row's
+         `id={dom_id}` stays the stream target — the panel itself is
+         re-rendered on every LiveView patch, including the
+         `:dtu_error` broadcast that refreshes the affected device's
+         error groups. Closing it (`close_expanded_errors`) clears the
+         `expand` param and pushes the bare `/devices` URL. --%>
+    <%= for {_dom_id, device} <- @streams.devices do %>
+      <%= if @expanded_dtu_id == device.id do %>
+        <div
+          id={"device-error-panel-#{device.id}"}
+          class="bg-rose-50/40 dark:bg-rose-950/20 border-l-4 border-r border-b border-rose-300 dark:border-rose-700 px-4 py-4"
+          data-test="error-panel"
+        >
+          <div class="flex items-start justify-between gap-4 mb-3">
+            <h4 class="text-sm font-semibold text-rose-900 dark:text-rose-200">
+              <%= if @expanded_error_groups == [] do %>
+                {gettext("No errors recorded for this DTU yet.")}
+              <% else %>
+                {gettext(
+                  "Errors (%{distinct} distinct, %{occurrences} total occurrences)",
+                  distinct: length(@expanded_error_groups),
+                  occurrences:
+                    Enum.reduce(@expanded_error_groups, 0, fn g, acc ->
+                      acc + g.occurrences
+                    end)
+                )}
+              <% end %>
+            </h4>
+            <button
+              type="button"
+              phx-click="close_expanded_errors"
+              id={"btn-close-error-panel-#{device.id}"}
+              class="text-xs font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition"
+              aria-label={gettext("Close error panel")}
+            >
+              ✕ {gettext("Close")}
+            </button>
+          </div>
+
+          <%= if @expanded_error_groups != [] do %>
+            <ul class="space-y-2">
+              <%= for group <- @expanded_error_groups do %>
+                <li class="flex items-start gap-2 text-sm text-rose-800 dark:text-rose-200">
+                  <.icon
+                    name="hero-exclamation-triangle"
+                    class="size-4 shrink-0 mt-0.5 text-rose-500"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <p class="break-words">{group.message}</p>
+                    <p class="mt-0.5 text-xs text-rose-600/80 dark:text-rose-400/80">
+                      {gettext(
+                        "%{count} occurrences · last seen %{when}",
+                        count: group.occurrences,
+                        when: format_relative(group.last_seen)
+                      )}
+                    </p>
+                  </div>
+                </li>
+              <% end %>
+            </ul>
+          <% end %>
+        </div>
+      <% end %>
+    <% end %>
   </div>
 
   <div

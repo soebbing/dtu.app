@@ -2339,15 +2339,19 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
-  describe "Device error bubble on the dashboard" do
-    # `dtus.last_error` carries the most recent MQTT-side failure surfaced
-    # by `DtuApp.MqttBroker.Telemetry.record_dtu_error/2`. The dashboard's
-    # device card renders this as a small rose-tinted bubble so a
-    # misconfigured DTU is unmissable — without it the user sees a happy
-    # "online" badge with no values, which is the exact "device shows
-    # as online but no values" symptom reported in the user feedback.
+  describe "Device error edge badge on the dashboard" do
+    # The dashboard surfaces MQTT-side failures (bad JSON, unknown
+    # topic, base-topic mismatch on a Shelly, DB insert failure) via a
+    # small red badge pinned to the top-right corner of each device
+    # card. The badge carries the *distinct*-error count — a Shelly
+    # spamming the same `unknown_topic` 50× in a minute shows "1",
+    # not "50". The whole card is a link to
+    # `/devices?expand=<id>` so a click anywhere on the card opens
+    # the manage-device page with the matching row's error panel
+    # expanded. See `DtuApp.Devices.count_distinct_dtu_errors/1` for
+    # the underlying query.
 
-    test "renders an error bubble on the device card when last_error is set", %{
+    test "renders an edge badge with the distinct error count", %{
       conn: conn,
       user: user
     } do
@@ -2358,30 +2362,38 @@ defmodule DtuAppWeb.DashboardLiveTest do
           mqtt_username: "sick-dtu"
         })
 
-      # Persist a last_error directly via the writer (same path the
-      # telemetry pipeline takes for parser-side failures). We don't
-      # drive a whole uplink through here because Telemetry's parser is
-      # covered by `mqtt_broker_test.exs` already; the dashboard's
-      # render is what we're pinning.
+      # Two distinct errors — the count is the badge's whole purpose.
+      # A repeat of the same message would not bump the count.
       :ok =
-        DtuApp.Devices.update_dtu_error(dtu.id, "Invalid JSON payload on solar/SN/realtime/data")
+        DtuApp.Devices.record_dtu_error(dtu.id, "Invalid JSON payload on solar/SN/realtime/data")
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Unknown topic solar/garbage/foo")
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # The bubble carries the exact id we target in the JS hook and
-      # in the e2e test. Without this assertion a regression that
-      # silently drops the conditional render would slip through.
-      assert html =~ ~s(id="dtu-error-bubble-#{dtu.id}"),
-             "expected the error bubble to be rendered on the dashboard"
+      # The badge carries the exact id we target in the e2e test.
+      assert html =~ ~s(id="dtu-error-edge-badge-#{dtu.id}"),
+             "expected the error edge badge to be rendered on the dashboard"
 
-      # The message is the user-visible body of the bubble.
-      assert html =~ "Invalid JSON payload on solar/SN/realtime/data"
+      # The badge's body is the distinct-error count. Pull the badge's
+      # content out of the HTML with a regex so the assertion doesn't
+      # depend on the surrounding page being present in the truncated
+      # render dump (the live render is >2KB; the test's failure dump
+      # truncates).
+      badge_id = "dtu-error-edge-badge-#{dtu.id}"
+      badge_match = Regex.run(~r/id="#{badge_id}"[^>]*>\s*(\d+)/, html)
 
-      # The title attribute carries the full message for hover text.
-      assert html =~ ~s(title="Invalid JSON payload on solar/SN/realtime/data")
+      count =
+        case badge_match do
+          [_, c] -> c
+          _ -> nil
+        end
+
+      assert count == "2",
+             "expected the badge body to be the distinct-error count; got #{inspect(count)}"
     end
 
-    test "does NOT render an error bubble on a healthy device", %{
+    test "does NOT render an edge badge on a healthy device", %{
       conn: conn,
       user: user
     } do
@@ -2394,65 +2406,116 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # No error bubble when last_error is nil — the conditional render
-      # is false. No bubble elements should appear at all.
-      refute html =~ "dtu-error-bubble-"
+      # No badge when the device has zero errors — the conditional
+      # render is false. Refute the prefix to catch any regression
+      # that renders a stray "0" badge.
+      refute html =~ "dtu-error-edge-badge-"
     end
 
-    test "bubble title carries the full error message (hover text)", %{
+    test "the device card links to /devices?expand=<id>", %{
       conn: conn,
       user: user
     } do
       dtu =
         device_fixture(user, %{
-          name: "Long Error DTU",
-          kind: "shelly3em",
-          mqtt_username: "long-error",
-          base_topic: "shellies/shellyplus3em"
+          name: "Clickable DTU",
+          kind: "opendtu",
+          mqtt_username: "clickable-dtu"
         })
 
-      long_message =
-        "Shelly topic mismatch (expected shellies/shellyplus3em, got shellyplus3em-aabbcc/status/em:0) — check the device's MQTT prefix"
-
-      :ok = DtuApp.Devices.update_dtu_error(dtu.id, long_message)
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Some error")
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # The bubble's body uses CSS `truncate` so the rendered text in
-      # the inner <span> may be cut by the browser at viewport width.
-      # The full message MUST round-trip through the title= attribute so
-      # a user hovering the bubble sees the complete string. We locate
-      # the bubble by id and check the title= substring inside it.
-      bubble_id = "dtu-error-bubble-#{dtu.id}"
-      bubble_match = Regex.run(~r/id="#{bubble_id}"[^>]*title="([^"]+)"/, html)
-      bubble_match_alt = Regex.run(~r/title="([^"]+)"[^>]*id="#{bubble_id}"/, html)
-
-      title_match =
-        case {bubble_match, bubble_match_alt} do
-          {[_, t | _], _} -> t
-          {_, [_, t | _]} -> t
-          _ -> nil
-        end
-
-      # HEEx HTML-escapes the apostrophe in the message to `&#39;` when
-      # rendering the title= attribute; the rest of the message
-      # round-trips intact. Compare against the escaped form so the test
-      # matches the live render rather than the HEEx quoting rules.
-      escaped_message = String.replace(long_message, "'", "&#39;")
-
-      assert title_match == escaped_message,
-             "expected the bubble's title= to equal the original message; got #{inspect(title_match)}"
+      # The whole card is a link to /devices?expand=<id> so the user
+      # can click anywhere on the card — not just the badge. Locate
+      # the link by id (the card's) and check the href.
+      assert html =~ ~s(id="device-card-#{dtu.id}")
+      assert html =~ ~s(href="/devices?expand=#{dtu.id}")
     end
 
-    test "re-renders the bubble when :dtu_error broadcasts", %{
+    test "repeated same-message errors show count 1, not the event count", %{
       conn: conn,
       user: user
     } do
-      # Pins the LiveView wiring: when the telemetry GenServer broadcasts
-      # `{:dtu_error, device_id}` on `dtu:status`, the dashboard's
-      # `:dtu_error` handler re-reads the device list and the bubble
-      # appears on the next render — without waiting for the next MQTT
-      # uplink.
+      dtu =
+        device_fixture(user, %{
+          name: "Repeating DTU",
+          kind: "shelly3em",
+          mqtt_username: "repeating-dtu",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      # 5 identical errors — they all collapse to one *distinct*
+      # message in the badge.
+      for _ <- 1..5 do
+        :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Shelly topic mismatch")
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The badge body is the digit "1", not "5".
+      badge_id = "dtu-error-edge-badge-#{dtu.id}"
+      badge_match = Regex.run(~r/id="#{badge_id}"[^>]*>\s*(\d+)/, html)
+
+      count =
+        case badge_match do
+          [_, c] -> c
+          _ -> nil
+        end
+
+      assert count == "1",
+             "expected the badge to count distinct messages, not events; got #{inspect(count)}"
+    end
+
+    test "badge title carries the click hint and a high-count cap renders 99+", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Many Errors DTU",
+          kind: "opendtu",
+          mqtt_username: "many-errors"
+        })
+
+      # Generate 100 distinct errors — just past the 99+ cap. Smaller
+      # counts would just render the digit, defeating the purpose of
+      # the cap test.
+      for i <- 1..100 do
+        :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Synthetic error ##{i}")
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      badge_id = "dtu-error-edge-badge-#{dtu.id}"
+      assert html =~ ~s(id="#{badge_id}")
+
+      # The body must read "99+", not "100". Pull the badge element out
+      # of the HTML with a non-anchored regex so the assertion doesn't
+      # need the surrounding page to be present in the truncated render
+      # dump (the full render is >2KB).
+      badge_match = Regex.run(~r/<span[^>]*id="#{badge_id}"[^>]*>\s*([^<]+)\s*<\/span>/, html)
+
+      body =
+        case badge_match do
+          [_, b] -> String.trim(b)
+          _ -> nil
+        end
+
+      assert body == "99+",
+             "expected the badge body to read '99+' for 100 errors, got #{inspect(body)}"
+    end
+
+    test "re-renders the badge when :dtu_error broadcasts", %{
+      conn: conn,
+      user: user
+    } do
+      # Pins the LiveView wiring: when the telemetry GenServer
+      # broadcasts `{:dtu_error, device_id}` on `dtu:status`, the
+      # dashboard's `:dtu_error` handler re-reads the device list
+      # (and the error_counts map) so the badge appears on the next
+      # render without waiting for the next MQTT uplink.
       dtu =
         device_fixture(user, %{
           name: "Broadcast DTU",
@@ -2463,42 +2526,25 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, view, html} = live(conn, ~p"/dashboard")
 
       # Healthy state on mount.
-      refute html =~ "dtu-error-bubble-"
+      refute html =~ "dtu-error-edge-badge-"
 
-      # Simulate the telemetry GenServer's broadcast. We use a small
-      # send-then-render poll so a re-render in flight doesn't race
-      # a bare `render/1` — the same race-resistance strategy the
-      # chart-label-shift tests use further up.
+      # Write + broadcast, mirroring what `record_dtu_error/2` does
+      # in production (but in two separate steps so the test
+      # exercises each leg).
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Shelly topic mismatch")
+
       Phoenix.PubSub.broadcast(
         DtuApp.PubSub,
         DtuApp.MqttBroker.Telemetry.status_topic(),
         {:dtu_error, dtu.id}
       )
 
-      # After the broadcast, the writer must run and the bubble appear.
-      # The DB write goes through `update_dtu_error/2`; the matching
-      # test in `mqtt_broker_test.exs` runs that path end-to-end.
-      :ok = DtuApp.Devices.update_dtu_error(dtu.id, "Shelly topic mismatch")
-
-      # A second broadcast (this time hitting the dashboard's handle_info)
-      # is needed for the LiveView to re-render and pick up the new
-      # state. In production both writes + broadcasts are issued by
-      # `record_dtu_error/2` in a single pass; here we split them so
-      # the test exercises each leg independently.
-      Phoenix.PubSub.broadcast(
-        DtuApp.PubSub,
-        DtuApp.MqttBroker.Telemetry.status_topic(),
-        {:dtu_error, dtu.id}
-      )
-
-      # Poll for up to 1s for the bubble to render. `reduce_while`
-      # gives us a clean early-exit on the first hit, no `break`
-      # keyword required.
+      # Poll for up to 1s for the badge to render.
       found? =
         Enum.reduce_while(1..20, false, fn _i, _acc ->
           current = render(view)
 
-          if current =~ "dtu-error-bubble-#{dtu.id}" do
+          if current =~ "dtu-error-edge-badge-#{dtu.id}" do
             {:halt, true}
           else
             Process.sleep(50)
@@ -2507,7 +2553,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
         end)
 
       assert found?,
-             "expected the bubble to appear on the dashboard after :dtu_error broadcast"
+             "expected the edge badge to appear on the dashboard after :dtu_error broadcast"
     end
   end
 end

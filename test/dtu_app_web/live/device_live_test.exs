@@ -327,4 +327,183 @@ defmodule DtuAppWeb.DeviceLiveTest do
              "expected the inline error message to appear after :dtu_error broadcast"
     end
   end
+
+  describe "Deep-link expansion from ?expand=ID" do
+    # The dashboard's edge badge links to `/devices?expand=<id>`. The
+    # manage-device page reads that query param in `handle_params/3`
+    # and renders the matching row's full error panel inline (see
+    # `DeviceLive.Index.assign_expansion/2`). The URL is bookmarkable:
+    # a refresh reopens the same panel. Bogus ids (non-integer,
+    # not-owned, foreign device) collapse to no expansion rather
+    # than 404-ing the page.
+
+    test "mount/3 with ?expand=<id> shows the error panel expanded by default",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Expandable",
+          kind: "shelly3em",
+          mqtt_username: "expandable",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Shelly topic mismatch")
+
+      {:ok, _view, html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # The expansion panel is rendered.
+      assert html =~ ~s(id="device-error-panel-#{dtu.id}")
+
+      # The error group itself is in the panel.
+      assert html =~ "Shelly topic mismatch"
+    end
+
+    test "renders an empty-state message when the expanded device has no errors",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Healthy Expanded",
+          kind: "opendtu",
+          mqtt_username: "healthy-expanded"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # Panel renders even when the device has no errors — the user
+      # deep-linked to it explicitly, so the empty-state message
+      # explains "no errors recorded" rather than silently hiding the
+      # panel.
+      assert html =~ ~s(id="device-error-panel-#{dtu.id}")
+      assert html =~ "No errors recorded for this DTU yet."
+    end
+
+    test "groups repeated messages in the panel with their occurrence count", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Repeating Expanded",
+          kind: "shelly3em",
+          mqtt_username: "repeating-expanded",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      # 3 identical errors + 1 different = 2 groups, with occurrences
+      # 3 and 1.
+      for _ <- 1..3 do
+        :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Shelly topic mismatch")
+      end
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Different error")
+
+      {:ok, _view, html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # The header line shows the distinct + total counts.
+      assert html =~ "2 distinct"
+      assert html =~ "4 total occurrences"
+
+      # The repeated message shows its occurrence count.
+      assert html =~ "3 occurrences"
+      # The unique message shows its occurrence count.
+      assert html =~ "1 occurrence"
+    end
+
+    test "?expand=<id> for a non-owned device is silently ignored", %{
+      conn: conn,
+      user: _user
+    } do
+      # Two users; user A owns the device, user B tries to expand it
+      # via the URL. The page renders user B's (empty) device list
+      # rather than 404'ing — the deep-link is dropped.
+      other_user = DtuApp.AccountsFixtures.user_fixture()
+      _dtu = device_fixture(other_user, %{name: "Foreign"})
+
+      # Hand-roll an id we know doesn't belong to `user`.
+      {:ok, _view, html} = live(conn, ~p"/devices?expand=99999999")
+
+      refute html =~ "device-error-panel-"
+    end
+
+    test "?expand=<not-an-integer> is silently ignored (no panel, no 500)", %{
+      conn: conn,
+      user: _user
+    } do
+      {:ok, _view, html} = live(conn, ~p"/devices?expand=abc")
+
+      refute html =~ "device-error-panel-"
+    end
+
+    test "closing the panel pushes a patch to /devices without expand param", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Closable",
+          kind: "opendtu",
+          mqtt_username: "closable"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Some error")
+
+      {:ok, view, _html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # Click the close button — should trigger the
+      # `close_expanded_errors` event handler which clears the
+      # `expand` param via `push_patch`.
+      view
+      |> element("#btn-close-error-panel-#{dtu.id}")
+      |> render_click()
+
+      # The handler calls `push_patch(to: ~p"/devices")` — pin the
+      # URL change. The rendered HTML update happens at the same
+      # time; the panel's `<%= if @expanded_dtu_id == device.id %>`
+      # guard is false once the patch lands.
+      assert_patch(view, ~p"/devices")
+    end
+
+    test "the expansion panel refreshes when :dtu_error broadcasts for the expanded device",
+         %{conn: conn, user: user} do
+      # The :dtu_error broadcast handler re-fetches the affected
+      # device's `list_dtu_error_groups/1` only when the device is the
+      # currently-expanded one. Pins the wiring so a freshly-fired
+      # error appears in the panel without a refresh.
+      dtu =
+        device_fixture(user, %{
+          name: "Live Expanded",
+          kind: "opendtu",
+          mqtt_username: "live-expanded"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      # Initial state: empty panel.
+      assert html =~ "No errors recorded for this DTU yet."
+
+      # Trigger an error via the writer + broadcast (mirroring what
+      # `record_dtu_error/2` does in production, but split so the
+      # test exercises each leg independently).
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Fresh error")
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_error, dtu.id}
+      )
+
+      # Poll for up to 1s for the new error to appear in the panel.
+      found? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "Fresh error",
+            do: {:halt, true},
+            else: Process.sleep(50) && {:cont, false}
+        end)
+
+      assert found?,
+             "expected the new error to appear in the expansion panel after :dtu_error broadcast"
+    end
+  end
 end
