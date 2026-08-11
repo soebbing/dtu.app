@@ -18,6 +18,25 @@ defmodule DtuAppWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Web Push (VAPID) HTTP endpoints. The browser-side `PushSubscribe`
+  # JS hook issues `fetch(/, /push/...)` calls that send `Accept:
+  # application/json`. The default `:browser` pipeline has
+  # `plug :accepts, ["html"]`, which makes Phoenix content-negotiate
+  # against the browser pipeline and reject JSON-accepting requests
+  # with **406 Not Acceptable**. We reuse the browser session
+  # (`:fetch_session`, `:fetch_current_scope_for_user`) and CSRF
+  # (`:protect_from_forgery`) but accept JSON, so the same-origin
+  # `fetch` from the JS hook gets a 200 response and never has to
+  # deal with 406s.
+  pipeline :push_api do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug :fetch_current_scope_for_user
+  end
+
   scope "/", DtuAppWeb do
     pipe_through :browser
 
@@ -66,18 +85,6 @@ defmodule DtuAppWeb.Router do
     put "/users/settings", UserSettingsController, :update
     get "/users/settings/confirm-email/:token", UserSettingsController, :confirm_email
 
-    # Web Push (VAPID) subscription endpoints. The browser-side
-    # `PushSubscribe` JS hook hits these to register the service
-    # worker's push subscription with the server. Auth-gated so
-    # only the owner of the session can subscribe / unsubscribe
-    # their own devices. CSRF is enforced via the standard
-    # `X-CSRF-Token` header (the `:protect_from_forgery` plug from
-    # the `:browser` pipeline); the JS hook reads the token from
-    # the `<meta name="csrf-token">` element in the root layout.
-    get "/push/vapid/public_key", PushController, :vapid_public_key
-    post "/push/subscribe", PushController, :subscribe
-    post "/push/unsubscribe", PushController, :unsubscribe
-
     live_session :current_scope,
       on_mount: [{DtuAppWeb.UserAuth, :mount_current_scope}, DtuAppWeb.Plugs.Locale] do
       live "/dashboard", DashboardLive, :index
@@ -90,6 +97,23 @@ defmodule DtuAppWeb.Router do
       # fires the actual `new Notification(...)`.
       live "/notifications", NotificationsLive, :index
     end
+  end
+
+  # Web Push (VAPID) subscription endpoints. The browser-side
+  # `PushSubscribe` JS hook hits these to register the service
+  # worker's push subscription with the server. Auth-gated so
+  # only the owner of the session can subscribe / unsubscribe
+  # their own devices. The `:push` pipeline accepts JSON (the
+  # `:browser` pipeline's `accepts: ["html"]` rejects with **406
+  # Not Acceptable**) and still enforces CSRF via the standard
+  # `X-CSRF-Token` header — the JS hook reads the token from the
+  # `<meta name="csrf-token">` element in the root layout.
+  scope "/", DtuAppWeb do
+    pipe_through [:push_api, :require_authenticated_user]
+
+    get "/push/vapid/public_key", PushController, :vapid_public_key
+    post "/push/subscribe", PushController, :subscribe
+    post "/push/unsubscribe", PushController, :unsubscribe
   end
 
   scope "/", DtuAppWeb do
