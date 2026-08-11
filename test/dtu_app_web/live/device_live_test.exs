@@ -463,6 +463,68 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert_patch(view, ~p"/devices")
     end
 
+    test "the close button survives a :dtu_seen broadcast that races the click",
+         %{conn: conn, user: user} do
+      # Regression test for a production-only bug: the close button
+      # didn't reliably close the panel when a `:dtu_seen` broadcast
+      # fired between the click and the resulting `push_patch` patch
+      # reaching the client. Root cause was that the expansion panel
+      # was rendered as a non-id child of the same `<div phx-update="stream">`
+      # container as the device rows, so `stream/3 reset: true` would
+      # wipe the panel's DOM nodes — including any pending
+      # `phx-click` handler — every time the device list refreshed.
+      #
+      # The fix moves the panel out of the stream container so the
+      # stream owns only the row elements; the panel survives every
+      # stream reset untouched.
+      dtu =
+        device_fixture(user, %{
+          name: "Race DTU",
+          kind: "opendtu",
+          mqtt_username: "race-dtu"
+        })
+
+      :ok = DtuApp.Devices.record_dtu_error(dtu.id, "Stale error")
+
+      {:ok, view, html} = live(conn, ~p"/devices?expand=#{dtu.id}")
+
+      assert html =~ ~s(id="device-error-panel-#{dtu.id}"),
+             "expected the panel to be visible before the click"
+
+      # Click close, then immediately fire a `:dtu_seen` broadcast
+      # (this is what `stream/3 reset: true` on the live view does in
+      # production when a per-MQTT-uplink `last_seen_at` arrives). The
+      # close click and the broadcast must both win: the panel must be
+      # gone and the URL must be back to bare `/devices`.
+      view
+      |> element("#btn-close-error-panel-#{dtu.id}")
+      |> render_click()
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_seen, dtu.id}
+      )
+
+      # Pin both: the patch landed AND the panel is gone.
+      assert_patch(view, ~p"/devices")
+
+      closed? =
+        Enum.reduce_while(1..20, false, fn _i, _acc ->
+          current = render(view)
+
+          if current =~ "device-error-panel-" do
+            Process.sleep(50)
+            {:cont, false}
+          else
+            {:halt, true}
+          end
+        end)
+
+      assert closed?,
+             "expected the panel to disappear after close + :dtu_seen broadcast"
+    end
+
     test "the expansion panel refreshes when :dtu_error broadcasts for the expanded device",
          %{conn: conn, user: user} do
       # The :dtu_error broadcast handler re-fetches the affected
@@ -497,9 +559,12 @@ defmodule DtuAppWeb.DeviceLiveTest do
         Enum.reduce_while(1..20, false, fn _i, _acc ->
           current = render(view)
 
-          if current =~ "Fresh error",
-            do: {:halt, true},
-            else: Process.sleep(50) && {:cont, false}
+          if current =~ "Fresh error" do
+            {:halt, true}
+          else
+            Process.sleep(50)
+            {:cont, false}
+          end
         end)
 
       assert found?,
