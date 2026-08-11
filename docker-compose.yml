@@ -98,6 +98,14 @@ services:
       SMTP_PORT: ${SMTP_PORT:-1025}
       SMTP_DOMAIN: ${SMTP_DOMAIN:-localhost}
       MAIL_FROM: ${MAIL_FROM:-DtuApp <noreply@localhost>}
+      # Web Push (VAPID, RFC 8292). The runtime refuses to start in :prod
+      # without these — see config/runtime.exs. Generate with `bin/gen-vapid`
+      # and paste the three values into .env. The private_key signs every
+      # native push; rotating it invalidates every browser PushManager
+      # subscription for this origin (use --force with `bin/gen-vapid`).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:?VAPID_PUBLIC_KEY must be set — run bin/gen-vapid and paste into .env}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:?VAPID_PRIVATE_KEY must be set — run bin/gen-vapid and paste into .env}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@localhost}
 
 volumes:
   dtu_app_pgdata:
