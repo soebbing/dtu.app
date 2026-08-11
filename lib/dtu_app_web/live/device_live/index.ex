@@ -36,6 +36,19 @@ defmodule DtuAppWeb.DeviceLive.Index do
      )}
   end
 
+  # `:dtu_error` is broadcast by `Telemetry.record_dtu_error/2` whenever
+  # the parser rejects an uplink or a DB insert fails for a user's DTU.
+  # The condition is already persisted on `dtus.last_error`; we re-stream
+  # the device list here so the warning fill appears on the affected
+  # row without waiting for the next MQTT uplink.
+  @impl true
+  def handle_info({:dtu_error, _device_id}, socket) do
+    {:noreply,
+     stream(socket, :devices, Devices.list_devices(socket.assigns.current_scope.user),
+       reset: true
+     )}
+  end
+
   # Host shown to users as the MQTT broker address in the created-device modal.
   # Prefers an explicit MQTT_HOST override (when the broker runs on a different
   # domain than the web app), falling back to the web app's host (PHX_HOST).

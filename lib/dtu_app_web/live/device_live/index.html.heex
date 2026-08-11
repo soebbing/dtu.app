@@ -23,10 +23,20 @@
     <div
       :for={{dom_id, device} <- @streams.devices}
       id={dom_id}
-      class="flex items-center justify-between gap-4 bg-white px-4 py-3 dark:bg-zinc-900"
+      class={[
+        "flex items-center justify-between gap-4 px-4 py-3 transition",
+        # Warning fill — distinct from a normal row so a misconfigured
+        # DTU is unmissable. The rose-tinted background + thicker left
+        # border mirror the delete-confirmation modal's warning style.
+        if(device.last_error,
+          do:
+            "bg-rose-50/60 dark:bg-rose-950/30 border-l-4 border-rose-500",
+          else: "bg-white dark:bg-zinc-900"
+        )
+      ]}
     >
       <% online? = DtuApp.Devices.Dtu.online?(device) %>
-      <div class="min-w-0">
+      <div class="min-w-0 flex-1">
         <div class="flex items-center gap-2">
           <span
             class={[
@@ -45,6 +55,20 @@
         <p class="mt-0.5 text-sm text-zinc-500">
           {device.kind} · <code class="font-mono">{device.mqtt_username}</code>
         </p>
+        <%!-- Compact inline error message: only rendered for
+             misconfigured devices. The full message is also carried on
+             the title-attribute so a user can hover for the whole
+             string when the truncated row doesn't fit it. --%>
+        <%= if device.last_error do %>
+          <p
+            class="mt-1 truncate text-xs text-rose-700 dark:text-rose-300"
+            id={"dtu-error-message-#{device.id}"}
+            title={device.last_error}
+          >
+            <.icon name="hero-exclamation-triangle" class="inline size-3 -mt-0.5 mr-0.5" />
+            {device.last_error}
+          </p>
+        <% end %>
       </div>
       <div class="flex shrink-0 items-center gap-3 text-sm">
         <.link

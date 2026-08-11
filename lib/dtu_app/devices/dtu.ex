@@ -26,6 +26,16 @@ defmodule DtuApp.Devices.Dtu do
     # in real time.
     field :last_seen_at, :utc_datetime_usec
 
+    # Most recent error surfaced by the MQTT telemetry pipeline. Written
+    # by `DtuApp.MqttBroker.Telemetry.record_dtu_error/2` whenever the
+    # parser rejects an uplink or a `readings` insert fails. Read by the
+    # dashboard and device-list LiveViews to render a bubble / fill so
+    # users can see when a DTU is misconfigured or upstream is sending
+    # malformed data. Both columns are nullable — a happy device has
+    # NULLs and renders nothing.
+    field :last_error, :string
+    field :last_error_at, :utc_datetime_usec
+
     belongs_to :user, DtuApp.Accounts.User
 
     timestamps(type: :utc_datetime)

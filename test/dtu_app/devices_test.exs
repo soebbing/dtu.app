@@ -452,6 +452,73 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "update_dtu_error/2" do
+    # `update_dtu_error/2` is the writer for the user-visible DTU error
+    # bubble / fill. It's invoked by `MqttBroker.Telemetry.record_dtu_error/2`
+    # every time the parser rejects an uplink or a DB insert fails —
+    # so any DB regression here would silently break the dashboard's
+    # error indicator. Tests pin the message write, the timestamp, the
+    # not-found path, and the empty-message no-op.
+
+    test "writes last_error and last_error_at for the matching DTU" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      before = DtuApp.Time.utc_now_usec()
+
+      assert :ok =
+               DtuApp.Devices.update_dtu_error(
+                 device.id,
+                 "Invalid JSON payload on topic solar/SN/realtime/data"
+               )
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id)
+      assert reloaded.last_error == "Invalid JSON payload on topic solar/SN/realtime/data"
+      # Timestamp is on the DB clock and within the same second as
+      # `before` (both hands of the comparison come from the same
+      # `utc_now_usec/0` source).
+      assert reloaded.last_error_at
+      assert DateTime.compare(reloaded.last_error_at, before) in [:gt, :eq]
+    end
+
+    test "overwriting an older error replaces the message and bumps the timestamp" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert :ok = DtuApp.Devices.update_dtu_error(device.id, "first error")
+      first_ts = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id).last_error_at
+
+      assert :ok = DtuApp.Devices.update_dtu_error(device.id, "second error")
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id)
+
+      # The user-visible guarantee is that the *most recent* error
+      # wins. Pinning that the timestamp is `>=` the first one is
+      # sufficient — under the test sandbox two `now()` calls can
+      # coalesce to the same µs and a strict `:gt` assertion would
+      # flake, so we use the same `:in [:gt, :eq]` predicate the first
+      # test uses.
+      assert reloaded.last_error == "second error"
+      assert reloaded.last_error_at
+      assert DateTime.compare(reloaded.last_error_at, first_ts) in [:gt, :eq]
+    end
+
+    test "returns {:error, :not_found} for a non-existent device" do
+      assert {:error, :not_found} =
+               DtuApp.Devices.update_dtu_error(99_999_999, "no such device")
+    end
+
+    test "whitespace-only message is a no-op (no DB write)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert :ok = DtuApp.Devices.update_dtu_error(device.id, "   ")
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id)
+      assert reloaded.last_error == nil
+      assert reloaded.last_error_at == nil
+    end
+  end
+
   describe "get_daily_stats/2 — current_power with multi-MPPT DTUs (regression)" do
     # Customer-reported bug: a DTU with multiple inverters, each exposing
     # one or two MPPTs, showed "Current Generation: 0 W" on the dashboard

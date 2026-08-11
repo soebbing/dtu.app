@@ -296,6 +296,16 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, refresh_devices(socket, user)}
   end
 
+  # `:dtu_error` is broadcast by `Telemetry.record_dtu_error/2` whenever
+  # the parser rejects an uplink or a DB insert fails. The condition is
+  # already persisted on `dtus.last_error`; we re-read the device list
+  # here so the bubble appears without waiting for the next uplink.
+  @impl true
+  def handle_info({:dtu_error, _device_id}, socket) do
+    user = socket.assigns.current_scope.user
+    {:noreply, refresh_devices(socket, user)}
+  end
+
   @impl true
   def handle_info({:set_timezone, offset_seconds}, socket)
       when is_integer(offset_seconds) do
@@ -3286,16 +3296,22 @@ defmodule DtuAppWeb.DashboardLive do
               <%= for device <- @devices do %>
                 <% online? = DtuApp.Devices.Dtu.online?(device) %>
                 <div
-                  class="border border-zinc-200 dark:border-zinc-700 rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition"
+                  class={[
+                    "border rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition",
+                    if(device.last_error,
+                      do: "border-rose-300 dark:border-rose-700 bg-rose-50/40 dark:bg-rose-950/20",
+                      else: "border-zinc-200 dark:border-zinc-700"
+                    )
+                  ]}
                   id={"device-card-#{device.id}"}
                 >
                   <div>
-                    <div class="flex items-center justify-between">
-                      <h3 class="text-md font-semibold text-zinc-900 dark:text-white">
+                    <div class="flex items-center justify-between gap-2">
+                      <h3 class="text-md font-semibold text-zinc-900 dark:text-white truncate">
                         {device.name}
                       </h3>
                       <span class={[
-                        "inline-flex items-center px-2 py-0.5 rounded text-xs font-medium",
+                        "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
                         if(online?,
                           do:
                             "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
@@ -3305,6 +3321,20 @@ defmodule DtuAppWeb.DashboardLive do
                         {if online?, do: gettext("online"), else: gettext("offline")}
                       </span>
                     </div>
+                    <%!-- Error bubble: surfaces the most recent MQTT-side error
+                         (bad JSON, unknown topic, base-topic mismatch, …).
+                         Conditional — a happy device renders nothing here. --%>
+                    <%= if device.last_error do %>
+                      <div
+                        class="mt-2 inline-flex items-start gap-1.5 rounded-md bg-rose-100 dark:bg-rose-900/40 text-rose-800 dark:text-rose-300 px-2 py-1 text-xs"
+                        id={"dtu-error-bubble-#{device.id}"}
+                        title={device.last_error}
+                        role="alert"
+                      >
+                        <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0 mt-0.5" />
+                        <span class="truncate">{device.last_error}</span>
+                      </div>
+                    <% end %>
                     <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
                       <p>
                         <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
