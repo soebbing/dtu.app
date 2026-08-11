@@ -2555,5 +2555,39 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert found?,
              "expected the edge badge to appear on the dashboard after :dtu_error broadcast"
     end
+
+    test "hides the edge badge when the device's only error is older than the 48h cutoff",
+         %{conn: conn, user: user} do
+      # A DTU that errored 72 h ago and hasn't fired since looks
+      # healthy to the user — the dashboard must NOT show the badge.
+      # Otherwise a one-off weekend misconfiguration would leave a
+      # permanent red dot on the device card.
+      dtu =
+        device_fixture(user, %{
+          name: "Silent DTU",
+          kind: "opendtu",
+          mqtt_username: "silent-dtu"
+        })
+
+      # Insert directly into `dtu_errors` with a past `inserted_at`,
+      # bypassing the clock-driven `record_dtu_error/2`. We need this
+      # to be older than the 48 h cutoff so the cutoff filter actually
+      # hides the row.
+      old_ts =
+        DtuApp.Time.utc_now_usec()
+        |> DateTime.add(-72 * 3600, :second)
+        |> DateTime.truncate(:microsecond)
+
+      DtuApp.Repo.insert!(%DtuApp.Devices.DtuError{
+        dtu_id: dtu.id,
+        message: "Old, stale error",
+        inserted_at: old_ts
+      })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ "dtu-error-edge-badge-#{dtu.id}",
+             "expected the badge to be hidden for an error older than the cutoff"
+    end
   end
 end
