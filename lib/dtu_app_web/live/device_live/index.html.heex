@@ -36,7 +36,34 @@
       ]}
     >
       <% online? = DtuApp.Devices.Dtu.online?(device) %>
-      <div class="min-w-0 flex-1">
+      <%!-- Clickable content area: clicking anywhere here toggles
+           the error expansion panel for this device (open if
+           closed, close if open). Edit and Remove are nested
+           elements with their own click handlers — those events
+           route to the inner elements and don't reach this
+           phx-click, so they don't accidentally toggle the panel.
+           `cursor-pointer` + the `hover:bg-zinc-50` make the
+           clickability discoverable to the user. The `role="button"`
+           and `tabindex="0"` add keyboard / screen-reader
+           support — pressing Enter / Space on a focused row toggles
+           the panel via the JS hook, mirroring the click. --%>
+      <div
+        class="min-w-0 flex-1 cursor-pointer rounded-md hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40 -my-1 py-1 px-1 -ml-1 transition"
+        phx-click="toggle_expanded_errors"
+        phx-value-id={device.id}
+        id={"device-row-content-#{device.id}"}
+        role="button"
+        tabindex="0"
+        aria-expanded={
+          if(@expanded_dtu_id == device.id, do: "true", else: "false")
+        }
+        aria-label={
+          if(@expanded_dtu_id == device.id,
+            do: gettext("Hide error history for %{name}", name: device.name),
+            else: gettext("Show error history for %{name}", name: device.name)
+          )
+        }
+      >
         <div class="flex items-center gap-2">
           <span
             class={[

@@ -196,6 +196,66 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> push_patch(to: ~p"/devices")}
   end
 
+  # Toggle the error expansion panel for a device. Wired to the
+  # `phx-click` on the row's content area (the clickable zone that
+  # opens the panel — Edit and Remove are separate elements inside
+  # the row and consume their own clicks so they don't fire this).
+  #
+  # Behaviour:
+  # * If the clicked device's panel is already open, close it
+  #   (mirrors the dashboard deep-link's open/close semantic and
+  #   keeps the URL in sync with the panel state).
+  # * If the panel is closed (or another device's panel is open),
+  #   open it for the clicked device. The "no errors" empty-state
+  #   in the panel reads `gettext("No errors recorded for this DTU
+  #   yet.")` (already extracted to the German/French locale files
+  #   in MR #89).
+  #
+  # Security: `Devices.get_device/2` is the non-raising variant so
+  # an attacker-crafted `id` parameter that doesn't belong to the
+  # current user (or doesn't exist) silently no-ops rather than
+  # raising — a row click that races with the device being deleted
+  # from another tab is the realistic case this guards against.
+  def handle_event("toggle_expanded_errors", %{"id" => raw}, socket) do
+    case Integer.parse(to_string(raw)) do
+      {id, ""} ->
+        user = socket.assigns.current_scope.user
+
+        if Devices.get_device(user, id) do
+          if socket.assigns.expanded_dtu_id == id do
+            # Already open for this device — close it. Push a patch
+            # to drop the `expand` query param so the URL stays in
+            # sync and a refresh doesn't reopen the panel.
+            {:noreply,
+             socket
+             |> assign(:expanded_dtu_id, nil)
+             |> assign(:expanded_error_groups, [])
+             |> push_patch(to: ~p"/devices")}
+          else
+            # Open it for the new device. Push a patch to set
+            # `?expand=<id>` so the URL is bookmarkable and a
+            # refresh re-opens the same panel.
+            {:noreply,
+             socket
+             |> assign(:expanded_dtu_id, id)
+             |> assign(:expanded_error_groups, Devices.list_dtu_error_groups(id))
+             |> push_patch(to: ~p"/devices?expand=#{id}")}
+          end
+        else
+          # Foreign / deleted device — silent no-op so a stale
+          # `phx-click` from a row the user already deleted doesn't
+          # crash the LiveView.
+          {:noreply, socket}
+        end
+
+      _ ->
+        # Non-integer `id` payload — silent no-op. Should never
+        # happen (Phoenix's `phx-value-id` is just an integer),
+        # but defensive so a malformed event doesn't crash the LV.
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("delete", %{"id" => id}, socket) do
     device = Devices.get_device!(socket.assigns.current_scope.user, id)
     {:ok, _} = Devices.delete_device(device)
