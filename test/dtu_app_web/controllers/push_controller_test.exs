@@ -66,6 +66,24 @@ defmodule DtuAppWeb.PushControllerTest do
       conn = build_conn() |> get(~p"/push/vapid/public_key")
       assert redirected_to(conn) == ~p"/users/log-in"
     end
+
+    test "returns 200 (not 406) when the client sends Accept: application/json", %{conn: conn} do
+      # Regression guard for the 406 bug: when the push routes were on
+      # the `:browser` pipeline (`accepts: ["html"]`), Phoenix's
+      # `Plug.Accepts` content-negotiated against the HTML mime type
+      # and rejected the JS hook's `Accept: application/json` header
+      # with **406 Not Acceptable**. The `:push_api` pipeline is now
+      # used (`:accepts: ["json"]`) so the JS hook's fetch lands on
+      # 200 + JSON. Without this guard, the next refactor that moves
+      # the route back to `:browser` would silently break native push.
+      conn =
+        conn
+        |> put_req_header("accept", "application/json")
+        |> get(~p"/push/vapid/public_key")
+
+      assert json = json_response(conn, 200)
+      assert json["public_key"] == "BTestPublicKey"
+    end
   end
 
   describe "POST /push/subscribe" do
