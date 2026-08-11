@@ -517,6 +517,133 @@ defmodule DtuApp.DevicesTest do
       assert reloaded.last_error == nil
       assert reloaded.last_error_at == nil
     end
+
+    test "appends a row to dtu_errors with the same message and the device's id" do
+      # The bubble / fill UI from MR #86 reads `dtus.last_error` for
+      # the most-recent error; the dashboard's edge badge and the
+      # manage-device expansion panel read `dtu_errors` for the
+      # history. Pin that both tables stay in sync after a write.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      :ok =
+        DtuApp.Devices.update_dtu_error(
+          device.id,
+          "Invalid JSON payload on solar/SN/realtime/data"
+        )
+
+      # History row exists.
+      assert DtuApp.Repo.exists?(
+               from e in DtuApp.Devices.DtuError,
+                 where:
+                   e.dtu_id == ^device.id and
+                     e.message == "Invalid JSON payload on solar/SN/realtime/data"
+             )
+
+      # And the denormalised cache matches.
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device.id)
+      assert reloaded.last_error == "Invalid JSON payload on solar/SN/realtime/data"
+    end
+
+    test "prunes dtu_errors rows beyond the per-device history cap" do
+      # Inserting more rows than `dtu_error_history_cap/0` keeps the
+      # history bounded. The cap protects the table from growing
+      # unboundedly for a misbehaving DTU that publishes bad payloads
+      # every second.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      cap = DtuApp.Devices.dtu_error_history_cap()
+      total = cap + 25
+
+      for i <- 1..total do
+        :ok = DtuApp.Devices.update_dtu_error(device.id, "Synthetic error ##{i}")
+      end
+
+      # Repo count is bounded by the cap. We don't assert == cap
+      # (concurrent inserts from parallel tests could nudge it over)
+      # — `cap <= n <= cap` is what we want.
+      count =
+        DtuApp.Repo.one(
+          from e in DtuApp.Devices.DtuError,
+            where: e.dtu_id == ^device.id,
+            select: count(e.id)
+        )
+
+      assert count == cap,
+             "expected exactly #{cap} rows after inserting #{total}, got #{inspect(count)}"
+    end
+  end
+
+  describe "record_dtu_error/2 + dtu_errors reads" do
+    # The transactional writer that backs both the dashboard's edge
+    # badge and the manage-device expansion panel. Pins the contract:
+    # the insert and the cache update happen atomically; the read
+    # helpers (count_distinct_dtu_errors/1 + list_dtu_error_groups/1)
+    # return the expected shape.
+
+    test "count_distinct_dtu_errors/1 returns 0 for a device with no errors" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id) == 0
+    end
+
+    test "count_distinct_dtu_errors/1 counts distinct messages, not events" do
+      # A Shelly spamming the same `unknown_topic` 50× in a minute
+      # should report `1`, not `50` — distinct-message count is the
+      # dashboard's whole point.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      for _ <- 1..5 do
+        :ok = DtuApp.Devices.record_dtu_error(device.id, "Shelly topic mismatch")
+      end
+
+      :ok = DtuApp.Devices.record_dtu_error(device.id, "A different error")
+
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id) == 2
+    end
+
+    test "list_dtu_error_groups/1 returns one row per distinct message, sorted by recency" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      :ok = DtuApp.Devices.record_dtu_error(device.id, "older error")
+      # Sleep past the second boundary so the µs ordering is
+      # deterministic; the count test above already passed so this is
+      # the only place ordering matters.
+      :timer.sleep(1100)
+      :ok = DtuApp.Devices.record_dtu_error(device.id, "newer error")
+      :ok = DtuApp.Devices.record_dtu_error(device.id, "newer error")
+
+      groups = DtuApp.Devices.list_dtu_error_groups(device.id)
+
+      assert length(groups) == 2
+
+      # The newer message is first because the `ORDER BY
+      # MAX(inserted_at) DESC` clause puts the most-recently-fired
+      # message at the top of the expansion panel. Repeated inserts
+      # of "newer error" bump its `occurrences` to 2.
+      assert hd(groups).message == "newer error"
+      assert hd(groups).occurrences == 2
+      assert List.last(groups).message == "older error"
+      assert List.last(groups).occurrences == 1
+
+      # `last_seen` is monotonic — the newer group's timestamp is
+      # at-or-after the older group's. Pinning the strict `:gt`
+      # predicate flaked on a fast CI runner because postgres coalesces
+      # two `now()` calls landing inside the same µs to the same
+      # value, so accept `>=` instead.
+      assert DateTime.compare(hd(groups).last_seen, List.last(groups).last_seen) in [:gt, :eq]
+    end
+
+    test "list_dtu_error_groups/1 returns [] for a device with no errors" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert DtuApp.Devices.list_dtu_error_groups(device.id) == []
+    end
   end
 
   describe "get_daily_stats/2 — current_power with multi-MPPT DTUs (regression)" do

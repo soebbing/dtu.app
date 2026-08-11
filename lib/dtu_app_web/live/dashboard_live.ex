@@ -1,6 +1,8 @@
 defmodule DtuAppWeb.DashboardLive do
   use DtuAppWeb, :live_view
 
+  import Ecto.Query
+
   alias DtuApp.Devices
   alias DtuApp.MqttBroker.Telemetry
   alias DtuApp.MqttBroker.Broker
@@ -394,6 +396,29 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:devices, devices)
     |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
     |> assign(:has_shelly?, Enum.any?(devices, &shelly_kind?/1))
+    |> assign(:error_counts, error_counts_by_dtu_id(devices))
+  end
+
+  # Per-device distinct-error-count map for the dashboard's edge
+  # badge. One round-trip regardless of how many devices the user has,
+  # so the refresh stays O(1) queries even for power users with
+  # many DTUs. Devices without errors are absent from the map — the
+  # badge conditional in the template uses `Map.get(@error_counts,
+  # device.id, 0)` so a missing entry reads as 0.
+  defp error_counts_by_dtu_id(devices) do
+    dtu_ids = Enum.map(devices, & &1.id)
+
+    if dtu_ids == [] do
+      %{}
+    else
+      DtuApp.Repo.all(
+        from e in DtuApp.Devices.DtuError,
+          where: e.dtu_id in ^dtu_ids,
+          group_by: e.dtu_id,
+          select: %{dtu_id: e.dtu_id, distinct_count: count(e.message, :distinct)}
+      )
+      |> Map.new(fn %{dtu_id: id, distinct_count: n} -> {id, n} end)
+    end
   end
 
   # Inverter kinds: DTUs that report `ac_power` / `yield_day` and
@@ -3295,63 +3320,87 @@ defmodule DtuAppWeb.DashboardLive do
             <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
               <%= for device <- @devices do %>
                 <% online? = DtuApp.Devices.Dtu.online?(device) %>
-                <div
-                  class={[
-                    "border rounded-lg p-5 flex flex-col justify-between hover:shadow-md transition",
-                    if(device.last_error,
-                      do: "border-rose-300 dark:border-rose-700 bg-rose-50/40 dark:bg-rose-950/20",
-                      else: "border-zinc-200 dark:border-zinc-700"
-                    )
-                  ]}
-                  id={"device-card-#{device.id}"}
-                >
-                  <div>
-                    <div class="flex items-center justify-between gap-2">
-                      <h3 class="text-md font-semibold text-zinc-900 dark:text-white truncate">
-                        {device.name}
-                      </h3>
-                      <span class={[
-                        "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
-                        if(online?,
-                          do:
-                            "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
-                          else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
-                        )
-                      ]}>
-                        {if online?, do: gettext("online"), else: gettext("offline")}
-                      </span>
-                    </div>
-                    <%!-- Error bubble: surfaces the most recent MQTT-side error
-                         (bad JSON, unknown topic, base-topic mismatch, …).
-                         Conditional — a happy device renders nothing here. --%>
-                    <%= if device.last_error do %>
-                      <div
-                        class="mt-2 inline-flex items-start gap-1.5 rounded-md bg-rose-100 dark:bg-rose-900/40 text-rose-800 dark:text-rose-300 px-2 py-1 text-xs"
-                        id={"dtu-error-bubble-#{device.id}"}
-                        title={device.last_error}
-                        role="alert"
-                      >
-                        <.icon name="hero-exclamation-triangle" class="size-3.5 shrink-0 mt-0.5" />
-                        <span class="truncate">{device.last_error}</span>
+                <% error_count = Map.get(@error_counts, device.id, 0) %>
+                <div class="relative">
+                  <.link
+                    navigate={~p"/devices?expand=#{device.id}"}
+                    aria-label={
+                      if(error_count > 0,
+                        do:
+                          gettext("%{count} errors, view details",
+                            count: error_count
+                          ),
+                        else: gettext("Manage device")
+                      )
+                    }
+                    class={[
+                      "block border rounded-lg p-5 h-full flex flex-col justify-between transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-emerald-500",
+                      if(error_count > 0,
+                        do: "border-rose-300 dark:border-rose-700",
+                        else: "border-zinc-200 dark:border-zinc-700"
+                      )
+                    ]}
+                    id={"device-card-#{device.id}"}
+                  >
+                    <div>
+                      <div class="flex items-center justify-between gap-2">
+                        <h3 class="text-md font-semibold text-zinc-900 dark:text-white truncate">
+                          {device.name}
+                        </h3>
+                        <span class={[
+                          "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
+                          if(online?,
+                            do:
+                              "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
+                            else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
+                          )
+                        ]}>
+                          {if online?, do: gettext("online"), else: gettext("offline")}
+                        </span>
                       </div>
-                    <% end %>
-                    <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
-                      <p>
-                        <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
-                          "Last seen:"
-                        )}</span>
-                        <span title={
-                          case device.last_seen_at do
-                            nil -> nil
-                            dt -> Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S UTC")
-                          end
-                        }>{case device.last_seen_at do
-                          nil -> gettext("never")
-                          dt -> relative_time_label(dt)
-                        end}</span>
-                      </p>
+                      <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">
+                        <p>
+                          <span class="font-medium text-zinc-700 dark:text-zinc-300">{gettext(
+                            "Last seen:"
+                          )}</span>
+                          <span title={
+                            case device.last_seen_at do
+                              nil -> nil
+                              dt -> Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S UTC")
+                            end
+                          }>{case device.last_seen_at do
+                            nil -> gettext("never")
+                            dt -> relative_time_label(dt)
+                          end}</span>
+                        </p>
+                      </div>
                     </div>
-                  </div>
+                  </.link>
+                  <%!-- Error badge: a small red circle pinned to the card's
+                       top-right corner. Shows the *distinct* error-message
+                       count so a Shelly spamming the same `unknown_topic`
+                       50× in a minute shows "1" rather than "50". The
+                       link is the entire card — clicking anywhere on the
+                       card surfaces the deep-link to /devices?expand=<id>.
+                       Hidden when the device has zero errors. --%>
+                  <%= if error_count > 0 do %>
+                    <span
+                      class={[
+                        "absolute -top-2 -right-2 inline-flex items-center justify-center size-7 rounded-full bg-rose-500 text-white text-xs font-semibold shadow-md ring-2 ring-white dark:ring-zinc-800 pointer-events-none",
+                        if(error_count > 99, do: "size-8 text-[10px]")
+                      ]}
+                      id={"dtu-error-edge-badge-#{device.id}"}
+                      aria-label={gettext("%{count} distinct errors", count: error_count)}
+                      title={
+                        gettext(
+                          "%{count} distinct error message — click to view",
+                          count: error_count
+                        )
+                      }
+                    >
+                      {if error_count > 99, do: "99+", else: error_count}
+                    </span>
+                  <% end %>
                 </div>
               <% end %>
             </div>

@@ -21,6 +21,7 @@ defmodule DtuAppWeb.DeviceLive.Index do
      |> assign(:deleting_device, nil)
      |> assign(:created_device, nil)
      |> assign(:mqtt_host, mqtt_host())
+     |> assign(:expanded_dtu_id, nil)
      |> assign_form(Devices.change_device(socket.assigns.current_scope.user))}
   end
 
@@ -38,15 +39,41 @@ defmodule DtuAppWeb.DeviceLive.Index do
 
   # `:dtu_error` is broadcast by `Telemetry.record_dtu_error/2` whenever
   # the parser rejects an uplink or a DB insert fails for a user's DTU.
-  # The condition is already persisted on `dtus.last_error`; we re-stream
-  # the device list here so the warning fill appears on the affected
-  # row without waiting for the next MQTT uplink.
+  # The condition is already persisted on `dtus.last_error` and on a row
+  # in `dtu_errors`; we re-stream the device list here so the warning
+  # fill (and the expansion panel, if the affected row is currently
+  # expanded) stays current without waiting for the next MQTT uplink.
+  # The expansion panel's `list_dtu_error_groups/1` is re-fetched below
+  # so a freshly-fired error shows up without a page refresh.
   @impl true
-  def handle_info({:dtu_error, _device_id}, socket) do
-    {:noreply,
-     stream(socket, :devices, Devices.list_devices(socket.assigns.current_scope.user),
-       reset: true
-     )}
+  def handle_info({:dtu_error, device_id}, socket) do
+    socket =
+      socket
+      |> stream(:devices, Devices.list_devices(socket.assigns.current_scope.user), reset: true)
+      |> maybe_refresh_expanded_errors(device_id)
+
+    {:noreply, socket}
+  end
+
+  # When the broadcast is for the currently-expanded device, re-fetch
+  # the per-message rollup so the user sees the new error appear in
+  # the panel without any further interaction. For other devices, the
+  # stream reset above already moved the row's distinct-error badge
+  # count up to date.
+  defp maybe_refresh_expanded_errors(socket, _device_id)
+       when socket.assigns.expanded_dtu_id == nil,
+       do: socket
+
+  defp maybe_refresh_expanded_errors(socket, device_id) do
+    if socket.assigns.expanded_dtu_id == device_id do
+      assign(
+        socket,
+        :expanded_error_groups,
+        Devices.list_dtu_error_groups(device_id)
+      )
+    else
+      socket
+    end
   end
 
   # Host shown to users as the MQTT broker address in the created-device modal.
@@ -69,7 +96,15 @@ defmodule DtuAppWeb.DeviceLive.Index do
     {:noreply, apply_action(socket, socket.assigns.live_action, params)}
   end
 
-  defp apply_action(socket, :index, _params), do: socket
+  defp apply_action(socket, :index, params) do
+    # Deep-link from the dashboard's edge-badge click:
+    # `/devices?expand=<dtu_id>` opens this page with the right device
+    # expanded to its full error panel. The id is validated against the
+    # user's owned devices — an attacker-crafted id expands nothing
+    # rather than leaking the error history of someone else's device.
+    socket
+    |> assign_expansion(params)
+  end
 
   defp apply_action(socket, :new, _params) do
     socket
@@ -84,6 +119,39 @@ defmodule DtuAppWeb.DeviceLive.Index do
     |> assign(:page_title, gettext("Edit DTU"))
     |> assign(:device, device)
     |> assign_form(Devices.change_device(socket.assigns.current_scope.user, device))
+  end
+
+  # Read the `expand` query param and decide whether to open an
+  # expansion panel for the matching device. Invalid ids (non-integer,
+  # not owned by the current user) collapse to `expanded_dtu_id = nil`
+  # rather than 404-ing the page — the device list still renders, the
+  # user just sees no expanded panel.
+  defp assign_expansion(socket, %{"expand" => raw}) do
+    case Integer.parse(to_string(raw)) do
+      {id, ""} ->
+        user = socket.assigns.current_scope.user
+
+        if Devices.get_device(user, id) do
+          socket
+          |> assign(:expanded_dtu_id, id)
+          |> assign(:expanded_error_groups, Devices.list_dtu_error_groups(id))
+        else
+          socket
+          |> assign(:expanded_dtu_id, nil)
+          |> assign(:expanded_error_groups, [])
+        end
+
+      _ ->
+        socket
+        |> assign(:expanded_dtu_id, nil)
+        |> assign(:expanded_error_groups, [])
+    end
+  end
+
+  defp assign_expansion(socket, _params) do
+    socket
+    |> assign(:expanded_dtu_id, nil)
+    |> assign(:expanded_error_groups, [])
   end
 
   @impl true
@@ -113,6 +181,19 @@ defmodule DtuAppWeb.DeviceLive.Index do
 
   def handle_event("close_created_modal", _params, socket) do
     {:noreply, assign(socket, :created_device, nil)}
+  end
+
+  # Close the expanded error panel by clearing the `expand` query
+  # param. `push_patch` keeps the URL in sync (so a refresh re-opens
+  # it) and avoids the full-page navigation that `navigate` would
+  # trigger — the device list itself doesn't change, only the panel
+  # collapses.
+  def handle_event("close_expanded_errors", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:expanded_dtu_id, nil)
+     |> assign(:expanded_error_groups, [])
+     |> push_patch(to: ~p"/devices")}
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
@@ -167,4 +248,21 @@ defmodule DtuAppWeb.DeviceLive.Index do
   # (name, username) resolve correctly; otherwise build against a fresh struct.
   defp dtu_changeset_target(%{assigns: %{device: %Dtu{} = device}}), do: device
   defp dtu_changeset_target(_socket), do: %Dtu{}
+
+  # Friendly relative-time label for the expansion panel's
+  # "last seen" line on each error group. Lightweight format that
+  # reads naturally in both English and German (`vor 5 Minuten`) —
+  # the dashboard's `relative_time_label/1` is private, so we inline
+  # a similar-enough helper here rather than coupling the two
+  # LiveViews. Returns "just now" for sub-minute timestamps.
+  defp format_relative(%DateTime{} = dt) do
+    diff_seconds = DateTime.diff(DtuApp.Time.utc_now(), dt, :second)
+
+    cond do
+      diff_seconds < 60 -> gettext("just now")
+      diff_seconds < 3600 -> gettext("%{n} minutes ago", n: div(diff_seconds, 60))
+      diff_seconds < 86_400 -> gettext("%{n} hours ago", n: div(diff_seconds, 3600))
+      true -> gettext("%{n} days ago", n: div(diff_seconds, 86_400))
+    end
+  end
 end

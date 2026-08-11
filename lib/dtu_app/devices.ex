@@ -16,6 +16,7 @@ defmodule DtuApp.Devices do
   alias DtuApp.Repo
   alias DtuApp.Accounts.User
   alias DtuApp.Devices.Dtu
+  alias DtuApp.Devices.DtuError
   alias DtuApp.Devices.Reading
 
   @doc "List all devices owned by `user`, newest first."
@@ -31,6 +32,19 @@ defmodule DtuApp.Devices do
     Dtu
     |> where([d], d.user_id == ^user.id and d.id == ^id)
     |> Repo.one!()
+  end
+
+  @doc """
+  Non-raising variant of `get_device!/2`. Returns `nil` if the device
+  doesn't exist or is owned by another user — callers use this when
+  they're validating a user-supplied id (e.g. a query-param from a
+  deep-link) and want the page to render with no expansion rather
+  than 404 when the id is bogus.
+  """
+  def get_device(%User{} = user, id) do
+    Dtu
+    |> where([d], d.user_id == ^user.id and d.id == ^id)
+    |> Repo.one()
   end
 
   @doc "Look up a device by its globally-unique MQTT username (broker auth path)."
@@ -192,54 +206,176 @@ defmodule DtuApp.Devices do
     end
   end
 
+  # Per-device cap for the `dtu_errors` history. Each insert prunes the
+  # oldest rows beyond this number so the table stays bounded without a
+  # separate sweep job. 200 events per device covers ~weeks of typical
+  # misbehaviour (a Shelly spamming `unknown_topic` every few seconds)
+  # and gives the manage-device expansion panel plenty of rows to
+  # summarise. A cap rather than a TTL is deliberate: a DTU that's been
+  # misbehaving for a month should still have its oldest error visible —
+  # the user's *first* encounter with the issue is often the most
+  # diagnostic one, and a TTL would erase it.
+  @dtu_error_history_cap 200
+
   @doc """
-  Record the most recent MQTT-side error for a DTU.
+  Per-device cap on the number of `dtu_errors` rows kept. Exposed so
+  tests can assert the prune step runs after every insert without
+  reaching into the module's private state.
+  """
+  def dtu_error_history_cap, do: @dtu_error_history_cap
 
-  Writes `last_error` (a short, human-readable summary like
-  `"Invalid JSON payload on topic solar/123/realtime/data"`) and
-  `last_error_at` (DB clock) on the matching row. Read by the dashboard
-  and device-list LiveViews to render an error bubble / fill — so a DTU
-  that has been silently failing to publish for hours no longer looks
-  identical to one that's happy.
+  @doc """
+  Record an MQTT-side error for a DTU — appends one row to `dtu_errors`
+  and updates the denormalised `dtus.last_error` / `last_error_at`
+  cache columns in the same transaction. Read by:
 
-  The columns are nullable: a happy device has NULLs and renders
-  nothing. Bumping the columns does NOT clear an older error — the most
-  recent error wins, matching how the rest of the app surfaces state.
-  Returns `:ok | {:error, changeset}`. A `:not_found` is reported as
+    * `count_distinct_dtu_errors/2` — the dashboard's edge badge counter
+    * `list_dtu_error_groups/2`     — the manage-device expansion panel
+    * the existing `dtus.last_error` readers (single most-recent error)
+
+  Whitespace-only / empty messages are a no-op (matches
+  `update_inverter_name/3`'s convention). A missing DTU returns
   `{:error, :not_found}` so the caller can distinguish "device vanished"
   from "DB write failed".
+
+  Pruning: after the insert, the per-device history is truncated to
+  `dtu_error_history_cap/0` rows so the table stays bounded. The prune
+  is a single `DELETE … WHERE id IN (SELECT … ORDER BY inserted_at
+  DESC OFFSET cap)` — no full table scan.
   """
-  @spec update_dtu_error(integer(), String.t()) :: :ok | {:error, term()}
-  def update_dtu_error(dtu_id, message)
+  @spec record_dtu_error(integer(), String.t()) :: :ok | {:error, term()}
+  def record_dtu_error(dtu_id, message)
       when is_integer(dtu_id) and is_binary(message) do
     trimmed = String.trim(message)
 
-    cond do
-      trimmed == "" ->
-        # Treat empty messages as a no-op (consistent with
-        # `update_inverter_name/3`'s handling of whitespace-only
-        # payloads). Returns `:ok` so the caller's pattern match stays
-        # uniform.
-        :ok
-
-      true ->
+    if trimmed == "" do
+      :ok
+    else
+      Repo.transaction(fn ->
         case Repo.get(Dtu, dtu_id) do
           nil ->
-            {:error, :not_found}
+            Repo.rollback({:not_found, dtu_id})
 
           %Dtu{} = dtu ->
-            dtu
-            |> Ecto.Changeset.change(%{
-              last_error: trimmed,
-              last_error_at: DtuApp.Time.utc_now_usec()
-            })
-            |> Repo.update()
-            |> case do
-              {:ok, _dtu} -> :ok
-              {:error, changeset} -> {:error, changeset}
+            now = DtuApp.Time.utc_now_usec()
+
+            case %DtuError{}
+                 |> DtuError.changeset(%{dtu_id: dtu.id, message: trimmed})
+                 |> Repo.insert() do
+              {:ok, _error} ->
+                dtu
+                |> Ecto.Changeset.change(%{last_error: trimmed, last_error_at: now})
+                |> Repo.update!()
+                |> tap(fn _dtu -> prune_dtu_errors(dtu.id) end)
+
+                :ok
+
+              {:error, changeset} ->
+                Repo.rollback({:insert_failed, changeset})
             end
         end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        {:error, {:not_found, _id}} -> {:error, :not_found}
+        {:error, {:insert_failed, changeset}} -> {:error, changeset}
+      end
     end
+  end
+
+  @doc """
+  Backwards-compatible alias for `record_dtu_error/2`. Kept so the
+  previous MR (#86)'s test suite and any in-flight callers don't break.
+  The new helper writes a `dtu_errors` row in addition to the column
+  update; this alias delegates to it.
+  """
+  @spec update_dtu_error(integer(), String.t()) :: :ok | {:error, term()}
+  def update_dtu_error(dtu_id, message),
+    do: record_dtu_error(dtu_id, message)
+
+  @doc """
+  Number of *distinct* error messages recorded against `dtu_id`.
+  Powers the dashboard's edge-badge counter: "N errors" is what the user
+  sees at a glance, not the raw event count (a Shelly spamming the
+  same `unknown_topic` 50× in a minute should not produce a `50`).
+
+  Returns 0 for devices with no history.
+  """
+  @spec count_distinct_dtu_errors(integer()) :: non_neg_integer()
+  def count_distinct_dtu_errors(dtu_id) when is_integer(dtu_id) do
+    # `count(e.id, :distinct)` would also work, but `count(e.message)` is
+    # clearer for the table layout (`message` is the column the user
+    # cares about — multiple rows with the same message collapse to one).
+    # `:distinct` is a keyword flag, not a boolean — passing `true` is
+    # what trips the Ecto.Query.CompileError. Wrap in `case` so a device
+    # with zero errors returns 0 rather than `nil`.
+    case Repo.one(
+           from e in DtuError,
+             where: e.dtu_id == ^dtu_id,
+             select: count(e.message, :distinct)
+         ) do
+      nil -> 0
+      n -> n
+    end
+  end
+
+  @doc """
+  Distinct-message rollup for `dtu_id`. Each row carries:
+
+    * `:message`         — the user-visible error text
+    * `:occurrences`     — how many times this exact message has fired
+    * `:last_seen`       — most recent `inserted_at` for this message
+
+  Ordered by `last_seen DESC` so the most-recent error appears first in
+  the manage-device expansion panel. Returns `[]` for devices with no
+  history.
+  """
+  @spec list_dtu_error_groups(integer()) :: [
+          %{message: String.t(), occurrences: non_neg_integer(), last_seen: DateTime.t()}
+        ]
+  def list_dtu_error_groups(dtu_id) when is_integer(dtu_id) do
+    Repo.all(
+      from e in DtuError,
+        where: e.dtu_id == ^dtu_id,
+        group_by: e.message,
+        # Secondary `desc: max(e.id)` tie-breaks groups whose
+        # `MAX(inserted_at)` collides at the same µs — postgres coalesces
+        # `now()` calls landing inside the same transaction to the same
+        # value, so without the tiebreaker the rollup's order between
+        # same-second groups is non-deterministic. `dtu_errors.id` is a
+        # `bigserial` (monotonically increasing), so `MAX(id)` matches the
+        # most recently inserted row for each group — exactly the
+        # insertion-order tiebreaker the user expects. Can't sort on
+        # `e.id` directly without grouping by it.
+        order_by: [desc: max(e.inserted_at), desc: max(e.id)],
+        select: %{
+          message: e.message,
+          occurrences: count(e.id),
+          last_seen: max(e.inserted_at)
+        }
+    )
+  end
+
+  # Delete the oldest `dtu_errors` rows for `dtu_id` so the table stays
+  # within `dtu_error_history_cap/0` rows. Runs inside the same
+  # transaction as `record_dtu_error/2`'s insert — if the prune fails
+  # the whole write rolls back, so the cache and the history table can
+  # never disagree about "what is the most recent error".
+  defp prune_dtu_errors(dtu_id) do
+    Repo.delete_all(
+      from e in DtuError,
+        where:
+          e.dtu_id == ^dtu_id and
+            e.id not in subquery(recent_dtu_error_ids(dtu_id, @dtu_error_history_cap))
+    )
+  end
+
+  defp recent_dtu_error_ids(dtu_id, cap) do
+    from e in DtuError,
+      where: e.dtu_id == ^dtu_id,
+      order_by: [desc: e.inserted_at],
+      limit: ^cap,
+      select: e.id
   end
 
   @doc "List recent readings for a specific user-owned DTU."
