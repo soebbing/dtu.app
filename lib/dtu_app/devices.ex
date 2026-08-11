@@ -224,6 +224,39 @@ defmodule DtuApp.Devices do
   """
   def dtu_error_history_cap, do: @dtu_error_history_cap
 
+  # Recency cutoff for the user-visible error surfaces (dashboard edge
+  # badge, manage-device expansion panel). An error that hasn't fired
+  # within this window is hidden — a misconfigured DTU that's been
+  # silent for two days doesn't deserve a permanent red badge. The
+  # cutoff is enforced at query time on `dtu_errors.inserted_at`, not
+  # via deletion, so a once-silent DTU that suddenly starts misbehaving
+  # again shows the new error immediately without waiting for the
+  # history table to be re-populated. 48 hours is wide enough to
+  # cover an overnight WiFi dropout plus a workday silence, and tight
+  # enough that a healthy DTU never carries a permanent badge from a
+  # one-off weekend hiccup.
+  @dtu_error_recency_seconds 48 * 60 * 60
+
+  @doc """
+  Cutoff (in seconds) for hiding stale `dtu_errors` rows from the
+  user-visible surfaces. Errors whose `MAX(inserted_at)` per group
+  is older than this many seconds before `now` are not counted or
+  listed. Defaults to 48 hours.
+  """
+  def dtu_error_recency_seconds, do: @dtu_error_recency_seconds
+
+  @doc """
+  Resolve the recency cutoff as a DB-clock `DateTime`. The dashboard
+  and manage-device panel pass this into the query helpers so the
+  filter's `now` matches the row's `inserted_at` (both via the DB
+  clock — see `DtuApp.Time.utc_now/0` for the rationale).
+  """
+  def dtu_error_recency_cutoff do
+    DtuApp.Time.utc_now_usec()
+    |> DateTime.add(-@dtu_error_recency_seconds, :second)
+    |> DateTime.truncate(:microsecond)
+  end
+
   @doc """
   Record an MQTT-side error for a DTU — appends one row to `dtu_errors`
   and updates the denormalised `dtus.last_error` / `last_error_at`
@@ -294,15 +327,29 @@ defmodule DtuApp.Devices do
     do: record_dtu_error(dtu_id, message)
 
   @doc """
-  Number of *distinct* error messages recorded against `dtu_id`.
-  Powers the dashboard's edge-badge counter: "N errors" is what the user
-  sees at a glance, not the raw event count (a Shelly spamming the
-  same `unknown_topic` 50× in a minute should not produce a `50`).
+  Number of *distinct* error messages recorded against `dtu_id` whose
+  most recent occurrence is within the recency cutoff. Powers the
+  dashboard's edge-badge counter: "N errors" is what the user sees at
+  a glance, not the raw event count (a Shelly spamming the same
+  `unknown_topic` 50× in a minute should not produce a `50`).
 
-  Returns 0 for devices with no history.
+  Errors older than the cutoff are excluded — a misconfigured DTU
+  that's been silent for two days doesn't deserve a permanent red
+  badge. The cutoff defaults to `dtu_error_recency_cutoff/0` (DB
+  clock minus `dtu_error_recency_seconds/0`); callers can pass a
+  custom cutoff (e.g. tests pinning to a fixed instant).
+
+  Returns 0 for devices with no history (or whose entire history is
+  older than the cutoff).
   """
-  @spec count_distinct_dtu_errors(integer()) :: non_neg_integer()
-  def count_distinct_dtu_errors(dtu_id) when is_integer(dtu_id) do
+  @spec count_distinct_dtu_errors(integer(), DateTime.t()) :: non_neg_integer()
+  def count_distinct_dtu_errors(dtu_id, cutoff \\ nil)
+
+  def count_distinct_dtu_errors(dtu_id, nil) when is_integer(dtu_id),
+    do: count_distinct_dtu_errors(dtu_id, dtu_error_recency_cutoff())
+
+  def count_distinct_dtu_errors(dtu_id, cutoff)
+      when is_integer(dtu_id) and is_struct(cutoff, DateTime) do
     # `count(e.id, :distinct)` would also work, but `count(e.message)` is
     # clearer for the table layout (`message` is the column the user
     # cares about — multiple rows with the same message collapse to one).
@@ -311,7 +358,7 @@ defmodule DtuApp.Devices do
     # with zero errors returns 0 rather than `nil`.
     case Repo.one(
            from e in DtuError,
-             where: e.dtu_id == ^dtu_id,
+             where: e.dtu_id == ^dtu_id and e.inserted_at >= ^cutoff,
              select: count(e.message, :distinct)
          ) do
       nil -> 0
@@ -324,19 +371,31 @@ defmodule DtuApp.Devices do
 
     * `:message`         — the user-visible error text
     * `:occurrences`     — how many times this exact message has fired
+                           **within the recency cutoff**
     * `:last_seen`       — most recent `inserted_at` for this message
+                           (within the cutoff)
 
   Ordered by `last_seen DESC` so the most-recent error appears first in
   the manage-device expansion panel. Returns `[]` for devices with no
-  history.
+  history (or whose entire history is older than the cutoff).
+
+  `cutoff` defaults to `dtu_error_recency_cutoff/0` (DB clock minus
+  `dtu_error_recency_seconds/0`); tests pass an explicit cutoff for
+  predictability.
   """
-  @spec list_dtu_error_groups(integer()) :: [
+  @spec list_dtu_error_groups(integer(), DateTime.t()) :: [
           %{message: String.t(), occurrences: non_neg_integer(), last_seen: DateTime.t()}
         ]
-  def list_dtu_error_groups(dtu_id) when is_integer(dtu_id) do
+  def list_dtu_error_groups(dtu_id, cutoff \\ nil)
+
+  def list_dtu_error_groups(dtu_id, nil) when is_integer(dtu_id),
+    do: list_dtu_error_groups(dtu_id, dtu_error_recency_cutoff())
+
+  def list_dtu_error_groups(dtu_id, cutoff)
+      when is_integer(dtu_id) and is_struct(cutoff, DateTime) do
     Repo.all(
       from e in DtuError,
-        where: e.dtu_id == ^dtu_id,
+        where: e.dtu_id == ^dtu_id and e.inserted_at >= ^cutoff,
         group_by: e.message,
         # Secondary `desc: max(e.id)` tie-breaks groups whose
         # `MAX(inserted_at)` collides at the same µs — postgres coalesces

@@ -646,6 +646,143 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "DTU error recency filter (48h cutoff)" do
+    # The dashboard's edge badge and the manage-device expansion panel
+    # hide errors older than `dtu_error_recency_seconds/0` (48 h) so a
+    # DTU that's been silent for two days doesn't carry a permanent
+    # red badge. The tests below pin the cutoff behaviour by inserting
+    # rows with explicit `inserted_at` timestamps so we can drive both
+    # sides of the threshold without sleeping for hours.
+
+    alias DtuApp.Devices.DtuError
+
+    # Insert a `dtu_errors` row directly with an explicit `inserted_at`,
+    # bypassing `record_dtu_error/2`'s clock-driven default. Used by
+    # every test in this block to construct rows in the past without
+    # real-time sleeps.
+    defp insert_error_at(dtu_id, message, %DateTime{} = inserted_at) do
+      %DtuError{}
+      |> DtuError.changeset(%{dtu_id: dtu_id, message: message})
+      |> Ecto.Changeset.put_change(:inserted_at, inserted_at)
+      |> DtuApp.Repo.insert!()
+    end
+
+    defp hours_ago(n) do
+      DtuApp.Time.utc_now_usec()
+      |> DateTime.add(-n * 3600, :second)
+      |> DateTime.truncate(:microsecond)
+    end
+
+    test "count_distinct_dtu_errors/1 hides errors older than the cutoff" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Two errors in the recent window (24 h ago) and one well past
+      # the cutoff (72 h ago). Only the recent errors should count.
+      insert_error_at(device.id, "recent error A", hours_ago(24))
+      insert_error_at(device.id, "recent error B", hours_ago(12))
+      insert_error_at(device.id, "stale error", hours_ago(72))
+
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id) == 2
+    end
+
+    test "count_distinct_dtu_errors/1 returns 0 when all errors are stale" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      insert_error_at(device.id, "very stale", hours_ago(72))
+      insert_error_at(device.id, "even staler", hours_ago(120))
+
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id) == 0
+    end
+
+    test "list_dtu_error_groups/1 excludes stale groups" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      insert_error_at(device.id, "fresh message", hours_ago(2))
+      insert_error_at(device.id, "stale message", hours_ago(72))
+
+      groups = DtuApp.Devices.list_dtu_error_groups(device.id)
+
+      assert length(groups) == 1
+      assert hd(groups).message == "fresh message"
+    end
+
+    test "list_dtu_error_groups/1 only counts occurrences within the cutoff" do
+      # A message that fired 50 times in the past 24 h and 100 times
+      # a month ago should report 50 occurrences, not 150 — the
+      # historical events stay in the table (so the per-device cap
+      # does its job), but the user-visible count excludes them.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      for _ <- 1..50 do
+        insert_error_at(device.id, "frequent recent", hours_ago(1))
+      end
+
+      for _ <- 1..100 do
+        insert_error_at(device.id, "frequent recent", hours_ago(720))
+      end
+
+      groups = DtuApp.Devices.list_dtu_error_groups(device.id)
+
+      assert length(groups) == 1
+      assert hd(groups).occurrences == 50
+    end
+
+    test "an error message split across the cutoff collapses to one group" do
+      # A message fired at -23 h and -50 h: the recent event is inside
+      # the cutoff, the older is outside. Both rows live in the table,
+      # so `GROUP BY message` still collapses them — but the
+      # `MAX(inserted_at)` is the recent event, which the user sees.
+      # The older event is hidden from the panel because the cutoff
+      # filter applies BEFORE the GROUP BY (so it never enters the
+      # aggregation). The test pins this so a future refactor that
+      # filters after the GROUP BY can't quietly surface the stale
+      # event's count.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      insert_error_at(device.id, "split message", hours_ago(23))
+      insert_error_at(device.id, "split message", hours_ago(50))
+
+      groups = DtuApp.Devices.list_dtu_error_groups(device.id)
+
+      assert length(groups) == 1
+      [group] = groups
+      assert group.message == "split message"
+      assert group.occurrences == 1
+    end
+
+    test "dtu_error_recency_cutoff/0 returns DB-clock minus the configured seconds" do
+      cutoff = DtuApp.Devices.dtu_error_recency_cutoff()
+      diff = DateTime.diff(DtuApp.Time.utc_now_usec(), cutoff, :second)
+
+      # Exact second precision — the cutoff subtracts an integer
+      # number of seconds from `now()`.
+      assert diff == DtuApp.Devices.dtu_error_recency_seconds()
+    end
+
+    test "explicit cutoff overrides the default (tests can pin to any instant)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      insert_error_at(device.id, "10h ago", hours_ago(10))
+      insert_error_at(device.id, "20h ago", hours_ago(20))
+
+      # Cutoff 15 h before now: only the 10 h error is visible.
+      cutoff_15h = hours_ago(15)
+      assert length(DtuApp.Devices.list_dtu_error_groups(device.id, cutoff_15h)) == 1
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id, cutoff_15h) == 1
+
+      # Cutoff 25 h before now: both errors visible.
+      cutoff_25h = hours_ago(25)
+      assert length(DtuApp.Devices.list_dtu_error_groups(device.id, cutoff_25h)) == 2
+      assert DtuApp.Devices.count_distinct_dtu_errors(device.id, cutoff_25h) == 2
+    end
+  end
+
   describe "get_daily_stats/2 — current_power with multi-MPPT DTUs (regression)" do
     # Customer-reported bug: a DTU with multiple inverters, each exposing
     # one or two MPPTs, showed "Current Generation: 0 W" on the dashboard

@@ -411,9 +411,16 @@ defmodule DtuAppWeb.DashboardLive do
     if dtu_ids == [] do
       %{}
     else
+      # Filter on `inserted_at >= cutoff` so a device whose last error
+      # fired more than `dtu_error_recency_seconds` ago doesn't show
+      # the badge. The cutoff is computed at the same `now()` the row's
+      # `inserted_at` was written against (DB clock), so the comparison
+      # is exact — see `DtuApp.Time.utc_now_usec/0` for why.
+      cutoff = DtuApp.Devices.dtu_error_recency_cutoff()
+
       DtuApp.Repo.all(
         from e in DtuApp.Devices.DtuError,
-          where: e.dtu_id in ^dtu_ids,
+          where: e.dtu_id in ^dtu_ids and e.inserted_at >= ^cutoff,
           group_by: e.dtu_id,
           select: %{dtu_id: e.dtu_id, distinct_count: count(e.message, :distinct)}
       )
