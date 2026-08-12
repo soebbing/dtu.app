@@ -261,10 +261,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
     case parse_opendtu(topic_str, device_info.base_topic, payload) do
       {:reading, attrs} ->
         attrs = Map.put(attrs, :dtu_id, device_info.id)
-        flush_opendtu_reading(client_id, device_info, attrs, state)
+        flush_opendtu_reading(client_id, device_info, attrs, payload, state)
 
       {:buffer, serial, channel, pairs} ->
-        flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, state)
+        flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, payload, state)
 
       {:name, serial, name} ->
         {:ok, count} = DtuApp.Devices.update_inverter_name(device_info.id, serial, name)
@@ -299,16 +299,41 @@ defmodule DtuApp.MqttBroker.Telemetry do
         end
 
       {:ignored, reason} ->
-        # `:ac_per_field_redundant` is the *expected* case for an OpenDTU
-        # that publishes both `realtime/data` and per-field `0/*`
-        # topics — duplicate-path suppression is part of the parser
-        # contract, not a user-visible error. Every other ignored reason
-        # means the DTU is sending malformed payloads we couldn't parse.
-        if reason != :ac_per_field_redundant do
-          record_dtu_error(
-            device_info.id,
-            "OpenDTU uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
-          )
+        # Three categories:
+        #
+        #  * `:ac_per_field_redundant` — *expected* case for an OpenDTU that
+        #    publishes both `realtime/data` and per-field `0/*` topics.
+        #    Duplicate-path suppression is part of the parser contract,
+        #    not a user-visible error.
+        #
+        #  * `:unknown_topic`, `:unknown_opendtu_field` — the firmware is
+        #    publishing a topic (or a per-MPPT metric name) we don't yet
+        #    parse. The DTU is otherwise healthy; we just haven't wired
+        #    up that field. Downgrade to Logger.info with the topic +
+        #    payload so a developer reading logs can identify what the
+        #    device is sending without polluting the user's error bubble.
+        #    No `dtu_errors` row is written.
+        #
+        #  * everything else (`:bad_json`, `:bad_status_value`,
+        #    `:bad_channel`) — the DTU is sending malformed payloads we
+        #    couldn't parse. Surface as a real error with the topic +
+        #    payload (truncated to 200 chars) so the user can see exactly
+        #    what was sent.
+        case reason do
+          :ac_per_field_redundant ->
+            :ok
+
+          topic when topic in [:unknown_topic, :unknown_opendtu_field] ->
+            log_unknown_uplink("OpenDTU", device_info.id, topic_str, payload)
+
+          other ->
+            snippet = format_payload_snippet(payload)
+            base = "OpenDTU uplink rejected (#{inspect(other)} on topic #{inspect(topic_str)})"
+
+            record_dtu_error(
+              device_info.id,
+              if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
+            )
         end
 
         Logger.debug("[Telemetry] OpenDTU parse skipped: #{inspect(reason)}")
@@ -316,7 +341,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
-  defp flush_opendtu_reading(client_id, device_info, attrs, state) do
+  defp flush_opendtu_reading(client_id, device_info, attrs, payload, state) do
     case DtuApp.Devices.create_reading(attrs) do
       {:ok, db_reading} ->
         Logger.debug(
@@ -335,9 +360,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
       {:error, changeset} ->
         Logger.warning("[Telemetry] Failed to save OpenDTU reading: #{inspect(changeset.errors)}")
 
+        snippet = format_payload_snippet(payload)
+
+        base =
+          "Failed to save OpenDTU reading: #{inspect(changeset.errors)}"
+
         record_dtu_error(
           device_info.id,
-          "Failed to save OpenDTU reading: #{inspect(changeset.errors)}"
+          if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
         )
 
         {:noreply, state}
@@ -347,7 +377,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # Per-MPPT DC input topics arrive as independent uplinks, so we buffer
   # multiple fields per (serial, channel) and flush whenever a recognised
   # field lands. Mirrors the AhoyDTU per-channel buffer.
-  defp flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, state) do
+  defp flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, payload, state) do
     buffer_key = {device_info.id, {serial, channel}}
 
     initial = %{
@@ -379,7 +409,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
     if flush? do
       reading_attrs = Map.put(updated_buffer, :dtu_id, device_info.id)
-      flush_opendtu_reading(client_id, device_info, reading_attrs, new_state)
+      flush_opendtu_reading(client_id, device_info, reading_attrs, payload, new_state)
     else
       {:noreply, new_state}
     end
@@ -538,9 +568,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
                 "[Telemetry] Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
               )
 
+              snippet = format_payload_snippet(payload)
+
+              base =
+                "Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
+
               record_dtu_error(
                 device_info.id,
-                "Failed to save AhoyDTU reading: #{inspect(changeset.errors)}"
+                if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
               )
 
               {:noreply, new_state}
@@ -549,18 +584,24 @@ defmodule DtuApp.MqttBroker.Telemetry do
           {:noreply, new_state}
         end
 
-      {:error, reason} ->
-        # AhoyDTU parser uses `{:error, reason}` for everything it
-        # can't recognise (unknown topic, JSON parse failure on a
-        # numeric-layout topic, malformed payload). Surface them all —
-        # `:ignored_topic` is the only reason so far; treat every one
-        # as a real error so the user sees the device as misconfigured
-        # rather than silently dropping values.
-        record_dtu_error(
-          device_info.id,
-          "AhoyDTU uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
-        )
-
+      {:error, _reason} ->
+        # The AhoyDTU parser currently emits only one `{:error, _}` reason:
+        # `:ignored_topic`. Three cases it covers today:
+        #
+        #   * JSON payload on a numeric-layout topic (mode-set mismatch — the
+        #     user toggled AhoyDTU to JSON after subscribing to numeric).
+        #   * non-JSON / unparseable payload on a JSON-layout topic.
+        #   * `{base}/total/...` (AhoyDTU fleet totals, intentionally
+        #     ignored — the dashboard recomputes across the user's devices).
+        #   * Anything else that doesn't match the parser's topic patterns.
+        #
+        # All of these are "topic provided by the client, that currently is
+        # not being read" — not user-visible errors. Downgrade to
+        # `Logger.info` with topic + payload so a developer reading logs can
+        # identify exactly what was sent. No `dtu_errors` row is written —
+        # the user's manage-device error panel isn't polluted with metadata
+        # the user can't act on.
+        log_unknown_uplink("AhoyDTU", device_info.id, topic_str, payload)
         {:noreply, state}
     end
   end
@@ -646,30 +687,42 @@ defmodule DtuApp.MqttBroker.Telemetry do
               "[Telemetry] Failed to save Shelly reading: #{inspect(changeset.errors)}"
             )
 
+            snippet = format_payload_snippet(payload)
+
+            base =
+              "Failed to save Shelly reading: #{inspect(changeset.errors)}"
+
             record_dtu_error(
               device_info.id,
-              "Failed to save Shelly reading: #{inspect(changeset.errors)}"
+              if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
             )
 
             {:noreply, state}
         end
 
       {:ignored, :unknown_topic} ->
-        # Log at warn (not debug) because the most common cause is a Shelly
-        # whose MQTT prefix doesn't match the device's base_topic here
-        # (the Shelly default is `shellyplus3em-XXXXXXXXXXXX`). The user
-        # sees the device as online (last_seen_at gets touched on the
-        # uplink) but no values land on the dashboard — exactly this case.
+        # The most common cause is a Shelly whose MQTT prefix doesn't match
+        # the device's base_topic here (the Shelly default is
+        # `shellyplus3em-XXXXXXXXXXXX`). Unlike the OpenDTU/AhoyDTU
+        # equivalent, we *do* surface this to the user — there's a fix-it
+        # action (set the Shelly's MQTT prefix), and the symptom
+        # ("device shows as online but no values") is hard to diagnose
+        # from logs alone.
         Logger.warning(
           "[Telemetry] Shelly uplink on topic #{inspect(topic_str)} did not match " <>
             "the device's base_topic #{inspect(device_info.base_topic)} — " <>
             "is the device's MQTT prefix set correctly?"
         )
 
-        record_dtu_error(
-          device_info.id,
+        snippet = format_payload_snippet(payload)
+
+        base =
           "Shelly topic mismatch (expected #{inspect(device_info.base_topic)}, " <>
             "got #{inspect(topic_str)}) — check the device's MQTT prefix"
+
+        record_dtu_error(
+          device_info.id,
+          if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
         )
 
         {:noreply, state}
@@ -684,9 +737,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
       {:ignored, reason} ->
         Logger.debug("[Telemetry] Shelly parse skipped: #{inspect(reason)}")
 
+        snippet = format_payload_snippet(payload)
+
+        base =
+          "Shelly uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
+
         record_dtu_error(
           device_info.id,
-          "Shelly uplink rejected (#{inspect(reason)} on topic #{inspect(topic_str)})"
+          if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
         )
 
         {:noreply, state}
@@ -810,6 +868,66 @@ defmodule DtuApp.MqttBroker.Telemetry do
       end)
 
     if sum == 0.0, do: nil, else: sum
+  end
+
+  # --- Shared helpers ----------------------------------------------------------
+
+  # Log an "ignored" uplink (one we didn't recognise) at `Logger.info`. The
+  # DTU is otherwise healthy — the firmware just publishes a topic we
+  # don't yet parse (or formats it in a way we don't handle). Downgrading
+  # these from `record_dtu_error/2` (which used to persist a row + show
+  # a user-visible error bubble) to a plain info log keeps the user's
+  # manage-device error panel focused on real issues they can act on,
+  # while preserving enough breadcrumbs in the log for a developer to
+  # figure out what topic the firmware started publishing.
+  #
+  # The payload is included in the line so a developer grepping the log
+  # for an unfamiliar topic immediately sees the wire-level bytes the
+  # device sent on that topic — no second lookup needed.
+  defp log_unknown_uplink(kind, device_id, topic_str, payload) do
+    snippet = format_payload_snippet(payload)
+
+    Logger.info(fn ->
+      suffix = if snippet == "", do: "", else: " — payload: " <> snippet
+
+      "[Telemetry] " <>
+        kind <>
+        " DTU=" <>
+        to_string(device_id) <> " topic not yet handled: " <> inspect(topic_str) <> suffix
+    end)
+  end
+
+  # Format a (binary) MQTT payload for inclusion in a user-visible error
+  # message or a Logger line. `format_payload_snippet/1` returns the
+  # first 200 chars (with an ellipsis if truncated) — used in long error
+  # messages and logs where a multi-KB Shelly status JSON would drown the
+  # line. The UI panel renders the snippet inside `<pre class="whitespace-pre-wrap">`
+  # so JSON-like payloads keep their shape.
+  #
+  # Returns `""` for nil so the caller can simply concat without a special
+  # case — important for messages that mix topic-only and payload-having
+  # errors.
+  @payload_snippet_limit 200
+
+  defp format_payload_snippet(nil), do: ""
+
+  defp format_payload_snippet(payload) when is_binary(payload) do
+    cond do
+      byte_size(payload) <= @payload_snippet_limit -> sanitize_payload(payload)
+      true -> sanitize_payload(binary_part(payload, 0, @payload_snippet_limit)) <> "…"
+    end
+  end
+
+  defp format_payload_snippet(_), do: ""
+
+  # Replace ASCII control characters (other than newlines) with `?` so a
+  # payload with NULs / tabs doesn't break the Logger formatter or make
+  # the UI panel's text wrap unpredictably. A `null` byte in the input
+  # would otherwise terminate C-string tooling downstream.
+  defp sanitize_payload(payload) when is_binary(payload) do
+    payload
+    |> :unicode.characters_to_binary()
+    |> String.replace(~r/[\x00-\x08\x0B\x0C\x0E-\x1F]/, "?")
   end
 
   # --- Shared parsing helpers -------------------------------------------------

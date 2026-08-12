@@ -325,4 +325,166 @@ defmodule DtuAppWeb.DeviceLive.Index do
       true -> gettext("%{n} days ago", n: div(diff_seconds, 86_400))
     end
   end
+
+  # Parse a stored `dtu_errors.message` into the structured parts the
+  # expansion panel renders. The message formats we know about:
+  #
+  #   * `"<KIND> uplink rejected (<REASON> on topic \"<TOPIC>\") — payload: <PAYLOAD>"`
+  #     — `Telemetry`'s `handle_<kind>dtu` rejected an uplink.
+  #   * `"Failed to save <KIND> reading: <CHANGESET> — payload: <PAYLOAD>"`
+  #     — DB insert failure (Record validation).
+  #   * `"Shelly topic mismatch (expected \"<EXPECTED>\", got \"<GOT>\") — check the device's MQTT prefix — payload: <PAYLOAD>"`
+  #     — Shelly base-topic mismatch.
+  #   * `"<KIND> status patch failed: <REASON>"`
+  #     — OpenDTU / AhoyDTU status patch failure.
+  #   * Anything else (forward-compatible / pre-existing rows)
+  #     — render as a single `pre` block.
+  #
+  # Returns `%{kind: string, reason: string, topic: string | nil,
+  #           payload: string | nil, raw: string}` so the template can
+  # pick parts to render explicitly without re-parsing the message in
+  # HEEx. `raw` is the original message so a future / unknown format
+  # still renders something useful.
+  @spec parse_error_message(String.t()) :: %{
+          kind: String.t(),
+          reason: String.t(),
+          topic: String.t() | nil,
+          payload: String.t() | nil,
+          raw: String.t()
+        }
+  def parse_error_message(message) when is_binary(message) do
+    {payload, head} = split_payload(message)
+
+    base =
+      cond do
+        # "<KIND> uplink rejected (<REASON> on topic \"<TOPIC>\")"
+        result = parse_uplink_rejected(head) ->
+          result
+
+        # "Failed to save <KIND> reading: <CHANGESET>"
+        result = parse_save_reading(head) ->
+          result
+
+        # "Shelly topic mismatch (expected \"<EXPECTED>\", got \"<GOT>\") — <hint>"
+        result = parse_shelly_topic_mismatch(head) ->
+          result
+
+        # "<KIND> status patch failed: <REASON>" (also matches the
+        # broader uplink-rejected regex shape — selected last so the
+        # upper-priority matchers win).
+        result = parse_status_patch_failed(head) ->
+          result
+
+        # Unrecognised format — render the whole message as the
+        # reason. The template's `raw` field carries the literal text
+        # so a future-aware rendering layer could still inspect it.
+        true ->
+          %{kind: "Error", reason: head, topic: nil}
+      end
+
+    base
+    |> Map.put(:payload, payload)
+    |> Map.put(:raw, message)
+  end
+
+  # Split the message at the canonical "— payload:" separator introduced
+  # by `Telemetry.format_payload_snippet/1`. Returns `{payload, head}`
+  # where `head` is the message with the trailing payload section
+  # stripped. Returns `{nil, message}` if the separator isn't present
+  # (legacy row written before this change).
+  defp split_payload(message) do
+    case String.split(message, " — payload: ", parts: 2) do
+      [head, payload] -> {payload, head}
+      [only] -> {nil, only}
+    end
+  end
+
+  # "<KIND> uplink rejected (<REASON> on topic \"<TOPIC>\")"
+  defp parse_uplink_rejected(head) do
+    case Regex.run(
+           ~r/^(\w+) uplink rejected \((.+) on topic (".+")\)\.?$/,
+           head,
+           capture: :all_but_first
+         ) do
+      [kind, reason, topic] ->
+        # Strip the surrounding quotes around the topic — the parser
+        # stored `inspect(topic_str)` which double-quotes the binary.
+        %{kind: kind, reason: reason, topic: strip_inspect_quotes(topic)}
+
+      _ ->
+        nil
+    end
+  end
+
+  # "Failed to save <KIND> reading: <CHANGESET>"
+  defp parse_save_reading(head) do
+    case Regex.run(~r/^Failed to save (\w+) reading: (.+)$/, head, capture: :all_but_first) do
+      [kind, reason] ->
+        %{kind: kind <> " insert", reason: reason, topic: nil}
+
+      _ ->
+        nil
+    end
+  end
+
+  # "<KIND> status patch failed: <REASON>"
+  # The OpenDTU / AhoyDTU `patch_latest_reading_status/3` failures are
+  # recorded without a topic or a payload — the JSON was already parsed
+  # upstream and the failure happened on the DB write path. Render the
+  # kind as `<KIND> status patch failed` so the chip carries the same
+  # vocabulary as the function name.
+  defp parse_status_patch_failed(head) do
+    case Regex.run(
+           ~r/^(\w+) status patch failed: (.+)$/,
+           head,
+           capture: :all_but_first
+         ) do
+      [kind, reason] ->
+        %{kind: kind <> " status patch failed", reason: reason, topic: nil}
+
+      _ ->
+        nil
+    end
+  end
+
+  # `Shelly topic mismatch (expected "<EXPECTED>", got "<GOT>") — <hint>`
+  defp parse_shelly_topic_mismatch(head) do
+    case Regex.run(
+           ~r/^Shelly topic mismatch \(expected (".+"), got (".+")\)(?: — (.+))?\.?$/,
+           head,
+           capture: :all_but_first
+         ) do
+      [expected, got, hint] ->
+        expected_t = strip_inspect_quotes(expected)
+        got_t = strip_inspect_quotes(got)
+
+        reason =
+          "base_topic #{expected_t}, device sent #{got_t}" <>
+            if(hint, do: " — #{hint}", else: "")
+
+        %{kind: "Shelly", reason: reason, topic: nil, payload: nil}
+
+      _ ->
+        nil
+    end
+  end
+
+  # `inspect/1` produces a binary like `"\"foo\""` when applied to a
+  # non-printable binary; otherwise it returns the bare string. Strip
+  # one pair of surrounding double-quotes so the topic displays as
+  # `solar/INV-1/realtime/data` rather than `"solar/INV-1/realtime/data"`.
+  # Returns the input unchanged if it's shorter than 2 chars or doesn't
+  # have matching outer quotes.
+  defp strip_inspect_quotes(quoted) when is_binary(quoted) do
+    cond do
+      byte_size(quoted) < 2 ->
+        quoted
+
+      String.starts_with?(quoted, "\"") and String.ends_with?(quoted, "\"") ->
+        binary_part(quoted, 1, byte_size(quoted) - 2)
+
+      true ->
+        quoted
+    end
+  end
 end
