@@ -17,23 +17,27 @@
     phx-update="stream"
     class="divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden rounded-xl border border-zinc-200 dark:border-zinc-800"
   >
-    <div id="no-devices-empty-state" class="hidden only:block px-4 py-8 text-center text-sm text-zinc-500">
+    <div
+      id="no-devices-empty-state"
+      class="hidden only:block px-4 py-8 text-center text-sm text-zinc-500"
+    >
       {gettext("No DTUs yet. Add one to start receiving telemetry.")}
     </div>
     <div
       :for={{dom_id, device} <- @streams.devices}
       id={dom_id}
-      class={[
-        "flex items-center justify-between gap-4 px-4 py-3 transition",
-        # Warning fill — distinct from a normal row so a misconfigured
-        # DTU is unmissable. The rose-tinted background + thicker left
-        # border mirror the delete-confirmation modal's warning style.
-        if(device.last_error,
-          do:
-            "bg-rose-50/60 dark:bg-rose-950/30 border-l-4 border-rose-500",
-          else: "bg-white dark:bg-zinc-900"
-        )
-      ]}
+      class={
+        [
+          "flex items-center justify-between gap-4 px-4 py-3 transition",
+          # Warning fill — distinct from a normal row so a misconfigured
+          # DTU is unmissable. The rose-tinted background + thicker left
+          # border mirror the delete-confirmation modal's warning style.
+          if(device.last_error,
+            do: "bg-rose-50/60 dark:bg-rose-950/30 border-l-4 border-rose-500",
+            else: "bg-white dark:bg-zinc-900"
+          )
+        ]
+      }
     >
       <% online? = DtuApp.Devices.Dtu.online?(device) %>
       <%!-- Clickable content area: clicking anywhere here toggles
@@ -54,9 +58,7 @@
         id={"device-row-content-#{device.id}"}
         role="button"
         tabindex="0"
-        aria-expanded={
-          if(@expanded_dtu_id == device.id, do: "true", else: "false")
-        }
+        aria-expanded={if(@expanded_dtu_id == device.id, do: "true", else: "false")}
         aria-label={
           if(@expanded_dtu_id == device.id,
             do: gettext("Hide error history for %{name}", name: device.name),
@@ -116,7 +118,7 @@
     </div>
   </div>
 
-    <%!-- Expansion panel: rendered OUTSIDE the `phx-update="stream"`
+  <%!-- Expansion panel: rendered OUTSIDE the `phx-update="stream"`
          container above. Putting it inside the container would cause
          the `:dtu_seen` / `:dtu_error` broadcasts (which call
          `stream/3 reset: true`) to wipe the panel's DOM nodes on every
@@ -240,7 +242,9 @@
     class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5"
   >
     <h2 class="text-lg font-semibold text-zinc-900 dark:text-zinc-100">{@page_title}</h2>
-    <p class="mt-1 text-sm text-zinc-500">{gettext("Configure how this DTU connects over MQTT.")}</p>
+    <p class="mt-1 text-sm text-zinc-500">
+      {gettext("Configure how this DTU connects over MQTT.")}
+    </p>
 
     <.form
       for={@form}
@@ -249,7 +253,12 @@
       phx-change="validate"
       phx-submit="save"
     >
-      <.input field={@form[:name]} type="text" label={gettext("Name")} placeholder="Roof inverter" />
+      <.input
+        field={@form[:name]}
+        type="text"
+        label={gettext("Name")}
+        placeholder="Roof inverter"
+      />
 
       <.input
         field={@form[:kind]}
@@ -265,9 +274,13 @@
 
       <%= if @live_action == :edit do %>
         <div class="space-y-3 bg-zinc-50 dark:bg-zinc-800/40 p-4 rounded-lg border border-zinc-200/60 dark:border-zinc-700/60 text-sm">
-          <p class="font-medium text-zinc-900 dark:text-zinc-100">{gettext("MQTT Connection Details")}</p>
+          <p class="font-medium text-zinc-900 dark:text-zinc-100">
+            {gettext("MQTT Connection Details")}
+          </p>
           <p class="text-xs text-zinc-500">
-            {gettext("Configure your physical DTU hardware using these system-generated settings.")}
+            {gettext(
+              "Configure your physical DTU hardware using these system-generated settings."
+            )}
           </p>
 
           <div class="grid grid-cols-3 gap-2 pt-2">
@@ -315,9 +328,14 @@
             <.icon name="hero-exclamation-triangle" class="h-6 w-6" />
           </div>
           <div>
-            <h3 class="text-lg font-bold text-zinc-900 dark:text-white">{gettext("Delete DTU")}</h3>
+            <h3 class="text-lg font-bold text-zinc-900 dark:text-white">
+              {gettext("Delete DTU")}
+            </h3>
             <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-              {gettext("Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed.", name: @deleting_device.name)}
+              {gettext(
+                "Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed.",
+                name: @deleting_device.name
+              )}
             </p>
           </div>
         </div>
@@ -354,11 +372,17 @@
             <.icon name="hero-check-circle" class="h-6 w-6" />
           </div>
           <div class="flex-1 min-w-0">
-            <h3 class="text-lg font-bold text-zinc-900 dark:text-white" id="created-device-modal-title">
+            <h3
+              class="text-lg font-bold text-zinc-900 dark:text-white"
+              id="created-device-modal-title"
+            >
               {gettext("DTU Configured Successfully!")}
             </h3>
             <p class="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-              {gettext("To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:", kind: @created_device.kind |> Atom.to_string() |> String.capitalize())}
+              {gettext(
+                "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:",
+                kind: @created_device.kind |> Atom.to_string() |> String.capitalize()
+              )}
             </p>
           </div>
         </div>
@@ -504,7 +528,9 @@
               {gettext("Navigate to Settings -> MQTT.")}
             </li>
             <li>
-              {gettext("Fill in the server details, username, password, and base topic as shown above.")}
+              {gettext(
+                "Fill in the server details, username, password, and base topic as shown above."
+              )}
             </li>
             <li>
               {gettext("Ensure MQTT is enabled, save and reboot the DTU.")}
@@ -540,7 +566,9 @@
         </div>
 
         <div class="border-t border-zinc-200 dark:border-zinc-800 pt-3 text-xs text-zinc-500 dark:text-zinc-400 space-y-1">
-          <p class="font-medium text-zinc-700 dark:text-zinc-300">{gettext("What happens next")}</p>
+          <p class="font-medium text-zinc-700 dark:text-zinc-300">
+            {gettext("What happens next")}
+          </p>
           <p>
             {gettext(
               "After your DTU reboots, it will appear as online on your dashboard within about a minute, and live power data starts flowing within seconds."
@@ -565,4 +593,4 @@
       </div>
     </div>
   <% end %>
-</Layouts.app>>
+</Layouts.app>
