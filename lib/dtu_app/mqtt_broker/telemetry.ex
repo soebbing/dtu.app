@@ -946,15 +946,16 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # ch0 carries AC-side values (incl. calculated P_DC); ch1..6 carry DC inputs.
   # Only DC-specific fields are taken from ch1..6 to avoid clobbering ch0's P_DC.
   #
-  # Yield values from AhoyDTU JSON layout are published in **kWh** and
-  # must be normalised to Wh (multiply by 1000) before reaching the DB so
-  # OpenDTU/AhoyDTU readings share a single Wh column. See
-  # `cast_ahoy_yield/1`.
+  # AhoyDTU's `YieldDay` is published in **Wh** on the JSON layout (matching
+  # OpenDTU's convention) — use `cast_float/1` so the value lands in the
+  # DB column unchanged. AhoyDTU's `YieldTotal` is published in **kWh** —
+  # `cast_ahoy_yield/1` multiplies by 1000 so both columns share a single
+  # Wh unit downstream (`get_daily_stats/3`'s `/1000` divisor expects Wh).
   defp ahoy_json_to_pairs(json, "ch0") do
     [
       {:ac_power, cast_float(json["P_AC"])},
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_day, cast_float(json["YieldDay"])},
       {:yield_total, cast_ahoy_yield(json["YieldTotal"])},
       {:frequency, cast_float(json["F_AC"])},
       {:temperature, cast_float(json["Temp"])},
@@ -966,7 +967,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   defp ahoy_json_to_pairs(json, _dc_channel) do
     [
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_day, cast_float(json["YieldDay"])},
       {:yield_total, cast_ahoy_yield(json["YieldTotal"])}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
@@ -999,11 +1000,13 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
-  # AhoyDTU's `YieldDay` and `YieldTotal` arrive in **kWh** on the
-  # numeric-topic layout (e.g. `balcony-inv/ch0/YieldTotal`). The
-  # rest of the pipeline (DB columns, `get_daily_stats/2`'s divisor,
-  # chart) stores Wh, so we normalise here by multiplying by 1000.
-  defp parse_ahoy_value(metric, payload) when metric in [:yield_day, :yield_total] do
+  # AhoyDTU's `YieldTotal` arrives in **kWh** on the numeric-topic
+  # layout (e.g. `balcony-inv/ch0/YieldTotal`). `YieldDay` is in **Wh**.
+  # The rest of the pipeline (`readings.yield_total`, the chart, the
+  # `get_daily_stats/3` `/1000` divisor) stores Wh, so the lifetime
+  # counter needs a ×1000 multiplier at the boundary while the daily
+  # counter falls through `cast_float/1` unchanged.
+  defp parse_ahoy_value(:yield_total, payload) do
     cast_ahoy_yield(payload)
   end
 
@@ -1024,19 +1027,20 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   defp cast_float(_), do: nil
 
-  # AhoyDTU publishes cumulative energy values (`YieldDay`, `YieldTotal`)
-  # in **kWh** on both the numeric-topic and JSON-topic layouts, while
-  # OpenDTU publishes the same fields in **Wh**. Everything downstream
-  # (`readings.yield_day` / `readings.yield_total`, `Devices.get_daily_stats/3`'s
-  # `/ 1000` Wh → kWh divisor) assumes **Wh** semantics, so we normalise
-  # AhoyDTU kWh to Wh at the parser boundary.
+  # AhoyDTU publishes its **lifetime cumulative** energy value
+  # (`YieldTotal`) in **kWh** on both the numeric-topic and JSON-topic
+  # layouts. `YieldDay` is published in **Wh** (matching OpenDTU's
+  # convention). Everything downstream (`readings.yield_total`,
+  # `Devices.get_daily_stats/3`'s `/ 1000` Wh → kWh divisor) assumes
+  # **Wh** semantics, so we normalise AhoyDTU's `YieldTotal` from
+  # kWh to Wh at the parser boundary by multiplying by 1000.
+  # `YieldDay` is left untouched (cast_float/1 — Wh → Wh, no-op).
   #
-  # Multiplying by 1000 at the parser keeps the rest of the pipeline
-  # oblivious to the firmware difference: a user's existing dashboard
-  # renders the same number whether the value was originally Wh or kWh.
-  # Storing the normalised value also means a future per-DTU settings
-  # toggle (e.g. "AhoyDTU uses Wh instead of kWh") only changes this
-  # one call site, not every reader.
+  # Multiplying at the parser keeps the rest of the pipeline
+  # oblivious to the firmware difference. Storing the normalised
+  # value also means a future per-DTU settings toggle (e.g. "AhoyDTU
+  # uses Wh instead of kWh for the lifetime counter") only changes
+  # this one call site, not every reader.
   #
   # `nil` falls through so the buffer/dashboard's existing `nil` handling
   # (treat as 0, omit from the row) keeps working for HALF-published
