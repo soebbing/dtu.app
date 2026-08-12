@@ -945,12 +945,17 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # Map an AhoyDTU per-channel JSON object into normalized {metric, value} pairs.
   # ch0 carries AC-side values (incl. calculated P_DC); ch1..6 carry DC inputs.
   # Only DC-specific fields are taken from ch1..6 to avoid clobbering ch0's P_DC.
+  #
+  # Yield values from AhoyDTU JSON layout are published in **kWh** and
+  # must be normalised to Wh (multiply by 1000) before reaching the DB so
+  # OpenDTU/AhoyDTU readings share a single Wh column. See
+  # `cast_ahoy_yield/1`.
   defp ahoy_json_to_pairs(json, "ch0") do
     [
       {:ac_power, cast_float(json["P_AC"])},
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_float(json["YieldDay"])},
-      {:yield_total, cast_float(json["YieldTotal"])},
+      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_total, cast_ahoy_yield(json["YieldTotal"])},
       {:frequency, cast_float(json["F_AC"])},
       {:temperature, cast_float(json["Temp"])},
       {:producing, parse_ahoy_value(:producing, json["producing"])}
@@ -961,8 +966,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
   defp ahoy_json_to_pairs(json, _dc_channel) do
     [
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_float(json["YieldDay"])},
-      {:yield_total, cast_float(json["YieldTotal"])}
+      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_total, cast_ahoy_yield(json["YieldTotal"])}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
   end
@@ -994,6 +999,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
+  # AhoyDTU's `YieldDay` and `YieldTotal` arrive in **kWh** on the
+  # numeric-topic layout (e.g. `balcony-inv/ch0/YieldTotal`). The
+  # rest of the pipeline (DB columns, `get_daily_stats/2`'s divisor,
+  # chart) stores Wh, so we normalise here by multiplying by 1000.
+  defp parse_ahoy_value(metric, payload) when metric in [:yield_day, :yield_total] do
+    cast_ahoy_yield(payload)
+  end
+
   defp parse_ahoy_value(_metric, payload) do
     cast_float(payload)
   end
@@ -1010,6 +1023,36 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   defp cast_float(_), do: nil
+
+  # AhoyDTU publishes cumulative energy values (`YieldDay`, `YieldTotal`)
+  # in **kWh** on both the numeric-topic and JSON-topic layouts, while
+  # OpenDTU publishes the same fields in **Wh**. Everything downstream
+  # (`readings.yield_day` / `readings.yield_total`, `Devices.get_daily_stats/3`'s
+  # `/ 1000` Wh → kWh divisor) assumes **Wh** semantics, so we normalise
+  # AhoyDTU kWh to Wh at the parser boundary.
+  #
+  # Multiplying by 1000 at the parser keeps the rest of the pipeline
+  # oblivious to the firmware difference: a user's existing dashboard
+  # renders the same number whether the value was originally Wh or kWh.
+  # Storing the normalised value also means a future per-DTU settings
+  # toggle (e.g. "AhoyDTU uses Wh instead of kWh") only changes this
+  # one call site, not every reader.
+  #
+  # `nil` falls through so the buffer/dashboard's existing `nil` handling
+  # (treat as 0, omit from the row) keeps working for HALF-published
+  # payloads where some fields are present and others aren't.
+  defp cast_ahoy_yield(nil), do: nil
+  defp cast_ahoy_yield(value) when is_float(value), do: value * 1000.0
+  defp cast_ahoy_yield(value) when is_integer(value), do: value * 1000.0
+
+  defp cast_ahoy_yield(value) when is_binary(value) do
+    case cast_float(value) do
+      nil -> nil
+      v when is_number(v) -> v * 1000.0
+    end
+  end
+
+  defp cast_ahoy_yield(_), do: nil
 
   defp truthy?(1), do: true
   defp truthy?(0), do: false
