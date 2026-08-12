@@ -934,12 +934,29 @@ defmodule DtuApp.Devices do
   computed against *today* (the most recent readings) — they only
   make sense for the live day — but `today_yield` reflects the
   requested date so we can compare day-over-day.
+
+  `total_yield` is the lifetime cumulative energy (in kWh) across all
+  of the user's inverters and MPPTs. It is computed from the firmware's
+  `YieldTotal` MQTT field — AhoyDTU's `YieldTotal` JSON / numeric topic
+  and OpenDTU's `AC.YieldTotal.v` JSON / per-MPPT `yieldtotal` field
+  both land in `readings.yield_total`. Because the lifetime counter is
+  monotonic and always reported in Wh, we take `MAX(yield_total)` per
+  `(dtu_id, inverter_serial, mppt_index)` across **all** readings
+  (no time-window filter — the lifetime value is independent of any
+  particular day) and sum the per-series maxes, the same shape
+  `today_yield` uses.
   """
   def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
-      %{current_power: 0.0, today_yield: 0.0, peak_power: 0.0, per_series: []}
+      %{
+        current_power: 0.0,
+        today_yield: 0.0,
+        total_yield: 0.0,
+        peak_power: 0.0,
+        per_series: []
+      }
     else
       # "Recent" reads against `readings.inserted_at`, which is written
       # via `DtuApp.Time.utc_now_usec/0`. Use the same DB clock for the
@@ -1017,6 +1034,41 @@ defmodule DtuApp.Devices do
         end)
         |> Enum.sum()
 
+      # Lifetime total yield: MAX(yield_total) per (dtu_id, inverter_serial,
+      # mppt_index) across **all** readings — no time-window filter, since
+      # the lifetime counter is monotonic and never resets. Summed across
+      # series to give the user's whole-system lifetime Wh. AhoyDTU
+      # publishes `YieldTotal` on ch0 (`YieldTotal` JSON key / numeric
+      # topic) and OpenDTU publishes `AC.YieldTotal.v` on the consolidated
+      # payload plus a per-MPPT `yieldtotal` scalar; both land in
+      # `readings.yield_total` in Wh.
+      total_yield_per_series =
+        Repo.all(
+          from r in Reading,
+            where: r.dtu_id in ^dtu_ids,
+            group_by: [r.dtu_id, r.inverter_serial, r.mppt_index],
+            select: %{
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              mppt_index: r.mppt_index,
+              max_yield_total: max(r.yield_total)
+            }
+        )
+
+      total_yield_wh =
+        total_yield_per_series
+        |> Enum.map(fn row ->
+          # nil can leak in for a series where every reading has
+          # yield_total: nil (e.g. a brand-new inverter that hasn't yet
+          # reported its lifetime counter). Treat as 0 so the half-wired
+          # inverter doesn't poison the household total.
+          case row.max_yield_total do
+            nil -> 0.0
+            v -> v
+          end
+        end)
+        |> Enum.sum()
+
       # Peak power today comes from the 5-minute continuous aggregate. The
       # bucket stays closed until its window fills, so a fast-rising
       # morning ramp can leave `bucket_max` several minutes behind the
@@ -1067,6 +1119,10 @@ defmodule DtuApp.Devices do
         # Round to one decimal place so the "Today's Total Yield" stat reads
         # as e.g. `12.3 kWh` rather than `12.345 kWh`.
         today_yield: Float.round(today_yield / 1000, 1),
+        # Lifetime cumulative yield from the firmware's `YieldTotal` field
+        # (Wh). Wh → kWh so the dashboard's kWh label matches. One decimal
+        # place for consistency with `today_yield`.
+        total_yield: Float.round(total_yield_wh / 1000, 1),
         peak_power: Float.round(peak_power * 1.0, 1),
 
         # Per (inverter, MPPT) breakdown so the dashboard can show each

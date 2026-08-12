@@ -174,6 +174,154 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "get_daily_stats/2 — total_yield" do
+    # `total_yield` is the lifetime cumulative kWh from the firmware's
+    # `YieldTotal` MQTT field (AhoyDTU's `YieldTotal` JSON / numeric topic
+    # and OpenDTU's `AC.YieldTotal.v` JSON / per-MPPT `yieldtotal` scalar).
+    # Both land in `readings.yield_total`. The helper takes
+    # `MAX(yield_total)` per `(dtu_id, inverter_serial, mppt_index)`
+    # across **all** readings (no time-window filter — the lifetime
+    # counter is monotonic and never resets) and sums the per-series
+    # maxes, then converts Wh → kWh. Round to 1 decimal place to match
+    # the dashboard's kWh rendering.
+
+    test "returns 0 when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      assert Devices.get_daily_stats(user).total_yield == 0.0
+    end
+
+    test "sums MAX(yield_total) per inverter across all readings" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Two inverters; MAX(yield_total) per inverter + sum = 50_000 + 35_000
+      # = 85_000 Wh = 85.0 kWh. The older INV-A reading must NOT win (lifetime
+      # counter is monotonic; only the largest value per series counts).
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        yield_total: 10_000.0,
+        inserted_at: DateTime.add(now, -120, :second)
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        yield_total: 50_000.0,
+        inserted_at: now
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-B",
+        yield_total: 35_000.0,
+        inserted_at: DateTime.add(now, -60, :second)
+      })
+
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 85.0, 0.001
+    end
+
+    test "ignores today's UTC window — uses ALL readings, not just today's" do
+      # The lifetime counter doesn't reset at local midnight, so the
+      # total_yield computation must include yesterday's readings too.
+      # Yesterday's row has the highest yield_total for the inverter
+      # (50_000 Wh); today's row is stale at 5_000 Wh. Without the
+      # "no time-window filter" design, the dashboard would render a
+      # lifetime total of just 5 kWh.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      today = DateTime.utc_now()
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        yield_total: 50_000.0,
+        inserted_at: DateTime.add(today, -1, :day)
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        yield_total: 5_000.0,
+        inserted_at: today
+      })
+
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 50.0, 0.001
+    end
+
+    test "uses MAX(yield_total) per (inverter, MPPT) — per-MPPT rows are summed" do
+      # Multi-MPPT inverters publish yield_total on the AC aggregate row
+      # (mppt_index = 0) and on each per-MPPT row (mppt_index >= 1).
+      # The AC aggregate is the inverter's true lifetime kWh; per-MPPT
+      # rows carry per-string lifetime kWh. Summing the per-series maxes
+      # double-counts the inverter, which matches what the firmware
+      # publishes per MPPT (each MPPT is a separate DC→AC stage with its
+      # own lifetime counter — a 2-MPPT Hoymiles has two physically
+      # independent MPPT channels, both reporting lifetime kWh).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        mppt_index: 0,
+        yield_total: 100_000.0,
+        inserted_at: now
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        mppt_index: 1,
+        yield_total: 60_000.0,
+        inserted_at: now
+      })
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        mppt_index: 2,
+        yield_total: 40_000.0,
+        inserted_at: now
+      })
+
+      # 100 + 60 + 40 = 200 kWh
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 200.0, 0.001
+    end
+
+    test "treats nil yield_total as 0 so a half-wired inverter doesn't poison the total" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-A",
+        yield_total: 25_000.0,
+        inserted_at: now
+      })
+
+      # A second inverter with nil yield_total — simulates a brand-new
+      # inverter that hasn't yet reported its lifetime counter. Must
+      # not poison the household total.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-B",
+        yield_total: nil,
+        inserted_at: now
+      })
+
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 25.0, 0.001
+    end
+
+    test "scopes by dtu_id when one is passed" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      dtu1 = DevicesFixtures.device_fixture(user)
+      dtu2 = DevicesFixtures.device_fixture(user)
+      now = DateTime.utc_now()
+
+      # Wh values; converted to kWh by get_daily_stats/2.
+      DevicesFixtures.reading_fixture(dtu1, %{yield_total: 20_000.0, inserted_at: now})
+      DevicesFixtures.reading_fixture(dtu2, %{yield_total: 70_000.0, inserted_at: now})
+
+      assert_in_delta Devices.get_daily_stats(user, dtu1.id).total_yield, 20.0, 0.001
+      assert_in_delta Devices.get_daily_stats(user, dtu2.id).total_yield, 70.0, 0.001
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 90.0, 0.001
+    end
+  end
+
   describe "get_daily_stats/2 — peak_power" do
     test "tracks the live current_power even before the 5-min bucket fills" do
       # The 5-min continuous aggregate closes its window 5 minutes after

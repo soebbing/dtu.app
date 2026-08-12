@@ -1911,6 +1911,46 @@ defmodule DtuAppWeb.DashboardLive do
                 </div>
               <% end %>
 
+              <%!-- Total Yield lifetime card (live view only): the cumulative
+                 kWh the inverters have produced since commissioning, sourced
+                 from the firmware's `YieldTotal` MQTT field (AhoyDTU's
+                 `YieldTotal` JSON / numeric topic and OpenDTU's
+                 `AC.YieldTotal.v` JSON / per-MPPT `yieldtotal` scalar — both
+                 land in `readings.yield_total`). Hidden on the historical day
+                 / week / month / year views, where the headline slot already
+                 carries the period total (`compute_*_period_stats`) and the
+                 lifetime counter wouldn't change across those windows. The
+                 amber `hero-bolt` badge echoes "Today's Total Yield" so the
+                 production row reads as a single amber cluster on the live
+                 view; the distinct label and `id` keep it addressable for
+                 the dashboard's tests. --%>
+              <%= if @live do %>
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Total Yield")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-total-yield-lifetime"
+                            >
+                              {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+
               <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
               <%= cond do %>
                 <% @live -> %>
