@@ -159,16 +159,67 @@
         </div>
 
         <%= if @expanded_error_groups != [] do %>
-          <ul class="space-y-2">
+          <ul class="space-y-3">
             <%= for group <- @expanded_error_groups do %>
+              <% parsed = DtuAppWeb.DeviceLive.Index.parse_error_message(group.message) %>
               <li class="flex items-start gap-2 text-sm text-rose-800 dark:text-rose-200">
                 <.icon
                   name="hero-exclamation-triangle"
                   class="size-4 shrink-0 mt-0.5 text-rose-500"
                 />
-                <div class="min-w-0 flex-1">
-                  <p class="break-words">{group.message}</p>
-                  <p class="mt-0.5 text-xs text-rose-600/80 dark:text-rose-400/80">
+                <div class="min-w-0 flex-1 space-y-1.5">
+                  <%!-- Top row: structured summary — kind chip + reason
+                       text, with the topic as a styled code chip below if
+                       the parser recognised the topic-bearing format. The
+                       mono / chip treatment gives the message type
+                       immediate hierarchy so a quick scan tells the user
+                       what the issue is ("AhoyDTU" / "Shelly" / etc.). --%>
+                  <div class="flex flex-wrap items-baseline gap-2">
+                    <span class="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-xs font-semibold bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-200">
+                      {parsed.kind}
+                    </span>
+                    <span class="break-words text-rose-800 dark:text-rose-100">
+                      {parsed.reason}
+                    </span>
+                  </div>
+
+                  <%= if parsed.topic do %>
+                    <div class="flex items-center gap-1.5 text-xs">
+                      <span class="text-rose-600/80 dark:text-rose-400/80 font-medium">
+                        {gettext("topic:")}
+                      </span>
+                      <code
+                        class="font-mono text-rose-900 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded break-all border border-rose-200/60 dark:border-rose-800/40"
+                        data-test="error-topic"
+                      >
+                        {parsed.topic}
+                      </code>
+                    </div>
+                  <% end %>
+
+                  <%= if parsed.payload do %>
+                    <%!-- Payload: rendered as a `<pre>` so multi-line /
+                         structured payloads (Shelly JSON, OpenDTU realtime
+                         JSON, etc.) keep their indentation and a quick
+                         scan surfaces syntax errors. `whitespace-pre-wrap`
+                         + `break-all` keeps both short and long payloads
+                         inside the panel width. The full payload is the
+                         message string itself (truncated upstream to
+                         200 chars by `format_payload_snippet/1`); for
+                         longer payloads the user copies via Cmd+L → copy
+                         in the raw `dtu_errors` row. --%>
+                    <details class="text-xs">
+                      <summary class="cursor-pointer text-rose-600/80 dark:text-rose-400/80 font-medium select-none">
+                        {gettext("payload (%{n} chars)", n: byte_size(parsed.payload))}
+                      </summary>
+                      <pre
+                        class="mt-1 font-mono text-rose-900 dark:text-rose-100 bg-rose-50 dark:bg-rose-950/40 px-2 py-1.5 rounded whitespace-pre-wrap break-all max-h-40 overflow-auto border border-rose-200/60 dark:border-rose-800/40"
+                        data-test="error-payload"
+                      ><code>{parsed.payload}</code></pre>
+                    </details>
+                  <% end %>
+
+                  <p class="mt-1 text-xs text-rose-600/80 dark:text-rose-400/80">
                     {gettext(
                       "%{count} occurrences · last seen %{when}",
                       count: group.occurrences,

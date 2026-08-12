@@ -1003,10 +1003,13 @@ defmodule DtuApp.MqttBrokerTest do
       assert device_id == dtu.id
     end
 
-    test "OpenDTU bad JSON uplink records an error" do
+    test "OpenDTU bad JSON uplink records an error including the payload" do
       # Real-world failure mode: an OpenDTU firmware in a transitional
       # state sends garbage JSON on `realtime/data`. The parser used to
-      # silently drop it; now the bubble should appear on the dashboard.
+      # silently drop it; now the bubble appears on the dashboard, and
+      # the message includes the payload so the user can see exactly what
+      # the device sent (useful for catching "JSON with trailing junk"
+      # firmware bugs that the parser can't recover from).
       user = user_fixture()
 
       dtu =
@@ -1030,9 +1033,25 @@ defmodule DtuApp.MqttBrokerTest do
       reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
       assert reloaded.last_error =~ "bad_json"
       assert reloaded.last_error =~ "solar/SN/realtime/data"
+      # Payload included in the message — `format_payload_snippet/1`
+      # truncated to 200 chars; here the payload is short so it
+      # round-trips verbatim.
+      assert reloaded.last_error =~ "payload:"
+      assert reloaded.last_error =~ "not-json"
     end
 
-    test "OpenDTU unknown topic records an error" do
+    test "OpenDTU unknown topic is downgraded to a Logger.info line — no dtu_error row written" do
+      # An OpenDTU publishing on a topic we don't yet parse (e.g. a
+      # future firmware version adds a field on a path we haven't wired
+      # up yet) used to surface a user-visible error bubble. Now it's
+      # downgraded to a plain info log with the topic + payload — the
+      # DTU is otherwise healthy; we just don't know what to do with
+      # that topic yet. The user's manage-device error panel is kept
+      # focused on real issues they can act on.
+      #
+      # Captures logs at info level so the regression guard fails if a
+      # future refactor moves this back to the warn path or starts
+      # writing a `dtu_errors` row.
       user = user_fixture()
 
       dtu =
@@ -1051,10 +1070,31 @@ defmodule DtuApp.MqttBrokerTest do
       }
 
       msg = {:uplink, "client_unk", device_info, "garbage/foo/bar", "data"}
-      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
 
+      # The default test log level (`config :logger, level: :warning`)
+      # drops `Logger.info` calls before they reach `ExUnit.CaptureLog`,
+      # so the capture has to raise the threshold to :info for the
+      # duration of the call. Bump it back via `on_exit` so we don't
+      # leak the level change across tests.
+      previous_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: previous_level) end)
+
+      log = ExUnit.CaptureLog.capture_log(fn -> Telemetry.handle_info(msg, %{buffers: %{}}) end)
+
+      # Log: includes the firmware kind, the device id, the topic, the
+      # payload — every breadcrumb a developer needs to recognise what
+      # the firmware started publishing.
+      assert log =~ "[info]"
+      assert log =~ "OpenDTU"
+      assert log =~ to_string(dtu.id)
+      assert log =~ "topic not yet handled"
+      assert log =~ "garbage/foo/bar"
+      assert log =~ "data"
+
+      # No row written — the user's error list is left clean.
       reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
-      assert reloaded.last_error =~ "unknown_topic"
+      assert reloaded.last_error == nil
     end
 
     test "OpenDTU :ac_per_field_redundant does NOT record an error" do
@@ -1087,10 +1127,13 @@ defmodule DtuApp.MqttBrokerTest do
       assert reloaded.last_error == nil
     end
 
-    test "Shelly non-matching base_topic records an error" do
+    test "Shelly non-matching base_topic records an error including the payload" do
       # Companion to the existing "logs a warning and writes no row"
       # test: the same condition must additionally surface a user-
-      # visible error message on `dtus.last_error`.
+      # visible error message on `dtus.last_error`. The payload is now
+      # included so a user can see exactly what the device sent on the
+      # non-matching topic (often empty for a status uplink, but useful
+      # for diagnostic capture-log captures).
       user = user_fixture()
 
       dtu =
@@ -1120,6 +1163,10 @@ defmodule DtuApp.MqttBrokerTest do
       reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
       assert reloaded.last_error =~ "Shelly topic mismatch"
       assert reloaded.last_error =~ "shellies/shellyplus3em"
+      # Payload is included in the message so the user can see exactly
+      # what was sent on the rejected topic.
+      assert reloaded.last_error =~ "payload:"
+      assert reloaded.last_error =~ "{}"
     end
 
     test "Shelly /online LWT does NOT record an error" do
@@ -1153,7 +1200,15 @@ defmodule DtuApp.MqttBrokerTest do
       assert reloaded.last_error == nil
     end
 
-    test "AhoyDTU unknown topic records an error" do
+    test "AhoyDTU unknown topic is downgraded to a Logger.info line — no dtu_error row written" do
+      # The AhoyDTU parser returns `{:error, :ignored_topic}` for three
+      # shapes: `total/...` (AhoyDTU fleet totals, intentionally
+      # dropped), JSON payload on a numeric-layout topic (mode-set
+      # mismatch), and any topic that doesn't match the parser's
+      # patterns. All three are "topic provided by the client that we
+      # don't currently parse" — downgrade to a plain info log with
+      # the topic + payload so a developer reading logs can identify
+      # exactly what was sent. No `dtu_errors` row is written.
       user = user_fixture()
 
       dtu =
@@ -1171,16 +1226,30 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      # `{base}/total/...` is the AhoyDTU fleet-totals path; the parser
-      # intentionally drops it because the dashboard recomputes across
-      # the user's devices. It's still a real "rejected" outcome and
-      # the user-visible error surfaces this — useful when a user has
-      # set a custom prefix expecting it to be picked up.
       msg = {:uplink, "client_ah", device_info, "inverter/total/P_AC", "150.0"}
-      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
 
+      # The default test log level (`config :logger, level: :warning`)
+      # drops `Logger.info` calls before they reach `ExUnit.CaptureLog`,
+      # so the capture has to raise the threshold to :info for the
+      # duration of the call (then restore via `on_exit` so we don't
+      # leak the level change to the rest of the suite).
+      previous_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: previous_level) end)
+
+      log = ExUnit.CaptureLog.capture_log(fn -> Telemetry.handle_info(msg, %{buffers: %{}}) end)
+
+      # Log line: firmware kind, device id, topic, payload.
+      assert log =~ "[info]"
+      assert log =~ "AhoyDTU"
+      assert log =~ to_string(dtu.id)
+      assert log =~ "topic not yet handled"
+      assert log =~ "inverter/total/P_AC"
+      assert log =~ "150.0"
+
+      # No row written — the user's manage-device error panel stays clean.
       reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
-      assert reloaded.last_error =~ "AhoyDTU uplink rejected"
+      assert reloaded.last_error == nil
     end
 
     test "record_dtu_error/2 with non-existent device does not crash" do

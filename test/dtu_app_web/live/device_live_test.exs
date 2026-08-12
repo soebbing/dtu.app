@@ -5,6 +5,7 @@ defmodule DtuAppWeb.DeviceLiveTest do
   import DtuApp.DevicesFixtures
 
   alias DtuApp.Repo
+  alias DtuAppWeb.DeviceLive.Index
 
   setup :register_and_log_in_user
 
@@ -734,6 +735,111 @@ defmodule DtuAppWeb.DeviceLiveTest do
 
       # And the panel must NOT have opened.
       refute render(view) =~ "device-error-panel-#{dtu.id}"
+    end
+  end
+
+  describe "parse_error_message/1 — expansion-panel message parser" do
+    # The expansion panel renders each error group's message through
+    # `Index.parse_error_message/1` to split it into a kind chip, a
+    # reason string, an optional topic, and an optional payload
+    # section. The parser has to round-trip the message formats
+    # `Telemetry.handle_<kind>dtu` writes — tests below pin each.
+    alias DtuAppWeb.DeviceLive.Index
+
+    test "parses OpenDTU/AhoyDTU/Shelly uplink-rejected messages into topic + reason + payload" do
+      assert Index.parse_error_message(
+               ~s|OpenDTU uplink rejected (:bad_json on topic "solar/SN/realtime/data") — payload: not-json|
+             ) == %{
+               kind: "OpenDTU",
+               reason: ":bad_json",
+               topic: "solar/SN/realtime/data",
+               payload: "not-json",
+               raw:
+                 ~s|OpenDTU uplink rejected (:bad_json on topic "solar/SN/realtime/data") — payload: not-json|
+             }
+
+      assert Index.parse_error_message(
+               ~s|AhoyDTU uplink rejected (:ignored_topic on topic "inverter/total/P_AC") — payload: 150.0|
+             ) == %{
+               kind: "AhoyDTU",
+               reason: ":ignored_topic",
+               topic: "inverter/total/P_AC",
+               payload: "150.0",
+               raw:
+                 ~s|AhoyDTU uplink rejected (:ignored_topic on topic "inverter/total/P_AC") — payload: 150.0|
+             }
+    end
+
+    test "parses the Shelly topic-mismatch message into a base_topic-vs-device rendering" do
+      assert Index.parse_error_message(
+               ~s|Shelly topic mismatch (expected "shellies/shellyplus3em", got "shellyplus3em-aabbcc/status/em:0") — check the device's MQTT prefix — payload: {}|
+             ) == %{
+               kind: "Shelly",
+               reason:
+                 ~s|base_topic shellies/shellyplus3em, device sent shellyplus3em-aabbcc/status/em:0 — check the device's MQTT prefix|,
+               topic: nil,
+               payload: "{}",
+               raw:
+                 ~s|Shelly topic mismatch (expected "shellies/shellyplus3em", got "shellyplus3em-aabbcc/status/em:0") — check the device's MQTT prefix — payload: {}|
+             }
+    end
+
+    test "parses Failed-to-save messages without a topic chip" do
+      assert Index.parse_error_message(
+               ~s|Failed to save OpenDTU reading: [%{...}] — payload: not-json|
+             ) == %{
+               kind: "OpenDTU insert",
+               reason: "[%{...}]",
+               topic: nil,
+               payload: "not-json",
+               raw: ~s|Failed to save OpenDTU reading: [%{...}] — payload: not-json|
+             }
+    end
+
+    test "parses status-patch messages without a payload" do
+      # The status-patch failure doesn't carry the payload — it fails
+      # *after* the parser handed the JSON off to the DB-writing path,
+      # so the payload was consumed upstream. `payload` should be nil
+      # and the template must not render a payload `<details>` for
+      # such a row.
+      assert Index.parse_error_message("OpenDTU status patch failed: :no_readings") == %{
+               kind: "OpenDTU status patch failed",
+               reason: ":no_readings",
+               topic: nil,
+               payload: nil,
+               raw: "OpenDTU status patch failed: :no_readings"
+             }
+    end
+
+    test "falls back to a single raw block for an unrecognised format" do
+      # Forward compatibility: a future message format we haven't
+      # taught the parser yet should still render *something*. The
+      # template sees `kind: "Error"`, no topic, no payload, and the
+      # raw text as `reason`.
+      parsed = Index.parse_error_message("some unknown future format")
+
+      assert parsed.kind == "Error"
+      assert parsed.topic == nil
+      assert parsed.payload == nil
+      assert parsed.reason == "some unknown future format"
+      assert parsed.raw == "some unknown future format"
+    end
+
+    test "handles legacy rows that predate the payload-in-message change" do
+      # `format_payload_snippet/1` was introduced together with this
+      # parser, so rows written before that release have the old
+      # `OpenDTU uplink rejected ...)` form without the trailing
+      # ` — payload: ...` section. The parser must still produce a
+      # valid map with `payload: nil` for those rows.
+      parsed =
+        Index.parse_error_message(
+          ~s|OpenDTU uplink rejected (:unknown_topic on topic "solar/garbage/foo")|
+        )
+
+      assert parsed.kind == "OpenDTU"
+      assert parsed.reason == ":unknown_topic"
+      assert parsed.topic == "solar/garbage/foo"
+      assert parsed.payload == nil
     end
   end
 end
