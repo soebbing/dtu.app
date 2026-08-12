@@ -137,13 +137,19 @@ defmodule DtuApp.MqttBrokerTest do
 
       # Send yield_day — flushes again, carrying the previously-buffered
       # temperature through. This used to be silently dropped until P_AC.
+      #
+      # AhoyDTU publishes `YieldDay` in **kWh** on the numeric-topic
+      # layout. The parser multiplies by 1000 at the boundary so the rest
+      # of the pipeline (DB column, `get_daily_stats/2`'s `/1000` divisor)
+      # sees a Wh value. The expected `yield_day` below is therefore the
+      # kWh value × 1000 = 1.23 × 1000 = 1230.0 Wh.
       msg2 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/YieldDay", "1.23"}
       {:noreply, state} = Telemetry.handle_info(msg2, state)
 
       readings = Devices.list_recent_readings(user, dtu.id)
       assert [latest | _] = readings
       assert latest.temperature == 34.5
-      assert latest.yield_day == 1.23
+      assert latest.yield_day == 1230.0
       assert latest.ac_power == nil
 
       # Send active power — flushes once more with the full picture.
@@ -154,7 +160,7 @@ defmodule DtuApp.MqttBrokerTest do
       assert [latest | _] = readings
       assert latest.ac_power == 150.0
       assert latest.temperature == 34.5
-      assert latest.yield_day == 1.23
+      assert latest.yield_day == 1230.0
     end
 
     test "AhoyDTU yield-only uplink is persisted even when AC power is absent",
@@ -180,6 +186,9 @@ defmodule DtuApp.MqttBrokerTest do
       # because the firmware only publishes yield/temperature while the
       # inverter is producing is no longer true — each meaningful uplink
       # writes through, even with no P_AC in this batch.
+      #
+      # AhoyDTU numeric-topic YieldDay is published in kWh; the parser
+      # normalises to Wh (4.32 × 1000 = 4320.0).
       msg =
         {:uplink, "client_3", device_info, "inverter/balcony-inv/ch0/YieldDay", "4.32"}
 
@@ -187,7 +196,7 @@ defmodule DtuApp.MqttBrokerTest do
 
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.inverter_serial == "balcony-inv"
-      assert reading.yield_day == 4.32
+      assert reading.yield_day == 4320.0
       assert reading.ac_power == nil
     end
 
@@ -211,6 +220,12 @@ defmodule DtuApp.MqttBrokerTest do
 
       # AhoyDTU "JSON" setting: one JSON object per channel. ch0 carries the
       # AC-side values plus the calculated DC power total.
+      #
+      # AhoyDTU publishes `YieldDay`/`YieldTotal` in **kWh** on the
+      # JSON layout too. The parser multiplies by 1000 to normalise to Wh
+      # before persisting: 2.5 kWh × 1000 = 2500.0 Wh, 980.0 kWh × 1000
+      # = 980 000 Wh. Pin both here so a future refactor that drops the
+      # conversion would re-introduce the 1000× off-by-1000 bug.
       payload =
         ~s({"U_AC": 233.3, "P_AC": 320.0, "F_AC": 50.01, "Temp": 41.2,
             "YieldDay": 2.5, "YieldTotal": 980.0, "P_DC": 330.0})
@@ -224,8 +239,8 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.dc_power == 330.0
       assert reading.frequency == 50.01
       assert reading.temperature == 41.2
-      assert reading.yield_day == 2.5
-      assert reading.yield_total == 980.0
+      assert reading.yield_day == 2500.0
+      assert reading.yield_total == 980_000.0
     end
 
     test "OpenDTU realtime/data is persisted as the AC aggregate row (mppt_index=0)",
@@ -608,6 +623,62 @@ defmodule DtuApp.MqttBrokerTest do
       [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.mppt_index == 1
       assert reading.dc_power == 150.0
+    end
+
+    # End-to-end regression for the user-reported "today > total" bug.
+    # The AhoyDTU parser stores `YieldDay`/`YieldTotal` in **Wh** after
+    # the unit-conversion fix (`cast_ahoy_yield/1`). Without that fix the
+    # AhoyDTU values were stored verbatim in kWh, then `get_daily_stats/2`
+    # divided both by 1000 — which makes the dashboard render values 1000×
+    # too small and either inverts or distorts the daily-vs-total
+    # invariant. Pin a single AhoyDTU device's daily and lifetime values
+    # after a JSON-layout uplink carrying both YieldDay and YieldTotal
+    # in kWh: the daily value must remain < the lifetime value, and
+    # the lifetime value at 1000 kWh must render as 1000.0 kWh (not
+    # 1.0 kWh).
+    test "AhoyDTU JSON-layout uplink respects daily <= lifetime + matches the firmware's kWh scale",
+         %{user: user} do
+      # Set up an AhoyDTU device with credentials cached. Skip the per-
+      # kWh fixtures already covered above and exercise the end-to-end
+      # path through `Devices.get_daily_stats/2`.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-inv-scale",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # Realistic residential numbers:
+      #   YieldTotal = 1234.5 kWh → parser stores 1_234_500.0 Wh → 1234.5 kWh on dashboard
+      #   YieldDay   =   12.4 kWh → parser stores    12_400.0 Wh →   12.4 kWh on dashboard
+      payload =
+        ~s({"P_AC": 350.0, "YieldDay": 12.4, "YieldTotal": 1234.5})
+
+      msg = {:uplink, "client_inv", device_info, "inverter/balcony-inv/ch0", payload}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      stats = Devices.get_daily_stats(user)
+
+      # The end-to-end invariant the user reported: today's daily must
+      # be ≤ the lifetime total. If this fails, the dashboard will
+      # render a value that's larger than the device has ever produced.
+      assert stats.total_yield >= stats.today_yield,
+             "total_yield=#{stats.total_yield} < today_yield=#{stats.today_yield}; " <>
+               "the AhoyDTU parser must normalise kWh→Wh at the boundary"
+
+      # And the magnitudes match what the firmware said — no 1000× off.
+      assert_in_delta stats.today_yield, 12.4, 0.01
+      assert_in_delta stats.total_yield, 1234.5, 0.01
     end
   end
 
