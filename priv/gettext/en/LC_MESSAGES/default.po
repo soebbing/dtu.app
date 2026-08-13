@@ -12,21 +12,21 @@ msgstr ""
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:1298
-#: lib/dtu_app_web/live/device_live/details.ex:336
+#: lib/dtu_app_web/live/device_live/details.ex:407
 #: lib/dtu_app_web/live/device_live/index.ex:325
 #, elixir-autogen, elixir-format
 msgid "%{n} days ago"
 msgstr ""
 
 #: lib/dtu_app_web/live/dashboard_live.ex:1295
-#: lib/dtu_app_web/live/device_live/details.ex:335
+#: lib/dtu_app_web/live/device_live/details.ex:406
 #: lib/dtu_app_web/live/device_live/index.ex:324
 #, elixir-autogen, elixir-format
 msgid "%{n} hours ago"
 msgstr ""
 
 #: lib/dtu_app_web/live/dashboard_live.ex:1292
-#: lib/dtu_app_web/live/device_live/details.ex:334
+#: lib/dtu_app_web/live/device_live/details.ex:405
 #: lib/dtu_app_web/live/device_live/index.ex:323
 #, elixir-autogen, elixir-format
 msgid "%{n} minutes ago"
@@ -918,7 +918,7 @@ msgid "dtu.app is a self-hosted telemetry dashboard for solar inverters that pub
 msgstr ""
 
 #: lib/dtu_app_web/live/dashboard_live.ex:1289
-#: lib/dtu_app_web/live/device_live/details.ex:333
+#: lib/dtu_app_web/live/device_live/details.ex:404
 #: lib/dtu_app_web/live/device_live/index.ex:322
 #, elixir-autogen, elixir-format
 msgid "just now"
@@ -1306,7 +1306,7 @@ msgstr ""
 msgid "%{count} errors, view details"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:115
+#: lib/dtu_app_web/live/device_live/details.html.heex:112
 #: lib/dtu_app_web/live/device_live/index.html.heex:238
 #, elixir-autogen, elixir-format
 msgid "%{count} occurrences · last seen %{when}"
@@ -1342,7 +1342,7 @@ msgstr ""
 msgid "Native push is on for this device — you'll get a system notification even when this site isn't open."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:74
+#: lib/dtu_app_web/live/device_live/details.html.heex:73
 #: lib/dtu_app_web/live/device_live/index.html.heex:153
 #, elixir-autogen, elixir-format
 msgid "No errors recorded for this DTU yet."
@@ -1368,7 +1368,7 @@ msgstr ""
 msgid "%{distinct} distinct, %{occurrences} total"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:146
+#: lib/dtu_app_web/live/device_live/details.html.heex:174
 #, elixir-autogen, elixir-format
 msgid "%{n} topic(s)"
 msgstr ""
@@ -1393,17 +1393,17 @@ msgstr ""
 msgid "Errors"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:140
+#: lib/dtu_app_web/live/device_live/details.html.heex:137
 #, elixir-autogen, elixir-format
 msgid "Live MQTT topics"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:154
+#: lib/dtu_app_web/live/device_live/details.html.heex:183
 #, elixir-autogen, elixir-format
 msgid "Topics appear here as soon as the device publishes."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:152
+#: lib/dtu_app_web/live/device_live/details.html.heex:181
 #, elixir-autogen, elixir-format
 msgid "Waiting for live data…"
 msgstr ""
@@ -1413,19 +1413,40 @@ msgstr ""
 msgid "none in the last 48 hours"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.ex:403
+#: lib/dtu_app_web/live/device_live/details.ex:478
 #, elixir-autogen, elixir-format
 msgid "payload"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:109
+#: lib/dtu_app_web/live/device_live/details.html.heex:106
 #: lib/dtu_app_web/live/device_live/index.html.heex:228
 #, elixir-autogen, elixir-format
 msgid "payload (%{n} chars)"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:97
+#: lib/dtu_app_web/live/device_live/details.html.heex:96
 #: lib/dtu_app_web/live/device_live/index.html.heex:204
 #, elixir-autogen, elixir-format
 msgid "topic:"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/details.html.heex:158
+#, elixir-autogen, elixir-format
+msgid "Copied!"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/details.html.heex:167
+#, elixir-autogen, elixir-format
+msgid "Copy as JSON"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/details.html.heex:159
+#, elixir-autogen, elixir-format
+msgid "Copy failed"
+msgstr ""
+
+#: lib/dtu_app_web/live/device_live/details.html.heex:161
+#: lib/dtu_app_web/live/device_live/details.html.heex:162
+#, elixir-autogen, elixir-format
+msgid "Copy the live topic tree as JSON"
 msgstr ""

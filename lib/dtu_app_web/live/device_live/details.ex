@@ -109,6 +109,26 @@ defmodule DtuAppWeb.DeviceLive.Details do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  @impl true
+  def handle_event("copy_topics_as_json", _params, socket) do
+    # Build the JSON document on demand and push it to the client
+    # as a `copy_topics_json` event. The colocated `CopyTopicsJson`
+    # JS hook on the button element receives the event, writes the
+    # JSON to the clipboard, and shows a "Copied" indicator. We
+    # build the JSON on click rather than rendering it into the
+    # DOM as a `data-value` attribute: a 200-topic × 4 KB-payload
+    # tree can be ~800 KB, which would bloat every render even
+    # when the user never clicks the button. Building on demand
+    # keeps the steady-state DOM size bounded.
+    json = topics_as_json(socket.assigns.device, socket.assigns.topics)
+
+    {:noreply,
+     push_event(socket, "copy_topics_json", %{
+       json: json,
+       topic_count: map_size(socket.assigns.topics)
+     })}
+  end
+
   # --- Tree rendering ---------------------------------------------------------
 
   @doc """
@@ -317,6 +337,56 @@ defmodule DtuAppWeb.DeviceLive.Details do
   end
 
   def render_payload(_), do: ""
+
+  # Build a JSON document describing the DTU's live topic map.
+  # Used by the "Copy as JSON" button via `push_event/3` — the JS
+  # hook receives the event, writes the payload to the clipboard,
+  # and shows a "Copied" indicator. Building the JSON on demand
+  # keeps the per-render DOM size bounded (200 topics × 4 KB
+  # payloads is ~800 KB worst case; shipping that on every
+  # render is wasteful, especially when most visits don't click
+  # the button).
+  #
+  # Shape:
+  #
+  #     {
+  #       "dtu_id": <int>,
+  #       "dtu_name": "...",
+  #       "base_topic": "...",
+  #       "captured_at": "<ISO-8601>",
+  #       "topic_count": <int>,
+  #       "topics": {
+  #         "<topic>": { "payload": "<raw string>", "received_at": "<ISO-8601>" },
+  #         ...
+  #       }
+  #     }
+  #
+  # `payload` is the raw wire-level string the firmware sent (NOT
+  # re-decoded JSON) so the document round-trips exactly. The
+  # on-screen tree view pretty-prints payloads via `render_payload/1`
+  # independently.
+  @doc """
+  Build the JSON document for clipboard export. Public so unit
+  tests can verify the shape without mounting the LV.
+  """
+  @spec topics_as_json(%Dtu{}, map()) :: String.t()
+  def topics_as_json(%Dtu{} = device, topics) when is_map(topics) do
+    topics_block =
+      Map.new(topics, fn {topic, {payload, received_at}} ->
+        {topic, %{"payload" => payload, "received_at" => DateTime.to_iso8601(received_at)}}
+      end)
+
+    document = %{
+      "dtu_id" => device.id,
+      "dtu_name" => device.name,
+      "base_topic" => device.base_topic,
+      "captured_at" => DateTime.to_iso8601(DtuApp.Time.utc_now()),
+      "topic_count" => map_size(topics),
+      "topics" => topics_block
+    }
+
+    Jason.encode_to_iodata!(document, pretty: true) |> IO.iodata_to_binary()
+  end
 
   # --- Formatting -------------------------------------------------------------
 
