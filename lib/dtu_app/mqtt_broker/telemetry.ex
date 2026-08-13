@@ -616,9 +616,26 @@ defmodule DtuApp.MqttBroker.Telemetry do
         if json_object?(payload) do
           {:error, :ignored_topic}
         else
-          metric_atom = parse_ahoy_metric(metric)
+          channel_idx = channel_index(rest)
+          # AhoyDTU firmware publishes `YieldDay` / `YieldTotal` only on
+          # ch0 — the inverter-aggregate counter. Per-MPPT channels
+          # (ch1..6) carry only per-string DC power. We coerce a per-MPPT
+          # yield metric to `:other` here so it falls through to the
+          # "ignored metric" path in the buffer handler and the row
+          # lands without a yield field. Mirrors `ahoy_json_to_pairs/2`,
+          # which drops yield fields from per-MPPT JSON layouts the
+          # same way. Without this guard the parser stored per-MPPT
+          # yield values as separate rows, and the dashboard's
+          # `MAX(yield_day)` aggregation summed them into today's
+          # total — double-counting the inverter's actual production
+          # (ch0 already = ch1 + ch2 by the firmware's design).
+          metric_atom =
+            if channel_idx >= 1 and metric in ["YieldDay", "YieldTotal"],
+              do: :other,
+              else: parse_ahoy_metric(metric)
+
           value = parse_ahoy_value(metric_atom, payload)
-          {:ok, name, channel_index(rest), [{metric_atom, value}]}
+          {:ok, name, channel_idx, [{metric_atom, value}]}
         end
 
       # JSON layout: {base}/{name}/ch{0..6} -> a JSON object of many metrics.
@@ -1023,14 +1040,17 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # dashboard's existing `get_daily_stats/3` `/1000` divisor renders
   # the correct kWh figure for both the daily and the lifetime fields.
   #
-  # Per-MPPT numeric topics (`ch1..6/YieldDay` and `ch1..6/YieldTotal`)
-  # are **not** extracted here — AhoyDTU publishes inverter-aggregate
-  # yield on ch0 only; ch1..6 carry only DC power per-string. Any
-  # per-MPPT yield uplink falls through to `parse_ahoy_value/2`'s
-  # default `cast_float/1` clause, which lands a raw (mostly stale)
-  # Wh value in the row. The dashboard's per-MPPT overcounting is
-  # eliminated because the ch0 (mppt_index = 0) row carries the
-  # canonical value; the per-MPPT rows are ignored.
+  # Per-MPPT yield is suppressed at the parse site in `parse_ahoydtu/3`
+  # (the `channel_idx >= 1 and metric in ["YieldDay", "YieldTotal"]`
+  # guard). AhoyDTU publishes inverter-aggregate yield on ch0 only;
+  # ch1..6 carry only DC power per-string, and the firmware design
+  # is ch0 = ch1 + ch2 (per-string sub-totals sum into the
+  # aggregate). Letting per-MPPT yields land in separate rows would
+  # cause `get_daily_stats/3`'s `MAX(yield_day)` aggregation to sum
+  # them into today's total — double-counting the inverter's actual
+  # production. The ch0 (mppt_index = 0) row carries the canonical
+  # yield value; per-MPPT rows are ignored by the dashboard's
+  # `mppt_index = 0` filter.
   defp parse_ahoy_value(:yield_total, payload) do
     cast_ahoy_yield(payload)
   end
