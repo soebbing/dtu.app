@@ -1,0 +1,159 @@
+<Layouts.app flash={@flash} current_scope={@current_scope}>
+  <%!-- Header: device name + back link + online indicator. The back
+       link is intentionally separate from the page title — a
+       breadcrumb-style "← Back to devices" keeps the navigation
+       discoverable without making the title feel like a link. --%>
+  <div class="flex items-center justify-between gap-4 mb-4">
+    <div class="flex items-center gap-3 min-w-0">
+      <.link
+        navigate={~p"/devices"}
+        class="inline-flex items-center gap-1 text-sm font-medium text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition"
+      >
+        <.icon name="hero-arrow-left" class="size-4" /> {gettext("Back to devices")}
+      </.link>
+    </div>
+    <div class="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+      <span
+        class={[
+          "inline-block size-2 rounded-full",
+          if(online?(@device),
+            do: "bg-emerald-500",
+            else: "bg-zinc-300 dark:bg-zinc-600"
+          )
+        ]}
+        title={if(online?(@device), do: gettext("online"), else: gettext("offline"))}
+      />
+      <span>{if(online?(@device), do: gettext("online"), else: gettext("offline"))}</span>
+    </div>
+  </div>
+
+  <div class="flex items-baseline justify-between mb-6">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
+        {@device.name}
+      </h1>
+      <p class="mt-0.5 text-sm text-zinc-500">
+        {@device.kind} · <code class="font-mono">{@device.mqtt_username}</code>
+        · <code class="font-mono">{@device.base_topic}</code>
+      </p>
+    </div>
+  </div>
+
+  <%!-- Two-column layout: errors panel (top) + topics tree (main).
+       Errors are short-lived so the panel stays narrow; topics are
+       the main content and fill the rest of the viewport. --%>
+  <div class="space-y-6">
+    <%!-- Error panel — same per-message rollup the index's
+         expansion panel uses, so the user sees a familiar
+         interface. `list_dtu_error_groups/1` filters to errors
+         within the last 48 hours via the `dtu_error_recency_cutoff/0`
+         default. --%>
+    <section
+      id="device-details-errors"
+      class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden"
+    >
+      <header class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          {gettext("Errors")}
+        </h2>
+        <span class="text-xs text-zinc-500">
+          {if @error_groups == [] do
+            gettext("none in the last 48 hours")
+          else
+            gettext(
+              "%{distinct} distinct, %{occurrences} total",
+              distinct: length(@error_groups),
+              occurrences: Enum.reduce(@error_groups, 0, fn g, acc -> acc + g.occurrences end)
+            )
+          end}
+        </span>
+      </header>
+      <%= if @error_groups == [] do %>
+        <div class="px-4 py-6 text-center text-sm text-zinc-500">
+          {gettext("No errors recorded for this DTU yet.")}
+        </div>
+      <% else %>
+        <ul class="divide-y divide-zinc-100 dark:divide-zinc-800">
+          <%= for group <- @error_groups do %>
+            <% parsed = DtuAppWeb.DeviceLive.Index.parse_error_message(group.message) %>
+            <li class="px-4 py-3 flex items-start gap-2 text-sm">
+              <.icon
+                name="hero-exclamation-triangle"
+                class="size-4 shrink-0 mt-0.5 text-rose-500"
+              />
+              <div class="min-w-0 flex-1 space-y-1.5">
+                <div class="flex flex-wrap items-baseline gap-2">
+                  <span class="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-xs font-semibold bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-200">
+                    {parsed.kind}
+                  </span>
+                  <span class="break-words text-zinc-800 dark:text-zinc-100">
+                    {parsed.reason}
+                  </span>
+                </div>
+                <%= if parsed.topic do %>
+                  <div class="flex items-center gap-1.5 text-xs">
+                    <span class="text-zinc-500 font-medium">
+                      {gettext("topic:")}
+                    </span>
+                    <code class="font-mono text-zinc-800 dark:text-zinc-200 bg-zinc-50 dark:bg-zinc-800 px-1.5 py-0.5 rounded break-all border border-zinc-200/60 dark:border-zinc-700/40">
+                      {parsed.topic}
+                    </code>
+                  </div>
+                <% end %>
+                <%= if parsed.payload do %>
+                  <details class="text-xs">
+                    <summary class="cursor-pointer text-zinc-500 font-medium select-none">
+                      {gettext("payload (%{n} chars)", n: byte_size(parsed.payload))}
+                    </summary>
+                    <pre class="mt-1 font-mono text-zinc-800 dark:text-zinc-200 bg-zinc-50 dark:bg-zinc-800 px-2 py-1.5 rounded whitespace-pre-wrap break-all max-h-40 overflow-auto border border-zinc-200/60 dark:border-zinc-700/40"><code>{parsed.payload}</code></pre>
+                  </details>
+                <% end %>
+                <p class="mt-1 text-xs text-zinc-500">
+                  {gettext(
+                    "%{count} occurrences · last seen %{when}",
+                    count: group.occurrences,
+                    when: DtuAppWeb.DeviceLive.Details.format_relative_time(group.last_seen)
+                  )}
+                </p>
+              </div>
+            </li>
+          <% end %>
+        </ul>
+      <% end %>
+    </section>
+
+    <%!-- Topics tree. `<details>` per node lets the user collapse
+         branches; the deepest level (leaves) renders as a
+         `<details>` too so the payload is collapsed by default
+         (a noisy tree is hard to scan). Open all on first render
+         so the user sees what's happening immediately; they can
+         collapse what they don't care about. --%>
+    <section
+      id="device-details-topics"
+      class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden"
+    >
+      <header class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+          {gettext("Live MQTT topics")}
+        </h2>
+        <span
+          class="text-xs text-zinc-500"
+          id="topic-count"
+        >
+          {gettext("%{n} topic(s)", n: map_size(@topics))}
+        </span>
+      </header>
+      <%= if @tree == [] do %>
+        <div class="px-4 py-8 text-center text-sm text-zinc-500">
+          <.icon name="hero-signal-slash" class="inline size-5 -mt-0.5 mr-1" />
+          {gettext("Waiting for live data…")}
+          <p class="mt-1 text-xs text-zinc-400">
+            {gettext("Topics appear here as soon as the device publishes.")}
+          </p>
+        </div>
+      <% else %>
+        <.render_tree nodes={@tree} />
+      <% end %>
+    </section>
+  </div>
+</Layouts.app>

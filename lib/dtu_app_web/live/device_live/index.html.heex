@@ -100,6 +100,19 @@
         <% end %>
       </div>
       <div class="flex shrink-0 items-center gap-3 text-sm">
+        <%!-- "Details" navigates (not patches) to the device-details
+             LiveView, which is a separate LV mounted on the same
+             `live_session :current_scope`. `navigate` does a full
+             LV lifecycle so the topic-tree subscription is wired
+             fresh on the new page — patching in-place would
+             collide with the Index's `:dtu_seen` subscription and
+             the topic-tree subscription would leak across pages. --%>
+        <.link
+          navigate={~p"/devices/#{device}/details"}
+          class="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+        >
+          {gettext("Details")}
+        </.link>
         <.link
           patch={~p"/devices/#{device}/edit"}
           class="font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"

@@ -189,6 +189,19 @@ defmodule DtuAppWeb.DeviceLiveTest do
       refute has_element?(index_live, "#confirm-delete-modal")
       refute has_element?(index_live, "#devices-#{device.id}")
     end
+
+    test "renders a Details link per device row that navigates to /devices/:id/details",
+         %{conn: conn, user: user} do
+      dtu = device_fixture(user, %{name: "Detailable Inverter"})
+
+      {:ok, _index_live, html} = live(conn, ~p"/devices")
+
+      # The Details link carries the device id in its href so the
+      # navigation target is unambiguous. Same convention as the
+      # Edit link (which uses `patch`); the Details link uses
+      # `navigate` because it points at a separate LiveView.
+      assert html =~ ~s(href="/devices/#{dtu.id}/details")
+    end
   end
 
   describe "Device error fill on the manage-device list" do
