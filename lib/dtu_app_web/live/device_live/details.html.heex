@@ -132,16 +132,48 @@
       id="device-details-topics"
       class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 overflow-hidden"
     >
-      <header class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+      <header class="px-4 py-3 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-3">
         <h2 class="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           {gettext("Live MQTT topics")}
         </h2>
-        <span
-          class="text-xs text-zinc-500"
-          id="topic-count"
-        >
-          {gettext("%{n} topic(s)", n: map_size(@topics))}
-        </span>
+        <div class="flex items-center gap-3">
+          <%!-- "Copy as JSON" button. The payload is large (up to
+               ~800 KB for 200 topics × 4 KB), so the JSON is built
+               on demand by the server on click and pushed to the
+               client as a `copy_topics_json` event rather than
+               rendered into a `data-value` attribute. The
+               `CopyTopicsJson` colocated JS hook (defined at the
+               bottom of this template) listens for the event and
+               writes the payload to the clipboard, then shows a
+               brief "Copied" indicator. `phx-click` on the same
+               element handles the case where the user clicks before
+               the page is fully connected — the push_event round-trip
+               is skipped and the click is a no-op. --%>
+          <button
+            type="button"
+            id="btn-copy-topics-as-json"
+            phx-click="copy_topics_as_json"
+            phx-hook="CopyTopicsJson"
+            data-topic-count={map_size(@topics)}
+            data-copied-label={gettext("Copied!")}
+            data-failed-label={gettext("Copy failed")}
+            class="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            title={gettext("Copy the live topic tree as JSON")}
+            aria-label={gettext("Copy the live topic tree as JSON")}
+            disabled={@topics == %{}}
+          >
+            <.icon name="hero-clipboard-document" class="size-3.5" />
+            <span data-copy-label>
+              {gettext("Copy as JSON")}
+            </span>
+          </button>
+          <span
+            class="text-xs text-zinc-500"
+            id="topic-count"
+          >
+            {gettext("%{n} topic(s)", n: map_size(@topics))}
+          </span>
+        </div>
       </header>
       <%= if @tree == [] do %>
         <div class="px-4 py-8 text-center text-sm text-zinc-500">
@@ -156,4 +188,79 @@
       <% end %>
     </section>
   </div>
+
+  <%!-- Colocated JS hook for the "Copy as JSON" button. Listens
+       for the `copy_topics_json` event fired by the server's
+       `handle_event("copy_topics_as_json", ...)` clause, writes
+       the JSON payload to the clipboard, and shows a "Copied"
+       indicator for 1.5 s before reverting. The hook is colocated
+       here (file-scoped) rather than in `assets/js/` because the
+       hook is used only by this one button. The locale-aware
+       indicator labels are pre-translated server-side via
+       `data-copied-label` / `data-failed-label` attributes so the
+       JS hook stays locale-agnostic. --%>
+  <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyTopicsJson">
+    export default {
+      mounted() {
+        this.handleEvent("copy_topics_json", ({json}) => {
+          const text = json || ""
+          // `navigator.clipboard.writeText` requires a secure
+          // context (HTTPS or localhost). Fall back to a hidden
+          // <textarea> + execCommand for the rare case where the
+          // page is served over plain HTTP from a non-localhost
+          // host — the fallback works in any context.
+          const write = (s) => {
+            if (navigator.clipboard && window.isSecureContext) {
+              return navigator.clipboard.writeText(s)
+            }
+
+            return new Promise((resolve, reject) => {
+              const ta = document.createElement("textarea")
+              ta.value = s
+              ta.style.position = "fixed"
+              ta.style.opacity = "0"
+              document.body.appendChild(ta)
+              ta.select()
+
+              try {
+                const ok = document.execCommand("copy")
+                document.body.removeChild(ta)
+                ok ? resolve() : reject(new Error("execCommand copy returned false"))
+              } catch (e) {
+                document.body.removeChild(ta)
+                reject(e)
+              }
+            })
+          }
+
+          write(text).then(
+            () => this.flashLabel(this.el.dataset.copiedLabel),
+            (err) => {
+              console.error("CopyTopicsJson hook: copy failed", err)
+              this.flashLabel(this.el.dataset.failedLabel, 2000)
+            }
+          )
+        })
+      },
+
+      // Swap the button's text content to the pre-translated
+      // indicator label for `duration` ms, then revert. Both
+      // label and duration are pulled from `data-*` attributes set
+      // server-side via gettext — the JS hook stays locale-agnostic.
+      flashLabel(next, duration = 1500) {
+        const labelEl = this.el.querySelector("[data-copy-label]")
+        if (!labelEl) return
+
+        const original = labelEl.textContent
+        labelEl.textContent = next || original
+        this.el.classList.add("copied")
+
+        clearTimeout(this._resetTimer)
+        this._resetTimer = setTimeout(() => {
+          labelEl.textContent = original
+          this.el.classList.remove("copied")
+        }, duration)
+      }
+    }
+  </script>
 </Layouts.app>
