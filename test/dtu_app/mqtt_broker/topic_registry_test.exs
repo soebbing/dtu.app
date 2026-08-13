@@ -185,6 +185,55 @@ defmodule DtuApp.MqttBroker.TopicRegistryTest do
       assert Map.has_key?(topics, "solar/HM1/199")
       assert Map.has_key?(topics, "solar/HM1/198")
     end
+
+    test "evicts the lex-smallest topic when multiple entries share a timestamp" do
+      # Regression test for a CI flake: when multiple entries
+      # share a `received_at` (a fast uplink burst that lands on
+      # the same DB clock µs, or a test seeding via ETS with
+      # truncated DateTime precision), `Enum.min_by/2`'s default
+      # tiebreak is map iteration order — non-deterministic across
+      # Erlang versions. The eviction uses `{received_at, topic}`
+      # as the sort key so the lex-smallest topic wins among ties,
+      # keeping the "FIFO within a µs" contract stable.
+      #
+      # Seed 201 entries all with the *same* `received_at`. After
+      # one more uplink the map holds 202 entries; the eviction
+      # loop drops 2 entries — both from the tied set, in lex order
+      # (`solar/HM1/00`, then `solar/HM1/01`). The new entry has a
+      # strictly-later `received_at` and survives.
+      same = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      :ets.insert(
+        TopicRegistry.Topics,
+        {200,
+         Map.new(0..200, fn i ->
+           # Pad to two digits so `"solar/HM1/00"` < `"solar/HM1/01"`
+           # < ... < `"solar/HM1/99"` < `"solar/HM1/100"` < ...
+           # by lexical comparison. With identical timestamps, the
+           # tiebreaker picks the lex-smallest: `"solar/HM1/00"`.
+           {"solar/HM1/#{Integer.to_string(i) |> String.pad_leading(2, "0")}",
+            {to_string(i), same}}
+         end)}
+      )
+
+      msg = {:uplink, "client_1", device_info(200), "solar/HM1/new", "new"}
+      TopicRegistry.handle_info(msg, %{})
+
+      topics = TopicRegistry.get_topics_for(200)
+      assert map_size(topics) == 200
+
+      # The two lex-smallest tied entries are gone.
+      refute Map.has_key?(topics, "solar/HM1/00")
+      refute Map.has_key?(topics, "solar/HM1/01")
+
+      # The new entry survives (its later timestamp keeps it).
+      assert Map.has_key?(topics, "solar/HM1/new")
+
+      # The third-smallest tied entry is the smallest survivor —
+      # pin its presence so a regression that drops arbitrary
+      # tied entries would also fail here.
+      assert Map.has_key?(topics, "solar/HM1/02")
+    end
   end
 
   describe "topic staleness (prune)" do

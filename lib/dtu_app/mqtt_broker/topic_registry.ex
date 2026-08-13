@@ -227,22 +227,34 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
     :ets.insert(table_name(), {dtu_id, topics})
   end
 
-  # Drop the oldest entry (by `received_at`) when the map is at or
-  # above the cap. `Map.put/3` adds the new entry first, so by the
-  # time we check `map_size > cap`, we've already exceeded the
-  # bound by one. Dropping exactly one topic keeps the map at
-  # `cap` after the insert — the cap is hard, not soft.
+  # Drop the oldest entries until the map is at or below the cap.
+  # `Map.put/3` adds the new entry first, so under normal operation
+  # the map exceeds the cap by exactly one and we drop a single
+  # entry. The loop also handles callers who seeded more than the
+  # cap via the ETS bypass (test-only — the public surface always
+  # inserts one entry at a time) so the registry's hard cap holds
+  # regardless of how the row got that big.
   #
-  # `Enum.min_by/2` on `received_at` is O(n) but n is bounded by
-  # `@max_topics_per_dtu` (200), so the cost is constant in
-  # practice.
+  # The sort key is a `{received_at, topic}` tuple so the eviction
+  # is deterministic even when multiple entries share a timestamp
+  # (e.g. fast uplinks that land on the same DB clock µs). Without
+  # the topic-name tiebreaker, `Enum.min_by/2` would return the
+  # first-encountered entry of the tied set, which depends on
+  # Erlang's map iteration order — non-deterministic across
+  # versions. Sorting on the lexicographically smallest topic among
+  # tied timestamps is stable and matches the "FIFO within a µs"
+  # contract we document.
   defp evict_oldest_if_over_cap(topics) do
-    if map_size(topics) > @max_topics_per_dtu do
-      {oldest_topic, _} = Enum.min_by(topics, fn {_t, {_p, at}} -> at end)
-      Map.delete(topics, oldest_topic)
-    else
-      topics
-    end
+    Enum.reduce_while(topics, topics, fn _entry, acc ->
+      if map_size(acc) > @max_topics_per_dtu do
+        {oldest_topic, _} =
+          Enum.min_by(acc, fn {topic, {_payload, received_at}} -> {received_at, topic} end)
+
+        {:cont, Map.delete(acc, oldest_topic)}
+      else
+        {:halt, acc}
+      end
+    end)
   end
 
   # Truncate payloads to `@max_payload_bytes`, appending `…` so the
