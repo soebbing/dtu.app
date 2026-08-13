@@ -705,12 +705,25 @@ defmodule DtuApp.MqttBrokerTest do
 
     test "AhoyDTU per-MPPT numeric yield topics (ch1..6/YieldDay) do not persist yield values",
          %{user: user} do
-      # Companion to the JSON-layout test above: even on the
-      # numeric-topic layout, `ch1..6/YieldDay` and `ch1..6/YieldTotal`
-      # are not extracted. The parser's `parse_ahoy_value/2` doesn't
-      # return any pairs for those metrics when the firmware publishes
-      # them on a per-MPPT channel — so the row lands without yield
-      # values.
+      # Companion to the JSON-layout test above: the AhoyDTU
+      # numeric-topic layout must mirror the JSON layout and drop
+      # `YieldDay` / `YieldTotal` on ch1..6. AhoyDTU publishes
+      # inverter-aggregate yield on ch0 only — ch1..6 are per-string
+      # DC inputs. Per the firmware design, ch0 = ch1 + ch2 (the
+      # per-string sub-totals are summed into the aggregate). Persisting
+      # per-MPPT yields as separate rows would cause the dashboard's
+      # `MAX(yield_day)` aggregation to sum them into today's total,
+      # double-counting the inverter's actual production.
+      #
+      # The parser's `parse_ahoydtu/3` coerces a per-MPPT yield
+      # metric to `:other` (the unrecognised-metric atom) so it falls
+      # through to the "ignored metric" path in the buffer handler
+      # and the row lands without a yield field. The pair's value is
+      # still in the buffer briefly but the buffer's `flush?` guard
+      # checks `metric_atom != :other`, so a yield-only per-MPPT
+      # uplink never flushes (no row written). When a per-MPPT uplink
+      # carries a non-yield metric (e.g. `ch1/P_DC`), the flush
+      # proceeds but the row's `yield_day` stays nil.
       dtu =
         device_fixture(user, %{
           kind: "ahoydtu",
@@ -728,36 +741,96 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      # Per-MPPT YieldDay numeric topic. The buffer would flush a row
-      # because YieldDay is a recognised metric atom (`:yield_day`),
-      # but `parse_ahoy_value(:yield_day, payload)` only applies
-      # `cast_ahoy_yield` for `:yield_total` — the `:yield_day`
-      # clause falls through to the default `cast_float/1`. Either
-      # way, the resulting Wh value lands in the row — the bug here
-      # is that on multi-MPPT inverters, the ch1 row's `yield_day`
-      # would be summed into `today_yield` (per-MPPT overcount).
-      # `get_daily_stats/3` restricts the aggregation to
-      # `mppt_index = 0` so ch1's value doesn't double-count.
+      # Per-MPPT YieldDay numeric topic. The parser drops the yield
+      # metric — `parse_ahoydtu/3` maps `YieldDay` on ch1+ to `:other`,
+      # so the buffer sees no recognised metric. No row is written.
       msg =
         {:uplink, "client_ch1_n", device_info, "inverter/balcony-inv/ch1/YieldDay", "5.0"}
 
       {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
 
-      [reading] = Devices.list_recent_readings(user, dtu.id)
-      assert reading.mppt_index == 1
-      # Per-MPPT yield is not extracted — the parser sees the metric
-      # atom but doesn't apply cast_ahoy_yield for `:yield_day`, so the
-      # default `cast_float/1` path leaves it as the raw string. The
-      # buffer flushes on the basis of `flush? = Enum.any?(... not :other)`,
-      # which is true for `:yield_day`. The pair is kept in the buffer
-      # but the buffer is the source of truth — the dashboard's
-      # `get_daily_stats/3` aggregation filters to `mppt_index = 0`,
-      # so the ch1 row's `yield_day` doesn't enter the daily total.
-      assert reading.yield_day == 5.0
+      # No row at all — the yield-only per-MPPT uplink was suppressed.
+      assert [] == Devices.list_recent_readings(user, dtu.id)
+    end
 
-      # The ch0 row is the source of truth for the dashboard.
-      stats = Devices.get_daily_stats(user)
-      assert stats.today_yield == 0.0
+    test "AhoyDTU per-MPPT numeric topics that mix yield + non-yield keep the non-yield, drop the yield",
+         %{user: user} do
+      # Companion to the yield-only test: when a per-MMPT uplink
+      # carries both a yield field (must be dropped) and a non-yield
+      # field like `P_DC` (must be persisted), the buffer flushes
+      # with the non-yield fields populated and the yield field
+      # nil. The pair reducer's `if metric_atom == :other` guard
+      # ensures the dropped yield value never lands in the buffer
+      # map, so a later ch1 flush can't back-fill the dropped
+      # value into a row that's already been written.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-ch1-mixed",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      state = %{buffers: %{}}
+
+      # The pair `parse_ahoydtu/3` returns: `{:yield_day, :other}` for
+      # the yield field (dropped at the parse site) plus the
+      # non-yield `P_DC` field. The buffer only sees the latter; the
+      # dropped pair's value is discarded and the `flush?` check
+      # still fires because the buffer has at least one recognised
+      # metric.
+      {:noreply, _state} =
+        Telemetry.handle_info(
+          {:uplink, "client_ch1_mixed", device_info, "inverter/balcony-inv/ch1",
+           ~s({"P_DC": 80.0, "YieldDay": 7.5})},
+          state
+        )
+
+      # JSON layout path is exercised above. Now exercise the numeric
+      # path: per-MPPT `P_DC` followed by a per-MPPT `YieldTotal`.
+      # The P_DC uplink flushes the ch1 row with dc_power=120; the
+      # following YieldTotal uplink is suppressed (no row).
+      {:noreply, _state} =
+        Telemetry.handle_info(
+          {:uplink, "client_ch1_mixed", device_info, "inverter/balcony-inv/ch1/P_DC", "120.0"},
+          state
+        )
+
+      readings = Devices.list_recent_readings(user, dtu.id)
+      # Two rows from the JSON `P_DC` + numeric `P_DC` uplinks, both
+      # with `yield_day == nil` and `yield_total == nil` because the
+      # yield fields were dropped at the parse site.
+      assert length(readings) == 2
+
+      Enum.each(readings, fn r ->
+        assert r.inverter_serial == "balcony-inv"
+        assert r.mppt_index == 1
+        assert r.dc_power in [80.0, 120.0]
+        assert r.yield_day == nil
+        assert r.yield_total == nil
+      end)
+
+      # And the per-MPPT `YieldTotal` uplink is suppressed entirely —
+      # `flush?` is false because the only pair is `:other`.
+      {:noreply, _state} =
+        Telemetry.handle_info(
+          {:uplink, "client_ch1_mixed", device_info, "inverter/balcony-inv/ch1/YieldTotal",
+           "10.0"},
+          state
+        )
+
+      # Still the same two rows — the per-MPPT YieldTotal uplink
+      # didn't flush.
+      assert length(Devices.list_recent_readings(user, dtu.id)) == 2
     end
 
     # End-to-end regression for the user-reported "daily value too high
