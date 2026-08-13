@@ -245,15 +245,20 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta Devices.get_daily_stats(user).total_yield, 50.0, 0.001
     end
 
-    test "uses MAX(yield_total) per (inverter, MPPT) — per-MPPT rows are summed" do
+    test "uses MAX(yield_total) per inverter, restricted to mppt_index = 0 (no per-MPPT double-count)" do
       # Multi-MPPT inverters publish yield_total on the AC aggregate row
-      # (mppt_index = 0) and on each per-MPPT row (mppt_index >= 1).
-      # The AC aggregate is the inverter's true lifetime kWh; per-MPPT
-      # rows carry per-string lifetime kWh. Summing the per-series maxes
-      # double-counts the inverter, which matches what the firmware
-      # publishes per MPPT (each MPPT is a separate DC→AC stage with its
-      # own lifetime counter — a 2-MPPT Hoymiles has two physically
-      # independent MPPT channels, both reporting lifetime kWh).
+      # (mppt_index = 0) and on each per-MPPT row (mppt_index >= 1). The
+      # AC aggregate IS the inverter's true lifetime kWh — AhoyDTU's ch0
+      # is the cumulative inverter-level value. Per-MPPT DC rows
+      # (mppt_index >= 1) carry per-string sub-totals that the firmware
+      # has already summed into ch0, so summing across MPPTs would
+      # double-count the inverter.
+      #
+      # The aggregation is restricted to `mppt_index = 0` so a 2-MPPT
+      # Hoymiles produces the same `total_yield` as a 1-MPPT install
+      # of the same model — only the AC aggregate row counts. The
+      # ch1+ch2 per-MPPT rows still get persisted to the DB (for the
+      # chart's per-MPPT lines) but don't enter the total.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
       now = DateTime.utc_now()
@@ -279,8 +284,9 @@ defmodule DtuApp.DevicesTest do
         inserted_at: now
       })
 
-      # 100 + 60 + 40 = 200 kWh
-      assert_in_delta Devices.get_daily_stats(user).total_yield, 200.0, 0.001
+      # Only the ch0 row counts → 100 kWh, NOT 200 kWh (the overcounted
+      # pre-fix sum).
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 100.0, 0.001
     end
 
     test "treats nil yield_total as 0 so a half-wired inverter doesn't poison the total" do
@@ -404,12 +410,20 @@ defmodule DtuApp.DevicesTest do
   end
 
   describe "get_daily_stats/2 — per_series breakdown" do
-    test "emits one entry per (inverter_serial, mppt_index) with the day's yield and peak" do
+    # The aggregation is restricted to `mppt_index = 0` (the AC aggregate
+    # row) so multi-MPPT AhoyDTU inverters don't double-count ch1+ch2's
+    # per-string sub-totals into the daily / lifetime total. The
+    # `per_series` breakdown emits one row per *inverter* (not per MPPT)
+    # for the same reason.
+    test "emits one entry per inverter, restricted to mppt_index = 0 (no per-MPPT double-count)" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      # Single inverter with AC + 2 DC MPPTs. Each (inverter, mppt) pair
-      # contributes one row to `per_series`.
+      # Single inverter with AC + 2 DC MPPTs. Only the ch0 row counts
+      # for the dashboard totals — ch1+ch2 are per-string sub-totals
+      # the firmware has already summed into ch0. The `per_series` list
+      # emits one entry per (inverter, mppt_index = 0), so this 2-MPPT
+      # inverter produces 1 row, not 3.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         inverter_name: "Roof Array",
@@ -436,29 +450,25 @@ defmodule DtuApp.DevicesTest do
 
       stats = Devices.get_daily_stats(user)
 
-      assert length(stats.per_series) == 3
+      # Only ch0 enters the breakdown → 1 row, not 3.
+      assert length(stats.per_series) == 1
 
-      by_mppt = Map.new(stats.per_series, &{&1.mppt_index, &1})
-
-      # The friendly name is preserved on every entry so the legend can
-      # label each line without a separate join.
-      assert by_mppt[0].inverter_name == "Roof Array"
-      assert by_mppt[1].inverter_name == "Roof Array"
-      assert by_mppt[2].inverter_name == "Roof Array"
-
-      # Yields are converted to kWh (OpenDTU/AhoyDTU publish Wh).
-      assert_in_delta by_mppt[0].today_yield, 5.0, 0.001
-      assert_in_delta by_mppt[1].today_yield, 2.5, 0.001
-      assert_in_delta by_mppt[2].today_yield, 2.5, 0.001
+      [series] = stats.per_series
+      assert series.inverter_name == "Roof Array"
+      assert series.mppt_index == 0
+      # Yields are converted to kWh (AhoyDTU/OpenDTU publish Wh).
+      assert_in_delta series.today_yield, 5.0, 0.001
     end
 
-    test "per_series sums to today_yield even when MPPTs report partial data" do
+    test "per_series sums to today_yield across multiple inverters (ch0 only)" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      # Two inverters × two MPPTs each. yield_day is in Wh; get_daily_stats
-      # converts to kWh before returning.
-      for {serial, mppts} <- [{"INV-1", [1, 2]}, {"INV-2", [1]}] do
+      # Two inverters, each with one AC row (mppt_index = 0). Even
+      # though AhoyDTU's per-MPPT rows (mppt_index = 1, 2) for the
+      # first inverter also carry yield_day values, the aggregation
+      # restricts to mppt_index = 0 to avoid the 2× / 3× overcount.
+      for {serial, mppts} <- [{"INV-1", [0, 1, 2]}, {"INV-2", [0]}] do
         for mppt <- mppts do
           DevicesFixtures.reading_fixture(device, %{
             inverter_serial: serial,
@@ -470,9 +480,10 @@ defmodule DtuApp.DevicesTest do
 
       stats = Devices.get_daily_stats(user)
 
-      # 3 series × 1 kWh each = 3.0 kWh total
-      assert_in_delta stats.today_yield, 3.0, 0.001
-      assert length(stats.per_series) == 3
+      # 2 ch0 rows × 1 kWh each = 2.0 kWh total (pre-fix this was
+      # 4 × 1 kWh = 4.0 kWh, double-counting the 2 per-MPPT rows of INV-1).
+      assert_in_delta stats.today_yield, 2.0, 0.001
+      assert length(stats.per_series) == 2
     end
 
     test "per_series is empty when the user has no DTUs" do
@@ -1007,27 +1018,28 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.current_power, 0.0, 0.1
     end
 
-    test "per_series_peak uses dc_power for per-MPPT rows (not ac_power)" do
+    test "per_series_peak uses ac_power for the ch0 entry (current_power mirrors it)" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
       now = DateTime.utc_now()
 
-      # Per-MPPT row whose ac_power is nil but dc_power is 380 W. Pre-fix
-      # the per-series peak for this MPPT would be 0; post-fix it should
-      # be 380 W.
+      # ch0 AC aggregate row. `per_series_peak` is sourced from
+      # `latest_per_series_readings` (full per-(inverter, MPPT) coverage)
+      # and the AC aggregate is selected via `chart_power_for_mppt/1`
+      # (ac_power for `mppt_index = 0`). The peak should be 380 W.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-1",
         inverter_name: "East Array",
-        mppt_index: 1,
-        dc_power: 380.0,
-        ac_power: nil,
+        mppt_index: 0,
+        ac_power: 380.0,
+        dc_power: nil,
         inserted_at: now
       })
 
       stats = Devices.get_daily_stats(user)
 
-      [mppt_1] = Enum.filter(stats.per_series, &(&1.mppt_index == 1))
-      assert_in_delta mppt_1.peak_power, 380.0, 0.1
+      [mppt_0] = Enum.filter(stats.per_series, &(&1.mppt_index == 0))
+      assert_in_delta mppt_0.peak_power, 380.0, 0.1
     end
   end
 

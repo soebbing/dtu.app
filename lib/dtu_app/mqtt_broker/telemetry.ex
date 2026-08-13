@@ -946,28 +946,25 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # ch0 carries AC-side values (incl. calculated P_DC); ch1..6 carry DC inputs.
   # Only DC-specific fields are taken from ch1..6 to avoid clobbering ch0's P_DC.
   #
-  # AhoyDTU publishes `YieldDay` and `YieldTotal` in **kWh** on both the
-  # numeric-topic and JSON-topic layouts (concrete example: the user
-  # reported `1856.0 kWh` rendered on the dashboard when the
-  # firmware-published `YieldDay` was `1.856` — a value that's only
-  # sensible as kWh, since 1.856 Wh is a fraction of a second of
-  # typical microinverter output). OpenDTU publishes the same fields
-  # in **Wh**. Everything downstream
-  # (`readings.yield_day` / `readings.yield_total`, the chart,
-  # `Devices.get_daily_stats/3`'s `/1000` Wh → kWh divisor) assumes
-  # **Wh** semantics uniformly, so we normalise AhoyDTU's kWh values
-  # to Wh at the parser boundary by multiplying by 1000
-  # (`cast_ahoy_yield/1`).
+  # AhoyDTU publishes `YieldTotal` in **kWh** on both the JSON and
+  # numeric-topic layouts. `YieldDay` is published in **Wh** (matching
+  # OpenDTU's convention). User report: live AhoyDTU install showed
+  # the firmware's own UI reporting the daily counter as `100 Wh`
+  # and the lifetime counter as `329.22 kWh` — so the two fields
+  # are in different units on the same firmware. Apply the
+  # `cast_ahoy_yield/1` ×1000 multiplier to `YieldTotal` only;
+  # `YieldDay` lands in the DB column as the raw Wh value.
   #
-  # Multiplying at the parser keeps the rest of the pipeline
-  # oblivious to the firmware difference. OpenDTU rows and AhoyDTU
-  # rows are indistinguishable in the DB column and the dashboard
-  # query — `get_daily_stats/3` treats them uniformly.
+  # `Devices.get_daily_stats/3`'s per-MPPT aggregation is restricted to
+  # `mppt_index = 0` (see comment there) so multi-MPPT AhoyDTU
+  # inverters don't double-count ch0 + ch1 + ch2 yield values
+  # (AhoyDTU's ch0 is the AC aggregate, ch1+ch2 are per-string
+  # sub-totals).
   defp ahoy_json_to_pairs(json, "ch0") do
     [
       {:ac_power, cast_float(json["P_AC"])},
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_day, cast_float(json["YieldDay"])},
       {:yield_total, cast_ahoy_yield(json["YieldTotal"])},
       {:frequency, cast_float(json["F_AC"])},
       {:temperature, cast_float(json["Temp"])},
@@ -979,7 +976,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   defp ahoy_json_to_pairs(json, _dc_channel) do
     [
       {:dc_power, cast_float(json["P_DC"])},
-      {:yield_day, cast_ahoy_yield(json["YieldDay"])},
+      {:yield_day, cast_float(json["YieldDay"])},
       {:yield_total, cast_ahoy_yield(json["YieldTotal"])}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) end)
@@ -1012,15 +1009,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
     end
   end
 
-  # AhoyDTU's `YieldDay` and `YieldTotal` arrive in **kWh** on the
-  # numeric-topic layout (e.g. `balcony-inv/ch0/YieldTotal`,
-  # `balcony-inv/ch0/YieldDay`). `cast_ahoy_yield/1` multiplies by 1000
-  # so both columns share a single Wh unit downstream
-  # (`get_daily_stats/3`'s `/1000` divisor expects Wh). The rationale
-  # in `ahoy_json_to_pairs/2` explains the per-firmware unit handling
-  # in detail.
-  defp parse_ahoy_value(metric, payload)
-       when metric in [:yield_day, :yield_total] do
+  # AhoyDTU's `YieldTotal` arrives in **kWh** on the numeric-topic
+  # layout (e.g. `balcony-inv/ch0/YieldTotal`). `YieldDay` arrives
+  # in **Wh** (matching OpenDTU's convention) — see
+  # `ahoy_json_to_pairs/2` for the rationale. `cast_ahoy_yield/1`
+  # multiplies the lifetime counter by 1000 so the column holds Wh;
+  # the existing `get_daily_stats/3` `/1000` divisor renders the
+  # correct kWh figure for both the daily and the lifetime fields.
+  defp parse_ahoy_value(:yield_total, payload) do
     cast_ahoy_yield(payload)
   end
 
@@ -1041,24 +1037,23 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   defp cast_float(_), do: nil
 
-  # AhoyDTU publishes `YieldDay` and `YieldTotal` in **kWh** on both the
-  # numeric-topic and JSON-topic layouts (concrete example: the user
-  # reported `1856.0 kWh` rendered on the dashboard when the
-  # firmware-published `YieldDay` was `1.856` — a value that's only
-  # sensible as kWh, since 1.856 Wh is a fraction of a second of
-  # typical microinverter output). OpenDTU publishes the same fields
-  # in **Wh**. Everything downstream
-  # (`readings.yield_day` / `readings.yield_total`, the chart,
+  # AhoyDTU publishes its **lifetime cumulative** counter
+  # (`YieldTotal`) in **kWh** on both the JSON and numeric-topic
+  # layouts. The daily counter (`YieldDay`) is published in **Wh**
+  # (matching OpenDTU's convention) — see `ahoy_json_to_pairs/2`
+  # for the per-field rationale. Everything downstream
+  # (`readings.yield_total`, the chart,
   # `Devices.get_daily_stats/3`'s `/ 1000` Wh → kWh divisor) assumes
-  # **Wh** semantics uniformly, so we normalise AhoyDTU's kWh values
-  # to Wh at the parser boundary by multiplying by 1000.
+  # **Wh** semantics uniformly, so we normalise AhoyDTU's `YieldTotal`
+  # kWh value to Wh at the parser boundary by multiplying by 1000.
   #
   # Multiplying at the parser keeps the rest of the pipeline oblivious
   # to the firmware difference. OpenDTU rows and AhoyDTU rows are
   # indistinguishable in the DB column and the dashboard query —
   # `get_daily_stats/3` treats them uniformly. A future per-DTU
-  # settings toggle (e.g. "AhoyDTU uses Wh instead of kWh") only
-  # changes this one call site, not every reader.
+  # settings toggle (e.g. "AhoyDTU uses Wh instead of kWh for the
+  # lifetime counter") only changes this one call site, not every
+  # reader.
   #
   # `nil` falls through so the buffer/dashboard's existing `nil` handling
   # (treat as 0, omit from the row) keeps working for HALF-published
