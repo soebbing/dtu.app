@@ -91,6 +91,13 @@ defmodule DtuAppWeb.Router do
       live "/devices", DeviceLive.Index, :index
       live "/devices/new", DeviceLive.Index, :new
       live "/devices/:id/edit", DeviceLive.Index, :edit
+      # Live, in-browser view of every MQTT topic the device is
+      # currently publishing on — see `DeviceLive.Details` for the
+      # rationale on using a separate LV (vs. a new `:details`
+      # action on `DeviceLive.Index`). Stays in the same
+      # `live_session` so the existing `current_scope` + `Locale`
+      # `on_mount` hooks continue to wire the user's session.
+      live "/devices/:id/details", DeviceLive.Details, :index
       # Notification preferences: opt in/out of browser notifications
       # for DTU connection state changes and the daily sun-down summary.
       # The page itself hosts the JS hook that requests permission and

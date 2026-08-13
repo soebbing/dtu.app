@@ -27,6 +27,14 @@ defmodule DtuApp.Application do
           # Consumes DTU uplinks and parses OpenDTU telemetry. Must start after
           # PubSub (subscribes on init).
           {DtuApp.MqttBroker.Telemetry, :ok},
+          # Live buffer of every MQTT topic a DTU has published recently.
+          # Powers the device-details LiveView's "all topics, not just
+          # the ones the parser interprets" tree. Independent of the
+          # parser's normal reading-rows path — its uplink subscription
+          # is parallel to `Telemetry`'s, so a slow parser never
+          # back-pressures the live-topic capture. Started after
+          # PubSub for the same reason as `Telemetry`.
+          {DtuApp.MqttBroker.TopicRegistry, :ok},
           # Start to serve requests, typically the last entry
           DtuAppWeb.Endpoint
         ]
