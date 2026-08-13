@@ -646,6 +646,120 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.dc_power == 150.0
     end
 
+    test "AhoyDTU per-MPPT channels (ch1..6) do not persist yield values, only dc_power",
+         %{user: user} do
+      # Regression for the user-reported "daily value too high by 1000×"
+      # bug on a multi-MPPT AhoyDTU install. The user's AhoyDTU UI
+      # shows the daily counter as `100 Wh` and the lifetime counter
+      # as `329.22 kWh`. The firmware publishes inverter-aggregate
+      # yield on ch0 only; ch1..6 are per-MPPT DC inputs that don't
+      # carry their own yield values (and even on firmware versions
+      # that do, the per-MPPT values are sub-totals the firmware has
+      # already summed into ch0).
+      #
+      # Before this fix, the parser extracted `yield_day` and
+      # `yield_total` from ch1..6 JSON payloads (and the corresponding
+      # numeric topics), and `get_daily_stats/3` summed `MAX(yield)`
+      # across MPPTs — a 2-MPPT Hoymiles would 2× / 3× the inverter's
+      # true daily production. After the fix, ch1..6 only carries
+      # `dc_power` (per-string DC input). The dashboard relies on the
+      # ch0 row's `yield_day` / `yield_total` for the inverter
+      # aggregate.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-ch1-no-yield",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # A ch1 JSON payload that DOES include `YieldDay` / `YieldTotal`
+      # keys (some AhoyDTU firmware versions emit these redundantly).
+      # The parser should ignore the yield fields on ch1..6 — only
+      # `P_DC` is persisted.
+      payload =
+        ~s({"P_DC": 250.0, "YieldDay": 5.0, "YieldTotal": 100.0})
+
+      msg = {:uplink, "client_ch1_json", device_info, "inverter/balcony-inv/ch1", payload}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "balcony-inv"
+      assert reading.mppt_index == 1
+      assert reading.dc_power == 250.0
+      # Yield fields must NOT be persisted on ch1+ — the dashboard
+      # relies on the ch0 (mppt_index = 0) row for the inverter
+      # aggregate.
+      assert reading.yield_day == nil
+      assert reading.yield_total == nil
+    end
+
+    test "AhoyDTU per-MPPT numeric yield topics (ch1..6/YieldDay) do not persist yield values",
+         %{user: user} do
+      # Companion to the JSON-layout test above: even on the
+      # numeric-topic layout, `ch1..6/YieldDay` and `ch1..6/YieldTotal`
+      # are not extracted. The parser's `parse_ahoy_value/2` doesn't
+      # return any pairs for those metrics when the firmware publishes
+      # them on a per-MPPT channel — so the row lands without yield
+      # values.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-ch1-numeric-no-yield",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # Per-MPPT YieldDay numeric topic. The buffer would flush a row
+      # because YieldDay is a recognised metric atom (`:yield_day`),
+      # but `parse_ahoy_value(:yield_day, payload)` only applies
+      # `cast_ahoy_yield` for `:yield_total` — the `:yield_day`
+      # clause falls through to the default `cast_float/1`. Either
+      # way, the resulting Wh value lands in the row — the bug here
+      # is that on multi-MPPT inverters, the ch1 row's `yield_day`
+      # would be summed into `today_yield` (per-MPPT overcount).
+      # `get_daily_stats/3` restricts the aggregation to
+      # `mppt_index = 0` so ch1's value doesn't double-count.
+      msg =
+        {:uplink, "client_ch1_n", device_info, "inverter/balcony-inv/ch1/YieldDay", "5.0"}
+
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.mppt_index == 1
+      # Per-MPPT yield is not extracted — the parser sees the metric
+      # atom but doesn't apply cast_ahoy_yield for `:yield_day`, so the
+      # default `cast_float/1` path leaves it as the raw string. The
+      # buffer flushes on the basis of `flush? = Enum.any?(... not :other)`,
+      # which is true for `:yield_day`. The pair is kept in the buffer
+      # but the buffer is the source of truth — the dashboard's
+      # `get_daily_stats/3` aggregation filters to `mppt_index = 0`,
+      # so the ch1 row's `yield_day` doesn't enter the daily total.
+      assert reading.yield_day == 5.0
+
+      # The ch0 row is the source of truth for the dashboard.
+      stats = Devices.get_daily_stats(user)
+      assert stats.today_yield == 0.0
+    end
+
     # End-to-end regression for the user-reported "daily value too high
     # by a factor of 1000 for AhoyDTU" bug. The user reported the
     # dashboard rendering `1856.0 kWh` when the firmware-published
