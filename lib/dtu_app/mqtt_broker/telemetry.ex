@@ -22,7 +22,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
       {base}/{inverter_name}/ch0                         # JSON object of ch0 metrics
       {base}/{inverter_name}/ch{1..6}/{Metric}           # DC per-string inputs
       {base}/{inverter_name}/ch{1..6}                    # JSON per DC input
-      {base}/total/...                                   # ignored (recomputed by the dashboard)
+      {base}/total                                       # JSON fleet total (YieldDay, YieldTotal, P_AC, P_DC)
+      {base}/total/{Metric}                              # numeric-layout fleet total fallback
 
   Per-channel metrics arrive on staggered intervals (P_AC in one uplink, YieldDay
   in the next), so we buffer them per `(inverter, channel)` and flush a row
@@ -591,8 +592,6 @@ defmodule DtuApp.MqttBroker.Telemetry do
         #   * JSON payload on a numeric-layout topic (mode-set mismatch — the
         #     user toggled AhoyDTU to JSON after subscribing to numeric).
         #   * non-JSON / unparseable payload on a JSON-layout topic.
-        #   * `{base}/total/...` (AhoyDTU fleet totals, intentionally
-        #     ignored — the dashboard recomputes across the user's devices).
         #   * Anything else that doesn't match the parser's topic patterns.
         #
         # All of these are "topic provided by the client, that currently is
@@ -650,8 +649,65 @@ defmodule DtuApp.MqttBroker.Telemetry do
             {:error, :ignored_topic}
         end
 
-      # AhoyDTU fleet totals {base}/total/... — recomputed across the user's
-      # devices by the dashboard, so ignore here.
+      # AhoyDTU fleet-wide totals on `{base}/total` — the firmware sums
+      # all inverters' `YieldDay` / `YieldTotal` and publishes the
+      # aggregate on this single topic. The parser persists the values
+      # into a row keyed by `inverter_serial = "_fleet"` so the
+      # dashboard's `get_daily_stats/3` (and `list_range_yield_data/4`)
+      # can prefer this row over per-inverter sums — the firmware
+      # already aggregated, so re-summing would only re-introduce
+      # rounding error and double-count logic.
+      #
+      # Per upstream `pubMqttIvData.h` (`stateSendTotals`):
+      #   * `YieldDay`   is published in **Wh** (same convention as the
+      #     per-channel `YieldDay`).
+      #   * `YieldTotal` is published in **kWh** — the firmware's
+      #     kWh-published lifetime counter — so we apply the same
+      #     `cast_ahoy_yield/1` ×1000 normalisation used by
+      #     `ahoy_json_to_pairs/2`'s ch0 branch. The fleet row's
+      #     `yield_total` column holds Wh, uniformly with everything else.
+      #
+      # The `ac_power` / `dc_power` fields on the `total` topic are also
+      # aggregate sums across all inverters — useful but not what this
+      # parser is for. We extract only the yields here; the existing
+      # `current_power` / `peak_power` paths continue to read per-
+      # inverter ch0 rows. (A future "fleet power" card could read
+      # this row's `ac_power`.)
+      #
+      # The buffer handler treats this clause identically to a ch0 JSON
+      # clause (inverter name = `"_fleet"`, mppt_index = 0), so the
+      # existing flush logic persists the row without further changes.
+      [binary_base, "total"]
+      when binary_base == base_topic ->
+        case Jason.decode(payload) do
+          {:ok, json_map} when is_map(json_map) ->
+            pairs =
+              [
+                {:yield_day, cast_float(json_map["YieldDay"])},
+                {:yield_total, cast_ahoy_yield(json_map["YieldTotal"])}
+              ]
+              |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+            {:ok, "_fleet", 0, pairs}
+
+          _ ->
+            {:error, :ignored_topic}
+        end
+
+      # AhoyDTU fleet totals on numeric-layout topics (`{base}/total/{Field}`)
+      # — fallback for firmware variants that publish the fleet total
+      # as per-field scalars. We accept any metric name (the
+      # per-MPPT `metric in ["YieldDay", "YieldTotal"]` coercion to
+      # `:other` is scoped to the per-channel numeric clause higher
+      # up — it would mis-fire here because `{base}/total/{YieldDay,
+      # YieldTotal}` *is* the firmware-aggregated total, not a
+      # per-MPPT sub-total).
+      [binary_base, "total", metric]
+      when binary_base == base_topic ->
+        metric_atom = parse_ahoy_metric(metric)
+        value = parse_ahoy_value(metric_atom, payload)
+        {:ok, "_fleet", 0, [{metric_atom, value}]}
+
       _ ->
         {:error, :ignored_topic}
     end
@@ -973,6 +1029,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # double-count the inverter's true daily / lifetime production. The
   # parser deliberately extracts only `dc_power` from per-MPPT JSON
   # payloads and lets ch0 be the single source of truth for yield.
+  # Per-MPPT yields on the numeric-topic layout are also dropped at the
+  # parse site in `parse_ahoydtu/3`.
   #
   # `cast_ahoy_yield/1` normalises AhoyDTU's kWh-published `YieldTotal`
   # to Wh at the parser boundary so the column holds Wh uniformly
@@ -980,6 +1038,12 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # Wh on this firmware). The dashboard's existing
   # `Devices.get_daily_stats/3` `/ 1000` Wh → kWh divisor renders
   # the firmware's kWh figure verbatim.
+  #
+  # The fleet-wide `{base}/total` topic is handled by a separate
+  # `parse_ahoydtu/3` clause that persists the yields into a row keyed
+  # by `inverter_serial = "_fleet"`. The dashboard's `get_daily_stats/3`
+  # prefers that row over summing per-inverter yields so the firmware-
+  # already-aggregated value reaches the user verbatim.
   defp ahoy_json_to_pairs(json, "ch0") do
     [
       {:ac_power, cast_float(json["P_AC"])},
@@ -1051,6 +1115,15 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # production. The ch0 (mppt_index = 0) row carries the canonical
   # yield value; per-MPPT rows are ignored by the dashboard's
   # `mppt_index = 0` filter.
+  #
+  # The fleet-wide `{base}/total` topic carries an **already-summed**
+  # total across all inverters (AhoyDTU firmware's `stateSendTotals`).
+  # `parse_ahoydtu/3` handles that case separately, persisting the
+  # yields into a row keyed by `inverter_serial = "_fleet"` (and
+  # likewise for the numeric-layout fallback `{base}/total/YieldDay`
+  # etc.). The dashboard's `get_daily_stats/3` prefers that row over
+  # summing per-inverter yields — the firmware already aggregated, so
+  # re-summing would only re-introduce rounding error.
   defp parse_ahoy_value(:yield_total, payload) do
     cast_ahoy_yield(payload)
   end
