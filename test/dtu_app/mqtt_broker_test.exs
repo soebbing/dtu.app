@@ -833,6 +833,84 @@ defmodule DtuApp.MqttBrokerTest do
       assert length(Devices.list_recent_readings(user, dtu.id)) == 2
     end
 
+    test "AhoyDTU fleet-total JSON uplink ({base}/total) persists yields into a _fleet row",
+         %{user: user} do
+      # The AhoyDTU firmware's `stateSendTotals` publishes a single
+      # JSON object on `{base}/total` with `YieldDay` (Wh) and
+      # `YieldTotal` (kWh — normalised to Wh by `cast_ahoy_yield/1`).
+      # The parser keys the row by `inverter_serial = "_fleet"` so
+      # the dashboard's `get_daily_stats/3` fleet-totals path can
+      # prefer it over summing per-inverter rows.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-fleet",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      payload =
+        ~s({"YieldDay": 1234.0, "YieldTotal": 50.0})
+
+      msg = {:uplink, "client_fleet", device_info, "inverter/total", payload}
+      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "_fleet"
+      assert reading.inverter_name == "_fleet"
+      assert reading.mppt_index == 0
+      # YieldDay arrives in Wh (per upstream `stateSendTotals`):
+      # 1234.0 Wh verbatim.
+      assert reading.yield_day == 1234.0
+      # YieldTotal arrives in kWh and is normalised to Wh by the
+      # parser: 50.0 kWh × 1000 = 50_000 Wh.
+      assert reading.yield_total == 50_000.0
+    end
+
+    test "AhoyDTU fleet-total numeric-layout uplink ({base}/total/{Metric}) persists yields into a _fleet row",
+         %{user: user} do
+      # Fallback path for firmware variants that publish the fleet
+      # total as per-field scalars on `{base}/total/{Metric}`. The
+      # parser handles both the consolidated JSON topic and the
+      # per-field scalar fallback; the row's `inverter_serial` and
+      # `inverter_name` are both "_fleet" so the dashboard's
+      # fleet-preference query path picks them up.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-fleet-numeric",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # Numeric-layout fleet-total YieldDay — landing in Wh.
+      msg1 = {:uplink, "client_fleet_n", device_info, "inverter/total/YieldDay", "9876.0"}
+      {:noreply, _state} = Telemetry.handle_info(msg1, %{buffers: %{}})
+
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.inverter_serial == "_fleet"
+      assert reading.yield_day == 9876.0
+      assert reading.yield_total == nil
+    end
+
     # End-to-end regression for the user-reported "daily value too high
     # by a factor of 1000 for AhoyDTU" bug. The user reported the
     # dashboard rendering `1856.0 kWh` when the firmware-published
@@ -1510,7 +1588,14 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      msg = {:uplink, "client_ah", device_info, "inverter/total/P_AC", "150.0"}
+      # A topic structure that doesn't match any of the parser's
+      # clauses — not the per-channel numeric form (`{base}/{name}/ch{N}/{Metric}`)
+      # nor the JSON form (`{base}/{name}/ch{N}`), and not the fleet-total
+      # topics (`{base}/total` or `{base}/total/{Metric}`). The parser's
+      # `String.split/2` falls through to the catch-all clause which
+      # returns `{:error, :ignored_topic}` → `Logger.info` log.
+      msg =
+        {:uplink, "client_ah", device_info, "inverter/balcony-inv/totally-bogus/garbage", "150.0"}
 
       # The default test log level (`config :logger, level: :warning`)
       # drops `Logger.info` calls before they reach `ExUnit.CaptureLog`,
@@ -1528,7 +1613,7 @@ defmodule DtuApp.MqttBrokerTest do
       assert log =~ "AhoyDTU"
       assert log =~ to_string(dtu.id)
       assert log =~ "topic not yet handled"
-      assert log =~ "inverter/total/P_AC"
+      assert log =~ "totally-bogus"
       assert log =~ "150.0"
 
       # No row written — the user's manage-device error panel stays clean.

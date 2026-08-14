@@ -936,8 +936,15 @@ defmodule DtuApp.Devices do
   requested date so we can compare day-over-day.
 
   `total_yield` is the lifetime cumulative energy (in kWh) per
-  `(dtu_id, inverter_serial)`. The aggregation is restricted to
-  `mppt_index = 0` (the AC aggregate row) so multi-MPPT AhoyDTU
+  `(dtu_id, inverter_serial)`. For AhoyDTU the parser persists a
+  fleet-total row keyed by `inverter_serial = "_fleet"` (from the
+  firmware's `{base}/total` topic) which the aggregation prefers
+  over per-inverter sums — the firmware already aggregated, so re-
+  summing would only re-introduce rounding error and double-count
+  logic. Per-inverter sums are still used as the fallback for
+  installs that haven't published a `total` row yet, and for OpenDTU
+  (which doesn't publish a fleet total). Both paths are restricted
+  to `mppt_index = 0` (the AC aggregate row) so multi-MPPT AhoyDTU
   inverters don't double-count ch0 + ch1 + ch2 yield values —
   AhoyDTU's ch0 is the inverter's actual yield, ch1+ch2 are
   per-string sub-totals. OpenDTU only persists `yield_day` /
@@ -998,79 +1005,135 @@ defmodule DtuApp.Devices do
         |> Enum.map(&(&1.ac_power || 0.0))
         |> Enum.sum()
 
-      # Today's total yield: MAX(yield_day) per (dtu_id, inverter_serial)
-      # within today's UTC window, restricted to `mppt_index = 0`
-      # (the AC aggregate row). Per-MPPT DC rows (`mppt_index >= 1`)
-      # carry *per-string* values that already sum into the AC aggregate
-      # for AhoyDTU multi-MPPT inverters, so summing across MPPTs
-      # would 2× or 3× the inverter's actual daily production — the
-      # `0.1 → 0.2` (×2) or `0.1 → 0.3` (×3) bug observed by multi-MPPT
-      # Hoymiles / AhoyDTU users. OpenDTU only persists `yield_day` on
-      # `mppt_index = 0` (the consolidated `realtime/data` payload), so
-      # restricting to that index is a no-op for OpenDTU and the
-      # 1-MPPT AhoyDTU case but corrects the 2-MPPT and 3-MPPT cases.
+      # Today's total yield.
+      #
+      # Preference order:
+      #   1. Fleet-total row from AhoyDTU's `{base}/total` topic
+      #      (`inverter_serial = "_fleet"`). The firmware sums every
+      #      inverter's `YieldDay` into this row, so using it verbatim
+      #      avoids the rounding-error + double-count risk of summing
+      #      per-inverter rows. `MAX(yield_day)` over the day matches the
+      #      same monotonic-counter semantics as the per-inverter path.
+      #   2. Per-inverter `MAX(yield_day)` sum, restricted to
+      #      `mppt_index = 0` so multi-MPPT AhoyDTU inverters don't
+      #      double-count ch0 + ch1 + ch2 yields. OpenDTU only persists
+      #      `yield_day` on `mppt_index = 0`, so the restriction is a
+      #      no-op for OpenDTU.
       today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
 
-      today_yield_per_series =
+      fleet_today_rows =
         Repo.all(
           from r in Reading,
             where:
-              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+              r.dtu_id in ^dtu_ids and r.inverter_serial == "_fleet" and
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
+            group_by: r.dtu_id,
             select: %{
               dtu_id: r.dtu_id,
-              inverter_serial: r.inverter_serial,
-              inverter_name: r.inverter_name,
               max_yield: max(r.yield_day)
             }
         )
 
-      today_yield =
-        today_yield_per_series
-        |> Enum.map(fn row ->
-          # nil can leak in if every reading for a series has yield_day: nil
-          # (e.g. an inverter that has never reported a daily total).
+      fleet_today_yield =
+        Enum.reduce(fleet_today_rows, 0.0, fn row, acc ->
           case row.max_yield do
-            nil -> 0.0
-            v -> v
+            nil -> acc
+            v -> acc + v
           end
         end)
-        |> Enum.sum()
 
-      # Lifetime total yield: MAX(yield_total) per (dtu_id, inverter_serial)
-      # across **all** readings — no time-window filter, since the
-      # lifetime counter is monotonic and never resets. Restricted to
-      # `mppt_index = 0` for the same per-MPPT double-count reason as
-      # `today_yield` (see above). Per-string DC values for an
-      # AhoyDTU multi-MPPT inverter would 2× or 3× the inverter's
-      # actual lifetime production if summed across MPPTs.
-      total_yield_per_series =
+      today_yield =
+        if fleet_today_rows != [] do
+          fleet_today_yield
+        else
+          # No fleet-total row for the date (OpenDTU install, or
+          # AhoyDTU install that hasn't published `{base}/total` yet
+          # today). Fall back to per-inverter sums — same shape as
+          # before this change so a half-wired install still renders
+          # the dashboard.
+          today_yield_per_series =
+            Repo.all(
+              from r in Reading,
+                where:
+                  r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                    r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
+                group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
+                select: %{
+                  dtu_id: r.dtu_id,
+                  inverter_serial: r.inverter_serial,
+                  inverter_name: r.inverter_name,
+                  max_yield: max(r.yield_day)
+                }
+            )
+
+          today_yield_per_series
+          |> Enum.map(fn row ->
+            case row.max_yield do
+              nil -> 0.0
+              v -> v
+            end
+          end)
+          |> Enum.sum()
+        end
+
+      # Lifetime total yield.
+      #
+      # Same preference order: fleet-total row first, per-inverter
+      # sum as fallback. Fleet-total rows are persisted across all
+      # readings (no time-window filter — the lifetime counter is
+      # monotonic and never resets), so the same `MAX(yield_total)`
+      # query works for both the fleet and per-inverter paths.
+      fleet_total_rows =
         Repo.all(
           from r in Reading,
-            where: r.dtu_id in ^dtu_ids and r.mppt_index == 0,
-            group_by: [r.dtu_id, r.inverter_serial],
+            where: r.dtu_id in ^dtu_ids and r.inverter_serial == "_fleet",
+            group_by: r.dtu_id,
             select: %{
               dtu_id: r.dtu_id,
-              inverter_serial: r.inverter_serial,
               max_yield_total: max(r.yield_total)
             }
         )
 
-      total_yield_wh =
-        total_yield_per_series
-        |> Enum.map(fn row ->
-          # nil can leak in for a series where every reading has
-          # yield_total: nil (e.g. a brand-new inverter that hasn't yet
-          # reported its lifetime counter). Treat as 0 so the half-wired
-          # inverter doesn't poison the household total.
+      fleet_total_yield_wh =
+        Enum.reduce(fleet_total_rows, 0.0, fn row, acc ->
           case row.max_yield_total do
-            nil -> 0.0
-            v -> v
+            nil -> acc
+            v -> acc + v
           end
         end)
-        |> Enum.sum()
+
+      total_yield_wh =
+        if fleet_total_rows != [] do
+          fleet_total_yield_wh
+        else
+          # Per-inverter `MAX(yield_total)` sum, restricted to
+          # `mppt_index = 0` for the same per-MPPT double-count
+          # reason as `today_yield`. Per-string DC values for an
+          # AhoyDTU multi-MPPT inverter would 2× or 3× the
+          # inverter's actual lifetime production if summed across
+          # MPPTs.
+          total_yield_per_series =
+            Repo.all(
+              from r in Reading,
+                where: r.dtu_id in ^dtu_ids and r.mppt_index == 0,
+                group_by: [r.dtu_id, r.inverter_serial],
+                select: %{
+                  dtu_id: r.dtu_id,
+                  inverter_serial: r.inverter_serial,
+                  max_yield_total: max(r.yield_total)
+                }
+            )
+
+          total_yield_per_series
+          |> Enum.map(fn row ->
+            case row.max_yield_total do
+              nil -> 0.0
+              v -> v
+            end
+          end)
+          |> Enum.sum()
+        end
 
       # Peak power today comes from the 5-minute continuous aggregate. The
       # bucket stays closed until its window fills, so a fast-rising
@@ -1112,6 +1175,30 @@ defmodule DtuApp.Devices do
           end)
         end)
 
+      # Per-inverter breakdown for the chart legend. Computed
+      # independently of the fleet / per-inverter `today_yield` /
+      # `total_yield` aggregation above — `per_series` is about
+      # showing the user "which inverter produced what" on the chart,
+      # not about deduplicating against the fleet-total row. The
+      # `_fleet` row is excluded so the legend shows per-inverter
+      # entries only — the fleet row's contribution is already
+      # captured in `today_yield` (preferred path).
+      per_series_rows =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inverter_serial != "_fleet" and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
+            group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
+            select: %{
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              inverter_name: r.inverter_name,
+              max_yield: max(r.yield_day)
+            }
+        )
+
       %{
         current_power: Float.round(current_power * 1.0, 1),
         # `readings.yield_day` is published by OpenDTU/AhoyDTU in Wh (per the
@@ -1134,7 +1221,7 @@ defmodule DtuApp.Devices do
         # aggregation is restricted to `mppt_index = 0` (the AC aggregate
         # row), each entry is per-inverter, not per-MPPT.
         per_series:
-          Enum.map(today_yield_per_series, fn row ->
+          Enum.map(per_series_rows, fn row ->
             series = {row.dtu_id, row.inverter_serial, 0, row.inverter_name}
 
             %{
@@ -1610,11 +1697,52 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       []
     else
-      readings =
+      # Per-day fleet-total rows (`inverter_serial = "_fleet"`).
+      # Prefer these when present so the chart shows the firmware-
+      # aggregated value verbatim (no re-summing of per-inverter
+      # rows, no double-count risk). Grouping by `(date, dtu_id)`
+      # gives one fleet row per device per day; we take the MAX
+      # since `YieldDay` is monotonic within a day.
+      fleet_daily =
         Repo.all(
           from r in Reading,
             where:
-              r.dtu_id in ^dtu_ids and r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+              r.dtu_id in ^dtu_ids and r.inverter_serial == "_fleet" and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            group_by: [fragment("?::date", r.inserted_at), r.dtu_id],
+            select: %{
+              date: fragment("?::date", r.inserted_at),
+              dtu_id: r.dtu_id,
+              max_yield: max(r.yield_day)
+            }
+        )
+
+      fleet_daily_yields =
+        fleet_daily
+        |> Enum.group_by(fn r ->
+          case r.date do
+            %Date{} = d -> d
+            str when is_binary(str) -> Date.from_iso8601!(str)
+          end
+        end)
+        |> Enum.map(fn {date, dtu_fleet_rows} ->
+          {date,
+           dtu_fleet_rows
+           |> Enum.map(& &1.max_yield)
+           |> Enum.sum()}
+        end)
+        |> Map.new()
+
+      # Per-inverter rows (the fallback path for OpenDTU or for
+      # AhoyDTU installs that haven't published `{base}/total` yet
+      # on a given day). Grouping by `(date, dtu_id, inverter_serial)`
+      # gives one max-yield-per-inverter per device per day.
+      per_inverter_daily =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
             group_by: [fragment("?::date", r.inserted_at), r.dtu_id, r.inverter_serial],
             select: %{
               date: fragment("?::date", r.inserted_at),
@@ -1624,26 +1752,40 @@ defmodule DtuApp.Devices do
             }
         )
 
-      readings
-      |> Enum.group_by(fn r ->
-        case r.date do
-          %Date{} = d -> d
-          str when is_binary(str) -> Date.from_iso8601!(str)
-        end
-      end)
-      |> Enum.map(fn {date, date_readings} ->
-        # `readings.yield_day` is in Wh (see comment in `get_daily_stats/2`).
-        # The historical chart and `total_yield` for the `stats` map both
-        # render with a kWh label, so convert here.
-        total_yield =
-          date_readings
-          |> Enum.map(&(&1.max_yield || 0.0))
-          |> Enum.sum()
-          |> Kernel./(1000)
+      per_inverter_daily_yields =
+        per_inverter_daily
+        |> Enum.group_by(fn r ->
+          case r.date do
+            %Date{} = d -> d
+            str when is_binary(str) -> Date.from_iso8601!(str)
+          end
+        end)
+        |> Enum.map(fn {date, date_readings} ->
+          {date,
+           date_readings
+           |> Enum.map(&(&1.max_yield || 0.0))
+           |> Enum.sum()}
+        end)
+        |> Map.new()
 
-        {date, total_yield}
+      all_dates =
+        (Map.keys(fleet_daily_yields) ++ Map.keys(per_inverter_daily_yields))
+        |> Enum.uniq()
+        |> Enum.sort()
+
+      # `readings.yield_day` is in Wh (see comment in `get_daily_stats/2`).
+      # The historical chart and `total_yield` for the `stats` map both
+      # render with a kWh label, so convert here.
+      Enum.map(all_dates, fn date ->
+        yield_wh =
+          cond do
+            Map.has_key?(fleet_daily_yields, date) -> fleet_daily_yields[date]
+            Map.has_key?(per_inverter_daily_yields, date) -> per_inverter_daily_yields[date]
+            true -> 0.0
+          end
+
+        {date, yield_wh / 1000}
       end)
-      |> Enum.sort_by(fn {date, _} -> date end)
     end
   end
 
