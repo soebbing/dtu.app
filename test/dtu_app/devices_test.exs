@@ -491,6 +491,78 @@ defmodule DtuApp.DevicesTest do
       stats = Devices.get_daily_stats(user)
       assert stats.per_series == []
     end
+
+    test "prefers the fleet-total _fleet row over per-inverter sums (AhoyDTU {base}/total)" do
+      # AhoyDTU's firmware publishes an already-aggregated fleet total
+      # on `{base}/total` (the `stateSendTotals` path). The parser
+      # persists this into a row keyed by `inverter_serial = "_fleet"`,
+      # and `get_daily_stats/3` prefers that row over the per-inverter
+      # `mppt_index = 0` sum — re-summing would re-introduce rounding
+      # error and double-count risk (the firmware already aggregated
+      # across all inverters).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DtuApp.Time.utc_now_usec()
+
+      # Per-inverter ch0 rows: INV-1 reports 1000 Wh/day, INV-2
+      # reports 2000 Wh/day. Naive per-inverter sum would give 3000 Wh.
+      for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: serial,
+          mppt_index: 0,
+          inverter_name: serial,
+          yield_day: yield_day,
+          inserted_at: now
+        })
+      end
+
+      # Fleet-total row from the AhoyDTU {base}/total topic. The
+      # firmware reports 2500 Wh/day (close to but not exactly the
+      # per-inverter sum, due to firmware-side rounding). The
+      # dashboard uses this value verbatim — 2500 Wh / 1000 = 2.5 kWh.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "_fleet",
+        mppt_index: 0,
+        inverter_name: "_fleet",
+        yield_day: 2500.0,
+        inserted_at: now
+      })
+
+      stats = Devices.get_daily_stats(user)
+      # Fleet value preferred (2.5 kWh, NOT the 3.0 kWh naive sum).
+      assert_in_delta stats.today_yield, 2.5, 0.001
+
+      # Per-series still lists per-inverter entries (from the ch0
+      # aggregation, independent of the fleet-preference logic) so
+      # the chart legend has something to render.
+      assert length(stats.per_series) == 2
+    end
+
+    test "falls back to per-inverter sum when no fleet row exists (OpenDTU install)" do
+      # OpenDTU doesn't publish a fleet-total topic — its dashboard
+      # path falls back to summing the per-inverter ch0 rows. The
+      # fallback kicks in only when the fleet row is absent, which is
+      # the common case on OpenDTU installs.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DtuApp.Time.utc_now_usec()
+
+      for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: serial,
+          mppt_index: 0,
+          inverter_name: serial,
+          yield_day: yield_day,
+          inserted_at: now
+        })
+      end
+
+      # No fleet row — fall back to per-inverter sum.
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 3.0, 0.001
+    end
   end
 
   describe "list_day_chart_data/3 — per-series bucketing" do
