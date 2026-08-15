@@ -164,7 +164,7 @@ seed_multi_mppt_today = fn ->
     Stream.iterate(start_minute, &(&1 + interval))
     |> Stream.take_while(&(&1 <= end_minute))
 
-  Enum.reduce(minutes_sequence, %{}, fn minutes, acc ->
+  Enum.reduce(minutes_sequence, %{acc_1: 0.0, acc_2: 0.0}, fn minutes, acc ->
     hour = div(minutes, 60)
     minute = rem(minutes, 60)
 
@@ -180,6 +180,20 @@ seed_multi_mppt_today = fn ->
     inserted_at =
       %{DateTime.new!(today, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
 
+    # Accumulate `yield_day` per inverter, the same way the Roof
+    # Inverter loop above does, so the dashboard's per-inverter
+    # `MAX(yield_day)` aggregation returns the running kWh total
+    # instead of the seeded `0.0`. With `0.0`, Garage Array would
+    # contribute 0 kWh to `today_yield` regardless of how many
+    # readings it has, and the multi-device acceptance tests'
+    # "Garage yield > Roof yield" assertion would fail. The
+    # per-MPPT DC rows below inherit the same per-inverter
+    # accumulator so `MAX(yield_day)` returns the same number
+    # across all MPPTs of the same inverter (the dashboard's
+    # `get_daily_stats/3` collapses per-MPPT rows into the
+    # inverter's AC line for the yield aggregation).
+    new_acc_1 = acc.acc_1 + inverter_1_ac * (interval / 60.0)
+
     Repo.insert!(%Reading{
       dtu_id: dtu3.id,
       inverter_serial: "116180000001",
@@ -187,8 +201,8 @@ seed_multi_mppt_today = fn ->
       mppt_index: 0,
       ac_power: inverter_1_ac,
       dc_power: Float.round(inverter_1_ac * 1.04, 1),
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       frequency: 50.0,
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_1_ac > 2.0,
@@ -207,8 +221,8 @@ seed_multi_mppt_today = fn ->
       mppt_index: 1,
       ac_power: nil,
       dc_power: inverter_1_mppt_1_dc,
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       producing: inverter_1_mppt_1_dc > 2.0,
       reachable: true,
       power_type: "production",
@@ -225,8 +239,8 @@ seed_multi_mppt_today = fn ->
       mppt_index: 2,
       ac_power: nil,
       dc_power: inverter_1_mppt_2_dc,
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       producing: inverter_1_mppt_2_dc > 2.0,
       reachable: true,
       power_type: "production",
@@ -240,6 +254,8 @@ seed_multi_mppt_today = fn ->
     # renders as two distinct lines.
     inverter_2_ac = Float.round(600.0 * sine_val * fluctuation, 1)
 
+    new_acc_2 = acc.acc_2 + inverter_2_ac * (interval / 60.0)
+
     Repo.insert!(%Reading{
       dtu_id: dtu3.id,
       inverter_serial: "116180000002",
@@ -247,8 +263,8 @@ seed_multi_mppt_today = fn ->
       mppt_index: 0,
       ac_power: inverter_2_ac,
       dc_power: Float.round(inverter_2_ac * 1.04, 1),
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_2, 3),
+      yield_total: Float.round(800_000.0 + new_acc_2, 3),
       frequency: 50.0,
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_2_ac > 2.0,
@@ -257,7 +273,7 @@ seed_multi_mppt_today = fn ->
       inserted_at: inserted_at
     })
 
-    acc
+    %{acc_1: new_acc_1, acc_2: new_acc_2}
   end)
 end
 
@@ -277,6 +293,13 @@ seed_multi_mppt_today.()
 # `DateTime.new!/2` returns precision 0 by default, which Ecto's
 # `:utc_datetime_usec` cast rejects — force precision 6 like the
 # sine-arc bucket timestamps above.
+#
+# `yield_day` for the 23:55 row matches the running accumulator
+# from the bucket loop above so `MAX(yield_day)` returns the same
+# value across the bucket row and the live row for each inverter.
+# The exact number depends on the sine arc integral, so we just
+# pick a value larger than the 19:00 bucket's accumulated yield
+# to guarantee the live row wins the `MAX(yield_day)` aggregation.
 live_inserted_at =
   %{DateTime.new!(today, ~T[23:55:00], "Etc/UTC") | microsecond: {0, 6}}
 
@@ -287,8 +310,8 @@ Repo.insert!(%Reading{
   mppt_index: 0,
   ac_power: 800.0,
   dc_power: 832.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   frequency: 50.0,
   temperature: 35.0,
   producing: true,
@@ -304,8 +327,8 @@ Repo.insert!(%Reading{
   mppt_index: 1,
   ac_power: nil,
   dc_power: 440.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   producing: true,
   reachable: true,
   power_type: "production",
@@ -319,8 +342,8 @@ Repo.insert!(%Reading{
   mppt_index: 2,
   ac_power: nil,
   dc_power: 360.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   producing: true,
   reachable: true,
   power_type: "production",
@@ -334,8 +357,8 @@ Repo.insert!(%Reading{
   mppt_index: 0,
   ac_power: 600.0,
   dc_power: 624.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  yield_day: 4_000.0,
+  yield_total: 804_000.0,
   frequency: 50.0,
   temperature: 33.0,
   producing: true,
