@@ -96,6 +96,12 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
     temperature: Float.round(25.0 + 15.0 * sine_val, 1),
     producing: ac_power > 2.0,
     reachable: true,
+    # Set explicitly rather than relying on the schema default so the
+    # seed is portable across the `20260807190000_add_consumption_columns_to_readings`
+    # migration boundary: the column must be populated for the
+    # dashboard's `WHERE power_type = 'production'` filter to keep the
+    # seeded rows visible.
+    power_type: "production",
     inserted_at: inserted_at
   })
 
@@ -158,6 +164,7 @@ seed_multi_mppt_today = fn ->
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_1_ac > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -175,6 +182,7 @@ seed_multi_mppt_today = fn ->
       yield_total: 0.0,
       producing: inverter_1_mppt_1_dc > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -192,6 +200,7 @@ seed_multi_mppt_today = fn ->
       yield_total: 0.0,
       producing: inverter_1_mppt_2_dc > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -211,6 +220,7 @@ seed_multi_mppt_today = fn ->
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_2_ac > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -250,6 +260,7 @@ Repo.insert!(%Reading{
   temperature: 35.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -264,6 +275,7 @@ Repo.insert!(%Reading{
   yield_total: 0.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -278,6 +290,7 @@ Repo.insert!(%Reading{
   yield_total: 0.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -294,6 +307,7 @@ Repo.insert!(%Reading{
   temperature: 33.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -341,6 +355,7 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: ac_power > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
