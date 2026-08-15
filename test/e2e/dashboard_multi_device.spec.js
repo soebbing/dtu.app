@@ -321,14 +321,12 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(balconyYield).toBe(0);
   });
 
-  test('chart paths filter by the selected DTU and the legend reflects the filtered scope', async ({ page }) => {
-    // The dashboard filters the chart's `<path>` elements by the
-    // selected DTU, but the legend strip is a global enumeration of
-    // every `series_legend` entry across all devices — clicking a
-    // device narrows the chart but the legend names always include
-    // the full set. Pin that distinction so the test catches a
-    // regression on either side (filtered chart without a legend
-    // or global legend presented as if it were scoped).
+  test('chart paths filter by the selected DTU', async ({ page }) => {
+    // The dashboard filters both the chart's `<path>` elements and
+    // the legend strip by the selected DTU — clicking a device narrows
+    // both. Pin that scope so a regression on either side
+    // (filtered chart, full legend, or vice-versa) gets a clear
+    // failure.
     await page.locator('#dtu-switcher button', { hasText: 'Roof Inverter' }).click();
     await selectDtuAndWaitForPathCount(page, '#dtu-switcher button:has-text("Roof Inverter")', 1);
 
@@ -342,27 +340,23 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(roofInverterKeys).toHaveLength(1);
     expect(roofSeriesKeys).not.toContain('total');
 
-    // Wait for the legend strip to render the legend buttons (the
-    // chart buttons render in the same LiveView patch, but a tick
-    // later — separate poll keeps the test honest).
+    // Wait for the legend strip to render. It mirrors the chart paths
+    // (one entry per inverter in scope, no fleet Total because
+    // there's only one inverter).
     await page.waitForFunction(
       () => document.querySelectorAll('#chart-legend button[data-legend-key]').length > 0,
       null,
       { timeout: 10000 }
     );
-
-    // Legend strip keys: the legend shows every series in the
-    // user's fleet, including the ones for the non-selected
-    // devices. So Garage Array's two inverter keys ARE present even
-    // though the chart paths aren't.
-    const legendKeys = await page
+    const roofLegendKeys = await page
       .locator('#chart-legend button[data-legend-key]')
       .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
-    const allInverterKeys = legendKeys.filter(k => k.startsWith('series:'));
-    expect(allInverterKeys.length).toBeGreaterThanOrEqual(3);
+    expect(roofLegendKeys.filter(k => k.startsWith('series:'))).toHaveLength(1);
+    expect(roofLegendKeys).not.toContain('total');
 
-    // Switch to Garage Array — chart paths filter to its two
-    // inverters and the Total line reappears.
+    // Switch to Garage Array — chart paths and legend both filter to
+    // its two inverters, plus the fleet Total line reappears (>1
+    // inverter in scope).
     await selectDtuAndWaitForPathCount(
       page,
       '#dtu-switcher button:has-text("Garage Array")',
@@ -373,6 +367,17 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
       .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
     expect(garageSeriesKeys.filter(k => k.startsWith('series:'))).toHaveLength(2);
     expect(garageSeriesKeys).toContain('total');
+
+    await page.waitForFunction(
+      () => document.querySelectorAll('#chart-legend button[data-legend-key]').length > 1,
+      null,
+      { timeout: 10000 }
+    );
+    const garageLegendKeys = await page
+      .locator('#chart-legend button[data-legend-key]')
+      .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
+    expect(garageLegendKeys.filter(k => k.startsWith('series:'))).toHaveLength(2);
+    expect(garageLegendKeys).toContain('total');
   });
 
   test('Balcony Inverter (no today data) renders an empty chart and zero stats', async ({ page }) => {
