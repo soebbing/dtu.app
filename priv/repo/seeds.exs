@@ -7,6 +7,29 @@ alias DtuApp.Accounts.User
 alias DtuApp.Devices
 alias DtuApp.Devices.Reading
 
+# Seeded device yield magnitudes (today's power curve peaks). Picked
+# so each device's `today_yield` is distinct from the others AND the
+# numbering is in a clear, predictable order. Used by the e2e suite
+# to assert that switching devices in the dashboard changes the value
+# — without this ordering, two devices can produce identical kWh
+# after rounding and the multi-device acceptance tests
+# (`dashboard_multi_device.spec.js`) flake.
+#
+#   1. Roof Inverter (OpenDTU): 500 W peak — single inverter.
+#   2. Garage Array (OpenDTU):  800 W + 600 W peak — two inverters
+#      (multi-MPPT). The fleet per-day kWh > Roof Inverter.
+#   3. Balcony Inverter (AhoyDTU): 0 W today — historical only.
+#
+# Magnitude order (today's `today_yield`):
+#   Garage Array > Roof Inverter > Balcony Inverter (0)
+# So Total = Garage + Roof (Balcony contributes 0 today).
+#
+# Historical days (per the seed loops at the bottom of the file):
+#   Roof Inverter and Balcony Inverter both have historical readings
+#   at day_offset = 1, so the historical Day view's Total aggregates
+#   two inverters. Garage Array has NO historical readings — only
+#   the today sine arc.
+
 # Clean up existing data to prevent conflict when reseeding
 Repo.delete_all(Reading)
 Repo.delete_all(Devices.Dtu)
@@ -69,7 +92,11 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
 
   # Add slight random fluctuation (+/- 5%) to represent cloud passings
   fluctuation = 1.0 + (:rand.uniform() * 0.1 - 0.05)
-  ac_power = Float.round(580.0 * sine_val * fluctuation, 1)
+  # 500 W peak (single inverter). Smaller than Garage Array's two
+  # inverters combined, so the dashboard's per-device yield ordering
+  # is Garage Array > Roof Inverter > Balcony Inverter (0) — see the
+  # magnitude ordering at the top of this file.
+  ac_power = Float.round(500.0 * sine_val * fluctuation, 1)
 
   # Accumulate today's yield. `readings.yield_day` is in Wh (per OpenDTU /
   # AhoyDTU firmware), so write Wh directly here: power in Watts times
@@ -146,7 +173,9 @@ seed_multi_mppt_today = fn ->
     fluctuation = 1.0 + (:rand.uniform() * 0.1 - 0.05)
 
     # Inverter 1: AC row with both ac_power and dc_power totals.
-    inverter_1_ac = Float.round(580.0 * sine_val * fluctuation, 1)
+    # 800 W peak — larger than the Roof Inverter's single 500 W
+    # inverter so the Garage Array's combined yield > Roof Inverter.
+    inverter_1_ac = Float.round(800.0 * sine_val * fluctuation, 1)
 
     inserted_at =
       %{DateTime.new!(today, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
@@ -205,7 +234,11 @@ seed_multi_mppt_today = fn ->
     })
 
     # Inverter 2: single MPPT — only AC + DC totals, no per-MPPT breakdown.
-    inverter_2_ac = Float.round(380.0 * sine_val * fluctuation, 1)
+    # 600 W peak — second inverter of Garage Array. Combined with
+    # inverter 1 (800 W), the Garage Array exposes a clear
+    # 800 W + 600 W split that the dashboard's per-inverter chart
+    # renders as two distinct lines.
+    inverter_2_ac = Float.round(600.0 * sine_val * fluctuation, 1)
 
     Repo.insert!(%Reading{
       dtu_id: dtu3.id,
@@ -252,8 +285,8 @@ Repo.insert!(%Reading{
   inverter_serial: "116180000001",
   inverter_name: "West Roof",
   mppt_index: 0,
-  ac_power: 480.0,
-  dc_power: 499.2,
+  ac_power: 800.0,
+  dc_power: 832.0,
   yield_day: 0.0,
   yield_total: 0.0,
   frequency: 50.0,
@@ -270,7 +303,7 @@ Repo.insert!(%Reading{
   inverter_name: "West Roof",
   mppt_index: 1,
   ac_power: nil,
-  dc_power: 264.0,
+  dc_power: 440.0,
   yield_day: 0.0,
   yield_total: 0.0,
   producing: true,
@@ -285,7 +318,7 @@ Repo.insert!(%Reading{
   inverter_name: "West Roof",
   mppt_index: 2,
   ac_power: nil,
-  dc_power: 216.0,
+  dc_power: 360.0,
   yield_day: 0.0,
   yield_total: 0.0,
   producing: true,
@@ -299,8 +332,8 @@ Repo.insert!(%Reading{
   inverter_serial: "116180000002",
   inverter_name: "East Garage",
   mppt_index: 0,
-  ac_power: 320.0,
-  dc_power: 332.8,
+  ac_power: 600.0,
+  dc_power: 624.0,
   yield_day: 0.0,
   yield_total: 0.0,
   frequency: 50.0,

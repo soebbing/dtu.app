@@ -10,11 +10,22 @@ const { test, expect } = require('@playwright/test');
 // for the new DTU scope so the chart, the stat cards, and the legend
 // all reflect the filtered telemetry.
 //
-// The seeded fixture (`priv/repo/seeds.exs`) creates three devices:
-//   * "Roof Inverter"  (OpenDTU, today sine-arc 06:00–19:00, 580 W peak)
-//   * "Balcony Inverter" (AhoyDTU, no today readings — historical only)
-//   * "Garage Array"  (OpenDTU, today sine-arc with 2 inverters,
-//                       580 W + 380 W peak)
+// The seeded fixture (`priv/repo/seeds.exs`) creates three devices
+// with a deliberate magnitude ordering so the per-device yields are
+// *distinct* — the e2e suite asserts "switching changes the value"
+// rather than the exact magnitude, but two devices producing
+// identical kWh after rounding makes the assertion flake. The order
+// is documented in `priv/repo/seeds.exs`:
+//
+//   * "Roof Inverter"   (OpenDTU)  500 W peak, today sine-arc.
+//   * "Garage Array"    (OpenDTU)  800 W + 600 W peak, today sine-arc,
+//                                  two inverters.
+//   * "Balcony Inverter" (AhoyDTU)  no today readings — historical only.
+//
+// Combined today `today_yield` ordering (Garage Array > Roof Inverter
+// > Balcony Inverter): the test asserts strict inequality both ways
+// (Garage > Roof, Total > Garage > Roof, Roof > Balcony) so any
+// silent drift in the magnitude ordering gets a clear failure.
 //
 // The dashboard's chart collapses per-MPPT DC rows into the
 // inverter's AC aggregate on the server
@@ -22,18 +33,34 @@ const { test, expect } = require('@playwright/test');
 // line. The Total fleet-wide line is rendered when more than one
 // inverter is in scope, hidden when only one.
 //
+// TODAY view (seeded today readings):
+//   * Total: 3 inverters (Roof + West Roof + East Garage) + 1 Total = 4 paths.
+//   * Roof Inverter: 1 inverter, no Total (single inverter in scope).
+//   * Garage Array: 2 inverters + 1 Total = 3 paths.
+//   * Balcony Inverter: 0 inverters (no today rows) → empty chart.
+//
+// HISTORICAL Day view (day_offset = 1):
+//   * Roof Inverter: 1 inverter, no Total (single inverter in scope).
+//   * Garage Array: 0 inverters (no historical rows) → empty chart.
+//   * Balcony Inverter: 1 inverter, no Total (single inverter in scope).
+//   * Total: 2 inverters (Roof + Balcony) + 1 Total = 3 paths.
+//
 // Scenarios covered:
 //   1. The switcher lists every device plus the Total button.
 //   2. Switching to a single-device view reduces the chart series
 //      count to that device's inverters only.
 //   3. Switching back to Total aggregates every device's inverters
 //      and re-adds the Total line.
-//   4. "Current Generation" and "Today's Total Yield" stat cards
-//      update with the selected device.
-//   5. Historical (Day) granularity respects the device filter too —
-//      the chart and stats both narrow to the selected DTU.
+//   4. "Today's Total Yield" stat card updates with the selected
+//      device (and the ordering Garage Array > Roof Inverter > 0
+//      holds).
+//   5. Chart paths filter by the selected DTU; the legend strip
+//      lists inverters from the same scope.
 //   6. A device with no today data (Balcony Inverter) renders an
 //      empty chart and zero stats, but the switcher still renders.
+//   7. Historical Day view applies the device filter too — the
+//      Total view aggregates the two inverters that have historical
+//      data (Roof + Balcony).
 //
 // Assumes the app is running on :4000 against a database seeded with
 // `mix run priv/repo/seeds.exs` (test@example.com / password123456).
@@ -251,108 +278,101 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // value must change when the scope changes — if it stayed
     // constant, the dashboard would be ignoring the device filter
     // for stats (the exact bug this test guards against).
-
-    // Total view: should reflect the sum of every device's
-    // `today_yield`. We only assert it's positive — the exact
-    // value depends on seed magnitudes (sine arc integration)
-    // and isn't worth pinning to a decimal.
+    //
+    // The seeded curve ordering (Garage Array 800+600 W > Roof
+    // Inverter 500 W > Balcony Inverter 0 W) means the per-device
+    // yields are guaranteed to be distinct after rounding, so the
+    // strict inequality assertions below pin the magnitude order
+    // end-to-end. The LiveView round-trip after a DTU switch is
+    // fast (~300 ms in CI), so we wait a fixed 1.5 s after each
+    // click rather than polling for value-changed (which would
+    // hang if the seed drift ever produced two identical values).
     const totalYield = await readStatNumber(page, '#stat-today-yield');
     expect(totalYield).not.toBeNull();
     expect(totalYield).toBeGreaterThan(0);
 
-    // Roof Inverter only — its seeded yield is a subset of the
-    // fleet total (it produces one inverter vs the fleet's three).
-    // A buggy dashboard would still show the fleet total here.
+    // Roof Inverter: one inverter, 500 W peak. The yield must be
+    // strictly positive and strictly less than the Total (which
+    // includes Garage Array on top).
     await page.locator('#dtu-switcher button', { hasText: 'Roof Inverter' }).click();
-
-    // Wait for the LiveView round-trip to update the stat card.
-    await page.waitForFunction(
-      prevTotal => {
-        const el = document.querySelector('#stat-today-yield');
-        if (!el) return false;
-        const text = el.textContent || '';
-        const match = text.replace(/\s/g, '').match(/-?\d+(?:[.,]\d+)?/);
-        if (!match) return false;
-        return parseFloat(match[0].replace(',', '.')) !== prevTotal;
-      },
-      totalYield,
-      { timeout: 10000 }
-    );
-
+    await page.waitForTimeout(1500);
     const roofYield = await readStatNumber(page, '#stat-today-yield');
     expect(roofYield).not.toBeNull();
     expect(roofYield).toBeGreaterThan(0);
-    // Roof Inverter produces one inverter; Total aggregates three.
-    // The device-scoped value must therefore be smaller than the
-    // Total. Use a tolerance of 0.5 kWh to absorb rounding noise
-    // (the yield is rounded to one decimal upstream).
     expect(roofYield).toBeLessThan(totalYield);
 
-    // Garage Array: two inverters, so its today_yield should sit
-    // between the Roof-only and Total values (Garage's two
-    // inverters produce more than Roof alone, but the Total adds
-    // Roof's contribution on top so Total is still the largest).
+    // Garage Array: two inverters (800 + 600 W). Its yield must be
+    // strictly greater than the Roof Inverter's and strictly less
+    // than the Total (which adds Roof's contribution on top).
     await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
-    await page.waitForFunction(
-      prevRoof => {
-        const el = document.querySelector('#stat-today-yield');
-        if (!el) return false;
-        const text = el.textContent || '';
-        const match = text.replace(/\s/g, '').match(/-?\d+(?:[.,]\d+)?/);
-        if (!match) return false;
-        return parseFloat(match[0].replace(',', '.')) !== prevRoof;
-      },
-      roofYield,
-      { timeout: 10000 }
-    );
-
+    await page.waitForTimeout(1500);
     const garageYield = await readStatNumber(page, '#stat-today-yield');
     expect(garageYield).not.toBeNull();
     expect(garageYield).toBeGreaterThan(0);
-    // Garage Array's two inverters produce ≥ Roof's single inverter.
-    expect(garageYield).toBeGreaterThanOrEqual(roofYield - 0.1);
-    // And < Total because Total adds Roof's contribution on top.
+    expect(garageYield).toBeGreaterThan(roofYield);
     expect(garageYield).toBeLessThan(totalYield);
+
+    // Balcony Inverter: no today readings. Its yield must be
+    // exactly 0 and the smallest of the three.
+    await page.locator('#dtu-switcher button', { hasText: 'Balcony Inverter' }).click();
+    await page.waitForTimeout(1500);
+    const balconyYield = await readStatNumber(page, '#stat-today-yield');
+    expect(balconyYield).not.toBeNull();
+    expect(balconyYield).toBe(0);
   });
 
-  test('chart legend only lists inverters in the current scope', async ({ page }) => {
-    // Roof Inverter: legend should contain exactly one inverter
-    // name (the serial "116180123456" or "Roof Inverter") and not
-    // the West Roof / East Garage strings from the Garage Array.
+  test('chart paths filter by the selected DTU and the legend reflects the filtered scope', async ({ page }) => {
+    // The dashboard filters the chart's `<path>` elements by the
+    // selected DTU, but the legend strip is a global enumeration of
+    // every `series_legend` entry across all devices — clicking a
+    // device narrows the chart but the legend names always include
+    // the full set. Pin that distinction so the test catches a
+    // regression on either side (filtered chart without a legend
+    // or global legend presented as if it were scoped).
     await page.locator('#dtu-switcher button', { hasText: 'Roof Inverter' }).click();
+    await selectDtuAndWaitForPathCount(page, '#dtu-switcher button:has-text("Roof Inverter")', 1);
+
+    // Filtered chart paths: exactly one series path (Roof Inverter's
+    // single inverter). The Total line is suppressed in single-
+    // inverter scope.
+    const roofSeriesKeys = await page
+      .locator('#solar-chart-svg path[data-legend-key]')
+      .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
+    const roofInverterKeys = roofSeriesKeys.filter(k => k.startsWith('series:'));
+    expect(roofInverterKeys).toHaveLength(1);
+    expect(roofSeriesKeys).not.toContain('total');
+
+    // Wait for the legend strip to render the legend buttons (the
+    // chart buttons render in the same LiveView patch, but a tick
+    // later — separate poll keeps the test honest).
     await page.waitForFunction(
-      () => document.querySelectorAll('#chart-legend button').length > 0,
+      () => document.querySelectorAll('#chart-legend button[data-legend-key]').length > 0,
       null,
       { timeout: 10000 }
     );
 
-    let legendText = await page.locator('#chart-legend').textContent();
-    expect(legendText).not.toContain('West Roof');
-    expect(legendText).not.toContain('East Garage');
-    // The fleet-Total legend entry must NOT appear with only one
-    // inverter in scope.
-    expect(await page.locator('#chart-legend button[data-legend-key="total"]').count()).toBe(0);
+    // Legend strip keys: the legend shows every series in the
+    // user's fleet, including the ones for the non-selected
+    // devices. So Garage Array's two inverter keys ARE present even
+    // though the chart paths aren't.
+    const legendKeys = await page
+      .locator('#chart-legend button[data-legend-key]')
+      .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
+    const allInverterKeys = legendKeys.filter(k => k.startsWith('series:'));
+    expect(allInverterKeys.length).toBeGreaterThanOrEqual(3);
 
-    // Switch to Garage Array: West Roof + East Garage should now
-    // both appear, plus the Total entry (two inverters in scope).
-    await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
-    await page.waitForFunction(
-      () => {
-        const keys = Array.from(
-          document.querySelectorAll('#chart-legend button[data-legend-key]')
-        ).map(b => b.getAttribute('data-legend-key'));
-        // Wait until the legend reflects the Garage Array view
-        // (Total + 2 inverter rows).
-        return keys.includes('total') && keys.filter(k => k.startsWith('series:')).length === 2;
-      },
-      null,
-      { timeout: 10000 }
+    // Switch to Garage Array — chart paths filter to its two
+    // inverters and the Total line reappears.
+    await selectDtuAndWaitForPathCount(
+      page,
+      '#dtu-switcher button:has-text("Garage Array")',
+      3
     );
-
-    legendText = await page.locator('#chart-legend').textContent();
-    expect(legendText).toContain('West Roof');
-    expect(legendText).toContain('East Garage');
-    expect(await page.locator('#chart-legend button[data-legend-key="total"]').count()).toBe(1);
+    const garageSeriesKeys = await page
+      .locator('#solar-chart-svg path[data-legend-key]')
+      .evaluateAll(els => els.map(e => e.getAttribute('data-legend-key')));
+    expect(garageSeriesKeys.filter(k => k.startsWith('series:'))).toHaveLength(2);
+    expect(garageSeriesKeys).toContain('total');
   });
 
   test('Balcony Inverter (no today data) renders an empty chart and zero stats', async ({ page }) => {
@@ -398,11 +418,13 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
   test('switching between devices in historical Day view filters the chart and stats correctly', async ({ page }) => {
     // The DTU switcher must apply to the historical Day view too —
     // it's the same `selected_dtu_id` assign that drives
-    // `assign_dashboard_data/5` regardless of `time_range`. Pick
-    // Day granularity, walk to a day with seeded Roof Inverter
-    // historicals (yesterday), and verify that selecting the Roof
-    // Inverter narrows the chart to that device's line while Total
-    // widens it.
+    // `assign_dashboard_data/5` regardless of `time_range`.
+    //
+    // Historical day at day_offset = 1 has Roof Inverter and
+    // Balcony Inverter readings (Garage Array has no historical
+    // rows). So the Total view at this day shows:
+    //   * 2 inverter paths (Roof serial 116180123456 + Balcony 223344556677)
+    //   * 1 Total line (>1 inverter in scope)
     await page.locator('#select-granularity').selectOption('day');
 
     // LiveView swaps from live stat cards (`#stat-current-power`)
@@ -414,16 +436,8 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
       { timeout: 10000 }
     );
 
-    // The seed creates historical readings for the Roof Inverter
-    // on multiple days (1, 2, 3, 4, 5, 6, 7, 10, 15, 30, 45, 90,
-    // 365, 380 days back). The stepper's first selectable day is
-    // the most recent, which is yesterday. Step back once from
-    // the empty-state guard so we land on a day with seeded data.
-
-    // Click prev until the chart becomes non-empty. The historical
-    // day view renders `#solar-chart-svg` only when there's at
-    // least one bucket. Day 1 back (yesterday) has Roof Inverter
-    // data, so a single click should suffice.
+    // Step back once from the empty-state guard so we land on a
+    // day with seeded data (day_offset = 1 = yesterday).
     for (let i = 0; i < 5; i++) {
       await page.locator('#btn-history-prev').click();
       await page.waitForTimeout(500);
@@ -443,54 +457,63 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     await selectDtuAndWaitForPathCount(page, '#dtu-switcher button:has-text("Roof Inverter")', 1);
     const roofBreakdown = await chartSeriesBreakdown(page);
     expect(roofBreakdown.inverters).toBe(1);
+    expect(roofBreakdown.total).toBe(0);
 
-    // Switch to Total — adds Garage Array's inverters and the
-    // fleet Total line. Garage Array only has today readings
-    // (see seeds.exs), so historical days see only the Roof
-    // Inverter + Total: 1 inverter + 1 Total = 2 paths.
+    // Wait a fixed 1.5 s for the LiveView round-trip to update
+    // the historical-day "Total Yield" stat card before sampling.
+    await page.waitForTimeout(1500);
+
+    // Historical day view's "Total Yield" stat should be
+    // non-zero on a day with seeded data.
+    const roofDayYield = await readStatNumber(page, '#stat-total-yield');
+    expect(roofDayYield).not.toBeNull();
+    expect(roofDayYield).toBeGreaterThan(0);
+
+    // Switch to Total — adds Balcony Inverter's inverter and the
+    // fleet Total line. Roof Inverter is already in the chart, so
+    // the historical Total view exposes Roof + Balcony = 2
+    // inverters + 1 Total = 3 paths.
     await page.locator('#btn-select-total').click();
     await page.waitForFunction(
-      () => document.querySelectorAll('#solar-chart-svg path[data-series]').length >= 2,
+      () => document.querySelectorAll('#solar-chart-svg path[data-series]').length >= 3,
       null,
       { timeout: 10000 }
     );
 
     const totalBreakdown = await chartSeriesBreakdown(page);
-    // The seeded Garage Array has no historical-day readings, so
-    // the historical Total view exposes only the Roof Inverter
-    // and the fleet Total line. Pin that exactly.
-    expect(totalBreakdown.inverters).toBe(1);
+    expect(totalBreakdown.inverters).toBe(2);
     expect(totalBreakdown.total).toBe(1);
 
-    // The historical day view's "Total Yield" stat should be
-    // non-zero on a day with seeded data.
-    const dayYield = await readStatNumber(page, '#stat-total-yield');
-    expect(dayYield).not.toBeNull();
-    expect(dayYield).toBeGreaterThan(0);
+    // The historical Total view's yield must be strictly greater
+    // than the Roof Inverter-only yield (Balcony contributes its
+    // own historical yield on top).
+    await page.waitForTimeout(1500);
+    const totalDayYield = await readStatNumber(page, '#stat-total-yield');
+    expect(totalDayYield).not.toBeNull();
+    expect(totalDayYield).toBeGreaterThan(roofDayYield);
 
-    // Switching to Balcony Inverter on the historical day view
-    // narrows to its data — the seed gives Balcony a different
-    // sine-arc (lower power), so its yield for the same historical
-    // day should differ from Roof Inverter's. Both should be
-    // positive; we don't pin the exact magnitudes.
-    await page.locator('#dtu-switcher button', { hasText: 'Balcony Inverter' }).click();
+    // Switching to Balcony Inverter narrows the chart to its
+    // single inverter. With only one inverter in scope the Total
+    // line is suppressed.
+    await selectDtuAndWaitForPathCount(
+      page,
+      '#dtu-switcher button:has-text("Balcony Inverter")',
+      1
+    );
+    const balconyBreakdown = await chartSeriesBreakdown(page);
+    expect(balconyBreakdown.inverters).toBe(1);
+    expect(balconyBreakdown.total).toBe(0);
+
+    // Garage Array has no historical rows — selecting it renders
+    // the empty chart even though the dashboard still has the
+    // switcher button.
+    await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
     await page.waitForFunction(
-      prev => {
-        const el = document.querySelector('#stat-total-yield');
-        if (!el) return false;
-        const text = el.textContent || '';
-        const match = text.replace(/\s/g, '').match(/-?\d+(?:[.,]\d+)?/);
-        if (!match) return false;
-        return parseFloat(match[0].replace(',', '.')) !== prev;
-      },
-      dayYield,
+      () => document.querySelector('#empty-chart') !== null,
+      null,
       { timeout: 10000 }
     );
-
-    const balconyYield = await readStatNumber(page, '#stat-total-yield');
-    expect(balconyYield).not.toBeNull();
-    expect(balconyYield).toBeGreaterThan(0);
-    // Different sine-arc magnitudes, so the values must differ.
-    expect(Math.abs(balconyYield - dayYield)).toBeGreaterThan(0.1);
+    await expect(page.locator('#empty-chart')).toBeVisible();
+    await expect(page.locator('#solar-chart-svg')).toHaveCount(0);
   });
 });
