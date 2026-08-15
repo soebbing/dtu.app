@@ -2,6 +2,10 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './test/e2e',
+  // The global setup re-seeds the database via `mix run priv/repo/seeds.exs`
+  // before any test runs. Set `E2E_SKIP_SEED=1` to skip the reseed when
+  // iterating on a single test against an already-seeded DB.
+  globalSetup: './test/e2e/_setup/global-setup.js',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

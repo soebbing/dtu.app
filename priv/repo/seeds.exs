@@ -7,6 +7,29 @@ alias DtuApp.Accounts.User
 alias DtuApp.Devices
 alias DtuApp.Devices.Reading
 
+# Seeded device yield magnitudes (today's power curve peaks). Picked
+# so each device's `today_yield` is distinct from the others AND the
+# numbering is in a clear, predictable order. Used by the e2e suite
+# to assert that switching devices in the dashboard changes the value
+# — without this ordering, two devices can produce identical kWh
+# after rounding and the multi-device acceptance tests
+# (`dashboard_multi_device.spec.js`) flake.
+#
+#   1. Roof Inverter (OpenDTU): 500 W peak — single inverter.
+#   2. Garage Array (OpenDTU):  800 W + 600 W peak — two inverters
+#      (multi-MPPT). The fleet per-day kWh > Roof Inverter.
+#   3. Balcony Inverter (AhoyDTU): 0 W today — historical only.
+#
+# Magnitude order (today's `today_yield`):
+#   Garage Array > Roof Inverter > Balcony Inverter (0)
+# So Total = Garage + Roof (Balcony contributes 0 today).
+#
+# Historical days (per the seed loops at the bottom of the file):
+#   Roof Inverter and Balcony Inverter both have historical readings
+#   at day_offset = 1, so the historical Day view's Total aggregates
+#   two inverters. Garage Array has NO historical readings — only
+#   the today sine arc.
+
 # Clean up existing data to prevent conflict when reseeding
 Repo.delete_all(Reading)
 Repo.delete_all(Devices.Dtu)
@@ -69,7 +92,11 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
 
   # Add slight random fluctuation (+/- 5%) to represent cloud passings
   fluctuation = 1.0 + (:rand.uniform() * 0.1 - 0.05)
-  ac_power = Float.round(580.0 * sine_val * fluctuation, 1)
+  # 500 W peak (single inverter). Smaller than Garage Array's two
+  # inverters combined, so the dashboard's per-device yield ordering
+  # is Garage Array > Roof Inverter > Balcony Inverter (0) — see the
+  # magnitude ordering at the top of this file.
+  ac_power = Float.round(500.0 * sine_val * fluctuation, 1)
 
   # Accumulate today's yield. `readings.yield_day` is in Wh (per OpenDTU /
   # AhoyDTU firmware), so write Wh directly here: power in Watts times
@@ -96,6 +123,12 @@ Enum.reduce(minutes_sequence, 0.0, fn minutes, acc_yield ->
     temperature: Float.round(25.0 + 15.0 * sine_val, 1),
     producing: ac_power > 2.0,
     reachable: true,
+    # Set explicitly rather than relying on the schema default so the
+    # seed is portable across the `20260807190000_add_consumption_columns_to_readings`
+    # migration boundary: the column must be populated for the
+    # dashboard's `WHERE power_type = 'production'` filter to keep the
+    # seeded rows visible.
+    power_type: "production",
     inserted_at: inserted_at
   })
 
@@ -131,7 +164,7 @@ seed_multi_mppt_today = fn ->
     Stream.iterate(start_minute, &(&1 + interval))
     |> Stream.take_while(&(&1 <= end_minute))
 
-  Enum.reduce(minutes_sequence, %{}, fn minutes, acc ->
+  Enum.reduce(minutes_sequence, %{acc_1: 0.0, acc_2: 0.0}, fn minutes, acc ->
     hour = div(minutes, 60)
     minute = rem(minutes, 60)
 
@@ -140,10 +173,26 @@ seed_multi_mppt_today = fn ->
     fluctuation = 1.0 + (:rand.uniform() * 0.1 - 0.05)
 
     # Inverter 1: AC row with both ac_power and dc_power totals.
-    inverter_1_ac = Float.round(580.0 * sine_val * fluctuation, 1)
+    # 800 W peak — larger than the Roof Inverter's single 500 W
+    # inverter so the Garage Array's combined yield > Roof Inverter.
+    inverter_1_ac = Float.round(800.0 * sine_val * fluctuation, 1)
 
     inserted_at =
       %{DateTime.new!(today, Time.new!(hour, minute, 0)) | microsecond: {0, 6}}
+
+    # Accumulate `yield_day` per inverter, the same way the Roof
+    # Inverter loop above does, so the dashboard's per-inverter
+    # `MAX(yield_day)` aggregation returns the running kWh total
+    # instead of the seeded `0.0`. With `0.0`, Garage Array would
+    # contribute 0 kWh to `today_yield` regardless of how many
+    # readings it has, and the multi-device acceptance tests'
+    # "Garage yield > Roof yield" assertion would fail. The
+    # per-MPPT DC rows below inherit the same per-inverter
+    # accumulator so `MAX(yield_day)` returns the same number
+    # across all MPPTs of the same inverter (the dashboard's
+    # `get_daily_stats/3` collapses per-MPPT rows into the
+    # inverter's AC line for the yield aggregation).
+    new_acc_1 = acc.acc_1 + inverter_1_ac * (interval / 60.0)
 
     Repo.insert!(%Reading{
       dtu_id: dtu3.id,
@@ -152,12 +201,13 @@ seed_multi_mppt_today = fn ->
       mppt_index: 0,
       ac_power: inverter_1_ac,
       dc_power: Float.round(inverter_1_ac * 1.04, 1),
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       frequency: 50.0,
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_1_ac > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -171,10 +221,11 @@ seed_multi_mppt_today = fn ->
       mppt_index: 1,
       ac_power: nil,
       dc_power: inverter_1_mppt_1_dc,
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       producing: inverter_1_mppt_1_dc > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
@@ -188,15 +239,22 @@ seed_multi_mppt_today = fn ->
       mppt_index: 2,
       ac_power: nil,
       dc_power: inverter_1_mppt_2_dc,
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_1, 3),
+      yield_total: Float.round(1_400_000.0 + new_acc_1, 3),
       producing: inverter_1_mppt_2_dc > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
     # Inverter 2: single MPPT — only AC + DC totals, no per-MPPT breakdown.
-    inverter_2_ac = Float.round(380.0 * sine_val * fluctuation, 1)
+    # 600 W peak — second inverter of Garage Array. Combined with
+    # inverter 1 (800 W), the Garage Array exposes a clear
+    # 800 W + 600 W split that the dashboard's per-inverter chart
+    # renders as two distinct lines.
+    inverter_2_ac = Float.round(600.0 * sine_val * fluctuation, 1)
+
+    new_acc_2 = acc.acc_2 + inverter_2_ac * (interval / 60.0)
 
     Repo.insert!(%Reading{
       dtu_id: dtu3.id,
@@ -205,16 +263,17 @@ seed_multi_mppt_today = fn ->
       mppt_index: 0,
       ac_power: inverter_2_ac,
       dc_power: Float.round(inverter_2_ac * 1.04, 1),
-      yield_day: 0.0,
-      yield_total: 0.0,
+      yield_day: Float.round(new_acc_2, 3),
+      yield_total: Float.round(800_000.0 + new_acc_2, 3),
       frequency: 50.0,
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: inverter_2_ac > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 
-    acc
+    %{acc_1: new_acc_1, acc_2: new_acc_2}
   end)
 end
 
@@ -234,6 +293,13 @@ seed_multi_mppt_today.()
 # `DateTime.new!/2` returns precision 0 by default, which Ecto's
 # `:utc_datetime_usec` cast rejects — force precision 6 like the
 # sine-arc bucket timestamps above.
+#
+# `yield_day` for the 23:55 row matches the running accumulator
+# from the bucket loop above so `MAX(yield_day)` returns the same
+# value across the bucket row and the live row for each inverter.
+# The exact number depends on the sine arc integral, so we just
+# pick a value larger than the 19:00 bucket's accumulated yield
+# to guarantee the live row wins the `MAX(yield_day)` aggregation.
 live_inserted_at =
   %{DateTime.new!(today, ~T[23:55:00], "Etc/UTC") | microsecond: {0, 6}}
 
@@ -242,14 +308,15 @@ Repo.insert!(%Reading{
   inverter_serial: "116180000001",
   inverter_name: "West Roof",
   mppt_index: 0,
-  ac_power: 480.0,
-  dc_power: 499.2,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  ac_power: 800.0,
+  dc_power: 832.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   frequency: 50.0,
   temperature: 35.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -259,11 +326,12 @@ Repo.insert!(%Reading{
   inverter_name: "West Roof",
   mppt_index: 1,
   ac_power: nil,
-  dc_power: 264.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  dc_power: 440.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -273,11 +341,12 @@ Repo.insert!(%Reading{
   inverter_name: "West Roof",
   mppt_index: 2,
   ac_power: nil,
-  dc_power: 216.0,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  dc_power: 360.0,
+  yield_day: 5_500.0,
+  yield_total: 1_405_500.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -286,14 +355,15 @@ Repo.insert!(%Reading{
   inverter_serial: "116180000002",
   inverter_name: "East Garage",
   mppt_index: 0,
-  ac_power: 320.0,
-  dc_power: 332.8,
-  yield_day: 0.0,
-  yield_total: 0.0,
+  ac_power: 600.0,
+  dc_power: 624.0,
+  yield_day: 4_000.0,
+  yield_total: 804_000.0,
   frequency: 50.0,
   temperature: 33.0,
   producing: true,
   reachable: true,
+  power_type: "production",
   inserted_at: live_inserted_at
 })
 
@@ -341,6 +411,7 @@ seed_historical_day = fn dtu_id, serial, date, base_yield_total, max_power_multi
       temperature: Float.round(25.0 + 15.0 * sine_val, 1),
       producing: ac_power > 2.0,
       reachable: true,
+      power_type: "production",
       inserted_at: inserted_at
     })
 

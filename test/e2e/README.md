@@ -14,6 +14,12 @@ and a seeded database.
   stat cards, the granularity stepper (Day/Week/Month/Year) swapping stat cards
   and chart title, the prev/next stepper hitting the empty state past the data
   horizon, and the DTU switcher filtering between a single device and Total.
+- `dashboard_multi_device.spec.js` — multi-device behaviour: the DTU switcher
+  lists every device plus the Total button, switching between devices narrows
+  the chart to that device's inverters and updates the fleet-Total line, the
+  "Today's Total Yield" stat card changes per selection, a device with no
+  today data renders the empty-chart placeholder with zero stats, and the
+  filter applies to historical Day view too.
 - `dashboard_multi_mppt.spec.js` — the per-inverter / per-MPPT breakdown:
   the "Current Generation" stat card reflects the AC aggregate of every
   polled inverter (the bug where a multi-MPPT DTU showed 0 W while
@@ -31,9 +37,12 @@ and a seeded database.
 ## Running them
 
 The tests assume the app is reachable at `http://localhost:4000` and the DB is
-seeded (`test@example.com` / `password123456`, two DTUs, today's curve plus
-~1 year of historical readings). The easiest way to get that state is the
-docker compose stack:
+seeded (`test@example.com` / `password123456`, three DTUs, today's curve plus
+~1 year of historical readings). A `globalSetup` script at
+`test/e2e/_setup/global-setup.js` re-seeds the database via
+`mix run priv/repo/seeds.exs` automatically before the suite runs, so you
+don't have to remember to do it manually. The easiest way to get the rest of
+the stack up is the docker compose setup:
 
 ```sh
 # 1. Bring up app + TimescaleDB
@@ -41,18 +50,29 @@ cp .env.example .env
 #   fill in SECRET_KEY_BASE, e.g.:  mix phx.gen.secret
 docker compose up -d --build
 
-# 2. Seed the running app's database (host mix, pointed at the container DB,
-#    broker disabled so it doesn't collide on :1883)
+# 2. Install Playwright and run the suite (the global setup re-seeds
+#    the database automatically — no manual `mix run priv/repo/seeds.exs`
+#    step needed).
+npm install
+npx playwright install chromium
+npx playwright test
+```
+
+If you want to seed manually (e.g. to inspect the fixtures in a REPL):
+
+```sh
 MIX_ENV=prod \
 DATABASE_URL="ecto://postgres:postgres@localhost:5432/dtu_app_prod" \
 MQTT_BROKER_ENABLED=false \
 SECRET_KEY_BASE=dummy \
   mix run priv/repo/seeds.exs
+```
 
-# 3. Install Playwright and run the suite
-npm install
-npx playwright install chromium
-npx playwright test
+Skip the auto-reseed when iterating on a single test against an
+already-seeded DB:
+
+```sh
+E2E_SKIP_SEED=1 npx playwright test test/e2e/dashboard_multi_device.spec.js
 ```
 
 ### NixOS note
@@ -69,6 +89,6 @@ PLAYWRIGHT_CHROME="$(which google-chrome)" npx playwright test
 
 ## Re-seeding between runs
 
-`seeds.exs` wipes readings/devices/users before inserting, so re-running step 2
-resets the E2E fixture state. Note that DTU CRUD tests create additional
-devices, which persist until the next reseed.
+`seeds.exs` wipes readings/devices/users before inserting, so the global setup
+gives every test run a fresh fixture state. Note that DTU CRUD tests create
+additional devices, which persist until the next reseed.
