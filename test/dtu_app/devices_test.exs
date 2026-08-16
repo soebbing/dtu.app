@@ -492,25 +492,20 @@ defmodule DtuApp.DevicesTest do
       assert stats.per_series == []
     end
 
-    test "fleet-total _fleet row does NOT override per-inverter sum (AhoyDTU {base}/total)" do
-      # The dashboard's headline `today_yield` is the per-inverter ch0
-      # `MAX(yield_day)` sum across all inverters, NOT the AhoyDTU
-      # fleet-total row from `{base}/total`. Field reports show the
-      # fleet `YieldDay` can be smaller than the per-channel sum on
-      # some firmware variants (different counter reset semantics,
-      # half-published payloads, etc.) — silently picking the fleet
-      # row when it's the smaller value would render the dashboard
-      # below the firmware's actual daily total. The per-channel sum
-      # is the canonical aggregation: each inverter's AC aggregate
-      # row carries the inverter's daily total directly (AhoyDTU ch0
-      # / OpenDTU realtime/data), and the `mppt_index = 0` filter
-      # avoids the multi-MPPT double-count risk.
+    test "fleet-total _fleet row overrides per-inverter sum (AhoyDTU {base}/total)" do
+      # The dashboard's headline `today_yield` is the AhoyDTU fleet-total
+      # row from `{base}/total` (parser keys it by `inverter_serial =
+      # "_fleet"`) when one is present — the firmware already aggregated
+      # across every inverter on the DTU, so using the firmware value
+      # verbatim avoids re-summing per-inverter rows that may carry
+      # inconsistent counter resets or stale payloads across installs.
+      # The fleet row is what the `{base}/total/YieldDay` MQTT topic
+      # publishes, so the dashboard's "Today's Total Yield" headline
+      # matches the firmware's reported daily total exactly.
       #
-      # The fleet row is still persisted (the parser writes it from
-      # `{base}/total`), so the dashboard's chart legend / per-series
-      # rendering continues to use it for whatever future per-DTU
-      # fleet card needs it. But the headline `today_yield` doesn't
-      # consult it.
+      # Per-inverter ch0 `MAX(yield_day)` sum is the fallback path
+      # (OpenDTU or half-wired AhoyDTU installs that haven't published
+      # the fleet row yet on a given day).
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -529,23 +524,26 @@ defmodule DtuApp.DevicesTest do
         })
       end
 
-      # Fleet-total row from the AhoyDTU {base}/total topic, with a
-      # *smaller* value than the per-inverter sum — exactly the field-
-      # reported shape (the user reported the dashboard rendering
-      # `2.652 kWh` while the firmware's per-channel `today/YieldDay`
-      # published `6073` Wh / `6.073 kWh`). The fleet row should be
-      # ignored here, not preferred.
+      # Fleet-total row from the AhoyDTU {base}/total topic. The
+      # firmware sums every inverter's `YieldDay` into this row, so
+      # the dashboard prefers the firmware-published value (6587 Wh
+      # = 6.587 kWh) over the per-channel sum (3.0 kWh) — the user's
+      # reported field shape: dashboard rendered 2.649 kWh while
+      # the firmware's `total/YieldDay` published 6587 Wh.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "_fleet",
         mppt_index: 0,
         inverter_name: "_fleet",
-        yield_day: 2652.0,
+        yield_day: 6587.0,
         inserted_at: now
       })
 
       stats = Devices.get_daily_stats(user)
-      # Per-channel sum wins (3.0 kWh), NOT the fleet row (2.652 kWh).
-      assert_in_delta stats.today_yield, 3.0, 0.001
+      # Fleet row wins (6587 Wh / 1000 = 6.587 kWh, rounded to 6.6 kWh),
+      # NOT the per-channel sum (3.0 kWh). The dashboard's headline
+      # card displays one decimal place — same precision the user's
+      # MQTT view of the row shows at the firmware's report tick.
+      assert_in_delta stats.today_yield, 6.6, 0.001
 
       # Per-series still lists per-inverter entries (the fleet row is
       # excluded by `inverter_serial != "_fleet"` in the legend query)
@@ -553,12 +551,12 @@ defmodule DtuApp.DevicesTest do
       assert length(stats.per_series) == 2
     end
 
-    test "uses the per-inverter ch0 sum regardless of fleet row presence (AhoyDTU/OpenDTU)" do
-      # The dashboard's headline `today_yield` always uses the per-inverter
-      # ch0 `MAX(yield_day)` sum across all inverters. With no fleet
-      # `_fleet` row present (the common case for OpenDTU installs,
-      # which don't publish a fleet-total topic), the per-channel sum
-      # is the only aggregation available — and it must sum correctly.
+    test "falls back to per-inverter ch0 sum when no fleet row exists (OpenDTU)" do
+      # The dashboard's headline `today_yield` falls back to the per-inverter
+      # ch0 `MAX(yield_day)` sum across all inverters when no fleet `_fleet`
+      # row is present — the common case for OpenDTU installs, which
+      # don't publish a fleet-total topic. The per-channel sum is the
+      # only aggregation available and must sum correctly.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
