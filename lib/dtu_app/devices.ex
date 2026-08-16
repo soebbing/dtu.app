@@ -935,25 +935,28 @@ defmodule DtuApp.Devices do
   make sense for the live day — but `today_yield` reflects the
   requested date so we can compare day-over-day.
 
-  `total_yield` is the lifetime cumulative energy (in kWh) per
-  `(dtu_id, inverter_serial)`. For AhoyDTU the parser persists a
-  fleet-total row keyed by `inverter_serial = "_fleet"` (from the
-  firmware's `{base}/total` topic) which the aggregation prefers
-  over per-inverter sums — the firmware already aggregated, so re-
-  summing would only re-introduce rounding error and double-count
-  logic. Per-inverter sums are still used as the fallback for
-  installs that haven't published a `total` row yet, and for OpenDTU
-  (which doesn't publish a fleet total). Both paths are restricted
-  to `mppt_index = 0` (the AC aggregate row) so multi-MPPT AhoyDTU
-  inverters don't double-count ch0 + ch1 + ch2 yield values —
-  AhoyDTU's ch0 is the inverter's actual yield, ch1+ch2 are
-  per-string sub-totals. OpenDTU only persists `yield_day` /
-  `yield_total` on `mppt_index = 0` so the restriction is a no-op
-  for OpenDTU. The lifetime counter is monotonic and always reported
-  in Wh, so we take `MAX(yield_total)` per
-  `(dtu_id, inverter_serial)` across **all** readings (no time-window
-  filter — the lifetime value is independent of any particular day)
-  and sum the per-inverter maxes, the same shape `today_yield` uses.
+  `today_yield` and `total_yield` use the per-inverter ch0
+  `MAX(yield_day)` / `MAX(yield_total)` sum across all inverters —
+  the canonical aggregation, restricted to `mppt_index = 0` (the
+  AC aggregate row) so multi-MPPT AhoyDTU inverters don't double-
+  count ch0 + ch1 + ch2 yields. AhoyDTU's ch0 is the inverter's
+  actual yield, ch1+ch2 are per-string sub-totals. OpenDTU only
+  persists `yield_day` / `yield_total` on `mppt_index = 0` so the
+  restriction is a no-op for OpenDTU.
+
+  The AhoyDTU fleet-total row from `{base}/total` (parser keys it
+  by `inverter_serial = "_fleet"`) is **not** consulted here —
+  field reports show the fleet `YieldDay` can be smaller than the
+  per-channel sum on some firmware variants (different counter
+  reset semantics, half-published payloads, etc.). The parser
+  still persists the fleet row (it's available for the chart
+  legend and any future per-DTU fleet card), but the headline
+  `today_yield` / `total_yield` always use the per-inverter ch0
+  sum. `readings.yield_day` is in Wh (the AhoyDTU ch0 / OpenDTU
+  realtime/data daily counter is monotonic Wh that resets at
+  midnight), and `readings.yield_total` is in Wh for AhoyDTU too
+  — `cast_ahoy_yield/1` in the parser normalises AhoyDTU's kWh
+  lifetime counter to Wh at the boundary.
   """
   def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
@@ -1007,133 +1010,76 @@ defmodule DtuApp.Devices do
 
       # Today's total yield.
       #
-      # Preference order:
-      #   1. Fleet-total row from AhoyDTU's `{base}/total` topic
-      #      (`inverter_serial = "_fleet"`). The firmware sums every
-      #      inverter's `YieldDay` into this row, so using it verbatim
-      #      avoids the rounding-error + double-count risk of summing
-      #      per-inverter rows. `MAX(yield_day)` over the day matches the
-      #      same monotonic-counter semantics as the per-inverter path.
-      #   2. Per-inverter `MAX(yield_day)` sum, restricted to
-      #      `mppt_index = 0` so multi-MPPT AhoyDTU inverters don't
-      #      double-count ch0 + ch1 + ch2 yields. OpenDTU only persists
-      #      `yield_day` on `mppt_index = 0`, so the restriction is a
-      #      no-op for OpenDTU.
+      # Use the per-inverter ch0 `MAX(yield_day)` sum across all
+      # inverters. The AhoyDTU fleet row from `{base}/total` is
+      # **not** preferred here because field reports show the fleet
+      # `YieldDay` can be smaller than the per-channel sum — different
+      # firmware versions, half-published payloads, or a fleet
+      # counter that resets at midnight while per-channel counters
+      # don't. The per-channel sum is the canonical aggregation: each
+      # inverter's AC aggregate row carries the inverter's daily total
+      # directly (AhoyDTU ch0 / OpenDTU realtime/data), and the
+      # `mppt_index = 0` filter avoids the multi-MPPT double-count
+      # risk. The fleet row is still persisted (the parser still writes
+      # it for the chart legend and any future per-DTU fleet card) but
+      # the headline `today_yield` does not consult it.
       today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
 
-      fleet_today_rows =
+      today_yield_per_series =
         Repo.all(
           from r in Reading,
             where:
-              r.dtu_id in ^dtu_ids and r.inverter_serial == "_fleet" and
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inverter_serial != "_fleet" and
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            group_by: r.dtu_id,
+            group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
             select: %{
               dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              inverter_name: r.inverter_name,
               max_yield: max(r.yield_day)
             }
         )
 
-      fleet_today_yield =
-        Enum.reduce(fleet_today_rows, 0.0, fn row, acc ->
+      today_yield =
+        today_yield_per_series
+        |> Enum.map(fn row ->
           case row.max_yield do
-            nil -> acc
-            v -> acc + v
+            nil -> 0.0
+            v -> v
           end
         end)
-
-      today_yield =
-        if fleet_today_rows != [] do
-          fleet_today_yield
-        else
-          # No fleet-total row for the date (OpenDTU install, or
-          # AhoyDTU install that hasn't published `{base}/total` yet
-          # today). Fall back to per-inverter sums — same shape as
-          # before this change so a half-wired install still renders
-          # the dashboard.
-          today_yield_per_series =
-            Repo.all(
-              from r in Reading,
-                where:
-                  r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
-                    r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-                group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
-                select: %{
-                  dtu_id: r.dtu_id,
-                  inverter_serial: r.inverter_serial,
-                  inverter_name: r.inverter_name,
-                  max_yield: max(r.yield_day)
-                }
-            )
-
-          today_yield_per_series
-          |> Enum.map(fn row ->
-            case row.max_yield do
-              nil -> 0.0
-              v -> v
-            end
-          end)
-          |> Enum.sum()
-        end
+        |> Enum.sum()
 
       # Lifetime total yield.
       #
-      # Same preference order: fleet-total row first, per-inverter
-      # sum as fallback. Fleet-total rows are persisted across all
-      # readings (no time-window filter — the lifetime counter is
-      # monotonic and never resets), so the same `MAX(yield_total)`
-      # query works for both the fleet and per-inverter paths.
-      fleet_total_rows =
+      # Same per-inverter-sum path. The fleet `MAX(yield_total)` row is
+      # not preferred here either, for the same fleet-row-stale-or-
+      # incomplete reason as `today_yield` above.
+      total_yield_per_series =
         Repo.all(
           from r in Reading,
-            where: r.dtu_id in ^dtu_ids and r.inverter_serial == "_fleet",
-            group_by: r.dtu_id,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inverter_serial != "_fleet",
+            group_by: [r.dtu_id, r.inverter_serial],
             select: %{
               dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
               max_yield_total: max(r.yield_total)
             }
         )
 
-      fleet_total_yield_wh =
-        Enum.reduce(fleet_total_rows, 0.0, fn row, acc ->
+      total_yield_wh =
+        total_yield_per_series
+        |> Enum.map(fn row ->
           case row.max_yield_total do
-            nil -> acc
-            v -> acc + v
+            nil -> 0.0
+            v -> v
           end
         end)
-
-      total_yield_wh =
-        if fleet_total_rows != [] do
-          fleet_total_yield_wh
-        else
-          # Per-inverter `MAX(yield_total)` sum, restricted to
-          # `mppt_index = 0` for the same per-MPPT double-count
-          # reason as `today_yield`. Per-string DC values for an
-          # AhoyDTU multi-MPPT inverter would 2× or 3× the
-          # inverter's actual lifetime production if summed across
-          # MPPTs.
-          total_yield_per_series =
-            Repo.all(
-              from r in Reading,
-                where: r.dtu_id in ^dtu_ids and r.mppt_index == 0,
-                group_by: [r.dtu_id, r.inverter_serial],
-                select: %{
-                  dtu_id: r.dtu_id,
-                  inverter_serial: r.inverter_serial,
-                  max_yield_total: max(r.yield_total)
-                }
-            )
-
-          total_yield_per_series
-          |> Enum.map(fn row ->
-            case row.max_yield_total do
-              nil -> 0.0
-              v -> v
-            end
-          end)
-          |> Enum.sum()
-        end
+        |> Enum.sum()
 
       # Peak power today comes from the 5-minute continuous aggregate. The
       # bucket stays closed until its window fills, so a fast-rising
