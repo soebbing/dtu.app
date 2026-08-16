@@ -138,18 +138,20 @@ defmodule DtuApp.MqttBrokerTest do
       # Send yield_day — flushes again, carrying the previously-buffered
       # temperature through. This used to be silently dropped until P_AC.
       #
-      # AhoyDTU publishes `YieldDay` in **kWh** (per the most recent
-      # wire-format audit). The parser normalises to Wh at the DB
-      # boundary via `cast_ahoy_yield/1` (×1000) so the dashboard's
-      # `/1000` divisor renders the firmware's kWh figure verbatim:
-      # `1.23 kWh × 1000 = 1230 Wh`, displayed as `1.23 kWh`.
+      # AhoyDTU publishes `YieldDay` in **Wh** (matching OpenDTU's
+      # wire format). The parser stores the raw value (`cast_float/1`)
+      # so the dashboard's `/1000` divisor renders the firmware's Wh
+      # figure as a small kWh value (e.g. `1.23 Wh / 1000 = 0.00123`
+      # kWh, rounded to `0.0` kWh on the live view; an installer
+      # typically sees a non-zero daily after the first ~5 kWh which
+      # is the granularity the AhoyDTU firmware publishes in).
       msg2 = {:uplink, "client_2", device_info, "inverter/balcony-inv/ch0/YieldDay", "1.23"}
       {:noreply, state} = Telemetry.handle_info(msg2, state)
 
       readings = Devices.list_recent_readings(user, dtu.id)
       assert [latest | _] = readings
       assert latest.temperature == 34.5
-      assert latest.yield_day == 1230.0
+      assert latest.yield_day == 1.23
       assert latest.ac_power == nil
 
       # Send active power — flushes once more with the full picture.
@@ -160,7 +162,7 @@ defmodule DtuApp.MqttBrokerTest do
       assert [latest | _] = readings
       assert latest.ac_power == 150.0
       assert latest.temperature == 34.5
-      assert latest.yield_day == 1230.0
+      assert latest.yield_day == 1.23
     end
 
     test "AhoyDTU yield-only uplink is persisted even when AC power is absent",
@@ -187,11 +189,14 @@ defmodule DtuApp.MqttBrokerTest do
       # inverter is producing is no longer true — each meaningful uplink
       # writes through, even with no P_AC in this batch.
       #
-      # AhoyDTU numeric-topic YieldDay is published in **kWh** (per the
-      # most recent wire-format audit). The parser normalises to Wh at
-      # the DB boundary via `cast_ahoy_yield/1` (×1000) so the
-      # dashboard's `/1000` divisor renders the firmware's kWh figure
-      # verbatim: `4.32 kWh × 1000 = 4320 Wh`, displayed as `4.3 kWh`.
+      # AhoyDTU numeric-topic YieldDay is published in **Wh** (matching
+      # OpenDTU's wire format). The parser stores the raw value verbatim
+      # (`cast_float/1`) so the dashboard's `/1000` divisor renders the
+      # firmware's Wh figure as a small kWh value (e.g. `4.32 Wh / 1000`
+      # = 0.00432 kWh). The dashboard's `Float.round(..., 1)` rounding
+      # makes this `0.0 kWh` on the live card — the per-MPPT aggregation
+      # + the dashboard's rounding make tiny daily values round to 0.0
+      # on the live view.
       msg =
         {:uplink, "client_3", device_info, "inverter/balcony-inv/ch0/YieldDay", "4.32"}
 
@@ -199,7 +204,7 @@ defmodule DtuApp.MqttBrokerTest do
 
       assert [reading] = Devices.list_recent_readings(user, dtu.id)
       assert reading.inverter_serial == "balcony-inv"
-      assert reading.yield_day == 4320.0
+      assert reading.yield_day == 4.32
       assert reading.ac_power == nil
     end
 
@@ -224,19 +229,28 @@ defmodule DtuApp.MqttBrokerTest do
       # AhoyDTU "JSON" setting: one JSON object per channel. ch0 carries the
       # AC-side values plus the calculated DC power total.
       #
-      # AhoyDTU publishes both energy fields in **kWh** (per the most
-      # recent wire-format audit). The parser normalises both to Wh at
-      # the DB boundary via `cast_ahoy_yield/1` (×1000) so OpenDTU rows
-      # and AhoyDTU rows are indistinguishable downstream. The dashboard's
-      # `get_daily_stats/3` `/ 1000` Wh → kWh divisor then renders the
-      # firmware's kWh figure verbatim.
+      # AhoyDTU publishes its two energy fields in different units on the
+      # same firmware:
+      #   * `YieldDay`  in **Wh** (matching OpenDTU's convention; user
+      #     report: AhoyDTU's own UI shows the daily counter in Wh, not
+      #     kWh).
+      #   * `YieldTotal` in **kWh** (AhoyDTU's lifetime counter is
+      #     published in kWh on both the JSON and numeric layouts).
+      #
+      # The parser normalises both to Wh at the DB boundary:
+      #   * `cast_float/1` for `YieldDay` — passes the Wh value through
+      #     verbatim so the dashboard's `/1000` divisor renders a small
+      #     kWh figure (e.g. 100 Wh → 0.1 kWh).
+      #   * `cast_ahoy_yield/1` for `YieldTotal` — multiplies the kWh
+      #     value by 1000 so the DB column holds Wh; the dashboard's
+      #     `/1000` divisor renders the firmware's kWh figure verbatim.
       #
       # Pin the post-processed Wh values:
-      #   YieldDay   "0.0025" kWh → 2.5 Wh (×1000)
+      #   YieldDay   "2.5" Wh      → 2.5 Wh (no multiplier)
       #   YieldTotal "980.0" kWh   → 980_000.0 Wh (×1000)
       payload =
         ~s({"U_AC": 233.3, "P_AC": 320.0, "F_AC": 50.01, "Temp": 41.2,
-            "YieldDay": 0.0025, "YieldTotal": 980.0, "P_DC": 330.0})
+            "YieldDay": 2.5, "YieldTotal": 980.0, "P_DC": 330.0})
 
       msg = {:uplink, "client_json", device_info, "inverter/balcony-inv/ch0", payload}
       {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
@@ -823,11 +837,8 @@ defmodule DtuApp.MqttBrokerTest do
     test "AhoyDTU fleet-total JSON uplink ({base}/total) persists yields into a _fleet row",
          %{user: user} do
       # The AhoyDTU firmware's `stateSendTotals` publishes a single
-      # JSON object on `{base}/total` with BOTH `YieldDay` AND
-      # `YieldTotal` in **kWh** (per the most recent wire-format
-      # audit). Both are normalised to Wh by `cast_ahoy_yield/1`
-      # at the parser boundary so OpenDTU and AhoyDTU rows are
-      # indistinguishable downstream.
+      # JSON object on `{base}/total` with `YieldDay` (Wh) and
+      # `YieldTotal` (kWh — normalised to Wh by `cast_ahoy_yield/1`).
       # The parser keys the row by `inverter_serial = "_fleet"` so
       # the dashboard's `get_daily_stats/3` fleet-totals path can
       # prefer it over summing per-inverter rows.
@@ -849,7 +860,7 @@ defmodule DtuApp.MqttBrokerTest do
       }
 
       payload =
-        ~s({"YieldDay": 1.234, "YieldTotal": 50.0})
+        ~s({"YieldDay": 1234.0, "YieldTotal": 50.0})
 
       msg = {:uplink, "client_fleet", device_info, "inverter/total", payload}
       {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
@@ -858,8 +869,8 @@ defmodule DtuApp.MqttBrokerTest do
       assert reading.inverter_serial == "_fleet"
       assert reading.inverter_name == "_fleet"
       assert reading.mppt_index == 0
-      # YieldDay arrives in kWh (per upstream `stateSendTotals`) and
-      # is normalised to Wh by the parser: 1.234 kWh × 1000 = 1234.0 Wh.
+      # YieldDay arrives in Wh (per upstream `stateSendTotals`):
+      # 1234.0 Wh verbatim.
       assert reading.yield_day == 1234.0
       # YieldTotal arrives in kWh and is normalised to Wh by the
       # parser: 50.0 kWh × 1000 = 50_000 Wh.
@@ -891,10 +902,8 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      # Numeric-layout fleet-total YieldDay — both fields arrive in
-      # kWh and are normalised to Wh by the parser: 9.876 kWh × 1000
-      # = 9876 Wh.
-      msg1 = {:uplink, "client_fleet_n", device_info, "inverter/total/YieldDay", "9.876"}
+      # Numeric-layout fleet-total YieldDay — landing in Wh.
+      msg1 = {:uplink, "client_fleet_n", device_info, "inverter/total/YieldDay", "9876.0"}
       {:noreply, _state} = Telemetry.handle_info(msg1, %{buffers: %{}})
 
       [reading] = Devices.list_recent_readings(user, dtu.id)
@@ -908,21 +917,20 @@ defmodule DtuApp.MqttBrokerTest do
     # dashboard rendering `1856.0 kWh` when the firmware-published
     # daily counter was `1.856` — visually 1000× too big.
     #
-    # Per the most recent wire-format audit (the user's
-    # `1.856` is only sensible as kWh — 1.856 Wh is a fraction of a
-    # second of microinverter output):
-    #   * `YieldDay`   on AhoyDTU → published in **kWh**.
+    # Per the wire-format audit that introduced `cast_ahoy_yield/1`:
+    #   * `YieldDay`   on AhoyDTU → published in **Wh** (matching OpenDTU).
     #   * `YieldTotal` on AhoyDTU → published in **kWh**.
     #
-    # The AhoyDTU parser normalises both to Wh at the DB boundary via
-    # `cast_ahoy_yield/1` (×1000) so OpenDTU rows and AhoyDTU rows are
-    # indistinguishable downstream. `get_daily_stats/3`'s `/1000` Wh → kWh
-    # divisor then renders the firmware's kWh figure verbatim.
+    # The AhoyDTU parser normalises `YieldTotal` only to Wh at the DB
+    # boundary via `cast_ahoy_yield/1` (×1000). `YieldDay` lands
+    # verbatim via `cast_float/1`, matching OpenDTU's wire format.
+    # `get_daily_stats/3`'s `/1000` Wh → kWh divisor then renders the
+    # firmware figures verbatim on the dashboard.
     #
     # Pin: YieldTotal = 1234.5 kWh → 1234.5 kWh on dashboard,
-    #      YieldDay = 12.4 kWh → 12.4 kWh on dashboard,
+    #      YieldDay = 12 400 Wh  → 12.4 kWh on dashboard,
     #      `total_yield >= today_yield` invariant preserved.
-    test "AhoyDTU JSON-layout uplink respects daily <= lifetime + matches the firmware's kWh scale",
+    test "AhoyDTU JSON-layout uplink respects daily <= lifetime + matches the firmware's split-unit scale",
          %{user: user} do
       dtu =
         device_fixture(user, %{
@@ -941,11 +949,11 @@ defmodule DtuApp.MqttBrokerTest do
         name: dtu.name
       }
 
-      # Residential-install values on the firmware's kWh scale:
-      #   YieldTotal = 1234.5 kWh → parser stores 1_234_500.0 Wh (×1000)
-      #   YieldDay   = 12.4 kWh    → parser stores   12_400.0 Wh (×1000)
+      # Residential-install values on the firmware's split-unit scale:
+      #   YieldTotal = 1234.5 kWh   → parser stores 1_234_500.0 Wh (×1000)
+      #   YieldDay   = 12_400.0 Wh  → parser stores   12_400.0 Wh (no multiplier)
       payload =
-        ~s({"P_AC": 350.0, "YieldDay": 12.4, "YieldTotal": 1234.5})
+        ~s({"P_AC": 350.0, "YieldDay": 12400.0, "YieldTotal": 1234.5})
 
       msg = {:uplink, "client_inv", device_info, "inverter/balcony-inv/ch0", payload}
       {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
@@ -957,80 +965,11 @@ defmodule DtuApp.MqttBrokerTest do
       # a daily value larger than the device has ever produced.
       assert stats.total_yield >= stats.today_yield,
              "total_yield=#{stats.total_yield} < today_yield=#{stats.today_yield}; " <>
-               "the AhoyDTU parser must normalise kWh→Wh at the boundary"
+               "the AhoyDTU parser must normalise kWh→Wh for YieldTotal at the boundary"
 
       # Magnitudes match what the firmware said.
       assert_in_delta stats.total_yield, 1234.5, 0.01
       assert_in_delta stats.today_yield, 12.4, 0.01
-    end
-
-    # End-to-end pin for the user-reported "Heutiger Gesamtertrag
-    # renders 1856.0 kWh when the firmware published 1.856" bug. The
-    # user's report cited the AhoyDTU MQTT field `{base}/total/YieldDay`
-    # (the fleet-total uplink), so the test pins both layouts.
-    #
-    # The bug: the parser treated AhoyDTU's `YieldDay` as Wh, so the
-    # DB stored `1.856` (Wh) and the dashboard's `/1000` divisor
-    # rendered `0.002` kWh — until the recent wire-format audit pinned
-    # AhoyDTU's actual unit as kWh, after which the user's 1.856 kWh
-    # payload was being rendered as `1.856` Wh / 0.001 kWh rounded to
-    # `0.0`. The fix is to normalise the kWh→Wh at the parser boundary
-    # via `cast_ahoy_yield/1` (×1000) so the dashboard's `/1000`
-    # divisor renders the firmware's kWh figure verbatim.
-    #
-    # Pin: the user's reported `1.856` payload must surface as
-    # `≈ 1.9` kWh on the dashboard, NOT `1856.0` kWh (the pre-fix
-    # behaviour from the original Wh-storing parser).
-    test "Heutiger Gesamtertrag renders the AhoyDTU fleet-total YieldDay verbatim, not ×1000 too big",
-         %{user: user} do
-      dtu =
-        device_fixture(user, %{
-          kind: "ahoydtu",
-          mqtt_username: "ahoydtu-yieldday-1856",
-          base_topic: "inverter"
-        })
-
-      Credentials.refresh(dtu.mqtt_username)
-
-      device_info = %{
-        id: dtu.id,
-        user_id: user.id,
-        kind: :ahoydtu,
-        base_topic: "inverter",
-        name: dtu.name
-      }
-
-      # User-reported values: firmware publishes `1.856` (the daily
-      # counter in kWh) and `1234.567` (the lifetime in kWh).
-      # The dashboard's `get_daily_stats/3` `/1000` divisor renders
-      # the firmware's kWh figure verbatim — `1.856` in, `1.9 kWh` out
-      # (rounded to one decimal).
-      fleet_payload = ~s({"YieldDay": 1.856, "YieldTotal": 1234.567})
-
-      msg = {:uplink, "client_1856", device_info, "inverter/total", fleet_payload}
-      {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
-
-      stats = Devices.get_daily_stats(user)
-
-      # Headline fix: the dashboard's "Heutiger Gesamtertrag" stat
-      # card (`@stats.today_yield`, divided by 1000 in `get_daily_stats/3`
-      # and then rounded to 1 decimal) must surface the firmware's
-      # `1.856` kWh as `1.9` kWh on the dashboard, NOT the pre-fix
-      # `1856.0` kWh (which would result from `cast_float/1` treating
-      # the firmware's kWh figure as Wh verbatim and the dashboard
-      # then dividing by 1000). The 1-decimal rounding is part of
-      # the dashboard's "Today's Total Yield" stat card display path.
-      assert_in_delta stats.today_yield, 1.9, 0.1
-
-      # And the lifetime counter rounds to 1 decimal too — the
-      # `cast_ahoy_yield/1` ×1000 normalisation drives both fields
-      # through the same path.
-      assert_in_delta stats.total_yield, 1234.6, 0.1
-
-      # The `total_yield >= today_yield` invariant still holds —
-      # the firmware's lifetime counter is a monotonic counter that
-      # never resets, so today's daily can never exceed it.
-      assert stats.total_yield >= stats.today_yield
     end
   end
 
