@@ -501,12 +501,12 @@ defmodule DtuApp.DevicesTest do
       # error and double-count risk (the firmware already aggregated
       # across all inverters).
       #
-      # AhoyDTU's `YieldDay` arrives in **kWh** on both the JSON and
-      # numeric-topic layouts (per the most recent wire-format audit).
-      # The parser normalises kWh→Wh at the DB boundary via
-      # `cast_ahoy_yield/1` (×1000), so the persisted values below
-      # match what the parser stores for the firmware-published kWh
-      # figures: 2.5 kWh × 1000 = 2500 Wh.
+      # AhoyDTU's `YieldDay` arrives in **Wh** on both the JSON and
+      # numeric-topic layouts (matching OpenDTU's wire format). The
+      # parser stores the value verbatim via `cast_float/1`, so the
+      # persisted values below match the firmware-published figures
+      # directly (e.g. `2500.0 Wh` is the firmware's daily figure,
+      # not `2.5 kWh × 1000`).
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -514,8 +514,8 @@ defmodule DtuApp.DevicesTest do
 
       # Per-inverter ch0 rows: OpenDTU publishes `YieldDay` in Wh, so
       # the persisted Wh values match the firmware-published figures
-      # verbatim. (AhoyDTU ch0 rows would be 1000× larger after the
-      # ×1000 normalisation — different fixture below.)
+      # verbatim. (AhoyDTU ch0 rows would be the same — `YieldDay`
+      # is in Wh on both firmwares.)
       for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
         DevicesFixtures.reading_fixture(device, %{
           inverter_serial: serial,
@@ -527,11 +527,9 @@ defmodule DtuApp.DevicesTest do
       end
 
       # Fleet-total row from the AhoyDTU {base}/total topic. The
-      # firmware reports 2.5 kWh/day (close to but not exactly the
-      # per-inverter sum, due to firmware-side rounding). The parser
-      # normalises 2.5 kWh → 2500 Wh so the row matches the rest of
-      # the table's Wh convention. The dashboard uses this value
-      # verbatim — 2500 Wh / 1000 = 2.5 kWh.
+      # firmware reports 2500 Wh/day (close to but not exactly the
+      # per-inverter sum, due to firmware-side rounding). The dashboard
+      # uses this value verbatim — 2500 Wh / 1000 = 2.5 kWh.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "_fleet",
         mppt_index: 0,
