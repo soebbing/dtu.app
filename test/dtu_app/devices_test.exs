@@ -500,13 +500,22 @@ defmodule DtuApp.DevicesTest do
       # `mppt_index = 0` sum — re-summing would re-introduce rounding
       # error and double-count risk (the firmware already aggregated
       # across all inverters).
+      #
+      # AhoyDTU's `YieldDay` arrives in **kWh** on both the JSON and
+      # numeric-topic layouts (per the most recent wire-format audit).
+      # The parser normalises kWh→Wh at the DB boundary via
+      # `cast_ahoy_yield/1` (×1000), so the persisted values below
+      # match what the parser stores for the firmware-published kWh
+      # figures: 2.5 kWh × 1000 = 2500 Wh.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
       now = DtuApp.Time.utc_now_usec()
 
-      # Per-inverter ch0 rows: INV-1 reports 1000 Wh/day, INV-2
-      # reports 2000 Wh/day. Naive per-inverter sum would give 3000 Wh.
+      # Per-inverter ch0 rows: OpenDTU publishes `YieldDay` in Wh, so
+      # the persisted Wh values match the firmware-published figures
+      # verbatim. (AhoyDTU ch0 rows would be 1000× larger after the
+      # ×1000 normalisation — different fixture below.)
       for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
         DevicesFixtures.reading_fixture(device, %{
           inverter_serial: serial,
@@ -518,9 +527,11 @@ defmodule DtuApp.DevicesTest do
       end
 
       # Fleet-total row from the AhoyDTU {base}/total topic. The
-      # firmware reports 2500 Wh/day (close to but not exactly the
-      # per-inverter sum, due to firmware-side rounding). The
-      # dashboard uses this value verbatim — 2500 Wh / 1000 = 2.5 kWh.
+      # firmware reports 2.5 kWh/day (close to but not exactly the
+      # per-inverter sum, due to firmware-side rounding). The parser
+      # normalises 2.5 kWh → 2500 Wh so the row matches the rest of
+      # the table's Wh convention. The dashboard uses this value
+      # verbatim — 2500 Wh / 1000 = 2.5 kWh.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "_fleet",
         mppt_index: 0,
