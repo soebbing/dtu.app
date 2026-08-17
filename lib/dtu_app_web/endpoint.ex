@@ -30,6 +30,12 @@ defmodule DtuAppWeb.Endpoint do
     from: :dtu_app,
     gzip: not code_reloading?,
     only: DtuAppWeb.static_paths(),
+    # `only_matching` lets fingerprinted URLs past the `:only` filter —
+    # see `DtuAppWeb.static_match_paths/0` for the rationale. Without
+    # this, `/manifest-<digest>.webmanifest` and
+    # `/service-worker-<digest>.js` are 404'd by `Plug.Static` even
+    # though the files exist on disk.
+    only_matching: DtuAppWeb.static_match_paths(),
     raise_on_missing_only: code_reloading?
 
   # Code reloading can be explicitly enabled under the
