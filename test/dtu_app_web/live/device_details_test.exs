@@ -406,8 +406,15 @@ defmodule DtuAppWeb.DeviceLive.DetailsTest do
 
       # The button is the entry point for the copy-to-clipboard
       # action. Its hook attribute wires the colocated JS handler.
+      # The leading dot on `phx-hook=".CopyTopicsJson"` is required —
+      # Phoenix LiveView's tag engine rewrites a `.`-prefixed name into
+      # the fully-qualified colocated-hook name (`<Module>.<Name>`) at
+      # render time so the browser-side `LiveSocket.getHookDefinition/1`
+      # finds it in the colocated hooks map. Without the dot, the
+      # browser surfaces `unknown hook found for "CopyTopicsJson"` in
+      # the console and the click handler never fires.
       assert html =~ "btn-copy-topics-as-json"
-      assert html =~ ~s(phx-hook="CopyTopicsJson")
+      assert html =~ ~s(phx-hook="DtuAppWeb.DeviceLive.Details.CopyTopicsJson")
       assert html =~ ~s(phx-click="copy_topics_as_json")
       assert html =~ "Copy as JSON"
     end

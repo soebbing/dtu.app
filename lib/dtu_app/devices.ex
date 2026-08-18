@@ -327,6 +327,61 @@ defmodule DtuApp.Devices do
     do: record_dtu_error(dtu_id, message)
 
   @doc """
+  Clear any stale `dtus.last_error` / `last_error_at` for `dtu_id` and
+  broadcast `:dtu_error` so the dashboard's edge badge / manage-device
+  expansion panel re-renders without the cleared error.
+
+  Used by `DtuApp.MqttBroker.Telemetry` on every successfully-parsed
+  uplink: a device that recognises today's `inverter/total/YieldDay`
+  topic but has a stale `last_error` from a *previous* version of the
+  parser (which used to write `:ignored_topic` errors for fields like
+  `MaxPower`) needs that stale row cleared — otherwise the device
+  shows a red error bubble forever, even though the parser has long
+  since stopped writing the error and the corresponding `dtu_errors`
+  row is now older than the 48 h recency cutoff.
+
+  Per-row update — only writes when the current row has a non-nil
+  `last_error`, so devices that have never errored don't generate
+  write traffic on every uplink. The `:dtu_error` broadcast still
+  fires (no-op on the device-list side, since the manage-device
+  LiveView's `handle_info({:dtu_error, _id})` does a fresh re-stream
+  that already reads the cleared column).
+
+  Returns `:ok` for a missing DTU (race: the device was deleted
+  between an uplink landing and the clear running). Errors are
+  swallowed and logged at warn — the worst case is a stale bubble
+  persisting until the next uplink clears it.
+  """
+  @spec clear_stale_dtu_error(integer()) :: :ok
+  def clear_stale_dtu_error(dtu_id) when is_integer(dtu_id) do
+    try do
+      # Per-row update gated on `not is_nil(d.last_error)` so devices
+      # that have never errored don't generate write traffic on every
+      # uplink. `update_all` returns `{0, nil}` when nothing matched —
+      # we don't broadcast `:dtu_error` in that case (a healthy device's
+      # state didn't change, so no LiveView needs to re-stream).
+      {1, _} =
+        Repo.update_all(
+          from(d in Dtu, where: d.id == ^dtu_id and not is_nil(d.last_error)),
+          set: [last_error: nil, last_error_at: nil]
+        )
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        DtuApp.MqttBroker.Telemetry.status_topic(),
+        {:dtu_error, dtu_id}
+      )
+
+      :ok
+    rescue
+      e ->
+        require Logger
+        Logger.warning("[Devices] clear_stale_dtu_error(#{dtu_id}) failed: #{inspect(e)}")
+        :ok
+    end
+  end
+
+  @doc """
   Number of *distinct* error messages recorded against `dtu_id` whose
   most recent occurrence is within the recency cutoff. Powers the
   dashboard's edge-badge counter: "N errors" is what the user sees at
