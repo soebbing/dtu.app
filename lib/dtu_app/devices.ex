@@ -585,6 +585,15 @@ defmodule DtuApp.Devices do
   per-channel DC on `[serial]/[1-4]/...` topics), so collapsing them
   to `ac_power || 0.0` would draw every per-MPPT line flat at the
   X-axis even when those strings are producing.
+
+  This implementation walks the raw `readings` hypertable and buckets
+  in the BEAM, which is fine for a few hundred rows but scales poorly
+  once a DTU starts emitting a row every 10–30s for a full day
+  (≈20 000+ raw rows per device). The dashboard's hot path uses
+  `list_day_chart_data_for_dashboard/4` (aggregate-backed) instead;
+  this helper stays for callers that need a row-accurate view (e.g.
+  `compute_day_period_stats/2` against a single historical day where
+  the per-MPPT detail matters).
   """
   def list_day_chart_data(%User{} = user, utc_start, utc_end, dtu_id \\ nil)
       when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
@@ -609,6 +618,198 @@ defmodule DtuApp.Devices do
       end)
       |> Enum.sort_by(& &1.time)
     end
+  end
+
+  # Live / historical day chart, aggregate-backed. Replaces the per-row
+  # scan that `list_day_chart_data/4` did for the dashboard's hot path.
+  # See the `Devices` moduledoc for the broader rationale.
+  @doc """
+  Same shape as `list_day_chart_data/4`, but reads the per-bucket
+  average from the `readings_5m` continuous aggregate for everything
+  older than the aggregate's `end_offset` (5 min — matches the
+  policy: `add_continuous_aggregate_policy('readings_5m', end_offset =>
+  INTERVAL '5 minutes')`). The most recent 5 minutes of the day
+  aren't materialised yet, so we union with the raw `readings` table
+  for that tail.
+
+  Returns a flat list of `%{time, series, power}` map points — the
+  exact contract `list_day_chart_data/4` returns — so the dashboard
+  can swap the implementation without touching the chart code.
+
+  ## Why this matters
+
+  Without the aggregate, `list_day_chart_data/4` would walk every raw
+  `readings` row in the day for every dashboard mount and every
+  reading-triggered refresh. A typical AhoyDTU install publishes
+  ~4 300 AC rows + ~10–20 000 per-MPPT rows per day per DTU; a fleet
+  of two inverters plus a Shelly produces 20–30 thousand rows / day,
+  most in the current (uncompressed) hypertable chunk. The 5-minute
+  aggregate holds one row per `(bucket, dtu_id, inverter_serial,
+  mppt_index)` — at 288 buckets/day that's ≤ 1 200 rows per device
+  per day, an order-of-magnitude fewer rows than the raw table.
+
+  The 5-minute live tail (`utc_tail_start = now - 5 min`) is read
+  from the raw table because the aggregate lags by `end_offset`. The
+  tail's bucket means are computed in the BEAM (the same way
+  `list_day_chart_data/4` does for the full day) — the small row
+  count there makes the BEAM bucketing a non-issue.
+
+  Returns `[]` when the user has no devices or no readings in the
+  window.
+  """
+  @spec list_day_chart_data_for_dashboard(User.t(), DateTime.t(), DateTime.t(), integer() | nil) ::
+          [
+            chart_point()
+          ]
+  def list_day_chart_data_for_dashboard(
+        %User{} = user,
+        utc_start,
+        utc_end,
+        dtu_id \\ nil
+      )
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      []
+    else
+      now_usec = DtuApp.Time.utc_now_usec()
+
+      # The continuous aggregate has a 5-minute `end_offset`, so the
+      # newest closed bucket is `now - 5min`. Anything more recent than
+      # that lands in the raw-table "live tail".
+      utc_tail_start =
+        now_usec |> DateTime.add(-300, :second) |> DateTime.truncate(:microsecond)
+
+      # Materialised buckets: `bucket < utc_tail_start` (closed-only).
+      # `readings_5m.bucket` is the aggregate's time column.
+      #
+      # `avg_ac_power` is NULL on per-MPPT rows (`mppt_index >= 1`,
+      # where the firmware only publishes `dc_power`) — but the
+      # dashboard filters those out (`Enum.filter` in
+      # `assign_line_chart_data/5`), so this NULL never reaches the
+      # chart.
+      aggregate_points =
+        Repo.all(
+          from a in "readings_5m",
+            where:
+              a.dtu_id in ^dtu_ids and a.bucket < ^utc_tail_start and
+                a.bucket >= ^utc_start and a.bucket <= ^utc_end,
+            select: %{
+              bucket: a.bucket,
+              dtu_id: a.dtu_id,
+              inverter_serial: a.inverter_serial,
+              mppt_index: a.mppt_index,
+              inverter_name: a.inverter_name,
+              power: a.avg_ac_power
+            }
+        )
+
+      # Live tail — raw rows, bucketed via `time_bucket` in SQL so the
+      # shape matches the aggregate exactly. The 5-minute tail is
+      # small (≤ 5 min × 30 uplinks/min × N devices) so the bucketing
+      # is cheap, and skipping it would make the chart's "most
+      # recent bucket" lag up to 5 min behind reality.
+      live_tail_chart_points = live_tail_bucketed_chart_points(utc_tail_start, dtu_ids, utc_end)
+
+      # Fallback: a brand-new or never-refreshed `readings_5m`
+      # aggregate is empty (`WITH NO DATA` from the migration + no
+      # policy run since the first uplink). The first dashboard
+      # mount for a fresh install — or a test DB with no materialised
+      # buckets — would render an empty chart even though raw rows
+      # exist for the period. The fallback fires whenever the
+      # aggregate is empty, **regardless of the live tail** — the
+      # live tail only covers the last 5 minutes, so a cold
+      # aggregate plus day-old readings would otherwise drop
+      # everything but the last 5 minutes of data. The fallback
+      # path (`list_day_chart_data/4`) walks the raw rows for the
+      # full day and produces the same chart the pre-aggregate code
+      # did, so a cold aggregate doesn't blank the chart or lose
+      # out-of-tail readings. Once the aggregate fills in (after
+      # the first 5-min policy run), this branch won't fire and the
+      # hot path serves the optimised read.
+      result =
+        if aggregate_points == [] do
+          list_day_chart_data(user, utc_start, utc_end, dtu_id)
+        else
+          aggregate_points ++ live_tail_chart_points
+        end
+
+      result
+      |> Enum.map(fn pt ->
+        # `readings_5m.bucket` and the SQL `time_bucket(...)` result
+        # are `timestamp without time zone` columns. Without a schema
+        # cast (the aggregate has no Ecto schema), Postgrex decodes
+        # them as `NaiveDateTime`, but the rest of the dashboard
+        # (`shift_local/2`, `chart_time_range/2`, the bucket-mean
+        # arithmetic) expects `%DateTime{}`. Lift the value back into
+        # a UTC `DateTime` here so the contract matches
+        # `list_day_chart_data/4`. The raw-row fallback already
+        # returns `%DateTime{}` from `list_day_chart_data/4`, so the
+        # `case` keeps the function's contract uniform across both
+        # branches.
+        case pt.time do
+          %DateTime{} -> pt
+          %NaiveDateTime{} -> %{pt | time: DateTime.from_naive!(pt.time, "Etc/UTC")}
+        end
+      end)
+      |> Enum.sort_by(& &1.time)
+    end
+  end
+
+  # Returns the chart's bucket-mean shape for raw rows whose
+  # `inserted_at >= utc_tail_start`. Aggregated by
+  # `(bucket, dtu_id, inverter_serial, mppt_index)` via `time_bucket`
+  # so the output rows match the `readings_5m` schema 1:1. Returns
+  # the same `%{time, series, power}` map shape as
+  # `list_day_chart_data/4`.
+  defp live_tail_bucketed_chart_points(utc_tail_start, dtu_ids, utc_end) do
+    # `time_bucket('5 minutes', ...)` has the same boundary semantics
+    # as `readings_5m`'s bucket column, so concatenating with the
+    # aggregate rows produces a single ordered stream.
+    tail_rows =
+      Repo.all(
+        from r in Reading,
+          where:
+            r.dtu_id in ^dtu_ids and
+              r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end,
+          group_by: [
+            fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
+            r.dtu_id,
+            r.inverter_serial,
+            r.mppt_index,
+            r.inverter_name
+          ],
+          select: %{
+            bucket: fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
+            dtu_id: r.dtu_id,
+            inverter_serial: r.inverter_serial,
+            mppt_index: r.mppt_index,
+            inverter_name: r.inverter_name,
+            ac_power: fragment("avg(?)", r.ac_power),
+            dc_power: fragment("avg(?)", r.dc_power)
+          }
+      )
+
+    Enum.map(tail_rows, fn row ->
+      series = {row.dtu_id, row.inverter_serial, row.mppt_index, row.inverter_name}
+
+      %{
+        time: row.bucket,
+        series: series,
+        # Per `list_day_chart_data/4`: pick `ac_power` for AC-aggregate
+        # rows (`mppt_index = 0`) and `dc_power` for per-MPPT rows.
+        # The aggregate's NULLs for per-MPPT rows are dropped by the
+        # dashboard's filter, so we don't have to guard against them
+        # here.
+        power:
+          chart_power_for_mppt(%{
+            mppt_index: row.mppt_index,
+            ac_power: row.ac_power,
+            dc_power: row.dc_power
+          })
+      }
+    end)
   end
 
   @doc "Fetch today's readings for the user's DTUs (raw rows)."
@@ -756,85 +957,117 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       []
     else
-      # One query for both production and consumption rows; the
-      # `power_type` discriminator routes them to the right bucket.
-      readings =
+      # Single SQL query that pushes the production/consumption split
+      # into the database via `FILTER` aggregates on the raw
+      # `readings` rows. The result is one row per
+      # `(bucket, dtu_id, inverter_serial)` that has any data on either
+      # side — typically a few hundred rows for a day's worth of data,
+      # versus the ~30k raw rows the BEAM-driven path used to fetch.
+      #
+      # The `FILTER` clauses mirror the BEAM-side guards the previous
+      # implementation used:
+      #
+      #   * `power_type = 'production' AND mppt_index = 0` selects the
+      #     AC aggregate row only — per-MPPT DC rows duplicate the AC
+      #     total and would 2×/3× the inverter's actual output if
+      #     included.
+      #   * `power_type = 'consumption'` selects the Shelly's
+      #     instantaneous draw. `GREATEST(consumption_power, 0)` clamps
+      #     to ≥ 0 W so net-export windows where the Shelly publishes
+      #     negative `total_act_power` don't inflate the net figure
+      #     past the inverter's actual output.
+      #
+      # `time_bucket('5 minutes', inserted_at)` is the same bucketing
+      # the `readings_5m` continuous aggregate uses, so the bucket
+      # boundaries line up with the production chart's buckets.
+      # `AVG(...)` collapses each Shelly's ~10× per-5-min readings
+      # (and a multi-MPPT Hoymiles's per-minute per-string rows) to
+      # a single figure per (bucket, device) — the same per-device
+      # average the pre-rewrite code computed in BEAM.
+      bucketed =
         Repo.all(
           from r in Reading,
             where:
               r.dtu_id in ^dtu_ids and
                 r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            group_by: [
+              fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
+              r.dtu_id,
+              r.inverter_serial
+            ],
             select: %{
-              inserted_at: r.inserted_at,
+              bucket: fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
               dtu_id: r.dtu_id,
               inverter_serial: r.inverter_serial,
-              ac_power: r.ac_power,
-              dc_power: r.dc_power,
-              mppt_index: r.mppt_index,
-              consumption_power: r.consumption_power,
-              power_type: r.power_type
+              production_w:
+                fragment(
+                  "avg(?) FILTER (WHERE ? = 'production' AND ? = 0)",
+                  r.ac_power,
+                  r.power_type,
+                  r.mppt_index
+                ),
+              consumption_w:
+                fragment(
+                  "avg(GREATEST(?, 0)) FILTER (WHERE ? = 'consumption')",
+                  r.consumption_power,
+                  r.power_type
+                ),
+              # `count(*) FILTER (WHERE power_type='consumption')` lets the
+              # drop-bucket guard below distinguish "bucket had at least
+              # one consumption row" from "no consumption row at all".
+              # The clamped mean can be 0 W (a net-export window where
+              # every Shelly reading was negative) while the bucket still
+              # contains real data — keeping it preserves the
+              # production − 0 = export signal. Without this flag, the
+              # guard would drop those buckets and lose the export curve
+              # for net-exporting homes. Adds one extra `count(*)` per
+              # bucket to the work the planner already does alongside
+              # the two `avg`s.
+              consumption_presence:
+                fragment(
+                  "count(*) FILTER (WHERE ? = 'consumption')",
+                  r.power_type
+                )
             }
         )
 
-      if readings == [] do
+      if bucketed == [] do
         []
       else
-        readings
-        |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
-        |> Enum.flat_map(fn {bucket, bucket_readings} ->
-          time = DateTime.from_unix!(bucket * 300)
-
-          # Production side: the AC aggregate row (`mppt_index = 0`)
-          # is the inverter's actual AC output. Per-MPPT DC rows
-          # duplicate the AC figure (DC inputs that the firmware
-          # already summed into the AC total), so they're excluded
-          # from the net-flow calculation entirely. This mirrors what
-          # `get_daily_stats/3`'s `current_power` does and what the
-          # production chart's "Total" line renders.
+        bucketed
+        |> Enum.group_by(fn row -> row.bucket end)
+        |> Enum.flat_map(fn {bucket, bucket_rows} ->
+          # `production_w` is NULL for rows that only have consumption
+          # rows in the bucket (and vice versa) — `|| 0.0` collapses
+          # both to a numeric zero so the SUM below doesn't drop NULL
+          # and skip the bucket.
           production_w =
-            bucket_readings
-            |> Enum.filter(fn r -> r.power_type == "production" and r.mppt_index == 0 end)
-            |> Enum.group_by(fn r -> {r.dtu_id, r.inverter_serial} end)
-            |> Enum.map(fn {_series, series_readings} ->
-              powers = Enum.map(series_readings, & &1.ac_power)
-              mean_power(powers)
-            end)
+            bucket_rows
+            |> Enum.map(fn r -> r.production_w || 0.0 end)
             |> Enum.sum()
 
-          # Consumption side: a Shelly Plus 3EM publishes ~10× per
-          # 5-min bucket. We average per device so the household draw
-          # reflects the true mean drawn power in the window, then sum
-          # across devices (multi-Shelly households are possible
-          # though rare).
           consumption_w =
-            bucket_readings
-            |> Enum.filter(fn r -> r.power_type == "consumption" end)
-            |> Enum.group_by(fn r -> r.dtu_id end)
-            |> Enum.map(fn {_dtu_id, series_readings} ->
-              # Clamp to household draw (≥ 0 W). When the Shelly sees
-              # reverse flow (solar surplus), `total_act_power` goes
-              # negative — without the clamp, `production_w -
-              # consumption_w` would inflate the "Net export" figure
-              # past total production. With the clamp, household draw
-              # is treated as 0 W during net-export windows and the
-              # net-flow curve caps at +production.
-              powers =
-                Enum.map(series_readings, fn r -> clamp_household_draw(r.consumption_power) end)
-
-              mean_power(powers)
-            end)
+            bucket_rows
+            |> Enum.map(fn r -> r.consumption_w || 0.0 end)
             |> Enum.sum()
 
-          # Drop buckets where no Shelly uplink landed — without this
-          # guard, the net-flow curve would equal the Total line
-          # (production - 0 = production) and just be a duplicate.
-          # The dashboard's UI guard (`@net_path != ""`) hides the
-          # row entirely when no bucket survives.
-          has_consumption =
-            consumption_w > 0 or Enum.any?(bucket_readings, &(&1.power_type == "consumption"))
+          # Drop buckets where no Shelly uplink landed at all —
+          # without this guard, the net-flow curve would equal the
+          # production line (`production - 0 = production`) and just be
+          # a duplicate of the Total. A bucket where the clamped
+          # consumption is 0 but the bucket had at least one
+          # consumption row (net-export window where every Shelly reading
+          # was negative) is *kept* — `production - 0 = production` is
+          # exactly the export signal the chart should plot. Matches
+          # the pre-rewrite BEAM guard
+          # (`Enum.any?(&(&1.power_type == "consumption"))`).
+          has_consumption_row =
+            Enum.any?(bucket_rows, fn row ->
+              (row.consumption_presence || 0) > 0
+            end)
 
-          if has_consumption do
-            [%{time: time, power: production_w - consumption_w}]
+          if consumption_w > 0.0 or has_consumption_row do
+            [%{time: lift_naive!(bucket), power: production_w - consumption_w}]
           else
             []
           end
@@ -844,14 +1077,15 @@ defmodule DtuApp.Devices do
     end
   end
 
-  # Mean of a non-empty list of floats. Returns 0.0 for an empty list
-  # so a half-wired inverter (or a Shelly whose first reading of the
-  # day hasn't arrived yet) doesn't blow up the net-flow arithmetic
-  # with a division-by-zero. Callers filter to non-empty lists before
-  # calling, but the empty-list guard keeps the helper safe to use
-  # unconditionally.
-  defp mean_power([]), do: 0.0
-  defp mean_power(powers), do: Enum.sum(powers) / length(powers)
+  # `time_bucket` returns a `timestamp without time zone` so Postgres
+  # decodes it as `NaiveDateTime`. The dashboard's chart pipeline
+  # (`shift_local/2`, `chart_time_range/2`, the bucket-mean math)
+  # expects `%DateTime{}` — see the matching `case` in
+  # `list_day_chart_data_for_dashboard/4` for the same coercion.
+  defp lift_naive!(%NaiveDateTime{} = naive),
+    do: DateTime.from_naive!(naive, "Etc/UTC")
+
+  defp lift_naive!(%DateTime{} = dt), do: dt
 
   @doc """
   Net flow stat snapshot — mirrors `get_daily_stats/3` /
@@ -1206,19 +1440,32 @@ defmodule DtuApp.Devices do
           |> Enum.sum()
         end
 
-      # Peak power today comes from the 5-minute continuous aggregate. The
-      # bucket stays closed until its window fills, so a fast-rising
-      # morning ramp can leave `bucket_max` several minutes behind the
-      # live `current_power`. Lift the peak to the live reading whenever
-      # it exceeds the bucket max so the displayed number reflects what
-      # the inverter is producing *now*.
+      # Peak power today comes from the 5-minute continuous aggregate
+      # via `list_day_chart_data_for_dashboard/4` (no per-row scan).
+      # The aggregate's bucket stays closed until its window fills, so a
+      # fast-rising morning ramp can leave `bucket_max` several
+      # minutes behind the live `current_power`. Lift the peak to the
+      # live reading whenever it exceeds the bucket max so the
+      # displayed number reflects what the inverter is producing *now*.
+      today_utc_range_start = today_start
+      today_utc_range_end = today_end
+
       bucket_max =
-        case list_today_chart_data(user, dtu_id) do
+        case list_day_chart_data_for_dashboard(
+               user,
+               today_utc_range_start,
+               today_utc_range_end,
+               dtu_id
+             ) do
           [] ->
             0.0
 
           points ->
+            # Drop non-`mppt_index = 0` rows (same as the dashboard's
+            # `Enum.filter` so the peak matches what the user sees on
+            # the chart).
             points
+            |> Enum.filter(fn pt -> elem(pt.series, 2) == 0 end)
             |> Enum.map(& &1.power)
             |> Enum.max(fn -> 0.0 end)
         end
@@ -1491,22 +1738,48 @@ defmodule DtuApp.Devices do
   single-day peak via `MAX(consumption_power)` per day.
 
   Returns zero defaults when the user has no devices.
+
+  ## Performance note
+
+  The today and day branches both used to call
+  `get_consumption_daily_stats/2` internally — once to fetch the
+  today-side fields, and once again because the dashboard already
+  fetches the same data for the consumption stat cards. The second
+  call walks the day's entire consumption log twice (once for the
+  latest-readings lookup, once via `integrate_consumption_kwh/4`) and
+  is pure overhead on the dashboard's hot path.
+
+  The 5th argument (`consumption_daily_stats`) lets the caller thread
+  its pre-fetched result through. The dashboard passes the value it
+  already computed for the consumption stat cards, so the today / day
+  branches consume it directly instead of re-fetching. When the
+  argument is `nil` (older callers, the NotificationsLive page, and
+  tests that don't care about the perf path) the helper computes the
+  value itself — preserves the existing 4-arg API.
   """
-  def get_consumption_period_stats(%User{} = user, dtu_id, time_range, selected_period) do
+  def get_consumption_period_stats(
+        %User{} = user,
+        dtu_id,
+        time_range,
+        selected_period,
+        consumption_daily_stats \\ nil
+      ) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
       zero_period_stats()
     else
       today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+      # Single source of truth for the today-side consumption fields.
+      # `nil` callers hit the underlying helper; the dashboard thread
+      # passes its pre-fetched value to skip the round-trip.
+      today = consumption_daily_stats || get_consumption_daily_stats(user, dtu_id)
 
       case time_range do
         "today" ->
-          # Live view: mirror the existing `get_consumption_daily_stats/2`
-          # for the today-consumption side, and compute peak across today's
-          # consumption chart buckets.
-          today = get_consumption_daily_stats(user, dtu_id)
-
+          # Live view: it's identical to the today consumption stats
+          # by construction — just rename the keys into the
+          # period-stats shape.
           %{
             current_consumption: today.current_consumption,
             today_consumption: today.today_consumption,
@@ -1517,11 +1790,15 @@ defmodule DtuApp.Devices do
           }
 
         "day" ->
-          # Single-day historical view: same shape as today.
+          # Single-day historical view: same shape as today, but the
+          # *period* total / peak are scoped to the selected day
+          # rather than `today`. The today-side fields still come
+          # from the passed-through `today` snapshot so the
+          # "Current" / "Today" cards keep showing what's happening
+          # now even when the user is looking at a past day.
           {_date_utc, date_local} = resolve_consumption_period_date(selected_period, today_start)
           {utc_start, utc_end} = local_day_utc_range(date_local, 0)
 
-          today = get_consumption_daily_stats(user, dtu_id)
           period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
           period_peak = compute_consumption_peak_w(user, dtu_ids, utc_start, utc_end)
 

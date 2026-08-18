@@ -616,6 +616,214 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "list_day_chart_data_for_dashboard/4 (aggregate-backed hot path)" do
+    # The dashboard's chart path uses this helper instead of
+    # `list_day_chart_data/4` (which walks every raw `readings` row
+    # in the BEAM). The aggregate-backed variant reads from the
+    # `readings_5m` continuous aggregate for everything older than its
+    # 5-minute `end_offset`, and unions with a live tail of raw rows
+    # for the most recent 5 minutes — see the
+    # `list_day_chart_data_for_dashboard/4` docstring for the
+    # rationale.
+    #
+    # Tests below pin the contract the dashboard relies on:
+    # * the same `%{time, series, power}` shape as
+    #   `list_day_chart_data/4` so the chart can swap implementations
+    #   without touching the renderer;
+    # * the `time` is always a `%DateTime{}` (UTC), not the
+    #   `NaiveDateTime` the `readings_5m.bucket` column would naturally
+    #   decode to without a schema cast;
+    # * `mppt_index = 0` (AC aggregate) rows surface in the chart;
+    # * the cold-aggregate fallback returns the same points as
+    #   `list_day_chart_data/4` for new installations where the
+    #   materialised bucket rows haven't been refreshed yet.
+
+    defp today_at(hour, minute \\ 0) do
+      Date.utc_today()
+      |> DateTime.new!(Time.new!(hour, minute, 0))
+      |> Map.put(:microsecond, {0, 0})
+    end
+
+    defp today_end_of_day do
+      DateTime.new!(Date.utc_today(), ~T[23:59:59])
+      |> Map.put(:microsecond, {0, 0})
+    end
+
+    test "returns the same chart points shape as list_day_chart_data/4 (per-inverter AC rows)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Two inverters, each with one AC row at noon today.
+      for {serial, power} <- [{"INV-1", 200.0}, {"INV-2", 350.0}] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: serial,
+            inverter_name: serial,
+            mppt_index: 0,
+            ac_power: power,
+            inserted_at: today_at(12)
+          })
+      end
+
+      points =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          device.id
+        )
+
+      by_serial =
+        points
+        |> Enum.filter(fn pt -> elem(pt.series, 2) == 0 end)
+        |> Map.new(fn pt -> {elem(pt.series, 1), pt.power} end)
+
+      assert_in_delta by_serial["INV-1"], 200.0, 0.1
+      assert_in_delta by_serial["INV-2"], 350.0, 0.1
+
+      # Each point carries a `%DateTime{}` `time` (not a
+      # `NaiveDateTime`) so the dashboard's `shift_local/2` and
+      # `chart_time_range/2` keep their existing contract.
+      Enum.each(points, fn pt ->
+        assert %DateTime{} = pt.time
+      end)
+    end
+
+    test "returns points even when readings_5m is cold (no rows yet, fallback to raw scan)" do
+      # A brand-new install — the continuous-aggregate policy hasn't
+      # run yet, so `readings_5m` is empty (`WITH NO DATA`). The
+      # fallback path walks the raw rows for the full day so the
+      # chart still renders rather than blanking out. Pin that the
+      # points list equals what `list_day_chart_data/4` would have
+      # returned for the same data (same set of (bucket, series)
+      # pairs and the same per-bucket power).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      for {hour, minute, power} <- [{9, 0, 100.0}, {9, 30, 200.0}, {10, 0, 300.0}] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "INV-1",
+            mppt_index: 0,
+            ac_power: power,
+            inserted_at: today_at(hour, minute)
+          })
+      end
+
+      dashboard_points =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          device.id
+        )
+
+      raw_points =
+        Devices.list_day_chart_data(user, today_at(0), today_end_of_day(), device.id)
+
+      # Same number of points on both paths.
+      assert length(dashboard_points) == length(raw_points)
+
+      # Same set of `(bucket, series)` pairs on both paths. Comparing
+      # via a {time, serial} → power map normalises away any
+      # minor difference in the row-key shape between the two
+      # implementations (raw rows bucketed in BEAM by `div(unix, 300)`,
+      # aggregate rows by TimescaleDB's `time_bucket`). Both paths
+      # produce identical 5-minute bucket boundaries for any timestamp
+      # already aligned to a 5-min boundary, and the test seeds
+      # such-aligned timestamps on purpose.
+      dashboard_pairs =
+        dashboard_points
+        |> Map.new(fn pt -> {{pt.time, elem(pt.series, 1)}, pt.power} end)
+
+      raw_pairs =
+        raw_points
+        |> Map.new(fn pt -> {{pt.time, elem(pt.series, 1)}, pt.power} end)
+
+      Enum.each(raw_pairs, fn {key, expected_power} ->
+        assert Map.has_key?(dashboard_pairs, key),
+               "expected dashboard to have point #{inspect(key)}, got #{inspect(Map.keys(dashboard_pairs))}"
+
+        assert_in_delta Map.fetch!(dashboard_pairs, key), expected_power, 0.1
+      end)
+    end
+
+    test "returns [] for a window with no readings (no fallback scan)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      _device = DevicesFixtures.device_fixture(user)
+
+      # Empty window — no raw rows and no aggregate rows.
+      assert Devices.list_day_chart_data_for_dashboard(
+               user,
+               today_at(0),
+               today_end_of_day(),
+               nil
+             ) == []
+    end
+
+    test "scopes by dtu_id when one is supplied" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      dtu1 = DevicesFixtures.device_fixture(user)
+      dtu2 = DevicesFixtures.device_fixture(user)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu1.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: today_at(12)
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu2.id,
+          inverter_serial: "INV-2",
+          mppt_index: 0,
+          ac_power: 999.0,
+          inserted_at: today_at(12)
+        })
+
+      only_dtu1 =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          dtu1.id
+        )
+
+      # Only dtu1's row should appear; dtu2's 999 W row is filtered by
+      # the `dtu_id in ^dtu_ids` clause in the SQL.
+      assert Enum.all?(only_dtu1, fn pt -> elem(pt.series, 0) == dtu1.id end)
+      assert_in_delta hd(only_dtu1).power, 100.0, 0.1
+    end
+
+    test "returns [] when the supplied dtu_id is not owned by the user" do
+      # A user looking at another user's DTU must not see its rows.
+      owner = DtuApp.AccountsFixtures.user_fixture()
+      attacker = DtuApp.AccountsFixtures.user_fixture()
+      their_dtu = DevicesFixtures.device_fixture(owner)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: their_dtu.id,
+          inverter_serial: "INV-X",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: today_at(12)
+        })
+
+      assert Devices.list_day_chart_data_for_dashboard(
+               attacker,
+               today_at(0),
+               today_end_of_day(),
+               their_dtu.id
+             ) == []
+    end
+  end
+
   describe "update_inverter_name/3" do
     test "backfills inverter_name on every row for the given (dtu_id, inverter_serial)" do
       user = DtuApp.AccountsFixtures.user_fixture()

@@ -446,7 +446,12 @@ defmodule DtuAppWeb.DashboardLive do
   # local time.
   defp assign_line_chart_data(socket, user, local_date, tz_offset_seconds, dtu_id) do
     {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-    all_chart_points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
+    # Read from the `readings_5m` continuous aggregate (older buckets)
+    # unioned with a 5-minute live tail from raw rows; collapses the
+    # per-row scan that `list_day_chart_data/4` did on every refresh.
+    # See `DtuApp.Devices.list_day_chart_data_for_dashboard/4`.
+    all_chart_points =
+      Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id)
 
     # The dashboard exposes one line per *inverter* (its AC aggregate,
     # mppt_index = 0). Per-MPPT DC rows are intentionally collapsed so
@@ -1409,8 +1414,23 @@ defmodule DtuAppWeb.DashboardLive do
     # month/year views get period total / period peak / peak date.
     # Drives the dedicated "Power consumption" stat-card row that
     # mirrors the production row when a Shelly is paired.
+    #
+    # We pass the already-fetched `consumption_stats` through so the
+    # today / day branches don't re-fetch the same data. The
+    # `get_consumption_period_stats/4` helper used to call
+    # `get_consumption_daily_stats/2` again, doubling the per-day
+    # consumption scan on every dashboard mount / reading refresh
+    # (the dashboard pre-fetches the value just above for the
+    # consumption stat cards). The 5th argument is `nil` by default
+    # for older callers — see `DtuApp.Devices.get_consumption_period_stats/5`.
     consumption_period_stats =
-      Devices.get_consumption_period_stats(user, dtu_id, time_range, selected_period)
+      Devices.get_consumption_period_stats(
+        user,
+        dtu_id,
+        time_range,
+        selected_period,
+        consumption_stats
+      )
 
     # Net flow (production minus consumption) — the headline value
     # for a solar dashboard ("am I net-exporting or net-importing?").
