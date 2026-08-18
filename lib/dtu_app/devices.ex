@@ -714,6 +714,25 @@ defmodule DtuApp.Devices do
               power: a.avg_ac_power
             }
         )
+        # The aggregate SELECT returns a wide-table shape (`dtu_id`,
+        # `inverter_serial`, `mppt_index`, `inverter_name` as separate
+        # fields) — that's what TimescaleDB's continuous aggregate view
+        # exposes. The chart pipeline (`DashboardLive.assign_line_chart_data/5`,
+        # `get_daily_stats/3`'s `bucket_max`, the `chart_power_for_mppt/1` per-MPPT
+        # filter) consumes the `chart_point()` contract, where `:series`
+        # is a 4-tuple `{dtu_id, inverter_serial, mppt_index, inverter_name}`
+        # — not four fields. Without this reshape, every consumer that does
+        # `elem(pt.series, N)` raises `KeyError: key :series not found`.
+        # The live tail (`live_tail_bucketed_chart_points/3`) and the
+        # raw-row fallback (`list_day_chart_data/4`) already produce the
+        # 4-tuple shape; only the aggregate path needs the reshape.
+        |> Enum.map(fn pt ->
+          %{
+            time: pt.time,
+            series: {pt.dtu_id, pt.inverter_serial, pt.mppt_index, pt.inverter_name},
+            power: pt.power
+          }
+        end)
 
       # Live tail — raw rows, bucketed via `time_bucket` in SQL so the
       # shape matches the aggregate exactly. The 5-minute tail is
