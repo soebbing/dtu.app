@@ -1406,7 +1406,11 @@ defmodule DtuApp.Devices do
               v -> v
             end
           end)
-          |> Enum.sum()
+          # Same max-not-sum semantics as `list_range_yield_data/4`:
+          # take the day's highest reading rather than summing across
+          # rows, since the firmware's reported daily yield is a
+          # single value (the monotonic-counter end-of-day total).
+          |> Enum.max(fn -> 0.0 end)
         end
 
       # Lifetime total yield.
@@ -1466,7 +1470,11 @@ defmodule DtuApp.Devices do
               v -> v
             end
           end)
-          |> Enum.sum()
+          # Same max-not-sum semantics as the `today_yield` fallback:
+          # take the highest reading rather than summing across rows,
+          # since the firmware-reported lifetime yield is a single
+          # monotonic-counter value.
+          |> Enum.max(fn -> 0.0 end)
         end
 
       # Peak power today comes from the 5-minute continuous aggregate
@@ -2103,10 +2111,16 @@ defmodule DtuApp.Devices do
           end
         end)
         |> Enum.map(fn {date, dtu_fleet_rows} ->
+          # AhoyDTU's `{base}/total/YieldToday` publishes the firmware-
+          # aggregated daily yield for the DTU. Since `YieldDay` is
+          # monotonic within a day, the highest reading in the day's
+          # series is the day's total — pick that, never sum, since
+          # summing would inflate the figure across rows.
           {date,
            dtu_fleet_rows
            |> Enum.map(& &1.max_yield)
-           |> Enum.sum()}
+           |> Enum.reject(&is_nil/1)
+           |> Enum.max(fn -> 0.0 end)}
         end)
         |> Map.new()
 
@@ -2138,10 +2152,16 @@ defmodule DtuApp.Devices do
           end
         end)
         |> Enum.map(fn {date, date_readings} ->
+          # Per-inverter fallback path (OpenDTU installs or half-wired
+          # AhoyDTU installs without a `{base}/total` row). Same
+          # monotonic-counter semantics as the fleet path: take the
+          # day's highest `MAX(yield_day)` rather than summing across
+          # inverters. Summing would inflate the chart series against
+          # the firmware-reported daily total.
           {date,
            date_readings
            |> Enum.map(&(&1.max_yield || 0.0))
-           |> Enum.sum()}
+           |> Enum.max(fn -> 0.0 end)}
         end)
         |> Map.new()
 
