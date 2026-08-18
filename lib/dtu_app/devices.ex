@@ -696,7 +696,17 @@ defmodule DtuApp.Devices do
               a.dtu_id in ^dtu_ids and a.bucket < ^utc_tail_start and
                 a.bucket >= ^utc_start and a.bucket <= ^utc_end,
             select: %{
-              bucket: a.bucket,
+              # `readings_5m.bucket` is the aggregate's time column
+              # (TimescaleDB's `time_bucket(...)` result). The chart
+              # pipeline expects `:time` everywhere — the live tail
+              # (`live_tail_bucketed_chart_points/3`) and the
+              # raw-row fallback (`list_day_chart_data/4`) both use
+              # `:time` for the same field. Selecting the column as
+              # `:time` here keeps the consumer contract uniform and
+              # lets the `case pt.time` argument coercion below
+              # (NaiveDateTime → DateTime) handle the aggregate rows
+              # in the same pass as the live tail.
+              time: a.bucket,
               dtu_id: a.dtu_id,
               inverter_serial: a.inverter_serial,
               mppt_index: a.mppt_index,
