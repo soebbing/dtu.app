@@ -1639,6 +1639,99 @@ defmodule DtuApp.MqttBrokerTest do
       reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
       assert reloaded.last_error == nil
     end
+
+    test "AhoyDTU {base}/total/{Field} numeric uplink does NOT record an error and clears any stale last_error" do
+      # The user reported: a device shows a red error bubble with the
+      # message "AhoyDTU uplink rejected (:ignored_topic on topic
+      # "inverter/total/MaxPower")" even though the corresponding
+      # `dtu_errors` row is older than the 48 h recency cutoff (the
+      # expansion panel shows "No errors recorded for this DTU yet.").
+      #
+      # Root cause: an earlier parser build wrote that error message to
+      # `dtus.last_error` for any topic the parser didn't recognise.
+      # The current build:
+      #   1. Recognises `{base}/total/{Field}` (AhoyDTU fleet-total
+      #      numerics) and routes through `parse_ahoydtu/3`'s
+      #      `[binary_base, "total", metric]` clause — no `:ignored_topic`
+      #      error.
+      #   2. Calls `clear_stale_dtu_error/1` on every successfully-parsed
+      #      uplink so the cached `last_error` row is cleared the next
+      #      time the device publishes a topic the parser recognises.
+      #
+      # This test pins both contracts: the AhoyDTU numeric fleet-total
+      # topic doesn't write a new `dtu_errors` row, and a pre-existing
+      # `last_error` value is cleared by the parser's
+      # `clear_stale_error/1` call so the dashboard's red bubble goes
+      # away on the next successful uplink.
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "ahoydtu-stale-error",
+          base_topic: "inverter"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      # Seed a stale cached error directly on the `dtus` row — without
+      # going through `update_dtu_error/2` (which would also insert a
+      # `dtu_errors` row). The user's bug is precisely that the
+      # cached `last_error` column is sticky across parser versions,
+      # so we want to reproduce just that state.
+      stale_message =
+        ~s|AhoyDTU uplink rejected (:ignored_topic on topic "inverter/total/MaxPower")|
+
+      stale_ts = DtuApp.Time.utc_now_usec() |> DateTime.add(-(3 * 86_400), :second)
+
+      dtu =
+        DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+        |> Ecto.Changeset.change(%{last_error: stale_message, last_error_at: stale_ts})
+        |> DtuApp.Repo.update!()
+
+      assert dtu.last_error =~ "AhoyDTU uplink rejected"
+
+      # Sanity check: the seed did NOT create a `dtu_errors` row (the
+      # bug is that the column alone keeps the bubble — there isn't an
+      # `dtu_errors` row in scope).
+      assert DtuApp.Repo.one(
+               from e in DtuApp.Devices.DtuError,
+                 where: e.dtu_id == ^dtu.id
+             ) == nil
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :ahoydtu,
+        base_topic: "inverter",
+        name: dtu.name
+      }
+
+      # The device publishes a current fleet-total numeric — the
+      # topic the previous parser build rejected. The current parser
+      # routes this through the `[binary_base, "total", metric]`
+      # clause: `MaxPower` is unmapped, so `parse_ahoy_metric/1` returns
+      # `:other`, but the pair reaches the buffer with the value.
+      # `flush?` is false (only `:other`), so no row is written, but
+      # the parser's success path triggers `clear_stale_error/1` —
+      # which is the path that fixes the user's bug.
+      msg =
+        {:uplink, "client_stale", device_info, "inverter/total/MaxPower", "650"}
+
+      {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+
+      # Still no `dtu_errors` row — the parser's success path for
+      # this topic doesn't go through `record_dtu_error/2`.
+      assert DtuApp.Repo.one(
+               from e in DtuApp.Devices.DtuError,
+                 where: e.dtu_id == ^dtu.id
+             ) == nil
+
+      # The cached `last_error` was cleared by `clear_stale_error/1`.
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, dtu.id)
+      assert reloaded.last_error == nil
+      assert reloaded.last_error_at == nil
+    end
   end
 
   describe "Broker.handle_publish/4" do

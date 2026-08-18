@@ -177,6 +177,23 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # branch at all, e.g. an unknown topic) runs below.
       touch_last_seen(device_info.id)
 
+      # Clear any stale `dtus.last_error` written by a previous parser
+      # build. The current parser may *not* overwrite the cached
+      # column on every successful parse (the AhoyDTU numeric per-
+      # field path, for example, only writes a `dtu_errors` row when
+      # the parser returns an `:error` or a malformed-payload reason).
+      # Calling clear_stale_error/1 here means: any cached error is
+      # cleared as soon as the device successfully publishes *any*
+      # topic, even if the new parse doesn't surface a fresh error.
+      # If the parse *does* surface a new error, `record_dtu_error/2`
+      # (called from the per-kind handler) overwrites the cleared
+      # value with the new message — the order is:
+      # touch_last_seen → clear_stale_error → parse → maybe_record_error.
+      # The helper is a no-op on a healthy device (`update_all` is
+      # gated on `not is_nil(d.last_error)`), so the per-uplink cost
+      # is a single PK lookup.
+      clear_stale_error(device_info.id)
+
       case device_info.kind do
         :opendtu ->
           handle_opendtu(client_id, device_info, topic_str, payload, state)
@@ -248,6 +265,25 @@ defmodule DtuApp.MqttBroker.Telemetry do
             :ok
         end
     end
+  end
+
+  # Clear any stale `dtus.last_error` written by a previous parser
+  # version (e.g. an old build that wrote `:ignored_topic` errors for
+  # `inverter/total/MaxPower` uplinks). The current parser recognises
+  # those topics — the topic passes the `[binary_base, "total", metric]`
+  # clause — but it never calls `record_dtu_error/2` for them, so the
+  # cached `last_error` column is never overwritten. Without this
+  # helper, a device that successfully publishes today's
+  # `inverter/total/YieldDay` would still show its old
+  # `AhoyDTU uplink rejected (:ignored_topic on topic
+  # "inverter/total/MaxPower")` bubble, even though no `dtu_errors`
+  # row exists in the recency window.
+  #
+  # Called from every parser success path (OpenDTU, AhoyDTU, Shelly).
+  # Idempotent: a no-op for devices that have never errored or whose
+  # `last_error` was already cleared by an earlier uplink.
+  defp clear_stale_error(device_id) do
+    DtuApp.Devices.clear_stale_dtu_error(device_id)
   end
 
   # --- OpenDTU ----------------------------------------------------------------

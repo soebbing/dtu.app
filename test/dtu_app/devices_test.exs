@@ -819,6 +819,74 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "clear_stale_dtu_error/1" do
+    # Used by `MqttBroker.Telemetry`'s uplink handler to clear a stale
+    # `dtus.last_error` written by a previous parser build. The current
+    # parser may not call `record_dtu_error/2` for a topic that the
+    # previous build *did* (e.g. `inverter/total/MaxPower` — old build
+    # wrote `:ignored_topic` errors; current build silently drops the
+    # metric as `:other`). Without this helper, a device that's been
+    # publishing valid topics ever since the upgrade would still show
+    # its old error bubble forever.
+    #
+    # Tests pin: the clear runs, the broadcast fires, the no-op
+    # path on a healthy device, and the missing-device path.
+
+    test "clears last_error + last_error_at for a device with a cached error" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      device_id = device.id
+
+      # Seed an error first.
+      :ok = DtuApp.Devices.update_dtu_error(device_id, "stale parser message")
+
+      before = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device_id)
+      assert before.last_error == "stale parser message"
+      assert before.last_error_at
+
+      # Subscribe to the status topic to observe the broadcast.
+      Phoenix.PubSub.subscribe(DtuApp.PubSub, DtuApp.MqttBroker.Telemetry.status_topic())
+
+      :ok = DtuApp.Devices.clear_stale_dtu_error(device_id)
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device_id)
+      assert reloaded.last_error == nil
+      assert reloaded.last_error_at == nil
+
+      # The helper broadcasts `:dtu_error` so subscribed LiveViews
+      # (device-list, dashboard) re-stream the affected device.
+      assert_receive {:dtu_error, ^device_id}
+    end
+
+    test "is a no-op on a device with no cached error (no broadcast)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      device_id = device.id
+
+      Phoenix.PubSub.subscribe(DtuApp.PubSub, DtuApp.MqttBroker.Telemetry.status_topic())
+
+      :ok = DtuApp.Devices.clear_stale_dtu_error(device_id)
+
+      # No broadcast fires on a no-op — the device's last_error was
+      # already nil, so no LiveView needs to re-stream. We assert
+      # this explicitly so a future regression that always broadcasts
+      # is caught (extra broadcasts cost an extra re-fetch of the
+      # device list per uplink on a healthy fleet).
+      refute_receive {:dtu_error, ^device_id}, 50
+
+      reloaded = DtuApp.Repo.get!(DtuApp.Devices.Dtu, device_id)
+      assert reloaded.last_error == nil
+      assert reloaded.last_error_at == nil
+    end
+
+    test "returns :ok for a non-existent device" do
+      # The helper is called from the telemetry GenServer — a race
+      # where the device was deleted between an uplink landing and
+      # the clear running must not crash the parser.
+      :ok = DtuApp.Devices.clear_stale_dtu_error(99_999_999)
+    end
+  end
+
   describe "record_dtu_error/2 + dtu_errors reads" do
     # The transactional writer that backs both the dashboard's edge
     # badge and the manage-device expansion panel. Pins the contract:
