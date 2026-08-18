@@ -39,7 +39,25 @@ const NotificationPermission = {
   pushState() {
     const installed = this.isInstalledAsPWA()
     const support = this.computeSupport(installed)
-    this.pushEvent("notification_state", support)
+    // The hook only mounts on `/notifications` (a LiveView route) so
+    // `pushEvent` is normally safe to call directly. We still guard
+    // on `view.isConnected()` to avoid the Phoenix 1.8
+    // `unable to push hook event. LiveView not connected` rejection
+    // if the user navigates away from the page mid-mount (the SSR →
+    // LiveView transition is async and the hook can briefly outlive
+    // the connect handshake).
+    const view = this.view
+    if (!view || typeof view.isConnected !== "function" || !view.isConnected()) {
+      return
+    }
+    try {
+      const result = this.pushEvent("notification_state", support)
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {})
+      }
+    } catch (_err) {
+      // The dashboard's handler is no-op, so a missed push is harmless.
+    }
   },
 
   computeSupport(installed) {

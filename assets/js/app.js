@@ -38,61 +38,101 @@ import {OfflineBanner} from "./offline_banner.js"
 import {PushSubscribe} from "./push_subscribe.js"
 
 // Network Status Hook
+//
+// Connection-safety contract:
+// this hook fires `mounted()` the instant Phoenix mounts the element
+// on the client. The first `mounted()` call can land BEFORE the
+// underlying LiveView's WebSocket handshake completes (Phoenix's
+// SSR → LiveView transition is async). Calling `pushEvent` against
+// a not-yet-connected view triggers Phoenix 1.8's
+// `unable to push hook event. LiveView not connected` Promise
+// rejection, which used to produce a wall of identical console
+// errors and (more importantly) keep re-firing every 30 s for the
+// lifetime of the page — that wall of errors is what made the page
+// appear to take a long while to load.
+//
+// Two fixes:
+//   1. Guard every `pushEvent` call on `this.view.isConnected()`,
+//      catch the resulting rejection, and bail silently if the view
+//      isn't ready (the dashboard's `network_status_changed`
+//      handler is a no-op visual assign anyway, so losing one push
+//      is harmless).
+//   2. Drop the 30 s periodic re-push. It duplicated the window
+//      `online` / `offline` events that already drive
+//      handleOnline / handleOffline, and it was the reason the error
+//      came back every half-minute.
+//
+// `getConnectionType()` swallows any per-field throws (older
+// browsers expose the Network Information API but throw when you
+// read certain fields) so the hook can never throw during `mounted()`.
 const NetworkStatus = {
   mounted() {
     this.handleOnline = this.handleOnline.bind(this)
     this.handleOffline = this.handleOffline.bind(this)
 
-    // Set initial online status
     this.updateOnlineStatus()
 
-    // Listen for online/offline events
     window.addEventListener('online', this.handleOnline)
     window.addEventListener('offline', this.handleOffline)
 
-    // Periodic status check (every 30 seconds)
-    this.interval = setInterval(() => this.updateOnlineStatus(), 30000)
-
-    // Initial status push to server
     this.pushStatus()
   },
 
   destroyed() {
     window.removeEventListener('online', this.handleOnline)
     window.removeEventListener('offline', this.handleOffline)
-    if (this.interval) {
-      clearInterval(this.interval)
+  },
+
+  safePushEvent(name, payload) {
+    const view = this.view
+    if (view && typeof view.isConnected === 'function' && view.isConnected()) {
+      try {
+        const result = this.pushEvent(name, payload)
+        if (result && typeof result.catch === 'function') {
+          result.catch(() => {})
+        }
+      } catch (_err) {
+        // Synchronous throws from a stale view are swallowed
+        // so the page's `handle_event` consumer can take its time
+        // to come back online without flooding the console.
+      }
     }
   },
 
   handleOnline() {
-    console.log('[NetworkStatus] Connection restored')
-    this.pushStatus()
-    this.notifyServer(true)
     this.el.classList.remove('network-offline', 'network-unstable')
     this.el.classList.add('network-online')
+    this.updateIndicator(true)
+    this.safePushEvent('network_status_changed', {
+      online: true,
+      connection_type: this.getConnectionType(),
+      timestamp: new Date().toISOString()
+    })
   },
 
   handleOffline() {
-    console.log('[NetworkStatus] Connection lost')
-    this.pushStatus()
-    this.notifyServer(false)
     this.el.classList.remove('network-online', 'network-unstable')
     this.el.classList.add('network-offline')
+    this.updateIndicator(false)
+    this.safePushEvent('network_status_changed', {
+      online: false,
+      connection_type: this.getConnectionType(),
+      timestamp: new Date().toISOString()
+    })
   },
 
   updateOnlineStatus() {
     const isOnline = navigator.onLine
     const currentClass = isOnline ? 'network-online' : 'network-offline'
 
-    // Remove all network status classes
     this.el.classList.remove('network-online', 'network-offline', 'network-unstable')
     this.el.classList.add(currentClass)
-
-    // Update visual indicator
     this.updateIndicator(isOnline)
-
-    this.pushStatus()
+    this.safePushEvent('network_status_changed', {
+      online: isOnline,
+      connection_type: this.getConnectionType(),
+      timestamp: new Date().toISOString()
+    })
   },
 
   updateIndicator(isOnline) {
@@ -111,32 +151,30 @@ const NetworkStatus = {
   },
 
   pushStatus() {
-    this.pushEvent('network_status_changed', {
+    this.safePushEvent('network_status_changed', {
       online: navigator.onLine,
       connection_type: this.getConnectionType(),
       timestamp: new Date().toISOString()
     })
   },
 
-  notifyServer(isOnline) {
-    // Send a message to the LiveView process
-    this.pushEvent('network_status_changed', {
-      online: isOnline,
-      connection_type: this.getConnectionType(),
-      timestamp: new Date().toISOString()
-    })
-  },
-
   getConnectionType() {
-    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection
+    const connection =
+      navigator.connection || navigator.mozConnection || navigator.webkitConnection
 
     if (!connection) return 'unknown'
 
+    let effective_type, downlink, rtt, save_data
+    try { effective_type = connection.effectiveType } catch (_err) {}
+    try { downlink = connection.downlink } catch (_err) {}
+    try { rtt = connection.rtt } catch (_err) {}
+    try { save_data = connection.saveData } catch (_err) {}
+
     return {
-      effective_type: connection.effectiveType, // 'slow-2g', '2g', '3g', '4g'
-      downlink: connection.downlink, // approximate bandwidth in Mbps
-      rtt: connection.rtt, // round-trip time in ms
-      save_data: connection.saveData // data saver mode
+      effective_type: effective_type,
+      downlink: downlink,
+      rtt: rtt,
+      save_data: save_data
     }
   }
 }
