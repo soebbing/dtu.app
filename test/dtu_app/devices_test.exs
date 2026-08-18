@@ -690,6 +690,76 @@ defmodule DtuApp.DevicesTest do
       end)
     end
 
+    test "returns chart points with a :time key when the readings_5m aggregate is populated" do
+      # Regression for the production crash reported in the field:
+      #
+      #   [info] Sent 500 in 3384ms
+      #   ** (KeyError) key :time not found in: %{bucket: ~N[...], ...}
+      #       (dtu_app 0.1.0) lib/dtu_app/devices.ex:751: anonymous fn/1 in
+      #         DtuApp.Devices.list_day_chart_data_for_dashboard/4
+      #
+      # The aggregate SELECT returned the time column as `:bucket`
+      # (matching the `readings_5m` column name), but the rest of the
+      # function — and the dashboard's chart pipeline — expect `:time`.
+      # Without the alias, the `case pt.time` coercion at the end of the
+      # function raised KeyError on every dashboard mount once the
+      # aggregate's first refresh policy ran.
+      #
+      # The test seeds the aggregate view directly so the aggregate path
+      # runs (no raw-row fallback to mask the bug). The seed bucket is
+      # 30 minutes ago so the row falls outside the 5-minute live tail
+      # and the aggregate-only path is exercised.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      bucket =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      # Insert directly into the continuous aggregate view. TimescaleDB
+      # allows writes to materialised views — the row lands in the
+      # aggregate's storage and is then returned by the SELECT as
+      # `bucket: ~N[...]`. Without the `:time` alias in the SELECT,
+      # the dashboard crashed here.
+      Ecto.Adapters.SQL.query!(
+        DtuApp.Repo,
+        """
+        INSERT INTO readings_5m (bucket, dtu_id, inverter_serial, inverter_name, mppt_index,
+                                 avg_ac_power, max_ac_power, yield_day, yield_total)
+        VALUES ($1, $2, $3, $4, $5, $6, $6, 0, 0)
+        """,
+        [
+          bucket,
+          device.id,
+          "INV-1",
+          "INV-1",
+          0,
+          250.0
+        ]
+      )
+
+      points =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          device.id
+        )
+
+      # The aggregate path must produce a chart point with the same shape
+      # as the raw-row fallback: `%{time, series, power}` with `:time`
+      # as a `%DateTime{}` (not a `NaiveDateTime`).
+      assert length(points) == 1
+      [point] = points
+
+      assert Map.has_key?(point, :time),
+             "expected point to have a :time key, got: #{inspect(Map.keys(point))}"
+
+      assert %DateTime{} = point.time
+      assert_in_delta point.power, 250.0, 0.1
+    end
+
     test "returns points even when readings_5m is cold (no rows yet, fallback to raw scan)" do
       # A brand-new install — the continuous-aggregate policy hasn't
       # run yet, so `readings_5m` is empty (`WITH NO DATA`). The
