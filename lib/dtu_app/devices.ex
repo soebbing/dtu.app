@@ -657,9 +657,10 @@ defmodule DtuApp.Devices do
   Returns `[]` when the user has no devices or no readings in the
   window.
   """
-  @spec list_day_chart_data_for_dashboard(User.t(), DateTime.t(), DateTime.t(), integer() | nil) :: [
-          chart_point()
-        ]
+  @spec list_day_chart_data_for_dashboard(User.t(), DateTime.t(), DateTime.t(), integer() | nil) ::
+          [
+            chart_point()
+          ]
   def list_day_chart_data_for_dashboard(
         %User{} = user,
         utc_start,
@@ -711,23 +712,23 @@ defmodule DtuApp.Devices do
       # recent bucket" lag up to 5 min behind reality.
       live_tail_chart_points = live_tail_bucketed_chart_points(utc_tail_start, dtu_ids, utc_end)
 
+      # Fallback: a brand-new or never-refreshed `readings_5m`
+      # aggregate is empty (`WITH NO DATA` from the migration + no
+      # policy run since the first uplink). The first dashboard
+      # mount for a fresh install — or a test DB with no materialised
+      # buckets — would render an empty chart even though raw rows
+      # exist for the period. The fallback fires whenever the
+      # aggregate is empty, **regardless of the live tail** — the
+      # live tail only covers the last 5 minutes, so a cold
+      # aggregate plus day-old readings would otherwise drop
+      # everything but the last 5 minutes of data. The fallback
+      # path (`list_day_chart_data/4`) walks the raw rows for the
+      # full day and produces the same chart the pre-aggregate code
+      # did, so a cold aggregate doesn't blank the chart or lose
+      # out-of-tail readings. Once the aggregate fills in (after
+      # the first 5-min policy run), this branch won't fire and the
+      # hot path serves the optimised read.
       result =
-        # Fallback: a brand-new or never-refreshed `readings_5m`
-        # aggregate is empty (`WITH NO DATA` from the migration + no
-        # policy run since the first uplink). The first dashboard
-        # mount for a fresh install — or a test DB with no materialised
-        # buckets — would render an empty chart even though raw rows
-        # exist for the period. The fallback fires whenever the
-        # aggregate is empty, **regardless of the live tail** — the
-        # live tail only covers the last 5 minutes, so a cold
-        # aggregate plus day-old readings would otherwise drop
-        # everything but the last 5 minutes of data. The fallback
-        # path (`list_day_chart_data/4`) walks the raw rows for the
-        # full day and produces the same chart the pre-aggregate code
-        # did, so a cold aggregate doesn't blank the chart or lose
-        # out-of-tail readings. Once the aggregate fills in (after
-        # the first 5-min policy run), this branch won't fire and the
-        # hot path serves the optimised read.
         if aggregate_points == [] do
           list_day_chart_data(user, utc_start, utc_end, dtu_id)
         else
@@ -1450,7 +1451,12 @@ defmodule DtuApp.Devices do
       today_utc_range_end = today_end
 
       bucket_max =
-        case list_day_chart_data_for_dashboard(user, today_utc_range_start, today_utc_range_end, dtu_id) do
+        case list_day_chart_data_for_dashboard(
+               user,
+               today_utc_range_start,
+               today_utc_range_end,
+               dtu_id
+             ) do
           [] ->
             0.0
 
