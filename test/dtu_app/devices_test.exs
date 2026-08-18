@@ -749,7 +749,12 @@ defmodule DtuApp.DevicesTest do
 
       # The aggregate path must produce a chart point with the same shape
       # as the raw-row fallback: `%{time, series, power}` with `:time`
-      # as a `%DateTime{}` (not a `NaiveDateTime`).
+      # as a `%DateTime{}` (not a `NaiveDateTime`) and `:series` as a
+      # 4-tuple `{dtu_id, inverter_serial, mppt_index, inverter_name}`.
+      # The two crashes that hit production crashed on each of these keys
+      # separately — once because the time column was named `:bucket`,
+      # then once because the four series fields were emitted as separate
+      # keys instead of a 4-tuple. This test pins both.
       assert length(points) == 1
       [point] = points
 
@@ -758,6 +763,79 @@ defmodule DtuApp.DevicesTest do
 
       assert %DateTime{} = point.time
       assert_in_delta point.power, 250.0, 0.1
+
+      # `:series` contract: 4-tuple, not four separate fields. Pin both
+      # the shape (is_tuple) and the contents (the dtu_id, serial,
+      # mppt_index, and inverter_name we seeded).
+      assert Map.has_key?(point, :series),
+             "expected point to have a 4-tuple :series key, got: #{inspect(Map.keys(point))}"
+
+      assert match?({_dtu_id, "INV-1", 0, "INV-1"}, point.series),
+             "expected :series to be the 4-tuple {dtu_id, inverter_serial, mppt_index, inverter_name}, got: #{inspect(point.series)}"
+
+      assert {dtu_id, "INV-1", 0, "INV-1"} = point.series
+      assert dtu_id == device.id
+
+      # The wide-table fields must NOT leak into the result — a regression
+      # here would re-introduce the `:series` KeyError if the reshape
+      # stopped emitting the 4-tuple.
+      refute Map.has_key?(point, :dtu_id),
+             "aggregate-path result leaked :dtu_id field; expected :series to replace it"
+
+      refute Map.has_key?(point, :inverter_serial),
+             "aggregate-path result leaked :inverter_serial field; expected :series to replace it"
+
+      refute Map.has_key?(point, :mppt_index),
+             "aggregate-path result leaked :mppt_index field; expected :series to replace it"
+
+      refute Map.has_key?(point, :inverter_name),
+             "aggregate-path result leaked :inverter_name field; expected :series to replace it"
+    end
+
+    test "get_daily_stats/3 bucket_max reads the aggregate (exercises :series elem/2)" do
+      # End-to-end pin of the second KeyError class:
+      #
+      #   ** (KeyError) key :series not found in: %{time: ~U[...], ...}
+      #       (dtu_app 0.1.0) lib/dtu_app/devices.ex:1478: anonymous fn/1 in
+      #         DtuApp.Devices.get_daily_stats/3
+      #
+      # `get_daily_stats/3`'s `bucket_max` computes the day's peak power
+      # via `elem(pt.series, 2) == 0` — exactly the access pattern that
+      # crashed. With the aggregate populated, the function now visits
+      # the aggregate path; the reshape makes the access succeed and
+      # `peak_power` reflects the seeded 250 W.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      bucket =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      Ecto.Adapters.SQL.query!(
+        DtuApp.Repo,
+        """
+        INSERT INTO readings_5m (bucket, dtu_id, inverter_serial, inverter_name, mppt_index,
+                                 avg_ac_power, max_ac_power, yield_day, yield_total)
+        VALUES ($1, $2, $3, $4, $5, $6, $6, 0, 0)
+        """,
+        [
+          bucket,
+          device.id,
+          "INV-1",
+          "INV-1",
+          0,
+          250.0
+        ]
+      )
+
+      # Without the :series reshape, the `elem(pt.series, 2) == 0`
+      # filter inside `bucket_max` raises `KeyError: key :series
+      # not found`. The call also asserts the peak-power value
+      # surfaces (the live `current_power` is 0 since no recent
+      # reading landed, so `peak_power` is purely the bucket max).
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.peak_power, 250.0, 0.1
     end
 
     test "returns points even when readings_5m is cold (no rows yet, fallback to raw scan)" do
