@@ -77,6 +77,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   @reading_topic "dtu:reading"
   @status_topic "dtu:status"
+  @ro_fanout_topic "dtu:ro_fanout"
 
   # --- Public API -------------------------------------------------------------
 
@@ -93,6 +94,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
   @doc "Subscribe the calling process to DTU status changes."
   @spec subscribe_status() :: :ok | {:error, term()}
   def subscribe_status, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @status_topic)
+
+  @doc "Subscribe the calling process to account-scoped read-only sink fan-out."
+  @spec subscribe_ro_fanout() :: :ok | {:error, term()}
+  def subscribe_ro_fanout, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @ro_fanout_topic)
 
   @doc """
   Record the most recent MQTT-side error for a DTU.
@@ -161,6 +166,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   def init(:ok) do
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
+    Broker.subscribe_ro_fanout()
     Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
     {:ok, %{buffers: %{}}}
   end
@@ -194,6 +200,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # is a single PK lookup.
       clear_stale_error(device_info.id)
 
+      if device_info.kind != :mqtt_ro_sink do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @ro_fanout_topic,
+          {:ro_uplink, device_info, topic_str, payload}
+        )
+      end
+
       case device_info.kind do
         :opendtu ->
           handle_opendtu(client_id, device_info, topic_str, payload, state)
@@ -203,6 +217,9 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
         :shelly3em ->
           handle_shelly(client_id, device_info, topic_str, payload, state)
+
+        :mqtt_ro_sink ->
+          {:noreply, state}
       end
     end
   end

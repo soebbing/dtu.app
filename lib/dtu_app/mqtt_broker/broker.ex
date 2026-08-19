@@ -21,6 +21,7 @@ defmodule DtuApp.MqttBroker.Broker do
   # `DtuApp.MqttBroker.publish_downlink/2`.
   @uplink_topic "dtu:uplink"
   @presence_topic "dtu:presence"
+  @ro_fanout_topic "dtu:ro_fanout"
 
   @impl true
   def init(_opts) do
@@ -78,22 +79,46 @@ defmodule DtuApp.MqttBroker.Broker do
         other -> to_string(other)
       end
 
-    Logger.debug("[MQTT] PUBLISH client_id=#{state.client_id} topic=#{topic_str}")
+    if state.device && state.device.kind == :mqtt_ro_sink do
+      Logger.warning(
+        "[MQTT] READ-ONLY SINK PUBLISH DROPPED client_id=#{state.client_id} topic=#{topic_str}"
+      )
 
-    # Broadcast the uplink for the rest of the app to consume. Include authenticated device info.
-    Phoenix.PubSub.broadcast(
-      DtuApp.PubSub,
-      @uplink_topic,
-      {:uplink, state.client_id, state.device, topic_str, payload}
-    )
+      {:ok, state}
+    else
+      Logger.debug("[MQTT] PUBLISH client_id=#{state.client_id} topic=#{topic_str}")
 
-    {:ok, state}
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @uplink_topic,
+        {:uplink, state.client_id, state.device, topic_str, payload}
+      )
+
+      # The fan-out to read-only sinks runs *here* (broker-side) so it
+      # stays correct even if the telemetry GenServer is offline. Every
+      # connected sink subscribes to this topic on first MQTT SUBSCRIBE
+      # (see `handle_subscribe/2`) and the per-connection `handle_info/2`
+      # clause above decides whether to forward the message to the wire
+      # based on the source device's `user_id` and `kind`.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @ro_fanout_topic,
+        {:ro_uplink, state.device, topic_str, payload}
+      )
+
+      {:ok, state}
+    end
   end
 
   @impl true
   def handle_subscribe(topics, state) do
-    # Grant each requested topic its own requested QoS. OpenDTU telemetry is
-    # fire-and-forget, so devices usually subscribe at QoS 0.
+    # Read-only sinks receive the application's account-scoped fan-out. The
+    # broker itself has no MQTT ACL, so the telemetry consumer forwards only
+    # messages belonging to the same `user_id` as the sink.
+    if state.device && state.device.kind == :mqtt_ro_sink do
+      Phoenix.PubSub.subscribe(DtuApp.PubSub, @ro_fanout_topic)
+    end
+
     {:ok, Enum.map(topics, & &1.qos), state}
   end
 
@@ -126,6 +151,15 @@ defmodule DtuApp.MqttBroker.Broker do
     {:publish, topic, payload, Map.take(opts, [:qos, :retain]), state}
   end
 
+  def handle_info({:ro_uplink, source_device, topic, payload}, state) do
+    if (state.device && state.device.kind == :mqtt_ro_sink) and
+         state.device.user_id == source_device.user_id and source_device.kind != :mqtt_ro_sink do
+      {:publish, topic, payload, [], state}
+    else
+      {:ok, state}
+    end
+  end
+
   def handle_info(_message, state) do
     {:ok, state}
   end
@@ -150,6 +184,10 @@ defmodule DtuApp.MqttBroker.Broker do
   @doc "Subscribe the calling process to all telemetry uplinks."
   @spec subscribe_uplink() :: :ok | {:error, term()}
   def subscribe_uplink, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @uplink_topic)
+
+  @doc "Subscribe the calling process to account-scoped read-only sink fan-out."
+  @spec subscribe_ro_fanout() :: :ok | {:error, term()}
+  def subscribe_ro_fanout, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @ro_fanout_topic)
 
   @doc "Subscribe the calling process to device connect/disconnect presence."
   @spec subscribe_presence() :: :ok | {:error, term()}

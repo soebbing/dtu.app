@@ -372,10 +372,10 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   # Re-fetch the user's devices and recompute the scenario flags
-  # (`@has_inverter?`, `@has_shelly?`) that drive the dashboard's
-  # conditional rendering — which stat-card rows appear, whether
-  # the chart plots a production curve, and whether the net-flow
-  # row is shown.
+  # (`@has_inverter?`, `@has_shelly?`, `@has_ro_sink?`) that drive the
+  # dashboard's conditional rendering — which stat-card rows appear,
+  # whether the chart plots a production curve, and whether the
+  # net-flow row is shown.
   #
   # Called from every handle_info/2 that already updated
   # `@devices` (a reading, a CONNECT / DISCONNECT, a status tick,
@@ -385,10 +385,11 @@ defmodule DtuAppWeb.DashboardLive do
   # kind-classification logic.
   #
   # The classification mirrors `DtuApp.Devices.Dtu`'s `@kinds`
-  # (`:opendtu`, `:ahoydtu`, `:shelly3em`). New kinds added to
-  # the schema should extend `inverter_kinds?/1` /
-  # `shelly_kinds?/1` here — the dashboard's scenario logic is
-  # the single consumer that needs to distinguish them.
+  # (`:opendtu`, `:ahoydtu`, `:shelly3em`, `:mqtt_ro_sink`). New
+  # kinds added to the schema should extend `inverter_kinds?/1` /
+  # `shelly_kinds?/1` / `ro_sink_kind?/1` here — the dashboard's
+  # scenario logic is the single consumer that needs to distinguish
+  # them.
   defp refresh_devices(socket, user) do
     devices = Devices.list_devices(user)
 
@@ -396,6 +397,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:devices, devices)
     |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
     |> assign(:has_shelly?, Enum.any?(devices, &shelly_kind?/1))
+    |> assign(:has_ro_sink?, Enum.any?(devices, &ro_sink_kind?/1))
     |> assign(:error_counts, error_counts_by_dtu_id(devices))
   end
 
@@ -438,6 +440,18 @@ defmodule DtuAppWeb.DashboardLive do
   # paired energy meter. Currently only the Plus 3EM Gen3+.
   defp shelly_kind?(%Devices.Dtu{kind: :shelly3em}), do: true
   defp shelly_kind?(_), do: false
+
+  # Read-only MQTT sink: a passive subscriber that wants a real-time
+  # feed of every other DTU's telemetry on the same account, but is
+  # **never** allowed to PUBLISH. Sinks are not inverters and not
+  # consumption meters — they show as a presence-only device card
+  # with a "sink" badge so the user understands why this entry doesn't
+  # contribute to the production/consumption/net rows above. The
+  # broker enforces the publish-suppression contract
+  # (`DtuApp.MqttBroker.Broker.handle_publish/4`); this predicate is
+  # purely about the dashboard's presentation.
+  defp ro_sink_kind?(%Devices.Dtu{kind: :mqtt_ro_sink}), do: true
+  defp ro_sink_kind?(_), do: false
 
   # Helper to construct SVG line chart coordinates and range.
   # `local_date` is the user-facing date in the browser's timezone
@@ -3417,9 +3431,34 @@ defmodule DtuAppWeb.DashboardLive do
                   >
                     <div>
                       <div class="flex items-center justify-between gap-2">
-                        <h3 class="text-md font-semibold text-zinc-900 dark:text-white truncate">
-                          {device.name}
-                        </h3>
+                        <div class="flex items-center gap-2 min-w-0">
+                          <h3 class="text-md font-semibold text-zinc-900 dark:text-white truncate">
+                            {device.name}
+                          </h3>
+                          <%!-- Sink badge: identifies a `mqtt_ro_sink` device so
+                               the user understands this card represents a passive
+                               subscriber — it never publishes, so it never
+                               contributes to the production / consumption / net
+                               rows above. Rendered alongside the device name (not
+                               next to the online/offline pill) so the two roles
+                               read independently. The violet palette matches
+                               nothing else on the dashboard — sinks are their own
+                               kind, neither inverter nor consumption meter. --%>
+                          <%= if ro_sink_kind?(device) do %>
+                            <span
+                              class="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300"
+                              id={"dtu-sink-badge-#{device.id}"}
+                              title={
+                                gettext(
+                                  "Read-only MQTT sink — receives a real-time feed of this account's other devices"
+                                )
+                              }
+                            >
+                              <.icon name="hero-arrow-down-on-square-stack" class="size-3" />
+                              {gettext("sink")}
+                            </span>
+                          <% end %>
+                        </div>
                         <span class={[
                           "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
                           if(online?,
