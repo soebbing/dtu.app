@@ -152,8 +152,7 @@ defmodule DtuApp.MqttBroker.Broker do
   end
 
   def handle_info({:ro_uplink, source_device, topic, payload}, state) do
-    if (state.device && state.device.kind == :mqtt_ro_sink) and
-         state.device.user_id == source_device.user_id and source_device.kind != :mqtt_ro_sink do
+    if forwards_to?(state, source_device) do
       {:publish, topic, payload, [], state}
     else
       {:ok, state}
@@ -163,6 +162,29 @@ defmodule DtuApp.MqttBroker.Broker do
   def handle_info(_message, state) do
     {:ok, state}
   end
+
+  # A read-only sink connection receives the fan-out **only** when all
+  # three conditions hold:
+  #
+  #   1. this connection is a `:mqtt_ro_sink` device;
+  #   2. the publishing device belongs to the same `user_id`
+  #      (same-account scope; cross-account uplinks are dropped);
+  #   3. the publishing device is *not* itself a sink — so the
+  #      fan-out never amplifies sink-to-sink.
+  #
+  # Extracted into a helper (rather than inlining as a multi-line
+  # `if`) so the predicate reads as a single boolean expression;
+  # the Elixir 1.18 formatter adds parens around `&&` clauses that
+  # also use `and` continuations, which doesn't match the project's
+  # CI-pinned Elixir 1.16 formatter. Keep this as one expression.
+  defp forwards_to?(%{device: %{kind: :mqtt_ro_sink, user_id: uid}}, %{
+         user_id: uid,
+         kind: source_kind
+       })
+       when source_kind != :mqtt_ro_sink,
+       do: true
+
+  defp forwards_to?(_state, _source_device), do: false
 
   # --- Public helpers for the rest of the app ---------------------------------
 
