@@ -31,7 +31,11 @@ jobs:
 
     services:
       db:
-        image: timescale/timescaledb:latest-pg16
+        # Pinned to a specific tag instead of `latest-pg16` to keep CI runs
+        # reproducible — `latest` is a moving target and an image bump on the
+        # runner host can introduce transient flakes (e.g. longer first-boot
+        # init times after a TimescaleDB major upgrade).
+        image: timescale/timescaledb:2.29.2-pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -89,6 +93,28 @@ jobs:
         run: mix compile --warnings-as-errors
         env:
           MIX_ENV: test
+
+      # The TimescaleDB service container's `pg_isready` healthcheck can report
+      # success during the early init phase, before Postgres is actually
+      # accepting authenticated connections. `mix test`'s pre-test
+      # `ecto.create --quiet` + `ecto.migrate --quiet` then race that init and
+      # occasionally hand `postgrex` a half-open connection — the resulting
+      # `Sandbox.start_owner!` failures cascade into 50+ test errors that all
+      # look like "could not lookup Ecto repo DtuApp.Repo". Polling both the
+      # readiness probe AND a real authenticated query closes that race window.
+      - name: Wait for Postgres to accept authenticated connections
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq --no-install-recommends postgresql-client
+          for i in $(seq 1 60); do
+            if PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c '\q' 2>/dev/null; then
+              echo "Postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Postgres did not become ready within 60s"
+          exit 1
 
       - name: Run ExUnit Tests
         run: mix test
