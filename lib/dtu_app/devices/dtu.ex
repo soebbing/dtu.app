@@ -10,7 +10,7 @@ defmodule DtuApp.Devices.Dtu do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @kinds [:opendtu, :ahoydtu, :shelly3em]
+  @kinds [:opendtu, :ahoydtu, :shelly3em, :mqtt_ro_sink]
 
   schema "dtus" do
     field :name, :string
@@ -99,6 +99,12 @@ defmodule DtuApp.Devices.Dtu do
   end
 
   # Update base_topic based on selected kind.
+  #
+  # `:mqtt_ro_sink` is a passive subscriber — it never publishes under
+  # its own `base_topic`, so the default is just a routing label for
+  # the device row. The broker's `dtu:ro_fanout` fan-out is keyed on
+  # the *owning user*, not the sink's `base_topic`, so the value is
+  # purely cosmetic.
   defp default_base_topic_for_kind(changeset, attrs) do
     provided_topic = Map.get(attrs, :base_topic) || Map.get(attrs, "base_topic")
 
@@ -115,12 +121,16 @@ defmodule DtuApp.Devices.Dtu do
       get_change(changeset, :kind) == :shelly3em ->
         put_change(changeset, :base_topic, "shellies/shellyplus3em")
 
+      get_change(changeset, :kind) == :mqtt_ro_sink ->
+        put_change(changeset, :base_topic, "sinks/dturo")
+
       true ->
         if is_nil(get_field(changeset, :base_topic)) do
           case get_field(changeset, :kind) do
             :ahoydtu -> put_change(changeset, :base_topic, "inverter")
             :opendtu -> put_change(changeset, :base_topic, "solar")
             :shelly3em -> put_change(changeset, :base_topic, "shellies/shellyplus3em")
+            :mqtt_ro_sink -> put_change(changeset, :base_topic, "sinks/dturo")
             _ -> changeset
           end
         else

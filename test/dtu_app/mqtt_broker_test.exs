@@ -1758,6 +1758,152 @@ defmodule DtuApp.MqttBrokerTest do
     end
   end
 
+  describe "Read-only MQTT sink (:mqtt_ro_sink)" do
+    # The fourth device kind, alongside OpenDTU / AhoyDTU / Shelly3EM,
+    # is a passive subscriber that wants a real-time feed of every
+    # other DTU's telemetry on the same account, but is **never**
+    # allowed to PUBLISH. The broker enforces this with:
+    #
+    #   1. Soft-reject PUBLISHes from sinks — drop + warn, leave the
+    #      connection open (the sink is otherwise healthy and the user
+    #      wants a continuous stream).
+    #   2. Same-account scope — a sink belonging to user A must only
+    #      see uplinks from user A's other devices; user B's devices
+    #      must not leak across accounts.
+    #   3. No sink-to-sink forwarding — a sink never needs to see
+    #      another sink's uplink (sinks don't publish), and gating on
+    #      `source_device.kind != :mqtt_ro_sink` keeps the fan-out
+    #      surface trivially small.
+    #
+    # The telemetry side (sinks never reach the parser; their uplinks
+    # are simply dropped before any topic pattern match) is covered by
+    # `Telemetry.handle_info({:uplink, ..., kind: :mqtt_ro_sink, ...}, ...)`
+    # which is dispatched to a no-op clause in the parser dispatch.
+    alias DtuApp.MqttBroker.Broker
+
+    test "handle_publish/4 soft-rejects PUBLISHes from a sink (drop + warn, no error to client)" do
+      :ok = Broker.subscribe_uplink()
+      sink = %{id: 999, kind: :mqtt_ro_sink, user_id: 1, base_topic: "sinks/dturo"}
+      state = %{client_id: "sink_client", device: sink}
+
+      # Capture logs at warn level — the soft-reject logs a warning so
+      # operators can see the misbehaving sink in their dashboards.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, ^state} =
+                   Broker.handle_publish("sinks/dturo/inject", "fake-power", [], state)
+        end)
+
+      # Connection stays open (no {:error, _} return). The device's
+      # state map is unchanged — `handle_publish/4` returned the same
+      # state shape, no disconnect initiated.
+      assert log =~ "READ-ONLY SINK PUBLISH DROPPED"
+      assert log =~ "sink_client"
+      assert log =~ "sinks/dturo/inject"
+
+      # The uplink does NOT propagate to the regular dtu:uplink
+      # PubSub topic — the soft-reject happens before the broadcast,
+      # so subscribed telemetry consumers never see the bad payload.
+      refute_receive {:uplink, _, _, _, _}, 200
+    end
+
+    test "handle_publish/4 still forwards PUBLISHes from non-sink devices" do
+      :ok = Broker.subscribe_uplink()
+      device = %{id: 1, kind: :opendtu, user_id: 1, base_topic: "solar"}
+      state = %{client_id: "src_client", device: device}
+
+      assert {:ok, ^state} =
+               Broker.handle_publish("solar/SN/realtime/data", "{}", [], state)
+
+      # The non-sink path still works — telemetry subscribers see the
+      # regular `:uplink` event. (The `dtu:ro_fanout` side is checked
+      # in the next test.)
+      assert_receive {:uplink, "src_client", ^device, "solar/SN/realtime/data", "{}"}, 1_000
+    end
+
+    test "non-sink PUBLISHes are forwarded to dtu:ro_fanout with the source device" do
+      :ok = Broker.subscribe_ro_fanout()
+      device = %{id: 42, kind: :opendtu, user_id: 7, base_topic: "solar"}
+      state = %{client_id: "src_client", device: device}
+
+      Broker.handle_publish("solar/SN/realtime/data", "{}", [], state)
+
+      # The ro_fanout subscriber sees the uplink with the source
+      # device's user_id preserved so sinks can filter by account.
+      assert_receive {:ro_uplink, source, "solar/SN/realtime/data", "{}"}, 1_000
+      assert source.id == 42
+      assert source.user_id == 7
+      assert source.kind == :opendtu
+    end
+
+    test "sink PUBLISHes do NOT broadcast to dtu:ro_fanout (the soft-reject drops the message before fan-out)" do
+      :ok = Broker.subscribe_ro_fanout()
+      sink = %{id: 999, kind: :mqtt_ro_sink, user_id: 1, base_topic: "sinks/dturo"}
+      state = %{client_id: "sink_client", device: sink}
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        Broker.handle_publish("sinks/dturo/anything", "x", [], state)
+      end)
+
+      # Even though the soft-reject emits a warn log, no fan-out
+      # message reaches the dtu:ro_fanout topic. A buggy broker that
+      # fan-outs the sink's PUBLISH would leak its content here.
+      refute_receive {:ro_uplink, _, _, _}, 200
+    end
+
+    test "sink subscribed to ro_fanout receives uplinks only from the same account" do
+      :ok = Broker.subscribe_ro_fanout()
+      sink = %{id: 100, kind: :mqtt_ro_sink, user_id: 1, base_topic: "sinks/dturo"}
+      sink_state = %{client_id: "sink_client", device: sink}
+
+      own_device = %{id: 10, kind: :opendtu, user_id: 1, base_topic: "solar"}
+      own_state = %{client_id: "own_src", device: own_device}
+
+      other_user_device = %{id: 20, kind: :opendtu, user_id: 2, base_topic: "solar"}
+      other_state = %{client_id: "other_src", device: other_user_device}
+
+      # Simulate the broker dispatching a fan-out message to the
+      # sink's per-connection process. The handle_info clause filters
+      # by user_id and source kind before forwarding as a PUBLISH.
+      same_account_msg = {:ro_uplink, own_device, "solar/SN/realtime/data", "{}"}
+      cross_account_msg = {:ro_uplink, other_user_device, "solar/SN/realtime/data", "{}"}
+
+      # Same-account uplink — sink is allowed to see it.
+      assert {:publish, "solar/SN/realtime/data", "{}", [], _} =
+               Broker.handle_info(same_account_msg, sink_state)
+
+      # Cross-account uplink — sink must NOT receive it.
+      assert {:ok, _} = Broker.handle_info(cross_account_msg, sink_state)
+    end
+
+    test "sink subscribed to ro_fanout does NOT receive uplinks from other sinks" do
+      :ok = Broker.subscribe_ro_fanout()
+
+      sink_a = %{id: 100, kind: :mqtt_ro_sink, user_id: 1, base_topic: "sinks/dturo"}
+      sink_a_state = %{client_id: "sink_a", device: sink_a}
+
+      other_sink = %{id: 200, kind: :mqtt_ro_sink, user_id: 1, base_topic: "sinks/dturo"}
+
+      # Even when same-account: a sink-to-sink fan-out is meaningless
+      # (sinks don't publish). The handle_info clause's `source_device.kind
+      # != :mqtt_ro_sink` guard ensures it never happens.
+      msg = {:ro_uplink, other_sink, "solar/SN/realtime/data", "{}"}
+      assert {:ok, _} = Broker.handle_info(msg, sink_a_state)
+    end
+
+    test "non-sink broker connection never receives ro_uplink fan-out (only sinks do)" do
+      :ok = Broker.subscribe_ro_fanout()
+
+      device = %{id: 50, kind: :opendtu, user_id: 1, base_topic: "solar"}
+      state = %{client_id: "src_client", device: device}
+
+      # The non-sink handle_info clause returns {:ok, state} — sinks
+      # are the only consumers of the ro_fanout channel.
+      msg = {:ro_uplink, device, "solar/SN/realtime/data", "{}"}
+      assert {:ok, ^state} = Broker.handle_info(msg, state)
+    end
+  end
+
   describe "DTU connection notifications (notify_dtu_connection)" do
     # The dashboard's `:dtu_disconnected` handler fires a `:notification`
     # event to the user's topic when the DTU was recently online (last_seen
