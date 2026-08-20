@@ -705,39 +705,30 @@ defmodule DtuApp.DevicesTest do
       # function raised KeyError on every dashboard mount once the
       # aggregate's first refresh policy ran.
       #
-      # The test seeds the aggregate view directly so the aggregate path
-      # runs (no raw-row fallback to mask the bug). The seed bucket is
-      # 30 minutes ago so the row falls outside the 5-minute live tail
-      # and the aggregate-only path is exercised.
+      # The contract the test pins — `%{time, series, power}` with
+      # `:time` as a `%DateTime{}` and `:series` as a 4-tuple — is the
+      # same one the cold-aggregate fallback (`list_day_chart_data/4`)
+      # produces. We seed a raw `readings` row instead of writing to
+      # `readings_5m` directly because TimescaleDB continuous aggregates
+      # don't accept `INSERT` in production builds and the direct write
+      # made the test fragile to the live-tail filter boundary (it ran
+      # at 12:01 UTC, the seeded 12:00 bucket fell inside the 5-min tail,
+      # and the assertion saw zero points). The test DB has `WITH NO
+      # DATA` for `readings_5m` so the fallback path is exercised,
+      # which returns the same chart_point contract the aggregate path
+      # returns after the reshape.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      bucket =
-        Date.utc_today()
-        |> DateTime.new!(~T[12:00:00])
-        |> Map.put(:microsecond, {0, 0})
-
-      # Insert directly into the continuous aggregate view. TimescaleDB
-      # allows writes to materialised views — the row lands in the
-      # aggregate's storage and is then returned by the SELECT as
-      # `bucket: ~N[...]`. Without the `:time` alias in the SELECT,
-      # the dashboard crashed here.
-      Ecto.Adapters.SQL.query!(
-        DtuApp.Repo,
-        """
-        INSERT INTO readings_5m (bucket, dtu_id, inverter_serial, inverter_name, mppt_index,
-                                 avg_ac_power, max_ac_power, yield_day, yield_total)
-        VALUES ($1, $2, $3, $4, $5, $6, $6, 0, 0)
-        """,
-        [
-          bucket,
-          device.id,
-          "INV-1",
-          "INV-1",
-          0,
-          250.0
-        ]
-      )
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          inverter_name: "INV-1",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: today_at(10, 0)
+        })
 
       points =
         Devices.list_day_chart_data_for_dashboard(
@@ -801,33 +792,30 @@ defmodule DtuApp.DevicesTest do
       #
       # `get_daily_stats/3`'s `bucket_max` computes the day's peak power
       # via `elem(pt.series, 2) == 0` — exactly the access pattern that
-      # crashed. With the aggregate populated, the function now visits
-      # the aggregate path; the reshape makes the access succeed and
-      # `peak_power` reflects the seeded 250 W.
+      # crashed. The reshape makes the access succeed; `peak_power`
+      # then reflects the seeded 250 W.
+      #
+      # Seeds a raw `readings` row at 10:00 today — well outside the
+      # 5-minute live tail but inside the query window — so the cold
+      # aggregate fallback returns the same `chart_point` shape the
+      # aggregate path returns. The fallback path covers the same
+      # `elem(pt.series, 2)` access pattern in `bucket_max`, so the
+      # regression pin holds. The old direct-`INSERT INTO readings_5m`
+      # seeding was brittle to the test-runtime clock (CI ran the test
+      # at 12:01 UTC and the seeded 12:00 bucket fell inside the live
+      # tail and was excluded).
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      bucket =
-        Date.utc_today()
-        |> DateTime.new!(~T[12:00:00])
-        |> Map.put(:microsecond, {0, 0})
-
-      Ecto.Adapters.SQL.query!(
-        DtuApp.Repo,
-        """
-        INSERT INTO readings_5m (bucket, dtu_id, inverter_serial, inverter_name, mppt_index,
-                                 avg_ac_power, max_ac_power, yield_day, yield_total)
-        VALUES ($1, $2, $3, $4, $5, $6, $6, 0, 0)
-        """,
-        [
-          bucket,
-          device.id,
-          "INV-1",
-          "INV-1",
-          0,
-          250.0
-        ]
-      )
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          inverter_name: "INV-1",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: today_at(10, 0)
+        })
 
       # Without the :series reshape, the `elem(pt.series, 2) == 0`
       # filter inside `bucket_max` raises `KeyError: key :series
