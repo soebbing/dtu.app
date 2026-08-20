@@ -100,20 +100,27 @@ jobs:
       # `ecto.create --quiet` + `ecto.migrate --quiet` then race that init and
       # occasionally hand `postgrex` a half-open connection — the resulting
       # `Sandbox.start_owner!` failures cascade into 50+ test errors that all
-      # look like "could not lookup Ecto repo DtuApp.Repo". Polling both the
-      # readiness probe AND a real authenticated query closes that race window.
+      # look like "could not lookup Ecto repo DtuApp.Repo".
+      #
+      # Rather than installing `postgresql-client` via apt (which depends on
+      # the runner's apt mirror and is itself flaky — see PR #121), retry the
+      # `mix ecto.create` invocation that the `test` alias would run anyway.
+      # A successful `ecto.create` proves Postgres is accepting authenticated
+      # connections over the same `postgrex` code path the test suite uses.
       - name: Wait for Postgres to accept authenticated connections
+        env:
+          MIX_ENV: test
+          MIX_TEST_PARTITION: ${{ env.MIX_TEST_PARTITION }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -yqq --no-install-recommends postgresql-client
           for i in $(seq 1 60); do
-            if PGPASSWORD=postgres psql -h localhost -U postgres -d postgres -c '\q' 2>/dev/null; then
+            if mix ecto.create --quiet 2>/dev/null; then
               echo "Postgres ready after ${i}s"
               exit 0
             fi
             sleep 1
           done
           echo "::error::Postgres did not become ready within 60s"
+          mix ecto.create   # run it once without --quiet so the real error is visible
           exit 1
 
       - name: Run ExUnit Tests
