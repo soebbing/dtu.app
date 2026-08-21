@@ -203,11 +203,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert has_element?(view, "#btn-select-dtu-#{dtu2.id}")
 
       assert element(view, "#stat-current-power") |> render() =~ "300 W"
-      # Total view takes MAX(yield_day) across DTUs rather than summing
-      # — the firmware-reported daily yield is a single monotonic-counter
-      # value (the highest reading wins). max(1_000, 2_000) = 2_000 Wh
-      # = 2.0 kWh, NOT 3.0 kWh.
-      assert element(view, "#stat-today-yield") |> render() =~ "2.0 kWh"
+      # Total view sums each inverter's last reading of the day across
+      # both DTUs (each inverter's monotonic `yield_day` reaches its
+      # day's total at the day's last reading). Sum across DTUs:
+      # 1_000 + 2_000 = 3_000 Wh = 3.0 kWh.
+      assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
 
       # 2. Click "DTU One" and verify stats filter down to DTU One's values
       view
@@ -231,7 +231,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
       |> render_click()
 
       assert element(view, "#stat-current-power") |> render() =~ "300 W"
-      assert element(view, "#stat-today-yield") |> render() =~ "2.0 kWh"
+      # Same sum semantics as the on-mount Total view above:
+      # 1_000 + 2_000 = 3_000 Wh = 3.0 kWh.
+      assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
     end
 
     test "renders one chart legend entry per inverter plus the Total line", %{
