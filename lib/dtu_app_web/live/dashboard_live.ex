@@ -2718,7 +2718,19 @@ defmodule DtuAppWeb.DashboardLive do
                     <!-- Y-Axis Labels. When the chart extends below zero
                          (`y_min < 0`), the bottom label shows the negative
                          bound and the middle label sits at the zero line
-                         (`@zero_y`). The top label is unchanged. -->
+                         (`@zero_y`). The top label is unchanged.
+
+                         When the chart stays positive-only (`y_min == 0`),
+                         the zero line is rendered as a dashed gridline at
+                         `y=135` (just for the visual cue) and the three
+                         labels mark the actual data range: `y_max` at the
+                         top gridline (`y=20`), `y_max/2` at the midpoint
+                         gridline (`y=77.5`), and `0 W` at the chart bottom
+                         (`y=250`). Putting the midpoint label just below
+                         the zero line (the previous position) made a
+                         flat-at-zero line read as `y_max/2`, because the
+                         label sat right next to the line instead of at
+                         the value it actually names. -->
                     <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
                       {Devices.format_number(@y_max, 1, @locale)} W
                     </text>
@@ -2738,7 +2750,7 @@ defmodule DtuAppWeb.DashboardLive do
                         {Devices.format_number(@y_min, 0, @locale)} W
                       </text>
                     <% else %>
-                      <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">
+                      <text x="5" y="89.5" class="text-[10px] font-medium fill-zinc-400">
                         {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
                       </text>
                       <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>

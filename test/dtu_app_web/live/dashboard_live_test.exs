@@ -405,6 +405,61 @@ defmodule DtuAppWeb.DashboardLiveTest do
                "got duplicates: #{inspect(stroke_colors)}"
     end
 
+    test "midpoint Y-axis label sits at the y_max/2 gridline, not at the zero line", %{
+      conn: conn,
+      user: user
+    } do
+      # Regression: the line chart's "y_max/2 W" label used to render
+      # at y=147 — right next to the zero line at y=135 — instead of
+      # at the y_max/2 gridline (y=77.5). A flat-at-zero line then
+      # visually overlapped with the midpoint tick label, making a
+      # 0 W reading read as `y_max/2` (because the label sat right
+      # next to the line instead of at the value it actually named).
+      # The label now sits at y=89.5, just below the y_max/2 gridline.
+      dtu =
+        device_fixture(user, %{
+          name: "Mid Label DTU",
+          kind: "opendtu",
+          mqtt_username: "mid-label"
+        })
+
+      # 350 W peak → `max_power` ceils up to 350, `y_max` rounds up
+      # to the next multiple of 100 = 400. The midpoint label is
+      # `div(round(400), 2) = 200`, so we can also pin the literal
+      # "200.0 W" string the chart renders.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          inverter_name: "Solo",
+          ac_power: 350.0,
+          yield_day: 1_000.0,
+          inserted_at: DateTime.utc_now()
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The y_max/2 label is the only `<text>` whose `y` attribute
+      # equals `89.5`. The HEEx template puts the label body on its
+      # own line, so we slurp it via a multiline regex and strip the
+      # whitespace before asserting.
+      [mid_label_tag] =
+        Regex.run(
+          ~r{<text[^>]*y="89\.5"[^>]*>\s*([^<]+?)\s*</text>}s,
+          html,
+          capture: :all_but_first
+        )
+
+      assert String.contains?(mid_label_tag, "200") and
+               String.contains?(mid_label_tag, "W"),
+             "expected y_max/2 label to render at y=89.5 with '200' content, got: '#{mid_label_tag}'"
+
+      # And confirm the buggy position no longer has the label.
+      refute html =~ ~r{<text[^>]*y="147"[^>]*>\s*(?:\d+|<span[^>]*>)+\s*W\s*</text>}s,
+             "y_max/2 label must not be positioned at y=147 (just below the zero line)"
+    end
+
     test "fleet Total line sums every series at each bucket", %{
       conn: conn,
       user: user
