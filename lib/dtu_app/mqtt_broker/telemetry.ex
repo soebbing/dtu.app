@@ -362,6 +362,17 @@ defmodule DtuApp.MqttBroker.Telemetry do
       MatchError -> :ok
       DBConnection.ConnectionError -> :ok
       Ecto.Query.CastError -> :ok
+    catch
+      # DBConnection.Holder.checkout raises an `:exit` (not a `raise`)
+      # when the SQL.Sandbox owner has been torn down mid-query:
+      # `exit({:shutdown, %DBConnection.ConnectionError{...}})`. The
+      # `:rescue` clauses above cover a `raise` with the same exception
+      # type, but the exit-form is distinct enough that we need an
+      # explicit `catch :exit` clause as well. Without it the exit
+      # propagates past the try and kills the GenServer, defeating the
+      # whole point of the helper. Production never reaches this catch
+      # for the same reason the rescue clauses don't fire in :dev/:prod.
+      :exit, _ -> :ok
     end
   end
 
