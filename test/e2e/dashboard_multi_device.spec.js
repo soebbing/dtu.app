@@ -302,15 +302,16 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(roofYield).toBeLessThan(totalYield);
 
     // Garage Array: two inverters (800 + 600 W). Its yield must be
-    // strictly greater than the Roof Inverter's and strictly less
-    // than the Total (which adds Roof's contribution on top).
+    // strictly greater than the Roof Inverter's and at most the
+    // Total (which is the max across all inverters since PR #119
+    // switched fleet totals from sum to max-of-monotonic-counter).
     await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
     await page.waitForTimeout(1500);
     const garageYield = await readStatNumber(page, '#stat-today-yield');
     expect(garageYield).not.toBeNull();
     expect(garageYield).toBeGreaterThan(0);
     expect(garageYield).toBeGreaterThan(roofYield);
-    expect(garageYield).toBeLessThan(totalYield);
+    expect(garageYield).toBeLessThanOrEqual(totalYield);
 
     // Balcony Inverter: no today readings. Its yield must be
     // exactly 0 and the smallest of the three.
@@ -489,13 +490,14 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(totalBreakdown.inverters).toBe(2);
     expect(totalBreakdown.total).toBe(1);
 
-    // The historical Total view's yield must be strictly greater
-    // than the Roof Inverter-only yield (Balcony contributes its
-    // own historical yield on top).
+    // The historical Total view's yield is the max across all
+    // inverters (PR #119 switched fleet totals from sum to
+    // max-of-monotonic-counter), so it must be at least the Roof
+    // Inverter-only yield — equal when the Roof contributes the max.
     await page.waitForTimeout(1500);
     const totalDayYield = await readStatNumber(page, '#stat-total-yield');
     expect(totalDayYield).not.toBeNull();
-    expect(totalDayYield).toBeGreaterThan(roofDayYield);
+    expect(totalDayYield).toBeGreaterThanOrEqual(roofDayYield);
 
     // Switching to Balcony Inverter narrows the chart to its
     // single inverter. With only one inverter in scope the Total
