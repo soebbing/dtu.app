@@ -591,6 +591,136 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "Total path should not be rendered when only one inverter is in scope"
     end
 
+    test "Total line is omitted and legacy `_fleet` rows never reach the legend for a single-inverter dashboard",
+         %{conn: conn, user: user} do
+      # Regression for the "I still see _fleet and total legends" bug: a
+      # single real inverter exists, but the DB also carries legacy
+      # `{base}/total` uplinks persisted by an older parser version,
+      # keyed `inverter_serial = "_fleet"`. Without the
+      # `inverter_serial != "_fleet"` filter in
+      # `assign_line_chart_data/5`, the `_fleet` row counts as a second
+      # "distinct inverter" (via `distinct_inverters`) AND surfaces as
+      # its own legend entry — even though the user only owns one
+      # inverter and the new parser no longer creates `_fleet` rows.
+      dtu =
+        device_fixture(user, %{
+          name: "Legacy Fleet Host",
+          kind: "opendtu",
+          mqtt_username: "legacy-fleet"
+        })
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      # The single real inverter — what the user actually owns.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-REAL",
+          mppt_index: 0,
+          inverter_name: "Real Inverter",
+          ac_power: 200.0,
+          inserted_at: now
+        })
+
+      # Legacy `{base}/total` uplink the previous parser version
+      # persisted. `ac_power` here is the firmware-aggregated fleet
+      # total, not per-inverter power — that's the whole reason these
+      # rows are obsolete now and must never reach the chart.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "_fleet",
+          mppt_index: 0,
+          inverter_name: "_fleet",
+          ac_power: 200.0,
+          inserted_at: now
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # (1) Total curve must NOT render — only one real inverter means
+      # the per-inverter line *is* the total.
+      refute html =~ ~s(data-legend-key="total"),
+             "Total path leaked through despite only one real inverter"
+
+      # (2) `_fleet` must NOT appear anywhere in the legend or chart —
+      # not as a series path, not as a legend toggle, not in the
+      # rendered serial. The whole point of the defensive filter is to
+      # hide this obsolete firmware-aggregate entry completely.
+      refute html =~ "_fleet",
+             "legacy `_fleet` row leaked into the rendered dashboard"
+
+      # (3) Sanity: the real inverter must still be visible.
+      assert html =~ "Real Inverter"
+      assert html =~ "INV-REAL"
+    end
+
+    test "_fleet is filtered out of the chart even when multiple real inverters exist",
+         %{conn: conn, user: user} do
+      # Counterpart to the single-inverter case above: even when the
+      # fleet *does* have multiple inverters (so `show_total?` is true
+      # and the Total curve legitimately renders), a legacy `_fleet`
+      # row must NOT add a phantom third series to the chart or legend.
+      # Without the filter, the legend would show `_fleet` as a fourth
+      # line and the Total would double-count the fleet aggregate.
+      dtu1 =
+        device_fixture(user, %{
+          name: "Multi Fleet One",
+          kind: "opendtu",
+          mqtt_username: "multi-fleet-one"
+        })
+
+      dtu2 =
+        device_fixture(user, %{
+          name: "Multi Fleet Two",
+          kind: "ahoydtu",
+          mqtt_username: "multi-fleet-two"
+        })
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      for {dtu_id, serial, name, power} <- [
+            {dtu1.id, "INV-A", "East Array", 150.0},
+            {dtu2.id, "INV-B", "West Array", 100.0},
+            # Legacy firmware-aggregate row that must NOT reach the
+            # chart. Matches the sum of the two inverters above so a
+            # regression would visually double the Total peak.
+            {dtu1.id, "_fleet", "_fleet", 250.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu_id,
+            inverter_serial: serial,
+            mppt_index: 0,
+            inverter_name: name,
+            ac_power: power,
+            inserted_at: now
+          })
+      end
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # The two real inverters are present.
+      assert has_element?(view, "#chart-legend")
+      assert html =~ "East Array"
+      assert html =~ "West Array"
+
+      # Total renders (two real inverters ⇒ `show_total? = true`).
+      assert html =~ ~s(data-legend-key="total"),
+             "expected Total path for multi-inverter dashboard"
+
+      # `_fleet` is hidden — neither as a legend entry nor as a path.
+      refute html =~ "_fleet",
+             "legacy `_fleet` row leaked into the multi-inverter dashboard"
+
+      # Exactly three paths in the SVG: INV-A + INV-B + Total. Without
+      # the filter this would be four (INV-A + INV-B + _fleet + Total).
+      path_count = html |> String.split(~s(data-series=)) |> length() |> Kernel.-(1)
+
+      assert path_count == 3,
+             "expected 3 chart paths (2 inverters + Total), got #{path_count}"
+    end
+
     test "Total legend entry is rendered first so the headline value is the first thing the reader sees",
          %{conn: conn, user: user} do
       # Two inverters so the fleet Total is rendered (single-inverter
