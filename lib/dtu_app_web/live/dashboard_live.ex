@@ -472,7 +472,22 @@ defmodule DtuAppWeb.DashboardLive do
     # the chart stays readable when a fleet mixes single- and multi-
     # MPPT inverters; users can drill into a specific DTU on the
     # /devices page if they need MPPT-level detail.
-    chart_points = Enum.filter(all_chart_points, fn pt -> pt.series |> elem(2) == 0 end)
+    #
+    # `inverter_serial != "_fleet"` is the matching defensive filter
+    # against any legacy fleet-total rows an older parser version
+    # persisted before the parser drop (see the matching comment in
+    # `Devices.get_daily_stats/3`). The new parser no longer creates
+    # these rows, but installs upgrading from a previous version still
+    # have historical `_fleet` rows on disk — letting them through
+    # would (a) render a phantom "Total" line in the legend and (b)
+    # inflate the `show_total?` count, lighting up the headline Total
+    # curve on single-inverter installs. Same defensive filter lives
+    # at the data layer in `get_daily_stats/3` and `Devices.list_*` for
+    # the same reason.
+    chart_points =
+      Enum.filter(all_chart_points, fn pt ->
+        pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+      end)
 
     # Pull the consumption series upfront so `y_max` below can include
     # its peak — otherwise a heavy-load evening (Shelly reporting e.g.
