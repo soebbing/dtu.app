@@ -976,6 +976,76 @@ defmodule DtuApp.DevicesTest do
                their_dtu.id
              ) == []
     end
+
+    test "excludes the AhoyDTU firmware-aggregated _fleet row from the chart" do
+      # Regression: the dashboard was rendering a "_fleet" legend entry
+      # and line for the AhoyDTU `{base}/total` row the parser creates
+      # for fleet-total yields. That row only carries yield fields —
+      # `ac_power` / `dc_power` are NULL — so the chart's
+      # `chart_power_for_mppt/1` resolves it to 0 W and the line plots
+      # flat against the chart's zero reference at y=135. On a small
+      # `y_max` (e.g. 300 W) the eye reads that flat line as a
+      # non-zero baseline around y_max/2 (≈ 150 W), and the legend
+      # entry adds noise ("_fleet" alongside the per-inverter labels).
+      #
+      # The fleet-total value still feeds the "Today's Total Yield"
+      # headline via `get_daily_stats/3` (which explicitly prefers
+      # the `_fleet` row); only the per-inverter chart view excludes
+      # it. Pin both code paths — the aggregate-backed hot path and
+      # the cold-aggregate fallback to `list_day_chart_data/4` —
+      # drop `_fleet`.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # One real inverter plus one `_fleet` row at the same hour so
+      # the bucketing can't accidentally collapse them.
+      for {serial, ac} <- [
+            {"INV-1", 200.0},
+            {"_fleet", nil}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: serial,
+            inverter_name: serial,
+            mppt_index: 0,
+            ac_power: ac,
+            yield_day: 1_000.0,
+            inserted_at: today_at(12)
+          })
+      end
+
+      # Both the aggregate hot path AND the cold-aggregate fallback
+      # must hide the `_fleet` row.
+      dashboard_points =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          device.id
+        )
+
+      raw_points =
+        Devices.list_day_chart_data(user, today_at(0), today_end_of_day(), device.id)
+
+      for {label, points} <- [
+            {"aggregate hot path", dashboard_points},
+            {"cold-aggregate fallback", raw_points}
+          ] do
+        fleet_serials =
+          points
+          |> Enum.map(fn pt -> elem(pt.series, 1) end)
+          |> Enum.filter(&(&1 == "_fleet"))
+
+        assert fleet_serials == [],
+               "#{label} leaked the _fleet row into the chart: #{inspect(points)}"
+
+        # The real inverter is still there — the filter is per-row,
+        # not "drop the whole DTU".
+        assert Enum.any?(points, fn pt -> elem(pt.series, 1) == "INV-1" end),
+               "#{label} dropped the real inverter while filtering _fleet"
+      end
+    end
   end
 
   describe "update_inverter_name/3" do

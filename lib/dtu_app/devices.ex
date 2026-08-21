@@ -521,7 +521,7 @@ defmodule DtuApp.Devices do
       Repo.all(
         from r in Reading,
           where:
-            r.dtu_id in ^dtu_ids and
+            r.dtu_id in ^dtu_ids and r.inverter_serial != "_fleet" and
               r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
           order_by: [asc: r.inserted_at],
           select: %{
@@ -689,11 +689,24 @@ defmodule DtuApp.Devices do
       # dashboard filters those out (`Enum.filter` in
       # `assign_line_chart_data/5`), so this NULL never reaches the
       # chart.
+      #
+      # The `inverter_serial != "_fleet"` filter drops the
+      # firmware-aggregated AhoyDTU `{base}/total` row from the
+      # chart. That row carries only yields (no `ac_power` /
+      # `dc_power`), so it plots as a flat zero line that visually
+      # overlaps the chart's zero reference at `y=135` — easy to
+      # mistake for a non-zero baseline at small `y_max` and always
+      # confusing alongside the per-inverter lines. The fleet-total
+      # value still feeds the "Today's Total Yield" headline via
+      # `get_daily_stats/3` (which explicitly prefers the `_fleet`
+      # row when one exists); only the chart's per-inverter view
+      # excludes it.
       aggregate_points =
         Repo.all(
           from a in "readings_5m",
             where:
-              a.dtu_id in ^dtu_ids and a.bucket < ^utc_tail_start and
+              a.dtu_id in ^dtu_ids and a.inverter_serial != "_fleet" and
+                a.bucket < ^utc_tail_start and
                 a.bucket >= ^utc_start and a.bucket <= ^utc_end,
             select: %{
               # `readings_5m.bucket` is the aggregate's time column
@@ -800,7 +813,7 @@ defmodule DtuApp.Devices do
       Repo.all(
         from r in Reading,
           where:
-            r.dtu_id in ^dtu_ids and
+            r.dtu_id in ^dtu_ids and r.inverter_serial != "_fleet" and
               r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end,
           group_by: [
             fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
