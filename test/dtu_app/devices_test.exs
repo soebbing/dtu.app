@@ -44,16 +44,17 @@ defmodule DtuApp.DevicesTest do
       assert stats.peak_power == 0.0
     end
 
-    test "takes MAX(yield_day) across inverters for today's readings" do
+    test "sums each inverter's last reading of the day across multiple inverters" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
       now = DateTime.utc_now()
 
-      # Two inverters with multiple readings each; the most recent reading
-      # should win (yield_day is monotonic within a day). The fixture values
-      # are in Wh — OpenDTU/AhoyDTU firmware publish yield_day in Wh, and
-      # `get_daily_stats/2` converts to kWh before returning it for the
-      # dashboard label.
+      # Two inverters with multiple readings each. Per-inverter
+      # `yield_day` is monotonic Wh that resets at midnight, so the
+      # day's per-inverter total IS its last reading. Summing across
+      # inverters gives the fleet's daily total — replacing the old
+      # MAX-across-inverters semantic which conflated per-inverter
+      # totals.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         yield_day: 1_000.0,
@@ -72,12 +73,11 @@ defmodule DtuApp.DevicesTest do
         inserted_at: DateTime.add(now, -60, :second)
       })
 
-      # Earlier (smaller) reading on INV-A — must NOT win. The headline
-      # picks the highest per-inverter MAX as the day's yield: max(5_000,
-      # 3_500) = 5_000 Wh = 5.0 kWh. Summing across inverters would
-      # inflate the figure against the firmware's reported daily total.
+      # Headline = INV-A's last reading (5_000 Wh) + INV-B's last
+      # reading (3_500 Wh) = 8_500 Wh = 8.5 kWh. Earlier (smaller)
+      # readings don't influence the headline.
       stats = Devices.get_daily_stats(user)
-      assert_in_delta stats.today_yield, 5.0, 0.001
+      assert_in_delta stats.today_yield, 8.5, 0.001
     end
 
     test "ignores readings from before today (UTC day window)" do
@@ -103,20 +103,23 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.today_yield, 4.2, 0.001
     end
 
-    test "uses MAX(yield_day) even when the latest raw row's yield_day is stale" do
-      # The pre-fix bug: get_daily_stats/2 summed yield_day from the latest
-      # reading per inverter. If the inverter went offline mid-day, the
-      # latest reading's yield_day is whatever it was when the inverter
-      # stopped sending. The fix groups today's readings and takes MAX.
+    test "uses the latest reading of the day per inverter (multi-uplink day)" do
+      # Per-inverter `yield_day` is monotonic Wh that resets at
+      # midnight, so the day's per-inverter total IS its last
+      # reading of the day. A single inverter publishing multiple
+      # readings today: the headline picks the latest, not the
+      # day's MAX (which for a monotonic counter is also the latest,
+      # but we pin the latest-reading semantic explicitly so a
+      # future refactor doesn't slip back into MAX).
       #
       # Use UTC-midnight-anchored timestamps so the test stays
       # stable when CI happens to run a few seconds after 00:00 UTC —
-      # otherwise the older reading's `inserted_at` may have rolled into
-      # yesterday's UTC window and `today_start` filters it out.
+      # otherwise the older reading's `inserted_at` may have rolled
+      # into yesterday's UTC window and `today_start` filters it out.
       # `inserted_at` is typed `:utc_datetime_usec`, so add
       # microsecond precision explicitly (Ecto's `DateTime.truncate/2`
-      # leaves microseconds at `{0, 0}` when the source value has only
-      # second precision, which `:utc_datetime_usec` rejects).
+      # leaves microseconds at `{0, 0}` when the source value has
+      # only second precision, which `:utc_datetime_usec` rejects).
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -131,16 +134,16 @@ defmodule DtuApp.DevicesTest do
         inserted_at: now |> DateTime.add(-360, :second) |> Map.put(:microsecond, {0, 6})
       })
 
-      # Inverter went offline an hour ago. Reading has a low yield_day
-      # because the inverter's counter stopped accumulating.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
-        yield_day: 500.0,
+        yield_day: 15_000.0,
         inserted_at: now
       })
 
+      # Headline = INV-A's last reading of the day (15_000 Wh =
+      # 15.0 kWh). Earlier reading (12_000) doesn't influence it.
       stats = Devices.get_daily_stats(user)
-      assert_in_delta stats.today_yield, 12.0, 0.001
+      assert_in_delta stats.today_yield, 15.0, 0.001
     end
 
     test "treats nil yield_day as 0 so a half-wired inverter doesn't poison the sum" do
@@ -168,15 +171,15 @@ defmodule DtuApp.DevicesTest do
 
       # Wh values; converted to kWh by get_daily_stats/2. Two DTUs, one
       # reading each. Scoped by dtu_id the per-DTU yield is the single
-      # reading; unscoped the headline takes the max across the series
-      # rather than summing the two DTUs' figures (which would double-
-      # count against the firmware-reported daily total).
+      # reading; unscoped the headline sums each DTU's last reading of
+      # the day across the user's DTUs (multi-DTU fleet sums the
+      # per-DTU totals).
       DevicesFixtures.reading_fixture(dtu1, %{yield_day: 2_000.0, inserted_at: now})
       DevicesFixtures.reading_fixture(dtu2, %{yield_day: 7_000.0, inserted_at: now})
 
       assert_in_delta Devices.get_daily_stats(user, dtu1.id).today_yield, 2.0, 0.001
       assert_in_delta Devices.get_daily_stats(user, dtu2.id).today_yield, 7.0, 0.001
-      assert_in_delta Devices.get_daily_stats(user).today_yield, 7.0, 0.001
+      assert_in_delta Devices.get_daily_stats(user).today_yield, 9.0, 0.001
     end
   end
 
@@ -185,29 +188,28 @@ defmodule DtuApp.DevicesTest do
     # `YieldTotal` MQTT field (AhoyDTU's `YieldTotal` JSON / numeric topic
     # and OpenDTU's `AC.YieldTotal.v` JSON / per-MPPT `yieldtotal` scalar).
     # Both land in `readings.yield_total`. The helper takes
-    # `MAX(yield_total)` per `(dtu_id, inverter_serial, mppt_index)`
-    # across **all** readings (no time-window filter — the lifetime
-    # counter is monotonic and never resets) and sums the per-series
-    # maxes, then converts Wh → kWh. Round to 1 decimal place to match
-    # the dashboard's kWh rendering.
+    # `MAX(yield_total)` per `(dtu_id, inverter_serial)` across **all**
+    # readings (no time-window filter — the lifetime counter is
+    # monotonic and never resets), sums the per-inverter maxes, then
+    # converts Wh → kWh. Round to 1 decimal place to match the
+    # dashboard's kWh rendering.
 
     test "returns 0 when the user has no DTUs" do
       user = DtuApp.AccountsFixtures.user_fixture()
       assert Devices.get_daily_stats(user).total_yield == 0.0
     end
 
-    test "takes MAX(yield_total) across inverters for the lifetime total" do
+    test "sums each inverter's MAX(yield_total) across the fleet" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
       now = DateTime.utc_now()
 
-      # Two inverters; MAX(yield_total) per inverter is 50_000 (INV-A) and
-      # 35_000 (INV-B). The headline picks the highest per-inverter MAX
-      # as the lifetime total: max(50_000, 35_000) = 50_000 Wh = 50.0 kWh.
-      # Summing across inverters would inflate the figure against the
-      # firmware-reported lifetime yield. The older INV-A reading must
-      # NOT win (lifetime counter is monotonic; only the largest value
-      # per series counts).
+      # Two inverters; MAX(yield_total) per inverter is 50_000 (INV-A)
+      # and 35_000 (INV-B). The headline sums those: 50_000 + 35_000
+      # = 85_000 Wh = 85.0 kWh. The older INV-A reading (10_000)
+      # doesn't influence the headline because MAX(yield_total) per
+      # inverter uses only the largest value (lifetime counter is
+      # monotonic; only the largest value per series counts).
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         yield_total: 10_000.0,
@@ -226,7 +228,7 @@ defmodule DtuApp.DevicesTest do
         inserted_at: DateTime.add(now, -60, :second)
       })
 
-      assert_in_delta Devices.get_daily_stats(user).total_yield, 50.0, 0.001
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 85.0, 0.001
     end
 
     test "ignores today's UTC window — uses ALL readings, not just today's" do
@@ -330,15 +332,14 @@ defmodule DtuApp.DevicesTest do
 
       # Wh values; converted to kWh by get_daily_stats/2. Two DTUs, one
       # reading each. Scoped by dtu_id the per-DTU lifetime is the single
-      # reading; unscoped the headline takes the max across the series
-      # rather than summing the two DTUs' figures (which would double-
-      # count against the firmware-reported lifetime yield).
+      # reading; unscoped the headline sums each DTU's per-inverter MAX
+      # across the user's DTUs.
       DevicesFixtures.reading_fixture(dtu1, %{yield_total: 20_000.0, inserted_at: now})
       DevicesFixtures.reading_fixture(dtu2, %{yield_total: 70_000.0, inserted_at: now})
 
       assert_in_delta Devices.get_daily_stats(user, dtu1.id).total_yield, 20.0, 0.001
       assert_in_delta Devices.get_daily_stats(user, dtu2.id).total_yield, 70.0, 0.001
-      assert_in_delta Devices.get_daily_stats(user).total_yield, 70.0, 0.001
+      assert_in_delta Devices.get_daily_stats(user).total_yield, 90.0, 0.001
     end
   end
 
@@ -474,7 +475,7 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta series.today_yield, 5.0, 0.001
     end
 
-    test "per_series today_yield reflects the headline's max-not-sum across inverters" do
+    test "per_series today_yield matches the headline's sum-across-inverters semantics" do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -494,11 +495,12 @@ defmodule DtuApp.DevicesTest do
 
       stats = Devices.get_daily_stats(user)
 
-      # The headline picks the highest per-inverter MAX as the day's
-      # yield: max(1_000, 1_000) = 1_000 Wh = 1.0 kWh. Summing across
-      # inverters would inflate the figure against the firmware-reported
-      # daily total.
-      assert_in_delta stats.today_yield, 1.0, 0.001
+      # Headline = INV-1's last reading of the day (1000 Wh, mppt=0)
+      # + INV-2's last reading of the day (1000 Wh, mppt=0)
+      # = 2000 Wh = 2.0 kWh. Per-MPPT rows for INV-1 (ch1/ch2)
+      # don't influence the sum because of the `mppt_index = 0`
+      # restriction.
+      assert_in_delta stats.today_yield, 2.0, 0.001
       assert length(stats.per_series) == 2
     end
 
@@ -508,28 +510,27 @@ defmodule DtuApp.DevicesTest do
       assert stats.per_series == []
     end
 
-    test "fleet-total _fleet row overrides per-inverter sum (AhoyDTU {base}/total)" do
-      # The dashboard's headline `today_yield` is the AhoyDTU fleet-total
-      # row from `{base}/total` (parser keys it by `inverter_serial =
-      # "_fleet"`) when one is present — the firmware already aggregated
-      # across every inverter on the DTU, so using the firmware value
-      # verbatim avoids re-summing per-inverter rows that may carry
-      # inconsistent counter resets or stale payloads across installs.
-      # The fleet row is what the `{base}/total/YieldDay` MQTT topic
-      # publishes, so the dashboard's "Today's Total Yield" headline
-      # matches the firmware's reported daily total exactly.
+    test "today_yield sums each inverter's last reading of the day (AhoyDTU multi-inverter)" do
+      # Each per-inverter `yield_day` is a monotonic Wh counter that
+      # resets at midnight and climbs through the day — the day's
+      # per-inverter total IS its last reading of the day. Summing
+      # across inverters (and across the user's DTUs) gives the
+      # fleet's daily total without depending on the
+      # firmware-aggregated `{base}/total` topic, which the parser
+      # now drops.
       #
-      # Per-inverter ch0 `MAX(yield_day)` sum is the fallback path
-      # (OpenDTU or half-wired AhoyDTU installs that haven't published
-      # the fleet row yet on a given day).
+      # Replaces the old "fleet-total `_fleet` row overrides per-
+      # inverter sum" test: that behaviour depended on a parser-
+      # persisted row the current parser no longer creates.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
       now = DtuApp.Time.utc_now_usec()
 
-      # Per-inverter ch0 rows: AhoyDTU publishes `YieldDay` in Wh
-      # (matching OpenDTU's wire format), so the persisted Wh values
-      # match the firmware-published figures verbatim.
+      # Two inverters each with one reading today. Both readings are
+      # at the same instant (`now`) — either is "the last reading of
+      # the day" — and summing them gives the fleet's daily total
+      # (1000 + 2000 = 3000 Wh = 3.0 kWh).
       for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
         DevicesFixtures.reading_fixture(device, %{
           inverter_serial: serial,
@@ -540,40 +541,132 @@ defmodule DtuApp.DevicesTest do
         })
       end
 
-      # Fleet-total row from the AhoyDTU {base}/total topic. The
-      # firmware sums every inverter's `YieldDay` into this row, so
-      # the dashboard prefers the firmware-published value (6587 Wh
-      # = 6.587 kWh) over the per-channel sum (3.0 kWh) — the user's
-      # reported field shape: dashboard rendered 2.649 kWh while
-      # the firmware's `total/YieldDay` published 6587 Wh.
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 3.0, 0.001
+      # Per-series still lists per-inverter entries for the chart
+      # legend.
+      assert length(stats.per_series) == 2
+    end
+
+    test "today_yield uses each inverter's LATEST reading, not the day's MAX (multi-uplink day)" do
+      # An inverter that published `yield_day` at 10:00 (lower) and
+      # 16:00 (higher) on the same day should contribute its 16:00
+      # value to the headline — that's the day's total for that
+      # inverter. A naive MAX-semantic across rows would also
+      # return the 16:00 value (so MAX-not-sum was an OK
+      # approximation), but the new logic explicitly uses the
+      # latest reading so the headline tracks the firmware's
+      # monotonic counter. A second inverter at a different time
+      # of day confirms the per-inverter independence.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      earlier = DateTime.utc_now() |> DateTime.add(-3600, :second)
+      later = DateTime.utc_now()
+
+      # INV-1: 1000 at 10:00, 1500 at 16:00 → contributes 1500
+      for {ts, yield_day} <- [{earlier, 1000.0}, {later, 1500.0}] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_day: yield_day,
+          inserted_at: ts
+        })
+      end
+
+      # INV-2: 800 only at 16:00 → contributes 800
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-2",
+        mppt_index: 0,
+        inverter_name: "INV-2",
+        yield_day: 800.0,
+        inserted_at: later
+      })
+
+      # Headline = 1500 (INV-1 latest) + 800 (INV-2 latest) = 2300 Wh
+      # = 2.3 kWh.
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 2.3, 0.001
+    end
+
+    test "today_yield ignores legacy _fleet rows the old parser persisted" do
+      # Pre-source-drop installs may still have `_fleet` rows in the
+      # DB. The dashboard's `today_yield` query explicitly filters
+      # `inverter_serial != "_fleet"`, so a stale `_fleet` row with
+      # a wildly different `yield_day` doesn't influence the
+      # headline.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DtuApp.Time.utc_now_usec()
+
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-1",
+        mppt_index: 0,
+        inverter_name: "INV-1",
+        yield_day: 1000.0,
+        inserted_at: now
+      })
+
+      # Stale `_fleet` row from a previous parser version. Should
+      # have no effect on the headline.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "_fleet",
         mppt_index: 0,
         inverter_name: "_fleet",
-        yield_day: 6587.0,
+        yield_day: 999_999.0,
         inserted_at: now
       })
 
       stats = Devices.get_daily_stats(user)
-      # Fleet row wins (6587 Wh / 1000 = 6.587 kWh, rounded to 6.6 kWh),
-      # NOT the per-channel sum (3.0 kWh). The dashboard's headline
-      # card displays one decimal place — same precision the user's
-      # MQTT view of the row shows at the firmware's report tick.
-      assert_in_delta stats.today_yield, 6.6, 0.001
-
-      # Per-series still lists per-inverter entries (the fleet row is
-      # excluded by `inverter_serial != "_fleet"` in the legend query)
-      # so the chart legend has something to render.
-      assert length(stats.per_series) == 2
+      # 1000 Wh = 1.0 kWh — NOT 999_999 Wh / 1000 = 999.999 kWh.
+      assert_in_delta stats.today_yield, 1.0, 0.001
     end
 
-    test "falls back to per-inverter ch0 max when no fleet row exists (OpenDTU)" do
-      # The dashboard's headline `today_yield` falls back to the per-inverter
-      # ch0 reading when no fleet `_fleet` row is present — the common case
-      # for OpenDTU installs, which don't publish a fleet-total topic. Same
-      # max-not-sum semantics as `list_range_yield_data/4`: take the day's
-      # highest reading rather than summing across inverters, since the
-      # firmware-published daily yield is a single monotonic-counter value.
+    test "total_yield sums each inverter's MAX(yield_total)" do
+      # Multiple readings of `yield_total` per inverter across the
+      # device's lifetime — the lifetime counter is monotonic, so
+      # MAX equals the latest recorded lifetime value. Summing
+      # across inverters gives the fleet's lifetime total.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      earlier = DateTime.utc_now() |> DateTime.add(-86_400 * 365, :second)
+      later = DateTime.utc_now()
+
+      # INV-1's lifetime counter has climbed from 5 MWh to 6 MWh
+      # over a year. We seed three readings; MAX = 6 MWh.
+      for {ts, yield_total} <- [{earlier, 5_000_000.0}, {later, 6_000_000.0}] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_total: yield_total,
+          inserted_at: ts
+        })
+      end
+
+      # INV-2's lifetime counter = 2 MWh.
+      DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-2",
+        mppt_index: 0,
+        inverter_name: "INV-2",
+        yield_total: 2_000_000.0,
+        inserted_at: later
+      })
+
+      # Headline = 6 MWh (INV-1) + 2 MWh (INV-2) = 8 MWh,
+      # rendered as 8000.0 kWh on the dashboard.
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.total_yield, 8000.0, 0.1
+    end
+
+    test "falls back to per-inverter ch0 last reading when no fleet row exists (OpenDTU)" do
+      # The dashboard's headline `today_yield` sums each inverter's
+      # last reading of the day for the common OpenDTU install,
+      # which doesn't publish a fleet-total topic. Two inverters
+      # each contribute their `yield_day` to the sum.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -589,10 +682,12 @@ defmodule DtuApp.DevicesTest do
         })
       end
 
-      # No fleet row — per-inverter ch0 max (2000 Wh = 2.0 kWh) is the
-      # headline. Summing across inverters would inflate the figure.
       stats = Devices.get_daily_stats(user)
-      assert_in_delta stats.today_yield, 2.0, 0.001
+      # 1000 + 2000 = 3000 Wh / 1000 = 3.0 kWh. (Different from
+      # pre-source-drop semantics, which used MAX not SUM and
+      # returned 2.0 kWh — the new semantics matches what the
+      # firmware's per-inverter monotonic counters imply.)
+      assert_in_delta stats.today_yield, 3.0, 0.001
     end
   end
 

@@ -834,14 +834,17 @@ defmodule DtuApp.MqttBrokerTest do
       assert length(Devices.list_recent_readings(user, dtu.id)) == 2
     end
 
-    test "AhoyDTU fleet-total JSON uplink ({base}/total) persists yields into a _fleet row",
+    test "AhoyDTU fleet-total JSON uplink ({base}/total) is dropped (no _fleet row persisted)",
          %{user: user} do
       # The AhoyDTU firmware's `stateSendTotals` publishes a single
-      # JSON object on `{base}/total` with `YieldDay` (Wh) and
-      # `YieldTotal` (kWh — normalised to Wh by `cast_ahoy_yield/1`).
-      # The parser keys the row by `inverter_serial = "_fleet"` so
-      # the dashboard's `get_daily_stats/3` fleet-totals path can
-      # prefer it over summing per-inverter rows.
+      # JSON object on `{base}/total` with `YieldDay` and `YieldTotal`.
+      # The parser deliberately drops these uplinks at the boundary
+      # instead of persisting a `_fleet` row — the dashboard computes
+      # today's / lifetime yield by summing each inverter's last
+      # reading of the day, which avoids a special-case "fleet row"
+      # path and the half-reliable `total` topic the firmware rate-
+      # limits. Pin the dropped behaviour so the parser doesn't
+      # silently re-introduce a `_fleet` row in a future refactor.
       dtu =
         device_fixture(user, %{
           kind: "ahoydtu",
@@ -865,26 +868,18 @@ defmodule DtuApp.MqttBrokerTest do
       msg = {:uplink, "client_fleet", device_info, "inverter/total", payload}
       {:noreply, _state} = Telemetry.handle_info(msg, %{buffers: %{}})
 
-      [reading] = Devices.list_recent_readings(user, dtu.id)
-      assert reading.inverter_serial == "_fleet"
-      assert reading.inverter_name == "_fleet"
-      assert reading.mppt_index == 0
-      # YieldDay arrives in Wh (per upstream `stateSendTotals`):
-      # 1234.0 Wh verbatim.
-      assert reading.yield_day == 1234.0
-      # YieldTotal arrives in kWh and is normalised to Wh by the
-      # parser: 50.0 kWh × 1000 = 50_000 Wh.
-      assert reading.yield_total == 50_000.0
+      # The fleet-total topic must NOT persist any row — the parser
+      # returns :ignored_topic and the buffer handler skips the
+      # insert.
+      assert Devices.list_recent_readings(user, dtu.id) == []
     end
 
-    test "AhoyDTU fleet-total numeric-layout uplink ({base}/total/{Metric}) persists yields into a _fleet row",
+    test "AhoyDTU fleet-total numeric-layout uplink ({base}/total/{Metric}) is dropped",
          %{user: user} do
-      # Fallback path for firmware variants that publish the fleet
-      # total as per-field scalars on `{base}/total/{Metric}`. The
-      # parser handles both the consolidated JSON topic and the
-      # per-field scalar fallback; the row's `inverter_serial` and
-      # `inverter_name` are both "_fleet" so the dashboard's
-      # fleet-preference query path picks them up.
+      # Numeric-layout fleet totals on `{base}/total/{Metric}` are the
+      # fallback path for firmware variants that publish per-field
+      # scalars. Same drop policy as the JSON-layout `{base}/total`
+      # topic — no `_fleet` row persisted.
       dtu =
         device_fixture(user, %{
           kind: "ahoydtu",
@@ -906,10 +901,7 @@ defmodule DtuApp.MqttBrokerTest do
       msg1 = {:uplink, "client_fleet_n", device_info, "inverter/total/YieldDay", "9876.0"}
       {:noreply, _state} = Telemetry.handle_info(msg1, %{buffers: %{}})
 
-      [reading] = Devices.list_recent_readings(user, dtu.id)
-      assert reading.inverter_serial == "_fleet"
-      assert reading.yield_day == 9876.0
-      assert reading.yield_total == nil
+      assert Devices.list_recent_readings(user, dtu.id) == []
     end
 
     # End-to-end regression for the user-reported "daily value too high
@@ -1590,10 +1582,11 @@ defmodule DtuApp.MqttBrokerTest do
 
       # A topic structure that doesn't match any of the parser's
       # clauses — not the per-channel numeric form (`{base}/{name}/ch{N}/{Metric}`)
-      # nor the JSON form (`{base}/{name}/ch{N}`), and not the fleet-total
-      # topics (`{base}/total` or `{base}/total/{Metric}`). The parser's
-      # `String.split/2` falls through to the catch-all clause which
-      # returns `{:error, :ignored_topic}` → `Logger.info` log.
+      # nor the JSON form (`{base}/{name}/ch{N}`), and not the dedicated
+      # fleet-total drop clauses (`{base}/total` or `{base}/total/{Metric}` —
+      # those return `:ignored_topic` from their own match arms). The
+      # parser's `String.split/2` falls through to the catch-all clause
+      # which returns `{:error, :ignored_topic}` → `Logger.info` log.
       msg =
         {:uplink, "client_ah", device_info, "inverter/balcony-inv/totally-bogus/garbage", "150.0"}
 
@@ -1650,19 +1643,24 @@ defmodule DtuApp.MqttBrokerTest do
       # Root cause: an earlier parser build wrote that error message to
       # `dtus.last_error` for any topic the parser didn't recognise.
       # The current build:
-      #   1. Recognises `{base}/total/{Field}` (AhoyDTU fleet-total
-      #      numerics) and routes through `parse_ahoydtu/3`'s
-      #      `[binary_base, "total", metric]` clause — no `:ignored_topic`
-      #      error.
-      #   2. Calls `clear_stale_dtu_error/1` on every successfully-parsed
-      #      uplink so the cached `last_error` row is cleared the next
-      #      time the device publishes a topic the parser recognises.
+      #   1. Treats `{base}/total/{Field}` as `:ignored_topic` in
+      #      `parse_ahoydtu/3`'s `[binary_base, "total", _metric]`
+      #      clause — fleet-total numerics are deliberately dropped
+      #      (no `_fleet` row persisted; the dashboard computes the
+      #      fleet yield from per-inverter counters). The handler
+      #      returns `{:error, :ignored_topic}` without going through
+      #      `record_dtu_error/2`, so no new `dtu_errors` row is
+      #      written.
+      #   2. Calls `clear_stale_error/1` on every uplink that reaches
+      #      `handle_info/2` (before the per-kind handler runs), so a
+      #      cached `last_error` row is cleared the next time the
+      #      device publishes anything — even a topic that returns
+      #      `:ignored_topic` clears the bubble.
       #
       # This test pins both contracts: the AhoyDTU numeric fleet-total
       # topic doesn't write a new `dtu_errors` row, and a pre-existing
-      # `last_error` value is cleared by the parser's
-      # `clear_stale_error/1` call so the dashboard's red bubble goes
-      # away on the next successful uplink.
+      # `last_error` value is cleared by `clear_stale_error/1` so the
+      # dashboard's red bubble goes away on the next uplink.
       user = user_fixture()
 
       dtu =
