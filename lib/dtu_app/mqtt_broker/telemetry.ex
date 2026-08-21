@@ -164,6 +164,17 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   @impl true
   def init(:ok) do
+    # Trap exits so a sandbox-teardown race during tests (where the
+    # long-lived GenServer's in-flight `Repo.*` call lands after the
+    # SQL.Sandbox owner has been stopped) doesn't kill the GenServer
+    # via the linked DBConnection process's `DBConnection.ConnectionError`
+    # exit signal. The `safe_db_call/1` rescue catches the matching
+    # raise inside the GenServer's own code path; this trap covers the
+    # orthogonal case where the underlying connection process dies
+    # while a query is in flight and propagates its exit reason to
+    # every linked caller. We forward all `:EXIT` signals to
+    # `handle_info/2` and ignore them there.
+    Process.flag(:trap_exit, true)
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
     Broker.subscribe_ro_fanout()
@@ -236,6 +247,18 @@ defmodule DtuApp.MqttBroker.Telemetry do
   @impl true
   def handle_info({:dtu_disconnected, _client_id, device_id}, state) do
     if device_id, do: touch_last_seen(device_id)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # Ignore EXIT signals from linked processes. The most common
+    # source is a DBConnection process shutting down because the
+    # SQL.Sandbox owner has been torn down mid-query — the
+    # GenServer is long-lived (started in the application supervisor)
+    # and outlasts any single test's sandbox, so we must not die
+    # with the connection process. The actual `Repo.*` raise is
+    # caught by `safe_db_call/1`'s rescue clause.
     {:noreply, state}
   end
 
