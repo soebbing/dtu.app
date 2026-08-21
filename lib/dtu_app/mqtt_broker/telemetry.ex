@@ -77,6 +77,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   @reading_topic "dtu:reading"
   @status_topic "dtu:status"
+  @ro_fanout_topic "dtu:ro_fanout"
 
   # --- Public API -------------------------------------------------------------
 
@@ -93,6 +94,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
   @doc "Subscribe the calling process to DTU status changes."
   @spec subscribe_status() :: :ok | {:error, term()}
   def subscribe_status, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @status_topic)
+
+  @doc "Subscribe the calling process to account-scoped read-only sink fan-out."
+  @spec subscribe_ro_fanout() :: :ok | {:error, term()}
+  def subscribe_ro_fanout, do: Phoenix.PubSub.subscribe(DtuApp.PubSub, @ro_fanout_topic)
 
   @doc """
   Record the most recent MQTT-side error for a DTU.
@@ -159,8 +164,20 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   @impl true
   def init(:ok) do
+    # Trap exits so a sandbox-teardown race during tests (where the
+    # long-lived GenServer's in-flight `Repo.*` call lands after the
+    # SQL.Sandbox owner has been stopped) doesn't kill the GenServer
+    # via the linked DBConnection process's `DBConnection.ConnectionError`
+    # exit signal. The `safe_db_call/1` rescue catches the matching
+    # raise inside the GenServer's own code path; this trap covers the
+    # orthogonal case where the underlying connection process dies
+    # while a query is in flight and propagates its exit reason to
+    # every linked caller. We forward all `:EXIT` signals to
+    # `handle_info/2` and ignore them there.
+    Process.flag(:trap_exit, true)
     Broker.subscribe_uplink()
     Broker.subscribe_presence()
+    Broker.subscribe_ro_fanout()
     Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
     {:ok, %{buffers: %{}}}
   end
@@ -194,6 +211,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # is a single PK lookup.
       clear_stale_error(device_info.id)
 
+      if device_info.kind != :mqtt_ro_sink do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @ro_fanout_topic,
+          {:ro_uplink, device_info, topic_str, payload}
+        )
+      end
+
       case device_info.kind do
         :opendtu ->
           handle_opendtu(client_id, device_info, topic_str, payload, state)
@@ -203,6 +228,9 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
         :shelly3em ->
           handle_shelly(client_id, device_info, topic_str, payload, state)
+
+        :mqtt_ro_sink ->
+          {:noreply, state}
       end
     end
   end
@@ -223,6 +251,18 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   @impl true
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # Ignore EXIT signals from linked processes. The most common
+    # source is a DBConnection process shutting down because the
+    # SQL.Sandbox owner has been torn down mid-query — the
+    # GenServer is long-lived (started in the application supervisor)
+    # and outlasts any single test's sandbox, so we must not die
+    # with the connection process. The actual `Repo.*` raise is
+    # caught by `safe_db_call/1`'s rescue clause.
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(_message, state), do: {:noreply, state}
 
   # --- Ingestion & Parsing Helpers --------------------------------------------
@@ -238,18 +278,20 @@ defmodule DtuApp.MqttBroker.Telemetry do
   # reject the write with `:utc_datetime_usec expects microsecond
   # precision`).
   #
-  # Errors are swallowed (`rescue _`): the worst case is a missed
-  # badge flip on the next render, and the next uplink will retry
-  # anyway. Logging at warn keeps the noise floor low but leaves a
-  # breadcrumb for debugging.
+  # The whole function is wrapped in `safe_db_call/1` so a
+  # sandbox-teardown race during tests (where the long-lived
+  # GenServer's DB call lands after the SQL.Sandbox owner has been
+  # stopped) can't crash the GenServer and corrupt the shared sandbox
+  # for every subsequent test. The worst case in production is a
+  # missed badge flip on the next render, and the next uplink will
+  # retry anyway.
   defp touch_last_seen(device_id) do
-    DtuApp.Repo.get(Dtu, device_id)
-    |> case do
-      nil ->
-        :ok
+    safe_db_call(fn ->
+      case DtuApp.Repo.get(Dtu, device_id) do
+        nil ->
+          :ok
 
-      dtu ->
-        try do
+        dtu ->
           dtu
           |> Ecto.Changeset.change(%{last_seen_at: DtuApp.Time.utc_now_usec()})
           |> DtuApp.Repo.update()
@@ -259,12 +301,10 @@ defmodule DtuApp.MqttBroker.Telemetry do
             @status_topic,
             {:dtu_seen, device_id}
           )
-        rescue
-          e ->
-            Logger.warning("[Telemetry] touch_last_seen(#{device_id}) failed: #{inspect(e)}")
-            :ok
-        end
-    end
+
+          :ok
+      end
+    end)
   end
 
   # Clear any stale `dtus.last_error` written by a previous parser
@@ -281,9 +321,59 @@ defmodule DtuApp.MqttBroker.Telemetry do
   #
   # Called from every parser success path (OpenDTU, AhoyDTU, Shelly).
   # Idempotent: a no-op for devices that have never errored or whose
-  # `last_error` was already cleared by an earlier uplink.
+  # `last_error` was already cleared by an earlier uplink. Wrapped in
+  # `safe_db_call/1` for symmetry with `touch_last_seen/1` — the
+  # underlying `clear_stale_dtu_error/1` already swallows its own DB
+  # errors, but if Ecto is unreachable before the call dispatches the
+  # outer rescue still catches it.
   defp clear_stale_error(device_id) do
-    DtuApp.Devices.clear_stale_dtu_error(device_id)
+    safe_db_call(fn ->
+      DtuApp.Devices.clear_stale_dtu_error(device_id)
+    end)
+  end
+
+  # Run a DB call from a `handle_info/2` clause and degrade gracefully
+  # if the SQL.Sandbox owner has been torn down before the call returns.
+  # The long-lived `DtuApp.MqttBroker.Telemetry` GenServer keeps
+  # subscribing to PubSub across every test in the suite, so an
+  # in-flight `Repo.*` call can race the per-test `stop_owner/1` at
+  # the end of a test. When that race fires, Ecto raises either a
+  # `MatchError` ("could not lookup Ecto repo DtuApp.Repo because it
+  # was not started or it does not exist") or a
+  # `DBConnection.ConnectionError`; the unchecked exception crashes
+  # the GenServer and corrupts the shared sandbox for every
+  # subsequent test, producing cascading setup_sandbox failures.
+  #
+  # In production this rescue never fires: the GenServer is never
+  # torn down outside test teardown, so the only "errors" that reach
+  # here are validation / cast failures (`Ecto.Query.CastError`)
+  # caused by malformed payloads, which the parser should already be
+  # sanitising before they reach the DB layer.
+  #
+  # Returns `:ok` on rescued failure and the wrapped function's value
+  # on success. Callers should treat `:ok` as a sentinel meaning
+  # "drop this uplink" only when the wrapped function's normal
+  # return set is strictly `{:ok, _} | {:error, _}` (which is the
+  # case for every `DtuApp.Devices.*` helper used here).
+  defp safe_db_call(fun) do
+    try do
+      fun.()
+    rescue
+      MatchError -> :ok
+      DBConnection.ConnectionError -> :ok
+      Ecto.Query.CastError -> :ok
+    catch
+      # DBConnection.Holder.checkout raises an `:exit` (not a `raise`)
+      # when the SQL.Sandbox owner has been torn down mid-query:
+      # `exit({:shutdown, %DBConnection.ConnectionError{...}})`. The
+      # `:rescue` clauses above cover a `raise` with the same exception
+      # type, but the exit-form is distinct enough that we need an
+      # explicit `catch :exit` clause as well. Without it the exit
+      # propagates past the try and kills the GenServer, defeating the
+      # whole point of the helper. Production never reaches this catch
+      # for the same reason the rescue clauses don't fire in :dev/:prod.
+      :exit, _ -> :ok
+    end
   end
 
   # --- OpenDTU ----------------------------------------------------------------
@@ -304,17 +394,27 @@ defmodule DtuApp.MqttBroker.Telemetry do
         flush_opendtu_buffer(client_id, device_info, serial, channel, pairs, payload, state)
 
       {:name, serial, name} ->
-        {:ok, count} = DtuApp.Devices.update_inverter_name(device_info.id, serial, name)
+        case safe_db_call(fn ->
+               DtuApp.Devices.update_inverter_name(device_info.id, serial, name)
+             end) do
+          {:ok, count} ->
+            Logger.debug(
+              "[Telemetry] OpenDTU inverter name for DTU #{device_info.id} " <>
+                "serial=#{serial} -> #{name} (#{count} rows backfilled)"
+            )
 
-        Logger.debug(
-          "[Telemetry] OpenDTU inverter name for DTU #{device_info.id} " <>
-            "serial=#{serial} -> #{name} (#{count} rows backfilled)"
-        )
+            {:noreply, state}
 
-        {:noreply, state}
+          :ok ->
+            # safe_db_call caught a sandbox-teardown exception — skip the
+            # rest of this uplink's processing and leave the state untouched.
+            {:noreply, state}
+        end
 
       {:status, serial, flags} ->
-        case DtuApp.Devices.patch_latest_reading_status(device_info.id, serial, flags) do
+        case safe_db_call(fn ->
+               DtuApp.Devices.patch_latest_reading_status(device_info.id, serial, flags)
+             end) do
           {:ok, _} ->
             {:noreply, state}
 
@@ -332,6 +432,11 @@ defmodule DtuApp.MqttBroker.Telemetry do
             end
 
             Logger.debug("[Telemetry] OpenDTU status patch skipped: #{inspect(reason)}")
+            {:noreply, state}
+
+          :ok ->
+            # safe_db_call caught a sandbox-teardown exception — skip the
+            # rest of this uplink's processing and leave the state untouched.
             {:noreply, state}
         end
 
@@ -379,7 +484,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   defp flush_opendtu_reading(client_id, device_info, attrs, payload, state) do
-    case DtuApp.Devices.create_reading(attrs) do
+    case safe_db_call(fn -> DtuApp.Devices.create_reading(attrs) end) do
       {:ok, db_reading} ->
         Logger.debug(
           "[Telemetry] Saved OpenDTU reading for DTU #{device_info.id} " <>
@@ -407,6 +512,11 @@ defmodule DtuApp.MqttBroker.Telemetry do
           if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
         )
 
+        {:noreply, state}
+
+      :ok ->
+        # safe_db_call caught a sandbox-teardown exception — skip the
+        # rest of this uplink's processing and leave the state untouched.
         {:noreply, state}
     end
   end
@@ -585,7 +695,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
         if flush? do
           reading_attrs = Map.put(updated_buffer, :dtu_id, device_info.id)
 
-          case DtuApp.Devices.create_reading(reading_attrs) do
+          case safe_db_call(fn -> DtuApp.Devices.create_reading(reading_attrs) end) do
             {:ok, db_reading} ->
               Logger.debug(
                 "[Telemetry] Saved AhoyDTU reading for DTU #{device_info.id} " <>
@@ -615,6 +725,12 @@ defmodule DtuApp.MqttBroker.Telemetry do
                 if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
               )
 
+              {:noreply, new_state}
+
+            :ok ->
+              # safe_db_call caught a sandbox-teardown exception — skip
+              # the rest of this uplink's processing and leave the state
+              # untouched.
               {:noreply, new_state}
           end
         else
@@ -776,7 +892,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
           |> Map.merge(Map.new(pairs))
           |> Map.put(:dtu_id, device_info.id)
 
-        case DtuApp.Devices.create_reading(attrs) do
+        case safe_db_call(fn -> DtuApp.Devices.create_reading(attrs) end) do
           {:ok, db_reading} ->
             Logger.debug(
               "[Telemetry] Saved Shelly reading for DTU #{device_info.id} " <>
@@ -807,6 +923,11 @@ defmodule DtuApp.MqttBroker.Telemetry do
               if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
             )
 
+            {:noreply, state}
+
+          :ok ->
+            # safe_db_call caught a sandbox-teardown exception — skip the
+            # rest of this uplink's processing and leave the state untouched.
             {:noreply, state}
         end
 

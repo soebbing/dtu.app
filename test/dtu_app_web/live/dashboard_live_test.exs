@@ -2594,4 +2594,149 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "expected the badge to be hidden for an error older than the cutoff"
     end
   end
+
+  describe "Read-only sink badge on the dashboard" do
+    # The 4th DTU kind, `:mqtt_ro_sink`, is a passive subscriber that
+    # receives a real-time MQTT feed of every other DTU on the same
+    # account. It is **not** an inverter, **not** a consumption meter,
+    # and never publishes telemetry of its own — so its device card
+    # reads as a presence-only entry. A small "sink" badge next to the
+    # device name tells the user why this card doesn't contribute to
+    # the production/consumption/net rows above.
+    #
+    # The classifier is `DashboardLive.ro_sink_kind?/1`; the template
+    # emits `<span id="dtu-sink-badge-#{id}">…</span>` only when the
+    # predicate is true. The broker-side publish-suppression contract
+    # lives in `DtuApp.MqttBroker.Broker.handle_publish/4` — see
+    # `test/dtu_app/mqtt_broker_test.exs` for the corresponding
+    # broker-level tests. This describe block pins the dashboard's
+    # *render-side* contract: the badge is shown iff the DTU is a
+    # sink, and never shown for the other three kinds.
+
+    test "renders a sink badge for a :mqtt_ro_sink device", %{conn: conn, user: user} do
+      sink =
+        device_fixture(user, %{
+          name: "Home Assistant Bridge",
+          kind: "mqtt_ro_sink",
+          mqtt_username: "ha-bridge",
+          base_topic: "sinks/dturo"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The badge is the tier-stable hook the e2e test and the device
+      # card styling both rely on. The id includes the device id so a
+      # user with multiple sinks can address each one independently.
+      assert html =~ ~s(id="dtu-sink-badge-#{sink.id}"),
+             "expected the sink badge to be rendered on the dashboard"
+
+      # And the badge carries the localized "sink" label.
+      assert html =~ "sink"
+    end
+
+    test "does NOT render a sink badge for an :opendtu device", %{conn: conn, user: user} do
+      _inverter =
+        device_fixture(user, %{
+          name: "Inverter No Sink",
+          kind: "opendtu",
+          mqtt_username: "no-sink-inv",
+          base_topic: "solar"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # A wrong-klass device should never get the sink badge. Refute
+      # the prefix to catch any regression that renders a stray
+      # `dtu-sink-badge-` element for a non-sink device.
+      refute html =~ "dtu-sink-badge-"
+    end
+
+    test "does NOT render a sink badge for an :ahoydtu device", %{conn: conn, user: user} do
+      _inverter =
+        device_fixture(user, %{
+          name: "Ahoy Inverter",
+          kind: "ahoydtu",
+          mqtt_username: "ahoy-no-sink",
+          base_topic: "inverter"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ "dtu-sink-badge-"
+    end
+
+    test "does NOT render a sink badge for a :shelly3em device", %{conn: conn, user: user} do
+      _shelly =
+        device_fixture(user, %{
+          name: "Shelly Sink Test",
+          kind: "shelly3em",
+          mqtt_username: "shelly-no-sink",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ "dtu-sink-badge-"
+    end
+
+    test "renders one sink badge per sink device when the user has multiple sinks",
+         %{conn: conn, user: user} do
+      # Each sink gets its own card with its own badge id. The
+      # classifier is per-device, so two sinks must produce two
+      # badges — not one (no de-duplication) and not zero (no
+      # short-circuit).
+      sink1 =
+        device_fixture(user, %{
+          name: "Sink One",
+          kind: "mqtt_ro_sink",
+          mqtt_username: "sink-one",
+          base_topic: "sinks/dturo-one"
+        })
+
+      sink2 =
+        device_fixture(user, %{
+          name: "Sink Two",
+          kind: "mqtt_ro_sink",
+          mqtt_username: "sink-two",
+          base_topic: "sinks/dturo-two"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="dtu-sink-badge-#{sink1.id}")
+      assert html =~ ~s(id="dtu-sink-badge-#{sink2.id}")
+    end
+
+    test "sink badge does not pollute the device card of an inverter in the same fleet",
+         %{conn: conn, user: user} do
+      # Mixed fleet: one inverter + one sink. The inverter's card
+      # must stay clean (no sink badge), the sink's card must carry
+      # the badge. Pins the per-device scoping of the classifier.
+      inverter =
+        device_fixture(user, %{
+          name: "Fleet Inverter",
+          kind: "opendtu",
+          mqtt_username: "fleet-inv",
+          base_topic: "solar"
+        })
+
+      sink =
+        device_fixture(user, %{
+          name: "Fleet Sink",
+          kind: "mqtt_ro_sink",
+          mqtt_username: "fleet-sink",
+          base_topic: "sinks/dturo"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Inverter card has no sink badge.
+      refute html =~ ~s(id="dtu-sink-badge-#{inverter.id}"),
+             "inverter device card must not render a sink badge"
+
+      # Sink card has its badge.
+      assert html =~ ~s(id="dtu-sink-badge-#{sink.id}"),
+             "sink device card must render its sink badge"
+    end
+  end
 end
