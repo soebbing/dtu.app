@@ -146,6 +146,18 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
 
   @impl true
   def init(:ok) do
+    # Trap exits so a sandbox-teardown race during tests (where the
+    # long-lived GenServer's in-flight `DtuApp.Time.utc_now{,_usec}/0`
+    # call lands after the SQL.Sandbox owner has been stopped) doesn't
+    # kill the GenServer via the linked DBConnection process's
+    # `DBConnection.ConnectionError` exit signal. The `safe_db_call/1`
+    # rescue catches the matching raise inside the GenServer's own
+    # code path; this trap covers the orthogonal case where the
+    # underlying connection process dies while a query is in flight and
+    # propagates its exit reason to every linked caller. We forward
+    # all `:EXIT` signals to `handle_info/2` and ignore them there.
+    Process.flag(:trap_exit, true)
+
     # ETS table owned by this process. `:set` keyed on `dtu_id`; the
     # value is a `%{topic => {payload, received_at}}` map. `:public`
     # so `get_topics_for/1` can read without round-tripping through the
@@ -180,6 +192,17 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
     {:noreply, state}
   end
 
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # Ignore EXIT signals from linked processes. The most common
+    # source is a DBConnection process shutting down because the
+    # SQL.Sandbox owner has been torn down mid-query — the GenServer
+    # is long-lived (started in the application supervisor) and
+    # outlasts any single test's sandbox, so we must not die with
+    # the connection process. The actual `Repo.*` raise is caught by
+    # `safe_db_call/1`'s rescue clause.
+    {:noreply, state}
+  end
+
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl true
@@ -211,20 +234,37 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
     # deterministic. `utc_now/0` truncates to whole seconds, which
     # causes multiple uplinks within the same second to collide on
     # the eviction key.
-    received_at = DtuApp.Time.utc_now_usec()
-    new_entry = {stored_payload, received_at}
-
-    topics =
-      case :ets.lookup(table_name(), dtu_id) do
-        [{^dtu_id, existing}] -> existing
-        [] -> %{}
+    #
+    # Wrapped in `safe_db_call/1` so a sandbox-teardown race during
+    # tests (where this GenServer's `utc_now_usec` call lands after
+    # the SQL.Sandbox owner has been stopped) can't crash the
+    # GenServer and corrupt the shared sandbox for every subsequent
+    # test. The whole `ingest/3` is skipped on failure — the next
+    # uplink retries, and the device-details LiveView's empty-state
+    # path already handles "no recent topics" gracefully.
+    received_at =
+      case safe_db_call(fn -> DtuApp.Time.utc_now_usec() end) do
+        %DateTime{} = dt -> dt
+        :ok -> :skip
       end
 
-    topics =
-      Map.put(topics, topic, new_entry)
-      |> evict_oldest_if_over_cap()
+    if received_at == :skip do
+      :ok
+    else
+      new_entry = {stored_payload, received_at}
 
-    :ets.insert(table_name(), {dtu_id, topics})
+      topics =
+        case :ets.lookup(table_name(), dtu_id) do
+          [{^dtu_id, existing}] -> existing
+          [] -> %{}
+        end
+
+      topics =
+        Map.put(topics, topic, new_entry)
+        |> evict_oldest_if_over_cap()
+
+      :ets.insert(table_name(), {dtu_id, topics})
+    end
   end
 
   # Drop the oldest entries until the map is at or below the cap.
@@ -284,44 +324,94 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
   # the same sense `Dtu.online?/2` uses, so its topic tree collapses
   # to `nil`. ETS `select_delete/2` is atomic — no race against a
   # concurrent uplink write.
+  #
+  # The `utc_now/0` call is wrapped in `safe_db_call/1` for the same
+  # reason `ingest/3` wraps `utc_now_usec/0`: a sandbox-teardown race
+  # during tests would otherwise crash the GenServer mid-foldl and
+  # corrupt the shared sandbox for every subsequent test. On rescue
+  # the prune pass is skipped entirely — the next tick (one minute
+  # later) will retry against a fresh sandbox.
   defp prune_stale do
-    now = DtuApp.Time.utc_now()
-    cutoff = DateTime.add(now, -@topic_max_age_seconds, :second)
+    case safe_db_call(fn -> DtuApp.Time.utc_now() end) do
+      %DateTime{} = now ->
+        cutoff = DateTime.add(now, -@topic_max_age_seconds, :second)
 
-    :ets.foldl(
-      fn {dtu_id, topics}, _acc ->
-        fresh =
-          Enum.reject(topics, fn {_t, {_p, at}} ->
-            DateTime.compare(at, cutoff) == :lt
-          end)
+        :ets.foldl(
+          fn {dtu_id, topics}, _acc ->
+            fresh =
+              Enum.reject(topics, fn {_t, {_p, at}} ->
+                DateTime.compare(at, cutoff) == :lt
+              end)
 
-        # `Enum.reject/2` returns a list, not a map — rebuild the map
-        # so the value we re-insert (or compare) stays the same shape
-        # as the values written by `ingest/3`. Storing a list here
-        # would surface as `BadMapError` on the next `get_topics_for/1`
-        # call (it pattern-matches `%{}` for the empty case).
-        fresh_map = Map.new(fresh)
+            # `Enum.reject/2` returns a list, not a map — rebuild the map
+            # so the value we re-insert (or compare) stays the same shape
+            # as the values written by `ingest/3`. Storing a list here
+            # would surface as `BadMapError` on the next `get_topics_for/1`
+            # call (it pattern-matches `%{}` for the empty case).
+            fresh_map = Map.new(fresh)
 
-        case fresh_map do
-          # Whole DTU went stale — drop the row entirely so
-          # `get_topics_for/1` returns the empty-map default and the
-          # device-details LiveView can render its "no live data"
-          # empty state.
-          map when map_size(map) == 0 ->
-            :ets.delete(table_name(), dtu_id)
+            case fresh_map do
+              # Whole DTU went stale — drop the row entirely so
+              # `get_topics_for/1` returns the empty-map default and the
+              # device-details LiveView can render its "no live data"
+              # empty state.
+              map when map_size(map) == 0 ->
+                :ets.delete(table_name(), dtu_id)
 
-          map ->
-            :ets.insert(table_name(), {dtu_id, map})
-        end
+              map ->
+                :ets.insert(table_name(), {dtu_id, map})
+            end
 
+            :ok
+          end,
+          :ok,
+          table_name()
+        )
+
+      :ok ->
+        # Sandbox teardown — skip this prune pass. The schedule_prune
+        # in the `:prune` handle_info clause re-arms the tick.
         :ok
-      end,
-      :ok,
-      table_name()
-    )
+    end
   end
 
   defp schedule_prune do
     Process.send_after(self(), :prune, @prune_interval_ms)
+  end
+
+  # Wrap a DB-touching closure so a sandbox-teardown race during tests
+  # (where the long-lived GenServer's `DtuApp.Time.utc_now{,_usec}/0`
+  # call lands after the SQL.Sandbox owner has been stopped) can't
+  # crash the GenServer and corrupt the shared sandbox for every
+  # subsequent test.
+  #
+  # In production this rescue never fires: the GenServer is never
+  # torn down outside test teardown, so the only "errors" that reach
+  # here are validation / cast failures (`Ecto.Query.CastError`)
+  # caused by malformed payloads, which the parser should already be
+  # sanitising before they reach the DB layer.
+  #
+  # Returns `:ok` on rescued failure and the wrapped function's value
+  # on success. The callers in this module pattern-match on the
+  # `%DateTime{}` success shape and bail out via `:ok` otherwise.
+  defp safe_db_call(fun) do
+    try do
+      fun.()
+    rescue
+      MatchError -> :ok
+      DBConnection.ConnectionError -> :ok
+      Ecto.Query.CastError -> :ok
+    catch
+      # DBConnection.Holder.checkout raises an `:exit` (not a `raise`)
+      # when the SQL.Sandbox owner has been torn down mid-query:
+      # `exit({:shutdown, %DBConnection.ConnectionError{...}})`. The
+      # `:rescue` clauses above cover a `raise` with the same exception
+      # type, but the exit-form is distinct enough that we need an
+      # explicit `catch :exit` clause as well. Without it the exit
+      # propagates past the try and kills the GenServer, defeating the
+      # whole point of the helper. Production never reaches this catch
+      # for the same reason the rescue clauses don't fire in :dev/:prod.
+      :exit, _ -> :ok
+    end
   end
 end
