@@ -2736,16 +2736,23 @@ defmodule DtuAppWeb.DashboardLive do
                          (`@zero_y`). The top label is unchanged.
 
                          When the chart stays positive-only (`y_min == 0`),
-                         the zero line is rendered as a dashed gridline at
-                         `y=135` (just for the visual cue) and the three
-                         labels mark the actual data range: `y_max` at the
-                         top gridline (`y=20`), `y_max/2` at the midpoint
-                         gridline (`y=77.5`), and `0 W` at the chart bottom
-                         (`y=250`). Putting the midpoint label just below
-                         the zero line (the previous position) made a
-                         flat-at-zero line read as `y_max/2`, because the
-                         label sat right next to the line instead of at
-                         the value it actually names. -->
+                         the data zero line is rendered as a dashed gridline
+                         at `y=135` and the three labels are pinned to the
+                         gridlines they name: `y_max` at the top gridline
+                         (`y=20`), `y_max/2` at the midpoint gridline
+                         (`y=77.5`), and `0 W` at the zero gridline (just
+                         below, `y=147`). Putting the `0 W` label at the
+                         chart bottom (`y=245`) instead left a 110-px gap
+                         between the label and the dashed zero line — a
+                         flat-at-zero line sitting at `y=135` had no
+                         adjacent label, so readers interpolated between
+                         the nearby `y_max/2 W` label (above) and the
+                         stranded `0 W` label (far below) and read the
+                         value as somewhere in between (~66 W on a
+                         400 W scale). The label now sits where the value
+                         it names actually plots — same three-tick
+                         convention the `y_min < 0` branch already
+                         uses (`@zero_y + 12`). -->
                     <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
                       {Devices.format_number(@y_max, 1, @locale)} W
                     </text>
@@ -2768,7 +2775,7 @@ defmodule DtuAppWeb.DashboardLive do
                       <text x="5" y="89.5" class="text-[10px] font-medium fill-zinc-400">
                         {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
                       </text>
-                      <text x="5" y="245" class="text-[10px] font-medium fill-zinc-400">0 W</text>
+                      <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">0 W</text>
                     <% end %>
 
                     <!-- X-Axis Labels (Time slots). Dynamically positioned to

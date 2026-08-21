@@ -457,9 +457,70 @@ defmodule DtuAppWeb.DashboardLiveTest do
                String.contains?(mid_label_tag, "W"),
              "expected y_max/2 label to render at y=89.5 with '200' content, got: '#{mid_label_tag}'"
 
-      # And confirm the buggy position no longer has the label.
-      refute html =~ ~r{<text[^>]*y="147"[^>]*>\s*(?:\d+|<span[^>]*>)+\s*W\s*</text>}s,
+      # And confirm the y_max/2 label isn't at the buggy position. The
+      # regex requires a `200.0`-style value (digits + decimal + digits)
+      # because the new "0 W" label legitimately sits at y=147 (just
+      # below the dashed zero gridline) — without the decimal guard,
+      # `0 W` would match `\d+ W` and the assertion would refuted the
+      # correct placement of the `0 W` label.
+      refute html =~
+               ~r{<text[^>]*y="147"[^>]*>\s*\d+\.\d+\s*W\s*</text>}s,
              "y_max/2 label must not be positioned at y=147 (just below the zero line)"
+    end
+
+    test "0 W Y-axis label sits at the dashed zero gridline, not at the chart bottom",
+         %{conn: conn, user: user} do
+      # Regression for the "inverter shows 0 W but the chart reads ~66 W"
+      # report: PR #125 fixed the midpoint-label misplacement but left
+      # the positive-only branch's "0 W" label at y=245 (chart bottom)
+      # while the actual data-zero gridline sits at y=135. The 110-px
+      # gap meant a flat-at-zero line had no adjacent label, so readers
+      # interpolated between the y_max/2 label (above) and the
+      # far-away 0 W label and read the value as somewhere in between.
+      # Move the "0 W" label to y=147 (just below the dashed zero
+      # gridline) so it sits where the value it names actually plots.
+      #
+      # Same as the midpoint test: 350 W peak → `y_max` rounds up to
+      # the next 100 = 400, so the label content is literally "0 W".
+      dtu =
+        device_fixture(user, %{
+          name: "Zero Label DTU",
+          kind: "opendtu",
+          mqtt_username: "zero-label"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          inverter_name: "Solo",
+          ac_power: 350.0,
+          yield_day: 1_000.0,
+          inserted_at: DateTime.utc_now()
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The "0 W" label sits at y=147 (just below the dashed zero
+      # gridline at y=135). Pull the matching <text> tag, strip
+      # whitespace, and pin the exact label content.
+      [zero_label_tag] =
+        Regex.run(
+          ~r{<text[^>]*y="147"[^>]*>\s*([^<]+?)\s*</text>}s,
+          html,
+          capture: :all_but_first
+        )
+
+      assert zero_label_tag == "0 W",
+             "expected y=147 label to read '0 W', got: '#{zero_label_tag}'"
+
+      # And confirm the buggy position (chart bottom y=245) no longer
+      # carries the "0 W" label — the surrounding chart space below
+      # the zero gridline is pure visual padding with no data meaning,
+      # so leaving it unlabeled is correct.
+      refute html =~ ~r{<text[^>]*y="245"[^>]*>\s*0\s*W\s*</text>}s,
+             "0 W label must not sit at y=245 (chart bottom) any more"
     end
 
     test "fleet Total line sums every series at each bucket", %{
