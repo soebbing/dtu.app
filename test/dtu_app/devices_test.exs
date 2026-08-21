@@ -3461,4 +3461,111 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta stats.current_net_flow, 800.0, 0.1
     end
   end
+
+  describe "list_range_yield_data/4 — historical day, week, month, year" do
+    # The historical chart path (calendar picker → day/week/month/year) uses
+    # the same `list_range_yield_data/4` helper as the live "today" path.
+    # The `DISTINCT ON (date, dtu_id, inverter_serial) ORDER BY inserted_at
+    # DESC` query must work identically for any date in the past — pinning
+    # this so a future refactor doesn't accidentally couple the query to
+    # `Date.utc_today()`.
+    test "sums each inverter's last reading per day for any past date" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      today = Date.utc_today()
+      yesterday = Date.add(today, -1)
+      day_before = Date.add(today, -2)
+
+      seed = fn date, hour, serial, yield_day ->
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: serial,
+            mppt_index: 0,
+            yield_day: yield_day,
+            inserted_at: DateTime.new!(date, Time.new!(hour, 0, 0), "Etc/UTC")
+          })
+      end
+
+      # Day-before-yesterday: INV-1 has 500 at 10am, 1500 at 4pm → last = 1500
+      seed.(day_before, 10, "INV-1", 500.0)
+      seed.(day_before, 16, "INV-1", 1500.0)
+      # INV-2 only one reading at noon → 800
+      seed.(day_before, 12, "INV-2", 800.0)
+
+      # Yesterday: INV-1 last = 2000 (from 10am's 1000 + 4pm's 2000),
+      # INV-2 = 1500
+      seed.(yesterday, 10, "INV-1", 1000.0)
+      seed.(yesterday, 16, "INV-1", 2000.0)
+      seed.(yesterday, 12, "INV-2", 1500.0)
+
+      # Today: INV-1 last = 2500, INV-2 = 1800
+      seed.(today, 10, "INV-1", 1500.0)
+      seed.(today, 16, "INV-1", 2500.0)
+      seed.(today, 12, "INV-2", 1800.0)
+
+      # Query the full 3-day range.
+      {utc_start, _} = Devices.local_day_utc_range(day_before, 0)
+      {_, utc_end} = Devices.local_day_utc_range(today, 0)
+
+      yields = Devices.list_range_yield_data(user, utc_start, utc_end)
+
+      # Map: {date => kWh}
+      by_date = Map.new(yields)
+
+      # Day-before: 1500 + 800 = 2300 Wh = 2.3 kWh
+      assert_in_delta by_date[day_before] || 0.0, 2.3, 0.001
+      # Yesterday: 2000 + 1500 = 3500 Wh = 3.5 kWh
+      assert_in_delta by_date[yesterday] || 0.0, 3.5, 0.001
+      # Today: 2500 + 1800 = 4300 Wh = 4.3 kWh
+      assert_in_delta by_date[today] || 0.0, 4.3, 0.001
+    end
+
+    test "returns an empty list for a date range with no readings" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      _device = DevicesFixtures.device_fixture(user)
+
+      long_ago = Date.add(Date.utc_today(), -30)
+      {utc_start, utc_end} = Devices.local_day_utc_range(long_ago, 0)
+
+      assert Devices.list_range_yield_data(user, utc_start, utc_end) == []
+    end
+
+    test "ignores legacy _fleet rows an older parser persisted in historical data" do
+      # Same defensive filter as today's headline: `_fleet` rows from
+      # older parser versions must not influence the historical day
+      # chart's per-day yield.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      yesterday = Date.add(Date.utc_today(), -1)
+      dt = DateTime.new!(yesterday, Time.new!(12, 0, 0), "Etc/UTC")
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          yield_day: 1500.0,
+          inserted_at: dt
+        })
+
+      # Stale `_fleet` row — should be ignored.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "_fleet",
+          mppt_index: 0,
+          yield_day: 99_999.0,
+          inserted_at: dt
+        })
+
+      {utc_start, utc_end} = Devices.local_day_utc_range(yesterday, 0)
+      [{_date, kwh}] = Devices.list_range_yield_data(user, utc_start, utc_end)
+
+      # 1500 Wh / 1000 = 1.5 kWh — NOT 99.999 kWh.
+      assert_in_delta kwh, 1.5, 0.001
+    end
+  end
 end
