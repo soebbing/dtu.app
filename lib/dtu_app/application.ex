@@ -35,9 +35,38 @@ defmodule DtuApp.Application do
           # back-pressures the live-topic capture. Started after
           # PubSub for the same reason as `Telemetry`.
           {DtuApp.MqttBroker.TopicRegistry, :ok},
+          # Server-side producers for `event: "dtu_connection"` and
+          # `event: "sun_down"` notifications. These used to live in
+          # the dashboard LiveView's `handle_info/2` clauses, which
+          # meant notifications only fired while a LV process was
+          # alive (i.e. while the user had a tab open). Moving the
+          # producers into supervised GenServers lets the in-page and
+          # native-push fan-out fire even when the user has no tab
+          # open — the dashboard's LV was the only consumer, and a
+          # closed tab silently disabled both. Started after the
+          # broker / Telemetry GenServers so the broker's
+          # `:dtu_connected` / `:dtu_disconnected` broadcasts on
+          # `dtu:presence` are already flowing on the PubSub layer.
+          #
+          # Skipped in `:test` because the singleton producers use
+          # `Repo` from inside their `handle_info/2` callbacks, and
+          # the Ecto SQL Sandbox (`:manual` mode, see
+          # `test_helper.exs`) only allows the checked-out test
+          # process to use the connection. Running the producers in
+          # tests races the per-test sandbox owner: a producer
+          # callback lands after the test process exits → its
+          # connection is reclaimed → the next test's `checkout`
+          # sees the Repo as unregistered. The producer behaviour is
+          # exercised by the dedicated notifier tests under
+          # `test/dtu_app/notifications/`, which spawn their own
+          # dedicated GenServers via `start_supervised!/1` and so
+          # never touch the application tree's instance.
+          notifier_children()
+          ++
           # Start to serve requests, typically the last entry
-          DtuAppWeb.Endpoint
+          [DtuAppWeb.Endpoint]
         ]
+        |> List.flatten()
 
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
@@ -76,6 +105,16 @@ defmodule DtuApp.Application do
       ]
     else
       []
+    end
+  end
+
+  # Notification producer GenServers. Off in `:test` (see the long
+  # comment in `start/2` above for the sandbox-ownership reason).
+  defp notifier_children do
+    if Mix.env() == :test do
+      []
+    else
+      [DtuApp.Notifications.DtuConnection, DtuApp.Notifications.SunDown]
     end
   end
 end
