@@ -458,14 +458,32 @@ defmodule DtuAppWeb.DashboardLive do
   # (already converted from `selected_period` or `local_today/1`).
   # `tz_offset_seconds` shifts bucket times and labels so they read in
   # local time.
-  defp assign_line_chart_data(socket, user, local_date, tz_offset_seconds, dtu_id) do
+  defp assign_line_chart_data(
+         socket,
+         user,
+         local_date,
+         tz_offset_seconds,
+         dtu_id,
+         opts \\ []
+       ) do
     {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
     # Read from the `readings_5m` continuous aggregate (older buckets)
     # unioned with a 5-minute live tail from raw rows; collapses the
     # per-row scan that `list_day_chart_data/4` did on every refresh.
     # See `DtuApp.Devices.list_day_chart_data_for_dashboard/4`.
+    #
+    # The dashboard thread pre-fetches the chart points once at the
+    # top of `assign_dashboard_data/5`'s `:today` branch (where
+    # `get_daily_stats/4` ALSO needs `bucket_max`). Re-using that
+    # result here collapses two identical day-chart queries into one
+    # on the noon mount path. Older callers (anything still passing
+    # 5 args, including historical day/week/month branches and tests
+    # via `select_quick_range`) fall through to the old fetch path.
     all_chart_points =
-      Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id)
+      case Keyword.get(opts, :chart_points) do
+        nil -> Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id)
+        pts -> pts
+      end
 
     # The dashboard exposes one line per *inverter* (its AC aggregate,
     # mppt_index = 0). Per-MPPT DC rows are intentionally collapsed so
@@ -1484,7 +1502,29 @@ defmodule DtuAppWeb.DashboardLive do
 
     case time_range do
       "today" ->
-        stats = Devices.get_daily_stats(user, dtu_id)
+        # Fetch the day-chart points once and thread them into both
+        # `get_daily_stats/4`'s `bucket_max` (for the peak-power stat)
+        # and `assign_line_chart_data/6` (for the SVG render). Without
+        # threading each helper re-runs the exact same
+        # `list_day_chart_data_for_dashboard/4` query in series, so a
+        # noon-today mount had to eat two identical day-chart round
+        # trips back-to-back. The `today_local` is computed from the
+        # user's tz offset so the bucket boundaries line up with the
+        # rest of the dashboard's local-day window.
+        today_local = local_today(tz_offset_seconds)
+
+        {today_utc_start, today_utc_end} =
+          Devices.local_day_utc_range(today_local, tz_offset_seconds)
+
+        today_chart_points =
+          Devices.list_day_chart_data_for_dashboard(
+            user,
+            today_utc_start,
+            today_utc_end,
+            dtu_id
+          )
+
+        stats = Devices.get_daily_stats(user, dtu_id, Date.utc_today(), today_chart_points)
 
         socket
         |> assign(:stats, stats)
@@ -1493,7 +1533,13 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:net_flow_stats, net_flow_stats)
         |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
         |> assign(:chart_type, :line)
-        |> assign_line_chart_data(user, local_today(tz_offset_seconds), tz_offset_seconds, dtu_id)
+        |> assign_line_chart_data(
+          user,
+          today_local,
+          tz_offset_seconds,
+          dtu_id,
+          chart_points: today_chart_points
+        )
 
       "day" ->
         date =

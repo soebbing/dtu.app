@@ -1246,7 +1246,21 @@ defmodule DtuApp.Devices do
 
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
   def get_daily_stats(%User{} = user, dtu_id \\ nil) do
-    get_daily_stats(user, dtu_id, Date.utc_today())
+    get_daily_stats(user, dtu_id, Date.utc_today(), [])
+  end
+
+  @doc """
+  Variant of `get_daily_stats/4` that lets callers thread in a pre-fetched
+  chart-points list. The dashboard's `today` branch fetches the day-chart
+  points once (for both the SVG render and the peak-power `bucket_max`)
+  and passes them in here so we don't run the same
+  `list_day_chart_data_for_dashboard/4` query twice back-to-back on every
+  dashboard mount. Pass `[]` (or call the 2-arity) when no pre-fetch is
+  available — the helper then runs the query itself.
+  """
+  def get_daily_stats(%User{} = user, dtu_id, %Date{} = date, chart_points)
+      when is_list(chart_points) do
+    impl_get_daily_stats(user, dtu_id, date, chart_points)
   end
 
   @doc """
@@ -1284,6 +1298,11 @@ defmodule DtuApp.Devices do
   inverter goes by that name).
   """
   def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
+    impl_get_daily_stats(user, dtu_id, date, [])
+  end
+
+  defp impl_get_daily_stats(%User{} = user, dtu_id, %Date{} = date, pre_fetched_chart_points)
+       when is_list(pre_fetched_chart_points) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
@@ -1301,16 +1320,30 @@ defmodule DtuApp.Devices do
       # rows (or vice versa).
       two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
 
+      today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+      today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
+
       # Current power: only the AC aggregate row carries `ac_power`. A DTU
       # can publish many per-MPPT rows in between (and they're the most
       # recent rows for any given inverter), so we filter to mppt_index = 0
       # before picking the latest reading per inverter. Without this filter,
       # a per-MPPT row whose `ac_power` is nil would zero out the whole
       # `current_power` sum.
+      #
+      # The `inserted_at >= ^today_start` bound turns the unbounded
+      # `DISTINCT ON` into a single-chunk range scan via the `(dtu_id,
+      # inverter_serial, mppt_index, inserted_at)` primary key. The
+      # oldest-fresh-filter for `current_power` is `two_minutes_ago`;
+      # the oldest "latest reading" we need is from today. Bounding to
+      # the today chunk keeps the planner inside the active chunk even
+      # on multi-year installs where the whole-table DISTINCT ON would
+      # touch every compressed chunk.
       latest_ac_readings =
         Repo.all(
           from r in Reading,
-            where: r.dtu_id in ^dtu_ids and r.mppt_index == 0,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
             distinct: [r.dtu_id, r.inverter_serial],
             order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at]
         )
@@ -1318,11 +1351,15 @@ defmodule DtuApp.Devices do
       # Latest reading per (dtu_id, inverter_serial, mppt_index) for the
       # per-series peak computation. The chart's per-series power uses the
       # same `chart_power_for_mppt/1` selection as the rest of this module
-      # (ac_power for mppt_index = 0, dc_power for >= 1).
+      # (ac_power for mppt_index = 0, dc_power for >= 1). Same today-chunk
+      # bound as `latest_ac_readings/1` above so the DISTINCT ON walks the
+      # today chunk only.
       latest_per_series_readings =
         Repo.all(
           from r in Reading,
-            where: r.dtu_id in ^dtu_ids,
+            where:
+              r.dtu_id in ^dtu_ids and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
             distinct: [r.dtu_id, r.inverter_serial, r.mppt_index],
             order_by: [r.dtu_id, r.inverter_serial, r.mppt_index, desc: r.inserted_at]
         )
@@ -1360,8 +1397,6 @@ defmodule DtuApp.Devices do
       # persisted; the current parser never creates them (see
       # `telemetry.ex`'s `[binary_base, "total"]` ignored-topic
       # clauses).
-      today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
-      today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
 
       today_yield_per_inverter =
         Repo.all(
@@ -1390,12 +1425,30 @@ defmodule DtuApp.Devices do
       # all firmwares because `cast_ahoy_yield/1` normalises
       # AhoyDTU's kWh-published lifetime counter to Wh at the
       # parser boundary.
+      #
+      # The `inserted_at >= ^lifetime_cutoff` filter constrains the
+      # scan to a recent 30-day window — `yield_total` is monotonic
+      # per `(dtu_id, inverter_serial)` and the latest reported
+      # value within the window is by definition the largest, so
+      # `MAX(yield_total)` is unchanged for any inverter that has
+      # uplinked within the last 30 days (every active DTU). The
+      # bound collapses a full-hypertable `GROUP BY` into a single
+      # chunk's range scan via the `(dtu_id, inverter_serial,
+      # mppt_index, inserted_at)` primary key — without it, a
+      # multi-year install's `GROUP BY dtu_id, inverter_serial
+      # SELECT MAX(...)` walked every compressed chunk the DTU had
+      # ever written, which dominated the noon mount latency on
+      # long-running installs.
+      lifetime_cutoff =
+        DtuApp.Time.utc_now_usec() |> DateTime.add(-30 * 86_400, :second)
+
       total_yield_per_inverter =
         Repo.all(
           from r in Reading,
             where:
               r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
-                r.inverter_serial != "_fleet",
+                r.inverter_serial != "_fleet" and
+                r.inserted_at >= ^lifetime_cutoff,
             group_by: [r.dtu_id, r.inverter_serial],
             select: %{max_yield_total: max(r.yield_total)}
         )
@@ -1412,18 +1465,27 @@ defmodule DtuApp.Devices do
       # minutes behind the live `current_power`. Lift the peak to the
       # live reading whenever it exceeds the bucket max so the
       # displayed number reflects what the inverter is producing *now*.
-      today_utc_range_start = today_start
-      today_utc_range_end = today_end
+      #
+      # `pre_fetched_chart_points == []` is the "no pre-fetch" signal from
+      # the 2-arity wrapper (an empty list is the default for a
+      # dashboard-threaded caller that didn't run the chart yet). The
+      # dashboard thread passes a non-empty list it already rendered so
+      # we don't re-run `list_day_chart_data_for_dashboard/4`
+      # immediately after `assign_line_chart_data/5` ran the exact same
+      # query.
+      #
+      # Empty-list semantics: `[] || fetched` returns `[]` (empty lists
+      # are truthy in Elixir) and `bucket_max_from_chart_points([]) == 0.0`,
+      # which would silently collapse the headline peak power to the
+      # live `current_power`. Pattern-match instead so an empty list
+      # falls through to the fetch.
+      chart_points_for_max =
+        case pre_fetched_chart_points do
+          [] -> list_day_chart_data_for_dashboard(user, today_start, today_end, dtu_id)
+          [_ | _] = pts -> pts
+        end
 
-      bucket_max =
-        bucket_max_from_chart_points(
-          list_day_chart_data_for_dashboard(
-            user,
-            today_utc_range_start,
-            today_utc_range_end,
-            dtu_id
-          )
-        )
+      bucket_max = bucket_max_from_chart_points(chart_points_for_max)
 
       peak_power = max(current_power, bucket_max)
 
