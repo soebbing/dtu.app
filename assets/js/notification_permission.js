@@ -15,24 +15,26 @@ const NotificationPermission = {
     // capabilities…" forever — there is no other path that flips the
     // initial assign — so we MUST guarantee it lands.
     //
-    // We layer three fallbacks so the push survives every timing edge
-    // case we've seen in production:
-    //   1. **Immediate attempt** — `view.isConnected()` is normally true
-    //      by the time `mounted()` fires, so this is the common path.
-    //   2. **Next-macrotask retry** — covers the rare case where the
-    //      LiveView socket hasn't joined yet but will have by the next
-    //      tick (e.g. when the join reply arrives between `mounted()`
-    //      and `setTimeout(0)`).
-    //   3. **Polling fallback** — if both above fail, poll every 100ms
-    //      for up to 3s. This catches the slow-join case on mobile PWA
-    //      cold starts where the WS handshake takes noticeably longer
-    //      than a desktop browser. Without this, the user is stuck on
-    //      "Checking browser capabilities…" indefinitely.
+    // Strategy: start a bounded polling loop (100ms tick, 30 attempts,
+    // 3s cap). Each tick calls pushState(), which:
+    //   * **Bails** when `view.isConnected()` is false (socket not
+    //     joined yet — the next tick will try again).
+    //   * **Pushes** via LiveView's `pushEvent` and attaches a
+    //     `.then()` resolver/rejecter. The resolver tears down the
+    //     loop on server ack; the rejecter leaves it running for the
+    //     next tick. This is the critical bit — LiveView rejects
+    //     pushEvent **asynchronously** ("unable to push hook event.
+    //     LiveView not connected") so a synchronous try/catch can't
+    //     distinguish "push succeeded" from "push was lost".
+    //   * **Tracks in-flight** via `initialPushPending` so we don't
+    //     pile up overlapping pushes while waiting for the server to
+    //     ack a previous attempt.
     //
-    // `initialPushSent` is the single source of truth — once the first
-    // push lands, all later paths short-circuit and the polling loop
-    // tears itself down.
+    // `initialPushSent` is the single source of truth for "did the
+    // server ack?" — it can only be flipped by the pushEvent Promise's
+    // resolver, which proves the round-trip completed.
     this.initialPushSent = false
+    this.initialPushPending = false
     this.tryInitialPush()
     this.handleDisplayModeChange = () => this.pushState()
     this.handleClick = (e) => this.handleEnableClick(e)
@@ -55,18 +57,12 @@ const NotificationPermission = {
   // out of "Checking browser capabilities…" without a full reload.
   reconnected() {
     this.initialPushSent = false
+    this.initialPushPending = false
     this.tryInitialPush()
   },
 
   destroyed() {
-    if (this.initialPushTimer) {
-      clearTimeout(this.initialPushTimer)
-      this.initialPushTimer = null
-    }
-    if (this.initialPushInterval) {
-      clearInterval(this.initialPushInterval)
-      this.initialPushInterval = null
-    }
+    this.teardownInitialPushTimers()
     this.el.removeEventListener("click", this.handleClick)
     if (window.matchMedia) {
       const mql = window.matchMedia("(display-mode: standalone)")
@@ -79,45 +75,35 @@ const NotificationPermission = {
   },
 
   tryInitialPush() {
-    if (this.pushState()) {
-      this.initialPushSent = true
-      return
-    }
-    // View isn't ready yet. Retry on the next macrotask — by then the
-    // WS join reply has been processed and `view.isConnected()` returns
-    // true in the common case.
-    this.initialPushTimer = setTimeout(() => {
-      this.initialPushTimer = null
-      if (this.initialPushSent) return
-      if (this.pushState()) {
-        this.initialPushSent = true
+    // We can't trust pushState()'s return value as a "did the push
+    // land?" signal — LiveView's pushEvent rejects asynchronously
+    // when the socket isn't ready, and a rejected Promise returns
+    // `true` from a synchronous try/catch (the rejection lands later
+    // via the microtask queue). The previous versions of this hook
+    // used that false-positive to stop polling after a single failed
+    // attempt, leaving the page stuck on "Checking browser
+    // capabilities…" indefinitely.
+    //
+    // The fix: always start a bounded polling loop on mount. Each
+    // iteration calls pushState(), which attaches a `.then()` to the
+    // pushEvent Promise; only the **resolver** tears the loop down,
+    // which proves the server actually received the event. The
+    // rejection handler is silent — the next interval tick just
+    // tries again. Hard cap at MAX_ATTEMPTS × INTERVAL_MS so a real
+    // connection problem doesn't leave the loop running forever.
+    let attempts = 0
+    const MAX_ATTEMPTS = 30
+    const INTERVAL_MS = 100
+    this.initialPushInterval = setInterval(() => {
+      attempts++
+      if (attempts >= MAX_ATTEMPTS) {
+        this.teardownInitialPushTimers()
         return
       }
-      // Still not ready. Switch to a bounded polling loop so the push
-      // eventually lands even when the WS handshake is slow (mobile
-      // PWA cold start, iOS Safari low-power mode, etc.). Cap at 30
-      // attempts × 100ms = 3s; by then anything beyond a real
-      // connection problem and the user will need to reload anyway.
-      let attempts = 0
-      const MAX_ATTEMPTS = 30
-      this.initialPushInterval = setInterval(() => {
-        attempts++
-        if (this.initialPushSent || attempts >= MAX_ATTEMPTS) {
-          if (this.initialPushInterval) {
-            clearInterval(this.initialPushInterval)
-            this.initialPushInterval = null
-          }
-          return
-        }
-        if (this.pushState()) {
-          this.initialPushSent = true
-          if (this.initialPushInterval) {
-            clearInterval(this.initialPushInterval)
-            this.initialPushInterval = null
-          }
-        }
-      }, 100)
-    }, 0)
+      if (!this.initialPushPending) {
+        this.pushState()
+      }
+    }, INTERVAL_MS)
   },
 
   pushState() {
@@ -129,12 +115,41 @@ const NotificationPermission = {
     }
     try {
       const result = this.pushEvent("notification_state", support)
-      if (result && typeof result.catch === "function") {
-        result.catch(() => {})
+      if (result && typeof result.then === "function") {
+        // Mark a push in-flight so the polling loop doesn't pile up
+        // overlapping pushes while we wait for the server ack.
+        // `initialPushPending` is cleared in both the resolver and
+        // the rejection handler — either way the round-trip is over
+        // and we're free to try again on the next interval tick.
+        this.initialPushPending = true
+        result.then(
+          () => {
+            this.initialPushSent = true
+            this.initialPushPending = false
+            this.teardownInitialPushTimers()
+          },
+          () => {
+            // Rejection (Phoenix 1.8's "unable to push hook event.
+            // LiveView not connected"). Leave the polling loop
+            // running; the next tick will try again.
+            this.initialPushPending = false
+          },
+        )
       }
       return true
     } catch (_err) {
       return false
+    }
+  },
+
+  teardownInitialPushTimers() {
+    if (this.initialPushTimer) {
+      clearTimeout(this.initialPushTimer)
+      this.initialPushTimer = null
+    }
+    if (this.initialPushInterval) {
+      clearInterval(this.initialPushInterval)
+      this.initialPushInterval = null
     }
   },
 
