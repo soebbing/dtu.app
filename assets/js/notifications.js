@@ -14,12 +14,17 @@
 // payload; we format the title/body and dedup against localStorage.
 const Notifications = {
   mounted() {
-    this.handleNotify = (e) => this.handleNotify(e)
-    window.addEventListener("phx:notify", this.handleNotify)
+    // Store the listener under a separate property. Reassigning
+    // `this.handleNotify` to an arrow that calls itself made the
+    // arrow recursively call itself forever (every phx:notify
+    // dispatch threw "too much recursion"). Keep the destroy()
+    // contract — same identity is removed in destroyed().
+    this.boundNotify = (e) => this.handleNotify(e)
+    window.addEventListener("phx:notify", this.boundNotify)
   },
 
   destroyed() {
-    window.removeEventListener("phx:notify", this.handleNotify)
+    window.removeEventListener("phx:notify", this.boundNotify)
   },
 
   // iOS (Safari + Firefox-iOS) gates the Web Notifications API
