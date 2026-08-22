@@ -18,6 +18,8 @@ defmodule DtuAppWeb.NotificationsLive do
   alias DtuApp.Notifications
   alias DtuApp.PushSubscriptions
 
+  require Logger
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -51,6 +53,16 @@ defmodule DtuAppWeb.NotificationsLive do
     # The hook on the page sends {"state": "...", "installed": true|false}
     # once on mount and whenever the display-mode or permission state
     # changes. We store it as the assign the template renders.
+    #
+    # The debug-level log is the breadcrumb for the
+    # "stuck on 'Checking browser capabilities…'" bug: if the page is
+    # stuck, the absence of this line in the prod logs means the push
+    # never reached the server (hook didn't run, `view.isConnected()`
+    # rejected the push, or the SW served a stale bundle without the
+    # hook). Its presence tells us the round-trip landed and the
+    # problem is on the client.
+    Logger.debug("notifications: state pushed #{inspect(params)}")
+
     {:noreply, assign(socket, :notification_state, params)}
   end
 
