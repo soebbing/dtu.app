@@ -33,6 +33,7 @@ const NotificationPermission = {
     // `initialPushSent` is the single source of truth for "did the
     // server ack?" — it can only be flipped by the pushEvent Promise's
     // resolver, which proves the round-trip completed.
+    console.log("[NotificationPermission] mounted; starting push polling")
     this.initialPushSent = false
     this.initialPushPending = false
     this.tryInitialPush()
@@ -91,12 +92,14 @@ const NotificationPermission = {
     // rejection handler is silent — the next interval tick just
     // tries again. Hard cap at MAX_ATTEMPTS × INTERVAL_MS so a real
     // connection problem doesn't leave the loop running forever.
+    console.log("[NotificationPermission] tryInitialPush: starting polling loop")
     let attempts = 0
     const MAX_ATTEMPTS = 30
     const INTERVAL_MS = 100
     this.initialPushInterval = setInterval(() => {
       attempts++
       if (attempts >= MAX_ATTEMPTS) {
+        console.log("[NotificationPermission] polling exhausted (30 × 100ms)")
         this.teardownInitialPushTimers()
         return
       }
@@ -111,10 +114,23 @@ const NotificationPermission = {
     const support = this.computeSupport(installed)
     const view = this.view
     if (!view || typeof view.isConnected !== "function" || !view.isConnected()) {
+      console.log(
+        "[NotificationPermission] pushState skipped: view.isConnected()=" +
+          (view && typeof view.isConnected === "function"
+            ? String(view.isConnected())
+            : "n/a") +
+          "; attempt will retry on next tick",
+      )
       return false
     }
     try {
       const result = this.pushEvent("notification_state", support)
+      console.log(
+        "[NotificationPermission] pushEvent sent; support=" +
+          JSON.stringify(support) +
+          " result-type=" +
+          (result && typeof result.then === "function" ? "Promise" : typeof result),
+      )
       if (result && typeof result.then === "function") {
         // Mark a push in-flight so the polling loop doesn't pile up
         // overlapping pushes while we wait for the server ack.
@@ -123,12 +139,17 @@ const NotificationPermission = {
         // and we're free to try again on the next interval tick.
         this.initialPushPending = true
         result.then(
-          () => {
+          (resp) => {
+            console.log("[NotificationPermission] pushEvent resolved:", resp)
             this.initialPushSent = true
             this.initialPushPending = false
             this.teardownInitialPushTimers()
           },
-          () => {
+          (err) => {
+            console.log(
+              "[NotificationPermission] pushEvent rejected:",
+              err && err.message,
+            )
             // Rejection (Phoenix 1.8's "unable to push hook event.
             // LiveView not connected"). Leave the polling loop
             // running; the next tick will try again.
@@ -138,6 +159,7 @@ const NotificationPermission = {
       }
       return true
     } catch (_err) {
+      console.log("[NotificationPermission] pushEvent threw synchronously:", _err)
       return false
     }
   },
