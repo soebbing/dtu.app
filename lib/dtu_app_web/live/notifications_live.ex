@@ -168,7 +168,7 @@ defmodule DtuAppWeb.NotificationsLive do
           </h1>
           <p class="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
             {gettext(
-              "Receive alerts in your browser when your inverters change state or the day's production wraps up. Notifications only fire when this site is installed as a PWA."
+              "Receive alerts in your browser when your inverters change state or the day's production wraps up. Desktop Chrome/Firefox/Edge and Android Chrome deliver notifications in a normal tab; iOS Safari requires this site to be installed as a home-screen PWA."
             )}
           </p>
         </div>

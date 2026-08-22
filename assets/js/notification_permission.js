@@ -113,8 +113,7 @@ const NotificationPermission = {
   },
 
   pushState() {
-    const installed = this.isInstalledAsPWA()
-    const support = this.computeSupport(installed)
+    const support = this.computeSupport()
     // No `this.view.isConnected()` pre-check — `this.view` is not a
     // property on Phoenix LiveView hooks. The public surface is
     // `this.pushEvent(...)`, which calls `__view().pushHookEvent(...)`
@@ -174,25 +173,51 @@ const NotificationPermission = {
     }
   },
 
-  computeSupport(installed) {
+  computeSupport() {
+    // The PWA-install gate is iOS-only. iOS Safari (and Firefox-iOS)
+    // refuse to expose `Notification.requestPermission` until the
+    // site is added to the home screen and reopened from there — in
+    // a regular Safari tab the API is *defined* but
+    // `new Notification()` silently no-ops, which would look like
+    // the OS-bug. For everyone else (desktop Chrome/Firefox/Edge,
+    // Android Chrome) the API works fine in a regular tab, and
+    // refusing to show the Enable CTA there is paternalistic.
+    //
+    // Conflating "not installed as PWA" with "can't grant
+    // permission" used to send desktop users to the `not_installed`
+    // branch where the Enable button is hidden — they could only
+    // grant by installing first, which many users don't want to (or
+    // can't, e.g. Chrome on Linux without Chromium Web Store
+    // install support). Now only iOS triggers `not_installed`.
     if (typeof window === "undefined" || !("Notification" in window)) {
-      return {state: "unsupported", installed: installed}
+      return {state: "unsupported"}
     }
 
-    if (!installed) {
-      return {state: "not_installed", installed: false}
+    if (this.isIOS() && !this.isInstalledAsPWA()) {
+      return {state: "not_installed"}
     }
 
     const permission = window.Notification.permission
     if (permission === "denied") {
-      return {state: "denied", installed: true}
+      return {state: "denied"}
     }
 
     if (permission === "granted") {
-      return {state: "granted", installed: true}
+      return {state: "granted"}
     }
 
-    return {state: "default", installed: true}
+    return {state: "default"}
+  },
+
+  isIOS() {
+    // Same UA check used by `assets/js/notifications.js`. iOS Safari
+    // up through mid-2025 hides the Web Notification API behind
+    // home-screen-installed PWA. iPad in desktop-class mode shows up
+    // as MacIntel + touch points; that branch is included so an iPad
+    // with a Magic Keyboard doesn't slip through.
+    if (typeof navigator === "undefined") return false
+    return /iPad|iPhone|iPod/.test(navigator.userAgent || "") ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
   },
 
   isInstalledAsPWA() {
