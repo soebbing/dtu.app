@@ -8,7 +8,16 @@
 
 const NotificationPermission = {
   mounted() {
-    this.pushState()
+    // The first push advances the server's `@notification_state` from
+    // `%{"state" => "loading"}` to one of the renderable branches
+    // (`granted` / `denied` / `default` / `unsupported` / `not_installed`).
+    // If this push is lost, the page is stuck on "Checking browser
+    // capabilities…" forever — there is no other path that flips the
+    // initial assign — so we MUST guarantee it lands. Track the first
+    // push with a flag, attempt it immediately, and retry once on the
+    // next macrotask if the LiveView's WebSocket hasn't joined yet.
+    this.initialPushSent = false
+    this.pushInitialState()
     this.handleDisplayModeChange = () => this.pushState()
     this.handleClick = (e) => this.handleEnableClick(e)
     this.el.addEventListener("click", this.handleClick)
@@ -25,6 +34,10 @@ const NotificationPermission = {
   },
 
   destroyed() {
+    if (this.initialPushTimer) {
+      clearTimeout(this.initialPushTimer)
+      this.initialPushTimer = null
+    }
     this.el.removeEventListener("click", this.handleClick)
     if (window.matchMedia) {
       const mql = window.matchMedia("(display-mode: standalone)")
@@ -36,27 +49,43 @@ const NotificationPermission = {
     }
   },
 
+  pushInitialState() {
+    if (this.pushState()) {
+      this.initialPushSent = true
+      return
+    }
+    // View isn't ready yet. Retry on the next macrotask — by then the
+    // WS join reply has been processed and `view.isConnected()` returns
+    // true. One retry is enough: subsequent display-mode changes and
+    // permission flips go through `pushState()` directly.
+    this.initialPushTimer = setTimeout(() => {
+      this.initialPushTimer = null
+      if (this.initialPushSent) return
+      if (this.pushState()) {
+        this.initialPushSent = true
+      }
+      // If the retry also fails, give up silently — the page will
+      // remain on the "Checking browser capabilities…" branch and the
+      // user can still interact with the form (preferences are saved
+      // independently of notification capability).
+    }, 0)
+  },
+
   pushState() {
     const installed = this.isInstalledAsPWA()
     const support = this.computeSupport(installed)
-    // The hook only mounts on `/notifications` (a LiveView route) so
-    // `pushEvent` is normally safe to call directly. We still guard
-    // on `view.isConnected()` to avoid the Phoenix 1.8
-    // `unable to push hook event. LiveView not connected` rejection
-    // if the user navigates away from the page mid-mount (the SSR →
-    // LiveView transition is async and the hook can briefly outlive
-    // the connect handshake).
     const view = this.view
     if (!view || typeof view.isConnected !== "function" || !view.isConnected()) {
-      return
+      return false
     }
     try {
       const result = this.pushEvent("notification_state", support)
       if (result && typeof result.catch === "function") {
         result.catch(() => {})
       }
+      return true
     } catch (_err) {
-      // The dashboard's handler is no-op, so a missed push is harmless.
+      return false
     }
   },
 
