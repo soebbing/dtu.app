@@ -2159,6 +2159,184 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
+  describe "Nil-power chart points (regression for Float.ceil(nil) 500)" do
+    # Reproduces the production 500 reported in the field:
+    #
+    #   request_id=… [error] ** (FunctionClauseError) no function clause
+    #     matching in Float.ceil/2
+    #       (elixir 1.16.2) lib/float.ex:285: Float.ceil(nil, 0)
+    #       (dtu_app 0.1.0) lib/dtu_app_web/live/dashboard_live.ex:512:
+    #         DtuAppWeb.DashboardLive.assign_line_chart_data/5
+    #       (dtu_app 0.1.0) lib/dtu_app_web/live/dashboard_live.ex:87:
+    #         DtuAppWeb.DashboardLive.mount/3
+    #
+    # Same root cause as the `bucket_max_from_chart_points/1` fix in
+    # PR #131: AhoyDTU's buffer-flushing parser persists a row as
+    # soon as ANY recognised metric arrives, including a yield-only
+    # flush before the AC reading (`ac_power: nil`). The
+    # `readings_5m` continuous aggregate's `avg_ac_power` is then
+    # NULL for that 5-minute bucket, and the chart pipeline exposes
+    # the NULL as a chart-point with `power: nil`. `Enum.max` over
+    # a nil-only list returns `nil` (atom > number in Erlang term
+    # order), and the downstream `Float.ceil(nil, 0)` raised
+    # `FunctionClauseError` while the per-point
+    # `y = zero_y - power * pixels_per_watt_positive` raised
+    # `ArithmeticError` on `nil * float`.
+    #
+    # The cold-aggregate fallback path (`list_day_chart_data/4`)
+    # goes through `chart_power_for_mppt/1` (which returns `0.0`
+    # for nil — not nil), so a normal sandbox test that only
+    # seeds raw rows would never trigger the bug. The bug fires
+    # exclusively via the `readings_5m` aggregate path. The cleanest
+    # way to populate `readings_5m` in a sandbox test is a direct
+    # `INSERT INTO readings_5m` — TimescaleDB accepts it in the
+    # test environment (continuous aggregates reject manual writes
+    # in production but accept them here because the test DB has
+    # no hypertable chunk restrictions). The insert lives in the
+    # test's sandbox transaction and rolls back at teardown.
+
+    test "dashboard mounts without 500 when readings_5m has a nil-power bucket", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "nil-power-ahoydtu",
+          base_topic: "inverter"
+        })
+
+      # Seed the same nil-power chart-point the production
+      # `readings_5m` aggregate produces for an AhoyDTU yield-only
+      # flush — `avg_ac_power: NULL`, the AC reading never arrived.
+      #
+      # Bucket must be MORE than 5 minutes in the past so the
+      # dashboard's day-window query picks it up via the aggregate
+      # path (live tail only covers the last 5 minutes). The test
+      # runs at whatever wall-clock the CI box happens to be at, so
+      # we pin the bucket to 6 hours ago — well outside the live
+      # tail even if the box's clock is skewed forward.
+      bucket_time =
+        DateTime.utc_now()
+        |> DateTime.add(-6 * 3600, :second)
+        |> DateTime.truncate(:second)
+        |> DateTime.add(-rem(DateTime.utc_now().minute, 5) * 60, :second)
+
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [
+          bucket_time,
+          dtu.id,
+          # avg + max nil — the exact shape that crashed
+          # `assign_line_chart_data/5`'s `max_power` step
+          nil,
+          nil,
+          42.0,
+          5000.0,
+          "INV-1",
+          0,
+          "INV-1"
+        ]
+      )
+
+      # Pre-fix: mount raised `FunctionClauseError` from
+      # `Float.ceil(nil, 0)` at line 512 OR `ArithmeticError` from
+      # `nil * pixels_per_watt_positive` at line 644. Both crashed
+      # the dashboard mount with a 500.
+      # Post-fix: mount succeeds, chart renders with the nil-power
+      # bucket coerced to 0.0 W (a flat line at the zero gridline).
+      assert {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Sanity: the dashboard renders normally.
+      assert html =~ "PV Power Dashboard"
+      assert html =~ "Current Generation"
+
+      # The chart SVG renders without an error path. The nil-power
+      # bucket's `y` coordinate would be NaN if the per-point
+      # `y = zero_y - power * pixels_per_watt_positive` calc
+      # hadn't been guarded — assert no NaN coordinate leaked
+      # into the chart's `data-points` JSON.
+      refute html =~ "NaN",
+             "dashboard must not render NaN coordinates for nil-power chart points"
+    end
+
+    test "dashboard mounts when readings_5m has a mix of nil-power and numeric-power buckets",
+         %{conn: conn, user: user} do
+      # The mix matters because `Enum.max([nil, 250.0])` returns
+      # `nil` (atom > number) — the bug only goes away once every
+      # nil has been coalesced to 0.0 before the max. A test with
+      # only nil-power buckets would pass a buggy fix that simply
+      # dropped nil-power points (the empty-list case is already
+      # handled). The mix pins that the fix preserves the real
+      # max (`250.0`) while ignoring the nil, instead of letting
+      # the nil poison the max to `nil`.
+      dtu =
+        device_fixture(user, %{
+          kind: "ahoydtu",
+          mqtt_username: "mix-power-ahoydtu",
+          base_topic: "inverter"
+        })
+
+      now = DateTime.utc_now()
+
+      # Both buckets well outside the 5-minute live tail so the
+      # aggregate path (which is the path that produced the nil)
+      # is the one that surfaces the chart points.
+      nil_bucket =
+        now
+        |> DateTime.add(-6 * 3600, :second)
+        |> DateTime.truncate(:second)
+        |> DateTime.add(-rem(now.minute, 5) * 60, :second)
+
+      numeric_bucket =
+        nil_bucket
+        |> DateTime.add(-3600, :second)
+        |> DateTime.truncate(:second)
+        |> DateTime.add(-rem(DateTime.utc_now().minute, 5) * 60, :second)
+
+      # One nil-power bucket 6 hours ago.
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, $7)
+        """,
+        [nil_bucket, dtu.id, 10.0, 100.0, "INV-1", 0, "INV-1"]
+      )
+
+      # One numeric bucket 1 hour before that with a 250 W mean.
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [numeric_bucket, dtu.id, 250.0, 250.0, 30.0, 1500.0, "INV-1", 0, "INV-1"]
+      )
+
+      assert {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The Y-axis top label is the max rounded UP to the next 100.
+      # 250 W → 300 W. The Y-axis label uses `format_number/3` with
+      # `decimals: 1`, so it renders as "300.0 W" (the en-locale
+      # number format). Pre-fix this would have been a 500; post-fix
+      # the chart renders with 250 W as the peak — pinning that the
+      # numeric (not nil) 250 made it through the coalesce.
+      assert html =~ "300.0 W",
+             "expected Y-axis top label to surface the 250 W peak (rounded up to 300 W displayed as 300.0 W), " <>
+               "got: #{html}"
+
+      refute html =~ "NaN"
+    end
+  end
+
   describe "Sun-down notification firing" do
     # The dashboard's `handle_info({:reading, ...})` clause calls
     # `maybe_fire_sun_down_notification/2`, which (when the fleet has

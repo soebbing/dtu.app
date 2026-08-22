@@ -485,9 +485,23 @@ defmodule DtuAppWeb.DashboardLive do
     # at the data layer in `get_daily_stats/3` and `Devices.list_*` for
     # the same reason.
     chart_points =
-      Enum.filter(all_chart_points, fn pt ->
+      all_chart_points
+      |> Enum.filter(fn pt ->
         pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
       end)
+      # `readings_5m.avg_ac_power` is NULL for buckets whose only rows
+      # had `ac_power: nil` (e.g. an AhoyDTU yield-only buffer flush
+      # before the AC reading arrived — the same root cause as the
+      # `bucket_max_from_chart_points/1` fix in PR #131). The aggregate
+      # path exposes that NULL as a chart-point with `power: nil`.
+      # Coalesce to `0.0` here, once, so every downstream consumer
+      # (`Enum.max` over powers, `Enum.sum` per bucket, the per-point
+      # `y = zero_y - power * pixels_per_watt_positive` calc) sees
+      # numeric values only. Without the coalesce, `Float.ceil(nil, 0)`
+      # at the `max_power` step raises `FunctionClauseError` and
+      # `nil * pixels_per_watt_positive` at the per-point step raises
+      # `ArithmeticError` — both crash the dashboard mount with a 500.
+      |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
 
     # Pull the consumption series upfront so `y_max` below can include
     # its peak — otherwise a heavy-load evening (Shelly reporting e.g.
