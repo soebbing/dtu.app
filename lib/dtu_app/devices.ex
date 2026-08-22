@@ -357,20 +357,24 @@ defmodule DtuApp.Devices do
     try do
       # Per-row update gated on `not is_nil(d.last_error)` so devices
       # that have never errored don't generate write traffic on every
-      # uplink. `update_all` returns `{0, nil}` when nothing matched —
-      # we don't broadcast `:dtu_error` in that case (a healthy device's
-      # state didn't change, so no LiveView needs to re-stream).
-      {1, _} =
+      # uplink. `update_all` returns `{0, nil}` when nothing matched
+      # (a healthy device's `last_error` is already `nil`) — we
+      # capture the count and only broadcast `:dtu_error` when at
+      # least one row actually changed, so LiveViews don't re-stream
+      # on every healthy uplink.
+      {updated_count, _} =
         Repo.update_all(
           from(d in Dtu, where: d.id == ^dtu_id and not is_nil(d.last_error)),
           set: [last_error: nil, last_error_at: nil]
         )
 
-      Phoenix.PubSub.broadcast(
-        DtuApp.PubSub,
-        DtuApp.MqttBroker.Telemetry.status_topic(),
-        {:dtu_error, dtu_id}
-      )
+      if updated_count > 0 do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          DtuApp.MqttBroker.Telemetry.status_topic(),
+          {:dtu_error, dtu_id}
+        )
+      end
 
       :ok
     rescue
@@ -1412,24 +1416,14 @@ defmodule DtuApp.Devices do
       today_utc_range_end = today_end
 
       bucket_max =
-        case list_day_chart_data_for_dashboard(
-               user,
-               today_utc_range_start,
-               today_utc_range_end,
-               dtu_id
-             ) do
-          [] ->
-            0.0
-
-          points ->
-            # Drop non-`mppt_index = 0` rows (same as the dashboard's
-            # `Enum.filter` so the peak matches what the user sees on
-            # the chart).
-            points
-            |> Enum.filter(fn pt -> elem(pt.series, 2) == 0 end)
-            |> Enum.map(& &1.power)
-            |> Enum.max(fn -> 0.0 end)
-        end
+        bucket_max_from_chart_points(
+          list_day_chart_data_for_dashboard(
+            user,
+            today_utc_range_start,
+            today_utc_range_end,
+            dtu_id
+          )
+        )
 
       peak_power = max(current_power, bucket_max)
 
@@ -2385,6 +2379,48 @@ defmodule DtuApp.Devices do
   def chart_power_for_mppt(%{mppt_index: 0, ac_power: ac}) when not is_nil(ac), do: ac
   def chart_power_for_mppt(%{mppt_index: _, dc_power: dc}) when not is_nil(dc), do: dc
   def chart_power_for_mppt(_), do: 0.0
+
+  @doc """
+  Day-peak from a `list_day_chart_data_for_dashboard/4` result.
+
+  Filters down to `mppt_index = 0` (the AC aggregate the firmware emits
+  via `realtime/data` / AhoyDTU ch0) and returns the max `:power` so the
+  dashboard's `peak_power` matches what the user sees on the chart. Non-
+  AC-aggregate points are dropped so per-MPPT row averages don't compete
+  with the AC peak.
+
+  Returns `0.0` for an empty chart-point list (no readings today) so
+  `peak_power = max(current_power, bucket_max)` always has a numeric
+  base.
+
+  ## Why this is a separate helper
+
+  `avg_ac_power` in the `readings_5m` continuous aggregate is NULL
+  whenever a 5-minute bucket contains only rows whose `ac_power` was
+  nil — e.g. an AhoyDTU yield-only buffer flush that landed before the
+  AC reading arrived. The chart pipeline exposes that NULL as a
+  chart-point with `power: nil`. `Enum.max([nil, …])` poisons to `nil`
+  in Erlang term order (`atom > number`), so the downstream
+  `peak_power * 1.0` raises `ArithmeticError`. Coalescing each
+  `nil` to `0.0` before `Enum.max` keeps the max numeric.
+
+  Extracted as a public helper so the nil-coalesce has a direct
+  regression test — going through the full `readings_5m` aggregate
+  refresh from a unit test would need a separate Postgres connection
+  (CALL refresh_continuous_aggregate can't run inside the sandbox's
+  per-test transaction), and the raw-row fallback
+  (`list_day_chart_data/4`) never produces nil powers, so neither
+  end-to-end path exercises the nil-only bucket case from a test.
+  """
+  @spec bucket_max_from_chart_points([chart_point()]) :: float()
+  def bucket_max_from_chart_points([]), do: 0.0
+
+  def bucket_max_from_chart_points(points) do
+    points
+    |> Enum.filter(fn pt -> elem(pt.series, 2) == 0 end)
+    |> Enum.map(fn pt -> pt.power || 0.0 end)
+    |> Enum.max(fn -> 0.0 end)
+  end
 
   # Resolve the user's DTU ids for a query, scoped to either all of the user's
   # devices or one specific (owned) device. Returns [] if the device isn't owned.
