@@ -2,8 +2,112 @@ defmodule DtuAppWeb.NotificationsLiveTest do
   use DtuAppWeb.ConnCase, async: false
 
   import DtuApp.AccountsFixtures
+  import Phoenix.LiveViewTest
 
   alias DtuApp.Notifications
+
+  describe "Mount and notification_state round-trip" do
+    # The page renders one of six branches based on
+    # `Map.get(@notification_state, "state")`. Initial mount is
+    # `%{"state" => "loading"}` which falls through to the
+    # `<% _ -> %>` clause and shows "Checking browser capabilities…".
+    # The JS hook on `#notifications-permission` then sends a
+    # `notification_state` event with the browser's view, which
+    # transitions the assign and renders the right CTA. If the hook's
+    # push is lost, the page is stuck on the loading branch forever
+    # and the "Send test notification" button never appears (it's
+    # gated on `notification_state == "granted"`).
+    #
+    # The tests below exercise the server side of that round-trip so
+    # a future regression on the LiveView handler is caught even if
+    # the JS hook changes shape.
+
+    setup :register_and_log_in_user
+
+    test "mount renders the loading branch before the JS hook pushes state", %{
+      conn: conn
+    } do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      assert html =~ "Checking browser capabilities"
+      # The test-notification card is gated on `"granted"`, so it
+      # must NOT be in the initial render.
+      refute html =~ "Send test notification"
+    end
+
+    test "notification_state granted transitions the assign and reveals the test button", %{
+      conn: conn
+    } do
+      {:ok, view, html} = live(conn, ~p"/notifications")
+      assert html =~ "Checking browser capabilities"
+
+      render_hook(view, "notification_state", %{state: "granted", installed: true})
+
+      assert render(view) =~ "Notifications are enabled"
+      # Once permission is granted, the "Send test notification" card
+      # appears. Without this branch the user can never verify their
+      # setup end-to-end.
+      assert render(view) =~ "Send test notification"
+    end
+
+    test "notification_state default shows the enable CTA but no test button", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{state: "default", installed: true})
+
+      assert render(view) =~ "Notifications are available, but not yet enabled"
+      assert render(view) =~ "Enable notifications"
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "notification_state denied shows the blocked-OS-settings CTA", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{state: "denied", installed: true})
+
+      assert render(view) =~ "Notifications are blocked in your browser settings"
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "notification_state not_installed shows the install-PWA CTA", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{state: "not_installed", installed: false})
+
+      assert render(view) =~ "Install this site as a PWA first"
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "notification_state unsupported shows the install-PWA CTA even on browsers without the Notification API",
+         %{
+           conn: conn
+         } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{state: "unsupported", installed: true})
+
+      assert render(view) =~ "Browsers must be installed as a PWA"
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "push_subscribed flips has_push_subscriptions so the native-push badge renders", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{state: "granted", installed: true})
+      refute render(view) =~ "Native push is on for this device"
+
+      render_hook(view, "push_subscribed", %{endpoint: "https://example.test/push/abc"})
+      assert render(view) =~ "Native push is on for this device"
+    end
+  end
 
   describe "Test notification button" do
     # The /notifications page lets the user fire a synthetic notification
