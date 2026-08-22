@@ -57,10 +57,10 @@ defmodule DtuAppWeb.NotificationsLive do
     # The debug-level log is the breadcrumb for the
     # "stuck on 'Checking browser capabilities…'" bug: if the page is
     # stuck, the absence of this line in the prod logs means the push
-    # never reached the server (hook didn't run, the pushEvent Promise
-    # was rejected before the channel joined, or the SW served a stale
-    # bundle without the hook). Its presence tells us the round-trip
-    # landed and the problem is on the client.
+    # never reached the server (hook didn't run, `view.isConnected()`
+    # rejected the push, or the SW served a stale bundle without the
+    # hook). Its presence tells us the round-trip landed and the
+    # problem is on the client.
     Logger.debug("notifications: state pushed #{inspect(params)}")
 
     {:noreply, assign(socket, :notification_state, params)}
