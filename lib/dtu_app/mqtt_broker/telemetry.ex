@@ -997,7 +997,19 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # both single-segment prefixes (`shellies`) and multi-segment prefixes
       # (`shellies/shellyplus3em`) by matching either the full prefix as one
       # segment or as two concatenated segments joined by a "/".
-      [binary_base, "status", "em:0"] when binary_base == base_topic ->
+      #
+      # Both `em:0` and `emdata:0` are accepted as valid suffixes — the
+      # latter is published by some Shelly Plus 3EM firmware versions
+      # alongside the more common `em:0`. The two suffixes carry the
+      # same payload shape (a JSON object with the per-phase /
+      # total_act_power fields below), so a single `shelly_json_to_pairs/1`
+      # consumer is reused. Without the `emdata:0` clause, an
+      # otherwise-correctly-prefixed uplink falls through to
+      # `{:ignored, :unknown_topic}` and surfaces a misleading
+      # "Shelly prefix mismatch" warning to the user — the prefix IS
+      # correct, only the suffix doesn't match.
+      [binary_base, "status", suffix]
+      when binary_base == base_topic and suffix in ["em:0", "emdata:0"] ->
         case Jason.decode(payload) do
           {:ok, json} when is_map(json) ->
             {:reading, shelly_json_to_pairs(json)}
@@ -1006,7 +1018,8 @@ defmodule DtuApp.MqttBroker.Telemetry do
             {:ignored, :bad_json}
         end
 
-      [b1, b2, "status", "em:0"] when b1 <> "/" <> b2 == base_topic ->
+      [b1, b2, "status", suffix]
+      when b1 <> "/" <> b2 == base_topic and suffix in ["em:0", "emdata:0"] ->
         case Jason.decode(payload) do
           {:ok, json} when is_map(json) ->
             {:reading, shelly_json_to_pairs(json)}

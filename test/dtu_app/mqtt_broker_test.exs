@@ -1133,6 +1133,91 @@ defmodule DtuApp.MqttBrokerTest do
       assert Devices.list_recent_readings(user, dtu.id) == []
     end
 
+    test "accepts status/emdata:0 topic variant (some Shelly Plus 3EM firmware)",
+         %{user: user} do
+      # Regression: some Shelly Plus 3EM firmware versions publish the
+      # EM component's status JSON on `status/emdata:0` in addition to
+      # (or instead of) the more common `status/em:0`. Both suffixes
+      # carry the same payload shape — a JSON object with the per-phase
+      # / total_act_power fields the parser consumes — so the parser
+      # accepts both.
+      #
+      # Pre-fix, the parser only matched the literal `"em:0"` suffix.
+      # An uplink on `status/emdata:0` fell through to the
+      # `:unknown_topic` clause and surfaced a misleading
+      # `[Telemetry] Shelly uplink on topic "shellies/shellyplus3em/status/emdata:0"
+      #  did not match the device's base_topic "shellies/shellyplus3em"`
+      # warning to the operator — the prefix IS correct, only the
+      # suffix doesn't match. The user reported it as a confusing
+      # "device shows online but no values" symptom, same shape as a
+      # genuine prefix mismatch.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-emdata",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      payload =
+        Jason.encode!(%{
+          "id" => 0,
+          "a_current" => 4.029,
+          "a_voltage" => 236.1,
+          "a_act_power" => 951.2,
+          "b_current" => 4.027,
+          "b_voltage" => 236.201,
+          "b_act_power" => -951.1,
+          "c_current" => 3.03,
+          "c_voltage" => 236.402,
+          "c_act_power" => 715.4,
+          "n_current" => 11.029,
+          "total_current" => 11.083,
+          "total_act_power" => 715.5
+        })
+
+      # The regression trigger: same prefix, different suffix that
+      # pre-fix code rejected as :unknown_topic.
+      topic = "shellies/shellyplus3em/status/emdata:0"
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:noreply, _} =
+            Telemetry.handle_info({:uplink, "client_shelly", device_info, topic, payload}, %{
+              buffers: %{}
+            })
+        end)
+
+      # The misleading "did not match" / "base_topic" / "MQTT prefix"
+      # warning must NOT fire — the prefix IS correct, only the
+      # suffix differs from the older `em:0`.
+      refute log =~ "did not match",
+             "emdata:0 uplink must not log a prefix-mismatch warning " <>
+               "(prefix IS correct, only the suffix differs from em:0)"
+
+      refute log =~ "MQTT prefix"
+
+      # The reading must be persisted — same shape as the `em:0`
+      # uplink tests above. ("em:0" is hard-coded as the inverter
+      # serial in `handle_shelly/5` for every consumption reading —
+      # the topic suffix distinguishes the firmware variant on the
+      # wire but doesn't reach the persisted row.)
+      [reading] = Devices.list_recent_readings(user, dtu.id)
+      assert reading.power_type == "consumption"
+      assert reading.inverter_serial == "em:0"
+      assert reading.mppt_index == 0
+      assert reading.consumption_power == 715.5
+    end
+
     test "/online retained LWT does not write a row but still touches last_seen_at",
          %{user: user} do
       # Documents the LWT semantics: the broker still records the

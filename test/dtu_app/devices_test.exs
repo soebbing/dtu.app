@@ -422,6 +422,76 @@ defmodule DtuApp.DevicesTest do
                       0.1,
                       "peak_power should be the day's high, not the live low"
     end
+
+    test "does not raise ArithmeticError when a 5-min bucket contains only nil-power rows (regression)" do
+      # Reproduces the production crash reported in the field:
+      #
+      #   request_id=… [error] ** (ArithmeticError) bad argument in arithmetic expression
+      #       (dtu_app 0.1.0) lib/dtu_app/devices.ex:1495: DtuApp.Devices.get_daily_stats/3
+      #
+      # AhoyDTU's buffer-flushing parser persists a row as soon as ANY
+      # recognised metric arrives — including a yield-only flush before
+      # the AC reading. The `readings_5m` continuous aggregate's
+      # `avg_ac_power` is NULL when the only rows in a 5-minute bucket
+      # have nil `ac_power` (the `avg()` of an all-NULL set is NULL).
+      #
+      # Pre-fix, `bucket_max` ran `Enum.max` over a list of chart-point
+      # powers that contained only `nil`, which returned `nil` (Erlang
+      # term order: atom > number). The downstream `peak_power * 1.0`
+      # then raised `ArithmeticError` on `nil * 1.0` and every
+      # dashboard mount 500'd until the bucket rolled forward.
+      #
+      # Unit-test the helper directly. Going through the full
+      # `readings_5m` aggregate refresh from a unit test would need a
+      # separate Postgres connection (`CALL refresh_continuous_aggregate`
+      # can't run inside the sandbox's per-test transaction), and the
+      # raw-row fallback (`list_day_chart_data/4`) never produces nil
+      # powers (it uses `chart_power_for_mppt/1`, which returns `0.0`
+      # for nil — not `nil`). Neither end-to-end path can exercise the
+      # nil-only bucket case from a test, so the regression is pinned
+      # at the helper boundary instead.
+      dt = DateTime.utc_now()
+      dtu_id = 1
+
+      # A single bucket whose power is nil — exactly the shape the
+      # `readings_5m` aggregate produces for an all-nil-ac bucket.
+      chart_points = [
+        %{
+          time: dt,
+          series: {dtu_id, "INV-A", 0, "INV-A"},
+          power: nil
+        }
+      ]
+
+      # Pre-fix: this raised `Enum.max/1` returning `nil`, then
+      # `peak_power * 1.0` crashed the caller. Post-fix: it returns
+      # `0.0` (nil coerced to `0.0`).
+      assert Devices.bucket_max_from_chart_points(chart_points) == 0.0
+
+      # Empty list — the no-readings case.
+      assert Devices.bucket_max_from_chart_points([]) == 0.0
+
+      # Mixed nil + numeric — only the numeric values drive the max,
+      # but no nil is allowed to leak.
+      mixed_points = [
+        %{time: dt, series: {dtu_id, "INV-A", 0, "INV-A"}, power: nil},
+        %{time: dt, series: {dtu_id, "INV-A", 0, "INV-A"}, power: 250.0},
+        %{time: dt, series: {dtu_id, "INV-A", 0, "INV-A"}, power: nil}
+      ]
+
+      assert Devices.bucket_max_from_chart_points(mixed_points) == 250.0
+
+      # Per-MPPT points (mppt_index >= 1) must be dropped, even when
+      # they have nil power — the dashboard only plots the AC
+      # aggregate as `peak_power`. A non-AC-aggregate nil would still
+      # poison the max without this filter.
+      per_mppt_only = [
+        %{time: dt, series: {dtu_id, "INV-A", 1, "INV-A"}, power: nil},
+        %{time: dt, series: {dtu_id, "INV-A", 2, "INV-A"}, power: nil}
+      ]
+
+      assert Devices.bucket_max_from_chart_points(per_mppt_only) == 0.0
+    end
   end
 
   describe "get_daily_stats/2 — per_series breakdown" do
@@ -1322,7 +1392,31 @@ defmodule DtuApp.DevicesTest do
 
       Phoenix.PubSub.subscribe(DtuApp.PubSub, DtuApp.MqttBroker.Telemetry.status_topic())
 
-      :ok = DtuApp.Devices.clear_stale_dtu_error(device_id)
+      # Capture logs at warn level so the MatchError-regression test
+      # below can pin the absence of the warning this old code path
+      # produced on every healthy uplink.
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          :ok = DtuApp.Devices.clear_stale_dtu_error(device_id)
+        end)
+
+      # Regression: pre-fix, this branch raised
+      #   MatchError{term: {0, nil}}
+      # because `Repo.update_all` returns `{0, nil}` when no row
+      # matched the `not is_nil(d.last_error)` guard, but the old
+      # code did `{1, _} = ...`. The rescue clause caught the
+      # exception and logged a `[Devices] clear_stale_dtu_error(N)
+      # failed: %MatchError{...}` warning on every healthy uplink —
+      # flooding the log when a DTU first connected (the parser
+      # clears stale errors as part of every uplink handler). The
+      # helper now captures the count and only broadcasts on a real
+      # update, so the warning must not appear.
+      refute log =~ "MatchError",
+             "clear_stale_dtu_error must not raise MatchError when no row matched " <>
+               "(the rescue warning was the user-visible regression)"
+
+      refute log =~ "clear_stale_dtu_error(#{device_id}) failed",
+             "clear_stale_dtu_error must not log a failure warning on a healthy device"
 
       # No broadcast fires on a no-op — the device's last_error was
       # already nil, so no LiveView needs to re-stream. We assert
