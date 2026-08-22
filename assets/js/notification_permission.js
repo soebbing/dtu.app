@@ -16,23 +16,27 @@ const NotificationPermission = {
     // initial assign — so we MUST guarantee it lands.
     //
     // Strategy: start a bounded polling loop (100ms tick, 30 attempts,
-    // 3s cap). Each tick calls pushState(), which:
-    //   * **Bails** when `view.isConnected()` is false (socket not
-    //     joined yet — the next tick will try again).
-    //   * **Pushes** via LiveView's `pushEvent` and attaches a
-    //     `.then()` resolver/rejecter. The resolver tears down the
-    //     loop on server ack; the rejecter leaves it running for the
-    //     next tick. This is the critical bit — LiveView rejects
-    //     pushEvent **asynchronously** ("unable to push hook event.
-    //     LiveView not connected") so a synchronous try/catch can't
-    //     distinguish "push succeeded" from "push was lost".
-    //   * **Tracks in-flight** via `initialPushPending` so we don't
-    //     pile up overlapping pushes while waiting for the server to
-    //     ack a previous attempt.
+    // 3s cap). Each tick calls pushState(), which calls LiveView's
+    // `pushEvent` and attaches a `.then()` resolver/rejecter. The
+    // resolver tears down the loop on server ack; the rejecter leaves
+    // it running for the next tick. This is the critical bit — the
+    // hook's public surface is `pushEvent(...)`, which internally
+    // calls `view.pushHookEvent(...)`. That view method checks the
+    // channel state and rejects asynchronously with "unable to push
+    // hook event. LiveView not connected" when the channel isn't
+    // joined yet, so a synchronous try/catch can't distinguish "push
+    // succeeded" from "push was lost". (Earlier versions of this
+    // hook tried to pre-check `this.view.isConnected()` — but
+    // `this.view` is not exposed on Phoenix LiveView's hook class,
+    // so the guard was always truthy and pushEvent was never called.)
+    // The polling loop also **tracks in-flight** pushes via
+    // `initialPushPending` so we don't pile up overlapping pushes
+    // while waiting for the server to ack a previous attempt.
     //
     // `initialPushSent` is the single source of truth for "did the
     // server ack?" — it can only be flipped by the pushEvent Promise's
     // resolver, which proves the round-trip completed.
+    console.log("[NotificationPermission] mounted; starting push polling")
     this.initialPushSent = false
     this.initialPushPending = false
     this.tryInitialPush()
@@ -91,12 +95,14 @@ const NotificationPermission = {
     // rejection handler is silent — the next interval tick just
     // tries again. Hard cap at MAX_ATTEMPTS × INTERVAL_MS so a real
     // connection problem doesn't leave the loop running forever.
+    console.log("[NotificationPermission] tryInitialPush: starting polling loop")
     let attempts = 0
     const MAX_ATTEMPTS = 30
     const INTERVAL_MS = 100
     this.initialPushInterval = setInterval(() => {
       attempts++
       if (attempts >= MAX_ATTEMPTS) {
+        console.log("[NotificationPermission] polling exhausted (30 × 100ms)")
         this.teardownInitialPushTimers()
         return
       }
@@ -109,12 +115,21 @@ const NotificationPermission = {
   pushState() {
     const installed = this.isInstalledAsPWA()
     const support = this.computeSupport(installed)
-    const view = this.view
-    if (!view || typeof view.isConnected !== "function" || !view.isConnected()) {
-      return false
-    }
+    // No `this.view.isConnected()` pre-check — `this.view` is not a
+    // property on Phoenix LiveView hooks. The public surface is
+    // `this.pushEvent(...)`, which calls `__view().pushHookEvent(...)`
+    // internally; that method checks `channel.canPush()` and rejects
+    // with "unable to push hook event. LiveView not connected" if the
+    // socket/channel isn't ready. Track the returned Promise: resolve
+    // = server acked, reject = lost, retry on next tick.
     try {
       const result = this.pushEvent("notification_state", support)
+      console.log(
+        "[NotificationPermission] pushEvent sent; support=" +
+          JSON.stringify(support) +
+          " result-type=" +
+          (result && typeof result.then === "function" ? "Promise" : typeof result),
+      )
       if (result && typeof result.then === "function") {
         // Mark a push in-flight so the polling loop doesn't pile up
         // overlapping pushes while we wait for the server ack.
@@ -123,12 +138,17 @@ const NotificationPermission = {
         // and we're free to try again on the next interval tick.
         this.initialPushPending = true
         result.then(
-          () => {
+          (resp) => {
+            console.log("[NotificationPermission] pushEvent resolved:", resp)
             this.initialPushSent = true
             this.initialPushPending = false
             this.teardownInitialPushTimers()
           },
-          () => {
+          (err) => {
+            console.log(
+              "[NotificationPermission] pushEvent rejected:",
+              err && err.message,
+            )
             // Rejection (Phoenix 1.8's "unable to push hook event.
             // LiveView not connected"). Leave the polling loop
             // running; the next tick will try again.
@@ -138,6 +158,7 @@ const NotificationPermission = {
       }
       return true
     } catch (_err) {
+      console.log("[NotificationPermission] pushEvent threw synchronously:", _err)
       return false
     }
   },
