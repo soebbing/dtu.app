@@ -2338,17 +2338,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
   end
 
   describe "Sun-down notification firing" do
-    # The dashboard's `handle_info({:reading, ...})` clause calls
-    # `maybe_fire_sun_down_notification/2`, which (when the fleet has
-    # been at 0 W for ≥ 15 min and the user has `notify_sun_down`
-    # enabled) pushes a `:sun_down` payload to the user's session
-    # topic. The JS hook on the page (Notifications) then formats and
-    # fires the actual `new Notification(...)`.
-    #
-    # Mocking the 15-min idle window in a unit test is awkward
-    # without a sleep or a process-dict injection, so this describe
-    # block focuses on the gating conditions that are easy to
-    # assert synchronously: user opt-in and historical view.
+    # The producer lives in `DtuApp.Notifications.SunDown`, a server-
+    # side GenServer subscribed to `dtu:reading`. It maintains a
+    # per-user fleet-power state and arms a 15-min timer when the
+    # fleet first hits 0 W. The dashboard LV has no role in firing
+    # — it just subscribes to the user's notification topic in
+    # mount/3 and forwards `phx:notify` events to the page's
+    # `Notifications` JS hook. The negative case below pins that the
+    # opt-in flag (`notify_sun_down`) gates the VAPID fan-out — the
+    # positive case (timer actually fires after 15 min) lives in
+    # `test/dtu_app/notifications/sun_down_notifier_test.exs`.
     alias DtuApp.Notifications
 
     test "does not fire when notify_sun_down is off", %{conn: conn, user: user} do
@@ -2400,11 +2399,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
     # The dashboard's `mount/3` subscribes to the user's notification
     # topic and renders a hidden `phx-hook="Notifications"` div that
     # fires `new Notification(...)` on `phx:notify` events. Without
-    # this, the dashboard's `broadcast_dtu_connection/3` (and the
-    # future sun-down scheduler) fire events that nobody consumes —
-    # the user only saw desktop notifications when the `/notifications`
-    # page happened to be open. The tests below pin the
-    # subscribe + handle_info wiring.
+    # this, the server-side producers in
+    # `DtuApp.Notifications.{DtuConnection,SunDown}` fire events
+    # that nobody consumes — the user only saw desktop
+    # notifications when the `/notifications` page happened to be
+    # open. The tests below pin the subscribe + handle_info wiring.
     alias DtuApp.Notifications
 
     test "mounted dashboard forwards :notification PubSub events via push_event", %{

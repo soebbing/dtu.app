@@ -21,13 +21,15 @@ defmodule DtuAppWeb.DashboardLive do
       # `.ChartTooltip` or from tests).
       Phoenix.PubSub.subscribe(DtuApp.PubSub, @timezone_topic)
       # Subscribe to the per-user notification topic so this LiveView
-      # receives `:notification` events fired by `broadcast_dtu_connection/3`
-      # (and the future sun-down scheduler). The handle_info clause
-      # below forwards each one to the page's `phx-hook="Notifications"`
-      # sink via `push_event("notify", payload)`. Without this subscribe,
-      # the dashboard would fire events that nobody consumes — the user
-      # only saw notifications when they had the `/notifications` page
-      # open, which is the opposite of the intended behaviour.
+      # receives `:notification` events fired by the server-side
+      # producer GenServers (`DtuApp.Notifications.DtuConnection` and
+      # `DtuApp.Notifications.SunDown`). The handle_info clause below
+      # forwards each one to the page's `phx-hook="Notifications"`
+      # sink via `push_event("notify", payload)`. Without this
+      # subscribe, the dashboard would fire events that nobody
+      # consumes — the user only saw notifications when they had the
+      # `/notifications` page open, which is the opposite of the
+      # intended behaviour.
       Notifications.subscribe(socket.assigns.current_scope.user.id)
     end
 
@@ -241,50 +243,24 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   @impl true
-  def handle_info({:dtu_connected, _client_id, device_id}, socket) do
-    user = socket.assigns.current_scope.user
-
-    # Notify the user when a DTU comes back online — the `:dtu_connected`
-    # event only fires after a `:dtu_disconnected` (i.e. on reconnect),
-    # so this is the right hook for the "back online" half of the
-    # connection-state notification. Gated on `notify_dtu_connection`
-    # so users who didn't opt in stay silent.
-    if user.notify_dtu_connection and is_integer(device_id) do
-      case Enum.find(socket.assigns.devices, fn d -> d.id == device_id end) do
-        nil ->
-          :ok
-
-        %Devices.Dtu{name: name} = _device ->
-          broadcast_dtu_connection(user.id, name, :back_online)
-      end
-    end
-
-    {:noreply, refresh_devices(socket, user)}
+  def handle_info({:dtu_connected, _client_id, _device_id}, socket) do
+    # Connection-state *notifications* are fired by
+    # `DtuApp.Notifications.DtuConnection` (a server-side GenServer
+    # subscribed to `dtu:presence`), so the producer runs even when
+    # this LV process isn't alive. The LV's job here is only to
+    # refresh the online badge — the same `dtu_seen` / CONNECT event
+    # already triggered `last_seen_at` updates in `Telemetry`, but
+    # re-reading the device list is what flips the badge on the
+    # next render without waiting for the next reading.
+    {:noreply, refresh_devices(socket, socket.assigns.current_scope.user)}
   end
 
   @impl true
-  def handle_info({:dtu_disconnected, _client_id, device_id}, socket) do
-    user = socket.assigns.current_scope.user
-
-    # Only fire the "went offline" notification if the DTU was *recently*
-    # online — `last_seen_at` was touched within the past 5 min (the
-    # online-badge threshold). Without that guard, the very first MQTT
-    # disconnect after a deploy would fire on a DTU that was already
-    # offline before the server restarted, spamming the user.
-    if user.notify_dtu_connection and is_integer(device_id) do
-      case Enum.find(socket.assigns.devices, fn d -> d.id == device_id end) do
-        nil ->
-          :ok
-
-        %Devices.Dtu{name: name, last_seen_at: last_seen_at} = _device ->
-          if last_seen_at &&
-               DateTime.after?(last_seen_at, DateTime.add(DtuApp.Time.utc_now(), -300, :second)) do
-            broadcast_dtu_connection(user.id, name, :went_offline)
-          end
-      end
-    end
-
-    {:noreply, refresh_devices(socket, user)}
+  def handle_info({:dtu_disconnected, _client_id, _device_id}, socket) do
+    # Same as `:dtu_connected` above — the notification producer lives
+    # in `DtuApp.Notifications.DtuConnection`. We only refresh the
+    # online badge here.
+    {:noreply, refresh_devices(socket, socket.assigns.current_scope.user)}
   end
 
   # Every MQTT uplink (and every CONNECT / DISCONNECT) broadcasts a
@@ -341,34 +317,6 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
-  end
-
-  # Push a connection-state notification to the user's notifications topic.
-  # Both `DashboardLive` (mounted on `/dashboard`) and `NotificationsLive`
-  # (mounted on `/notifications`) subscribe in their `mount/3`, and each
-  # page mounts a `phx-hook="Notifications"` sink that fires the
-  # `new Notification(...)` after dedup against localStorage. The dedup
-  # tag (`dtu:<name>`) means a user with both pages open sees one
-  # notification per state change, not two.
-  defp broadcast_dtu_connection(user_id, name, status)
-       when is_integer(user_id) and is_binary(name) do
-    {title, body} =
-      case status do
-        :went_offline ->
-          {gettext("DTU went offline"),
-           gettext("Your inverter %{name} has been offline for at least 5 minutes.", name: name)}
-
-        :back_online ->
-          {gettext("DTU back online"),
-           gettext("Your inverter %{name} is publishing telemetry again.", name: name)}
-      end
-
-    DtuApp.Notifications.broadcast(user_id, %{
-      event: "dtu_connection",
-      title: title,
-      body: body,
-      tag: "dtu:#{name}"
-    })
   end
 
   # Re-fetch the user's devices and recompute the scenario flags
