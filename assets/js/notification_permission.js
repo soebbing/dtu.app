@@ -13,11 +13,27 @@ const NotificationPermission = {
     // (`granted` / `denied` / `default` / `unsupported` / `not_installed`).
     // If this push is lost, the page is stuck on "Checking browser
     // capabilities…" forever — there is no other path that flips the
-    // initial assign — so we MUST guarantee it lands. Track the first
-    // push with a flag, attempt it immediately, and retry once on the
-    // next macrotask if the LiveView's WebSocket hasn't joined yet.
+    // initial assign — so we MUST guarantee it lands.
+    //
+    // We layer three fallbacks so the push survives every timing edge
+    // case we've seen in production:
+    //   1. **Immediate attempt** — `view.isConnected()` is normally true
+    //      by the time `mounted()` fires, so this is the common path.
+    //   2. **Next-macrotask retry** — covers the rare case where the
+    //      LiveView socket hasn't joined yet but will have by the next
+    //      tick (e.g. when the join reply arrives between `mounted()`
+    //      and `setTimeout(0)`).
+    //   3. **Polling fallback** — if both above fail, poll every 100ms
+    //      for up to 3s. This catches the slow-join case on mobile PWA
+    //      cold starts where the WS handshake takes noticeably longer
+    //      than a desktop browser. Without this, the user is stuck on
+    //      "Checking browser capabilities…" indefinitely.
+    //
+    // `initialPushSent` is the single source of truth — once the first
+    // push lands, all later paths short-circuit and the polling loop
+    // tears itself down.
     this.initialPushSent = false
-    this.pushInitialState()
+    this.tryInitialPush()
     this.handleDisplayModeChange = () => this.pushState()
     this.handleClick = (e) => this.handleEnableClick(e)
     this.el.addEventListener("click", this.handleClick)
@@ -33,10 +49,23 @@ const NotificationPermission = {
     }
   },
 
+  // After a WS reconnect (mobile flaky networks, laptop sleep, …) the
+  // server has lost any prior `notification_state` push — the assign is
+  // back to `%{"state" => "loading"}`. Re-push so the page transitions
+  // out of "Checking browser capabilities…" without a full reload.
+  reconnected() {
+    this.initialPushSent = false
+    this.tryInitialPush()
+  },
+
   destroyed() {
     if (this.initialPushTimer) {
       clearTimeout(this.initialPushTimer)
       this.initialPushTimer = null
+    }
+    if (this.initialPushInterval) {
+      clearInterval(this.initialPushInterval)
+      this.initialPushInterval = null
     }
     this.el.removeEventListener("click", this.handleClick)
     if (window.matchMedia) {
@@ -49,25 +78,45 @@ const NotificationPermission = {
     }
   },
 
-  pushInitialState() {
+  tryInitialPush() {
     if (this.pushState()) {
       this.initialPushSent = true
       return
     }
     // View isn't ready yet. Retry on the next macrotask — by then the
     // WS join reply has been processed and `view.isConnected()` returns
-    // true. One retry is enough: subsequent display-mode changes and
-    // permission flips go through `pushState()` directly.
+    // true in the common case.
     this.initialPushTimer = setTimeout(() => {
       this.initialPushTimer = null
       if (this.initialPushSent) return
       if (this.pushState()) {
         this.initialPushSent = true
+        return
       }
-      // If the retry also fails, give up silently — the page will
-      // remain on the "Checking browser capabilities…" branch and the
-      // user can still interact with the form (preferences are saved
-      // independently of notification capability).
+      // Still not ready. Switch to a bounded polling loop so the push
+      // eventually lands even when the WS handshake is slow (mobile
+      // PWA cold start, iOS Safari low-power mode, etc.). Cap at 30
+      // attempts × 100ms = 3s; by then anything beyond a real
+      // connection problem and the user will need to reload anyway.
+      let attempts = 0
+      const MAX_ATTEMPTS = 30
+      this.initialPushInterval = setInterval(() => {
+        attempts++
+        if (this.initialPushSent || attempts >= MAX_ATTEMPTS) {
+          if (this.initialPushInterval) {
+            clearInterval(this.initialPushInterval)
+            this.initialPushInterval = null
+          }
+          return
+        }
+        if (this.pushState()) {
+          this.initialPushSent = true
+          if (this.initialPushInterval) {
+            clearInterval(this.initialPushInterval)
+            this.initialPushInterval = null
+          }
+        }
+      }, 100)
     }, 0)
   },
 
