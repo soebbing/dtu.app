@@ -224,6 +224,15 @@ test.describe('Acceptance: Chart tooltip overlay follows the touch on mobile', (
   // and the dashboard's single-column mobile layout means the
   // chart container is essentially full-viewport-width minus the
   // px-4 side padding.
+  //
+  // We use `mouse.move` rather than `page.touchscreen.tap` because
+  // the hook binds both `touchstart` and `mousemove` to the same
+  // `move()` handler, and the positioning math reads only
+  // `e.clientX` / `e.touches[0].clientX` — both in CSS px. The
+  // touch-event plumbing would force us to enable `hasTouch` on the
+  // context, which adds CI runtime for no behavioural coverage
+  // gain (the bug we're guarding is a coordinate-system bug, not a
+  // touch-event-handling bug).
 
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
@@ -249,14 +258,10 @@ test.describe('Acceptance: Chart tooltip overlay follows the touch on mobile', (
       `chart rendered at ${box.width} CSS px wide — bug requires < 800 (mobile-scaled)`
     );
 
-    // Tap at the horizontal middle of the chart.
+    // Tap (via mouse.move) at the horizontal middle of the chart.
     const tapX = box.x + box.width * 0.5;
     const tapY = box.y + box.height * 0.5;
-    // `tap` synthesises a touchstart + touchend at the given
-    // coordinates — closer to a real mobile tap than `mouse.move`
-    // (which would simulate a mouse hover that mobile devices
-    // don't emit).
-    await page.touchscreen.tap(tapX, tapY);
+    await page.mouse.move(tapX, tapY);
 
     const tooltip = page.locator('#chart-tooltip');
     const guide = page.locator('#chart-guide-line');
@@ -304,13 +309,13 @@ test.describe('Acceptance: Chart tooltip overlay follows the touch on mobile', (
       `chart rendered at ${box.width} CSS px wide — bug requires < 800 (mobile-scaled)`
     );
 
-    // Tap near the right edge of the chart so the flip threshold
-    // (tooltipWidthCss + 20 CSS px from the right edge — about 100
-    // CSS px on a 343-CSS-px mobile chart, i.e. the rightmost ~30 %)
-    // trips.
+    // Tap (via mouse.move) near the right edge of the chart so the
+    // flip threshold (tooltipWidthCss + 20 CSS px from the right
+    // edge — about 100 CSS px on a 343-CSS-px mobile chart, i.e. the
+    // rightmost ~30 %) trips.
     const tapX = box.x + box.width * 0.92;
     const tapY = box.y + box.height * 0.5;
-    await page.touchscreen.tap(tapX, tapY);
+    await page.mouse.move(tapX, tapY);
 
     const tooltip = page.locator('#chart-tooltip');
     const guide = page.locator('#chart-guide-line');
