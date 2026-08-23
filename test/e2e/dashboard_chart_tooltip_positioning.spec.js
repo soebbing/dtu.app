@@ -58,7 +58,14 @@ test.describe('Acceptance: Chart tooltip overlay follows the cursor', () => {
     // chart container ~1000 CSS px wide (scaleX ≈ 1.25), which is
     // already enough to drift the overlay 20 %+ away from the
     // cursor before the fix.
-    await page.setViewportSize({ width: 1280, height: 720 });
+    //
+    // The height is set tall enough that the chart sits in the
+    // viewport on first paint (the dashboard renders stat cards
+    // and a granularity switcher above the chart that push it below
+    // the fold on 1280×720 — Playwright's `mouse.move` doesn't
+    // auto-scroll, so an off-screen cursor generates no mousemove
+    // and the hook never updates the overlay attributes).
+    await page.setViewportSize({ width: 1280, height: 1024 });
 
     await logIn(page);
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
@@ -69,6 +76,12 @@ test.describe('Acceptance: Chart tooltip overlay follows the cursor', () => {
       null,
       { timeout: 10000 }
     );
+    // Defensive: even on the taller viewport the chart can land
+    // below the fold on smaller laptop screens. Bring it into view
+    // before any mouse.move so the hook's mousemove listener
+    // actually fires (otherwise `display:none` stays on the
+    // foreignObject and `toBeVisible()` times out).
+    await page.locator('#solar-chart-svg').scrollIntoViewIfNeeded();
   });
 
   test('guide line and tooltip land at the cursor on a stretched viewport', async ({ page }) => {
