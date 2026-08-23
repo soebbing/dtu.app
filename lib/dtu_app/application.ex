@@ -109,8 +109,14 @@ defmodule DtuApp.Application do
 
   # Notification producer GenServers. Off in `:test` (see the long
   # comment in `start/2` above for the sandbox-ownership reason).
+  #
+  # The gate reads `Application.get_env/3` against a config-driven flag,
+  # **not** `Mix.env/0` — `Mix` is a compile-time tooling module that
+  # isn't loaded in OTP releases, so calling `Mix.env/0` here would
+  # crash production boot before the supervision tree is up. See the
+  # regression test in `test/dtu_app/application_test.exs`.
   defp notifier_children do
-    if Mix.env() == :test do
+    if Application.get_env(:dtu_app, :notifier_children, [])[:enabled] == false do
       []
     else
       [
