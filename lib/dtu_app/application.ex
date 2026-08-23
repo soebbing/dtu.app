@@ -113,7 +113,11 @@ defmodule DtuApp.Application do
     if Mix.env() == :test do
       []
     else
-      [DtuApp.Notifications.DtuConnection, DtuApp.Notifications.SunDown]
+      [
+        DtuApp.Notifications.DtuConnection,
+        DtuApp.Notifications.SunDown,
+        DtuApp.Notifications.SunUp
+      ]
     end
   end
 end

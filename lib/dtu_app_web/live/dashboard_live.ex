@@ -287,6 +287,15 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info({:set_timezone, offset_seconds}, socket)
       when is_integer(offset_seconds) do
+    # Persist to the user record so the server-side `SunUp` producer
+    # (which has no LV attached) can compute "today" in the user's
+    # local TZ. Best-effort: a failed write doesn't break the render.
+    user = socket.assigns.current_scope.user
+
+    if user.tz_offset_seconds != offset_seconds do
+      _ = DtuApp.Accounts.update_user_tz_offset(user, offset_seconds)
+    end
+
     {:noreply,
      socket
      |> assign(:user_tz_offset_seconds, offset_seconds)

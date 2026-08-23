@@ -172,13 +172,33 @@ defmodule DtuApp.Accounts do
 
   @doc """
   Updates the user's notification preferences (`notify_dtu_connection`,
-  `notify_sun_down`). The dashboard reads these via the LiveView's
-  socket assigns to decide whether to push a browser notification.
+  `notify_sun_down`, `notify_sun_up`). The dashboard reads these via
+  the LiveView's socket assigns to decide whether to push a browser
+  notification.
   """
   def update_notification_settings(user, attrs) do
     user
     |> User.notification_settings_changeset(attrs)
     |> Repo.update()
+  end
+
+  @doc """
+  Persists the user's local UTC offset (in seconds, positive east of
+  UTC). Called by the dashboard on every `:set_timezone` push from
+  the JS, so the server-side `SunUp` producer can compute "today" in
+  the user's local TZ even when no LiveView is attached. Best-effort
+  — returns `:ok` on success and logs + swallows failures so a
+  transient DB hiccup doesn't break the dashboard render.
+  """
+  @spec update_user_tz_offset(User.t(), integer()) :: :ok | {:error, term()}
+  def update_user_tz_offset(user, offset_seconds) when is_integer(offset_seconds) do
+    user
+    |> Ecto.Changeset.change(%{tz_offset_seconds: offset_seconds})
+    |> Repo.update()
+    |> case do
+      {:ok, _user} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc """

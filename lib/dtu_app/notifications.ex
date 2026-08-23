@@ -64,6 +64,8 @@ defmodule DtuApp.Notifications do
       `notify_dtu_connection == true`.
     * `event: "sun_down"` is suppressed unless the user has
       `notify_sun_down == true`.
+    * `event: "sun_up"` is suppressed unless the user has
+      `notify_sun_up == true`.
     * Any other event (the `test` event from the test button,
       future event types) is delivered unconditionally — the user
       has already opted in to receiving those by interacting with
@@ -111,6 +113,7 @@ defmodule DtuApp.Notifications do
     cond do
       event == "dtu_connection" -> user.notify_dtu_connection == true
       event == "sun_down" -> user.notify_sun_down == true
+      event == "sun_up" -> user.notify_sun_up == true
       true -> true
     end
   end
@@ -122,6 +125,7 @@ defmodule DtuApp.Notifications do
     cond do
       event == :dtu_connection -> user.notify_dtu_connection == true
       event == :sun_down -> user.notify_sun_down == true
+      event == :sun_up -> user.notify_sun_up == true
       true -> true
     end
   end
