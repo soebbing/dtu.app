@@ -9,10 +9,23 @@ defmodule DtuApp.Accounts.User do
     field :confirmed_at, :utc_datetime
     field :authenticated_at, :utc_datetime, virtual: true
 
-    # Notification preferences. Both default to false so existing
+    # Notification preferences. All default to false so existing
     # users don't silently start receiving notifications on deploy.
     field :notify_dtu_connection, :boolean, default: false
     field :notify_sun_down, :boolean, default: false
+    # Fires once per local day when the user's fleet first transitions
+    # from 0 W to > 0 W (the array waking up for the day). Producer:
+    # `DtuApp.Notifications.SunUp`.
+    field :notify_sun_up, :boolean, default: false
+
+    # User's local UTC offset in seconds (positive east of UTC;
+    # e.g. 7200 for CEST). Persisted from the dashboard JS's
+    # `set_timezone` push so the server-side `SunUp` producer can
+    # compute "today" in the user's local TZ even when no
+    # LiveView is attached. Updated on every dashboard mount.
+    # Default 0 (UTC) for users who've never loaded the dashboard
+    # with TZ detection enabled.
+    field :tz_offset_seconds, :integer, default: 0
 
     # Energy rate (in cents per kWh) for the dashboard's
     # "Saved this month" card. Nullable — when nil, the card is
@@ -138,7 +151,7 @@ defmodule DtuApp.Accounts.User do
   """
   def notification_settings_changeset(user, attrs) do
     user
-    |> cast(attrs, [:notify_dtu_connection, :notify_sun_down])
+    |> cast(attrs, [:notify_dtu_connection, :notify_sun_down, :notify_sun_up])
   end
 
   @doc """

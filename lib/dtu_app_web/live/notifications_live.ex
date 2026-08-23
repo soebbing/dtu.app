@@ -6,6 +6,8 @@ defmodule DtuAppWeb.NotificationsLive do
       single inverter goes offline (and again when it comes back).
     * `:notify_sun_down` — a summary notification at end-of-day
       comparing today's yield + peak with yesterday's.
+    * `:notify_sun_up` — a single morning ping when the fleet first
+      produces power for the day (once per user per local day).
 
   The browser-side permission state (allowed / blocked / not
   installed as PWA / not supported) is computed by the JS hook
@@ -285,6 +287,24 @@ defmodule DtuAppWeb.NotificationsLive do
               <span class="block text-sm text-zinc-500 dark:text-zinc-400">
                 {gettext(
                   "When the sun goes down, get today's total yield compared to yesterday and the peak power from today compared to yesterday, if yesterday's data is available."
+                )}
+              </span>
+            </span>
+          </label>
+
+          <label class="flex items-start gap-3 cursor-pointer">
+            <.input
+              type="checkbox"
+              field={@form[:notify_sun_up]}
+              class="mt-1"
+            />
+            <span>
+              <span class="block text-sm font-medium text-zinc-900 dark:text-white">
+                {gettext("Morning sun-up ping")}
+              </span>
+              <span class="block text-sm text-zinc-500 dark:text-zinc-400">
+                {gettext(
+                  "A cheerful one-off when your panels start producing for the day. Fires once per day, in your local timezone, the moment your fleet wakes up."
                 )}
               </span>
             </span>
