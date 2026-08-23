@@ -3214,6 +3214,22 @@ defmodule DtuAppWeb.DashboardLive do
 
                     refRect() {
                       this.rect = this.svg.getBoundingClientRect();
+                      // The SVG declares `viewBox="0 0 800 280"` and
+                      // stretches to the container's full width via
+                      // `class="w-full"`. When the container is wider
+                      // than 800 CSS px (desktop), one user unit maps
+                      // to (rect.width / 800) CSS px; when narrower
+                      // (mobile), one user unit maps to less. The
+                      // cursor's local `x` and the tooltip's flip
+                      // threshold live in CSS px, but the `<line x1
+                      // x2>` and `<foreignObject x>` attributes we
+                      // write are in user units — so we compute the
+                      // scale once per layout pass and convert at
+                      // write time. Falls back to 1:1 if the SVG
+                      // hasn't been laid out yet (rect.width = 0 →
+                      // divide-by-zero would otherwise blow up
+                      // later).
+                      this.scaleX = this.rect.width > 0 ? this.rect.width / 800 : 1;
                     },
 
                     move(e) {
@@ -3232,8 +3248,14 @@ defmodule DtuAppWeb.DashboardLive do
                         ? this.xMin + (x / this.rect.width) * span
                         : this.xMin;
 
-                      this.guide.setAttribute("x1", String(x));
-                      this.guide.setAttribute("x2", String(x));
+                      // The guide line's x1/x2 attributes are in user
+                      // units; convert from the cursor's CSS-pixel
+                      // offset so the line sits at the cursor on
+                      // desktop (where rect.width > 800) and mobile
+                      // alike.
+                      const xUnits = x / this.scaleX;
+                      this.guide.setAttribute("x1", String(xUnits));
+                      this.guide.setAttribute("x2", String(xUnits));
                       this.guide.style.display = "";
 
                       // Drop rows whose legend entry was toggled off
@@ -3258,16 +3280,32 @@ defmodule DtuAppWeb.DashboardLive do
 
                       this.body.innerHTML = this.renderRows(time, rows);
 
-                      // Position the tooltip just to the right of the
-                      // cursor (4 px gap so it hugs the guide line
-                      // without overlapping the data point); flip to
-                      // the left when near the right edge.
-                      const tooltipWidth = 200;
-                      const tooltipX =
-                        x > this.rect.width - tooltipWidth - 20
-                          ? Math.max(0, x - tooltipWidth - 10)
-                          : Math.min(this.rect.width - tooltipWidth, x + 4);
-                      this.tooltip.setAttribute("x", String(tooltipX));
+                      // Position the tooltip just to the right of
+                      // the cursor (4 px gap so it hugs the guide
+                      // line without overlapping the data point);
+                      // flip to the left when there's no room. The
+                      // flip decision + the gap math are in CSS px
+                      // (measured against the cursor's local x) so
+                      // the visual feel is identical on desktop and
+                      // mobile — and `tooltipWidthCss` accounts for
+                      // the fact that the foreignObject's static
+                      // `width="200"` is in user units, so the box
+                      // actually renders at 200 * scaleX CSS px.
+                      const tooltipWidthCss = 200 * this.scaleX;
+                      const tooltipLeftCss =
+                        x > this.rect.width - tooltipWidthCss - 20
+                          ? Math.max(0, x - tooltipWidthCss - 10)
+                          : Math.min(this.rect.width - tooltipWidthCss, x + 4);
+                      // The foreignObject's `x` attribute is in user
+                      // units; convert from the CSS-pixel position
+                      // we just chose. Without this conversion the
+                      // tooltip lands at (x * scaleX) CSS px — i.e.
+                      // further from the cursor on every viewport
+                      // wider than 800 CSS px (desktop).
+                      this.tooltip.setAttribute(
+                        "x",
+                        String(tooltipLeftCss / this.scaleX)
+                      );
                       this.tooltip.style.display = "";
                     },
 
