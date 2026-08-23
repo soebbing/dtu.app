@@ -27,6 +27,15 @@ config :dtu_app, DtuAppWeb.Endpoint,
 # real port. The handler is exercised in isolation where needed.
 config :dtu_app, :mqtt_broker, enabled: false
 
+# The singleton notification producers (`DtuConnection`, `SunDown`,
+# `SunUp`) call `Repo` from inside their `handle_info/2` callbacks.
+# The Ecto SQL Sandbox (`:manual` mode, see `test_helper.exs`) only
+# allows the checked-out test process to use the connection, so the
+# long-lived supervisors would race the test owner. Per-test
+# instances are brought up via `start_supervised!/1` from
+# `test/dtu_app/notifications/*.exs`.
+config :dtu_app, :notifier_children, enabled: false
+
 # In test we don't send emails
 config :dtu_app, DtuApp.Mailer, adapter: Swoosh.Adapters.Test
 
