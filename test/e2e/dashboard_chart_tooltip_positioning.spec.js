@@ -207,3 +207,144 @@ test.describe('Acceptance: Chart tooltip overlay follows the cursor', () => {
     expect(gapUnits).toBeLessThan(15);    // within ~10 CSS px gap
   });
 });
+
+test.describe('Acceptance: Chart tooltip overlay follows the touch on mobile', () => {
+  // Mobile-specific regression: the same chart-container-vs-viewBox
+  // mismatch applies *inversely* on narrow viewports — the SVG
+  // renders at LESS than 800 CSS px wide, so the hook's scaleX is
+  // < 1 instead of > 1. If the conversion from CSS-px cursor
+  // position to user-unit foreignObject x is wrong (or absent) the
+  // overlay drifts to the LEFT of the cursor on mobile, because the
+  // raw pixel value reads as a position closer to the left edge of
+  // the (smaller) viewBox.
+  //
+  // Pinning an iPhone X-ish viewport (375×812, the default for
+  // `devices['iPhone X']`) is the right mobile representative:
+  // it's narrow enough that the SVG scales down (scaleX ≈ 0.43),
+  // and the dashboard's single-column mobile layout means the
+  // chart container is essentially full-viewport-width minus the
+  // px-4 side padding.
+  //
+  // We use `mouse.move` rather than `page.touchscreen.tap` because
+  // the hook binds both `touchstart` and `mousemove` to the same
+  // `move()` handler, and the positioning math reads only
+  // `e.clientX` / `e.touches[0].clientX` — both in CSS px. The
+  // touch-event plumbing would force us to enable `hasTouch` on the
+  // context, which adds CI runtime for no behavioural coverage
+  // gain (the bug we're guarding is a coordinate-system bug, not a
+  // touch-event-handling bug).
+
+  test.beforeEach(async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await logIn(page);
+    await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
+    await waitForLiveSocketConnected(page);
+    await expect(page.locator('#solar-chart-svg')).toBeVisible({ timeout: 10000 });
+    await page.waitForFunction(
+      () => document.querySelectorAll('#solar-chart-svg path[data-series]').length > 0,
+      null,
+      { timeout: 10000 }
+    );
+    await page.locator('#solar-chart-svg').scrollIntoViewIfNeeded();
+  });
+
+  test('overlay stays at the cursor when the SVG is narrower than the viewBox', async ({ page }) => {
+    const svg = page.locator('#solar-chart-svg');
+    const box = await svg.boundingBox();
+    // Defensive: skip if the chart somehow didn't shrink on this
+    // viewport (the bug requires rect.width < 800 to reproduce).
+    test.skip(
+      box.width >= 800,
+      `chart rendered at ${box.width} CSS px wide — bug requires < 800 (mobile-scaled)`
+    );
+
+    // Tap (via mouse.move) at the horizontal middle of the chart.
+    const tapX = box.x + box.width * 0.5;
+    const tapY = box.y + box.height * 0.5;
+    await page.mouse.move(tapX, tapY);
+
+    const tooltip = page.locator('#chart-tooltip');
+    const guide = page.locator('#chart-guide-line');
+    await expect(tooltip).toBeVisible({ timeout: 3000 });
+    await expect
+      .poll(
+        async () => {
+          const style = await guide.getAttribute('style');
+          return style === null || !style.includes('display:none');
+        },
+        { timeout: 3000, message: 'guide line still has inline display:none' }
+      )
+      .toBe(true);
+
+    const tooltipX = parseFloat(await tooltip.getAttribute('x'));
+    const guideX1 = parseFloat(await guide.getAttribute('x1'));
+
+    // The cursor at 50 % of the rendered chart width lands at user
+    // unit 400 (the middle of the 0..800 viewBox). Before the fix
+    // the hook set `x` to the raw CSS-pixel value (≈ 170 on a
+    // 343-CSS-px mobile chart), which placed the tooltip at user
+    // unit 170 — about a quarter of the chart to the LEFT of the
+    // cursor. Tight tolerance here is the regression assertion:
+    // anything outside [380, 420] means the conversion went wrong.
+    expect(tooltipX).toBeGreaterThan(380);
+    expect(tooltipX).toBeLessThan(420);
+    expect(guideX1).toBeGreaterThan(380);
+    expect(guideX1).toBeLessThan(420);
+
+    // The tooltip should sit 4 CSS px to the right of the guide
+    // line — in user units that's 4 / scaleX, which is ≈ 9 on a
+    // 0.43× mobile chart. The drift-before-fix scenario would have
+    // the tooltip FAR to the left of the cursor (its CSS-pixel x
+    // would have been ~170, much smaller than the cursor's
+    // ~170-px position scaled to user units 400).
+    expect(tooltipX).toBeGreaterThan(guideX1);
+    expect(tooltipX - guideX1).toBeLessThan(15);
+  });
+
+  test('overlay flips to the left of the cursor when near the right edge (mobile)', async ({ page }) => {
+    const svg = page.locator('#solar-chart-svg');
+    const box = await svg.boundingBox();
+    test.skip(
+      box.width >= 800,
+      `chart rendered at ${box.width} CSS px wide — bug requires < 800 (mobile-scaled)`
+    );
+
+    // Tap (via mouse.move) near the right edge of the chart so the
+    // flip threshold (tooltipWidthCss + 20 CSS px from the right
+    // edge — about 100 CSS px on a 343-CSS-px mobile chart, i.e. the
+    // rightmost ~30 %) trips.
+    const tapX = box.x + box.width * 0.92;
+    const tapY = box.y + box.height * 0.5;
+    await page.mouse.move(tapX, tapY);
+
+    const tooltip = page.locator('#chart-tooltip');
+    const guide = page.locator('#chart-guide-line');
+    await expect(tooltip).toBeVisible({ timeout: 3000 });
+    await expect
+      .poll(
+        async () => {
+          const style = await guide.getAttribute('style');
+          return style === null || !style.includes('display:none');
+        },
+        { timeout: 3000, message: 'guide line still has inline display:none' }
+      )
+      .toBe(true);
+
+    const tooltipX = parseFloat(await tooltip.getAttribute('x'));
+    const guideX1 = parseFloat(await guide.getAttribute('x1'));
+
+    // Flipped: tooltip's LEFT edge is LEFT of the guide line. Before
+    // the fix the tooltip stayed on the right even at the right edge
+    // (clamped to the chart's right edge) — the cursor floated
+    // outside the tooltip's left edge with no visible flip.
+    expect(tooltipX).toBeLessThan(guideX1);
+
+    // The tooltip's right edge (xUnits + 200 user units) should land
+    // close to but left of the cursor — a ~10 CSS px gap, scaled to
+    // user units (10 / scaleX ≈ 23 on a 0.43× mobile chart).
+    const tooltipRightX = tooltipX + 200;
+    const gapUnits = guideX1 - tooltipRightX;
+    expect(gapUnits).toBeGreaterThan(-5);
+    expect(gapUnits).toBeLessThan(30);
+  });
+});
