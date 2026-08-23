@@ -104,10 +104,28 @@ test.describe('Acceptance: Chart tooltip overlay follows the cursor', () => {
     // their `x` attributes. Wait for the tooltip to be visible so we
     // know the handler ran (visibility also implies the attribute
     // was set — `display:none` would keep the element hidden).
+    //
+    // NB: we deliberately do NOT check `toBeVisible()` on the guide
+    // line. It's a vertical SVG `<line>` (`x1 == x2`), so its
+    // geometric bounding box has width 0 — Playwright's visibility
+    // check considers zero-bounding-box elements hidden regardless
+    // of stroke width, and reports the line as hidden even when the
+    // hook correctly un-hides it. We assert the hook fired on the
+    // guide line via the `x1` attribute being updated (the default
+    // static value is "0", so a non-zero x1 means the hook wrote it)
+    // and the inline `style` no longer containing `display:none`.
     const tooltip = page.locator('#chart-tooltip');
     const guide = page.locator('#chart-guide-line');
     await expect(tooltip).toBeVisible({ timeout: 3000 });
-    await expect(guide).toBeVisible();
+    await expect
+      .poll(
+        async () => {
+          const style = await guide.getAttribute('style');
+          return style === null || !style.includes('display:none');
+        },
+        { timeout: 3000, message: 'guide line still has inline display:none' }
+      )
+      .toBe(true);
 
     const tooltipX = parseFloat(await tooltip.getAttribute('x'));
     const guideX1 = parseFloat(await guide.getAttribute('x1'));
@@ -153,7 +171,18 @@ test.describe('Acceptance: Chart tooltip overlay follows the cursor', () => {
     const tooltip = page.locator('#chart-tooltip');
     const guide = page.locator('#chart-guide-line');
     await expect(tooltip).toBeVisible({ timeout: 3000 });
-    await expect(guide).toBeVisible();
+    // Same SVG-line bounding-box caveat as in the middle-hover test
+    // — see the long-form comment there. Poll the inline style
+    // instead of `toBeVisible()`.
+    await expect
+      .poll(
+        async () => {
+          const style = await guide.getAttribute('style');
+          return style === null || !style.includes('display:none');
+        },
+        { timeout: 3000, message: 'guide line still has inline display:none' }
+      )
+      .toBe(true);
 
     const tooltipX = parseFloat(await tooltip.getAttribute('x'));
     const guideX1 = parseFloat(await guide.getAttribute('x1'));
