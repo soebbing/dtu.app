@@ -93,18 +93,22 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       refute render(view) =~ "Send test notification"
     end
 
-    test "notification_state not_installed on desktop falls through to the Enable CTA", %{
+    test "notification_state default + non-installed desktop renders the Enable CTA", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, ~p"/notifications")
 
-      # Desktop browsers (Chrome, Firefox, Edge on Windows / macOS /
-      # Linux) allow `new Notification(...)` in a regular tab once
-      # the user grants permission — PWA install is NOT a
-      # prerequisite. The JS hook therefore sends `state: "default"`
-      # with `installed: false` on non-installed desktops, and the
-      # template renders the Enable button exactly as if the page
-      # were already a PWA.
+      # A desktop user in a regular (non-PWA) tab visits the page for
+      # the first time. `Notification.permission === "default"` — the
+      # user has never been asked. The JS hook falls through to the
+      # permission check (now unconditional on desktop after the
+      # auto-detect refactor) and reports `state: "default"` with
+      # `installed: false, device: "desktop"`. The template renders
+      # the Enable button so the user can grant permission in one
+      # click. Pre-refactor this payload was also fired for
+      # already-granted desktop users (which was the bug — they saw
+      # the Enable CTA instead of the test button). Now it's only
+      # fired when permission is genuinely `"default"`.
       render_hook(
         view,
         "notification_state",
@@ -115,6 +119,40 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       assert render(view) =~ "Enable notifications"
       refute render(view) =~ "Install this site as a PWA first"
       refute render(view) =~ "Send test notification"
+    end
+
+    test "notification_state granted on non-installed desktop renders the test button (auto-detect)",
+         %{
+           conn: conn
+         } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      # A desktop user who previously granted notification permission
+      # in a regular (non-PWA) tab visits the page. `Notification.permission`
+      # already says `"granted"` — no need to click Enable. The JS
+      # hook reads the permission state regardless of `installed` on
+      # desktop (only mobile keeps the install-required gate, because
+      # iOS Safari only fires notifications from an installed PWA)
+      # and pushes `{state: "granted", installed: false, device:
+      # "desktop"}`. The template renders the granted branch with
+      # the test button, so the user can verify their setup without
+      # re-prompting the OS. This is the auto-detect path the
+      # pre-refactor short-circuit was hiding.
+      render_hook(
+        view,
+        "notification_state",
+        %{state: "granted", installed: false, device: "desktop"}
+      )
+
+      assert render(view) =~ "Notifications are enabled"
+      assert render(view) =~ "Send test notification"
+      # No push subscription was created, so the desktop hint about
+      # keeping the tab open should render (the user opted into
+      # tab-open delivery by NOT installing the PWA).
+      assert render(view) =~ "Keep this tab open"
+      refute render(view) =~ "Notifications are available, but not yet enabled"
+      refute render(view) =~ "Enable notifications"
+      refute render(view) =~ "Install this site as a PWA first"
     end
 
     test "notification_state unsupported shows the install-PWA CTA even on browsers without the Notification API",
