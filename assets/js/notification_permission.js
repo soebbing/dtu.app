@@ -179,30 +179,38 @@ const NotificationPermission = {
       return {state: "unsupported", installed: installed, device: this.deviceType()}
     }
 
-    if (!installed) {
-      // On desktop browsers (Chrome / Firefox / Edge on Windows /
-      // macOS / Linux) the Web Notifications API works in a regular
-      // tab once the user grants permission — PWA install is NOT a
-      // prerequisite. iOS Safari (and Firefox-iOS) gate the API
-      // behind Add to Home Screen, and mobile browsers in general
-      // are unreliable without install, so we still send
-      // `not_installed` there.
-      if (!this.isMobile()) {
-        return {state: "default", installed: false, device: "desktop"}
-      }
-      return {state: "not_installed", installed: false, device: "mobile"}
+    // Mobile-only install gate. iOS Safari (and to a lesser extent
+    // other mobile browsers) only fire notifications from an installed
+    // PWA — `window.Notification.permission` is misleading there
+    // because the API isn't really usable without install. On desktop
+    // (Chrome / Firefox / Edge on Windows / macOS / Linux) the
+    // Web Notifications API works in a regular tab once the user has
+    // granted permission — install is irrelevant for permission
+    // reporting. Without this distinction, a desktop user who
+    // previously granted permission in a regular (non-PWA) tab would
+    // short-circuit to `default` here and see the Enable CTA instead
+    // of the test button, even though `Notification.permission ===
+    // "granted"` already.
+    if (!installed && this.isMobile()) {
+      return {state: "not_installed", installed: installed, device: this.deviceType()}
     }
 
+    // From here on, `window.Notification.permission` is the source
+    // of truth for the state we report. `installed` is still reported
+    // in the payload so the template can render platform-appropriate
+    // copy, but it no longer gates the permission path — the auto-
+    // detect on desktop works the same whether the user is in a PWA
+    // window or a regular tab.
     const permission = window.Notification.permission
     if (permission === "denied") {
-      return {state: "denied", installed: true, device: this.deviceType()}
+      return {state: "denied", installed: installed, device: this.deviceType()}
     }
 
     if (permission === "granted") {
-      return {state: "granted", installed: true, device: this.deviceType()}
+      return {state: "granted", installed: installed, device: this.deviceType()}
     }
 
-    return {state: "default", installed: true, device: this.deviceType()}
+    return {state: "default", installed: installed, device: this.deviceType()}
   },
 
   deviceType() {

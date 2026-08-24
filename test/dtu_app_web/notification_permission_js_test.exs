@@ -62,40 +62,71 @@ defmodule DtuAppWeb.NotificationPermissionJsTest do
     end
   end
 
-  describe "computeSupport — desktop non-installed falls through to 'default'" do
-    # The whole point of the change: a non-installed desktop browser
-    # must NOT receive `state: "not_installed"`. Instead it must
-    # receive `state: "default"` (with `installed: false`) so the
-    # template renders the Enable button. Pre-change this returned
-    # `not_installed` regardless of platform and forced every
-    # desktop user through the install-PWA wall.
-    test "computeSupport returns default for non-installed desktop", %{
+  describe "computeSupport — install gate is mobile-only, permission drives desktop" do
+    # The auto-detect change: on desktop, `window.Notification.permission`
+    # is the source of truth for what the user sees. A desktop user who
+    # previously granted permission in a regular (non-PWA) tab must NOT
+    # be told to click Enable; the JS already knows they granted. The
+    # only legitimate gate on `!installed` is mobile, where iOS Safari
+    # requires PWA install for notifications to actually fire — without
+    # an install, the browser's `Notification.permission` value is
+    # misleading (the API isn't really usable).
+    test "the !installed short-circuit is gated by this.isMobile()", %{
       source: source
     } do
-      # The `!installed` branch must include a `!this.isMobile()`
-      # gate. The most common regression shape is a plain
-      # `if (!installed) { return {state: "not_installed", ...} }`
-      # without any device check — that's the buggy pre-change
-      # behaviour that forced every desktop user through the
-      # install-PWA wall. The pin below matches the nested shape:
-      # `if (!installed) { ... if (!this.isMobile()) { default } ... }`.
       assert source =~
+               ~r/if\s*\(\s*!\s*installed\s*&&\s*this\.isMobile\(\)\s*\)/,
+             "expected the `!installed` branch to be gated by " <>
+               "`this.isMobile()` — i.e. the install-required rule " <>
+               "applies only on mobile (iOS Safari needs the PWA for " <>
+               "notifications to fire). On desktop, `!installed` is " <>
+               "no longer a short-circuit; `Notification.permission` " <>
+               "below decides what to render."
+    end
+
+    test "computeSupport no longer has the nested !isMobile short-circuit", %{
+      source: source
+    } do
+      # Pre-refactor shape was
+      # `if (!installed) { if (!this.isMobile()) { default } }`.
+      # After the refactor, the desktop short-circuit is gone — every
+      # non-mobile payload falls through to the `Notification.permission`
+      # check below. Pin the absence so a regression that re-adds the
+      # nested gate is caught (it's exactly the bug that motivated the
+      # auto-detect fix: desktop users with a prior grant being told
+      # to click Enable).
+      refute source =~
                ~r/if\s*\(\s*!\s*installed\s*\)\s*\{[\s\S]{0,1000}?if\s*\(\s*!\s*this\.isMobile\(\)\s*\)/,
-             "expected computeSupport to gate the desktop short-circuit " <>
-               "on `!this.isMobile()` inside the `!installed` branch. A " <>
-               "plain `if (!installed) return 'not_installed'` (without " <>
-               "the isMobile check) would re-introduce the bug where " <>
-               "every non-installed browser — desktop included — gets " <>
-               "'not_installed'."
+             "expected computeSupport to no longer carry the nested " <>
+               "`if (!installed) { if (!this.isMobile()) ... }` " <>
+               "short-circuit. The desktop case should fall through " <>
+               "to the `Notification.permission` check, not short-" <>
+               "circuit to `state: default`."
+    end
+
+    test "computeSupport reads Notification.permission as the source of truth", %{
+      source: source
+    } do
+      # The whole point of the auto-detect fix: `Notification.permission`
+      # is read regardless of whether the user is in a PWA or a regular
+      # tab (on desktop). Pin the literal `Notification.permission`
+      # reference so a regression that re-gates the permission read on
+      # `installed` is caught.
+      assert source =~ ~r/Notification\.permission/,
+             "expected computeSupport to read `Notification.permission` " <>
+               "as the source of truth for the granted/denied/default " <>
+               "state. Without this read, the desktop auto-detect path " <>
+               "would not fire for users with a prior grant."
     end
 
     test "computeSupport still returns not_installed for non-installed mobile", %{
       source: source
     } do
-      # Mobile users still need the install advisory (iOS Safari
-      # gates notifications behind Add to Home Screen; Android
-      # Chrome in a regular tab is unreliable enough that the
-      # advisory is the right default). Pin the explicit branch.
+      # iOS Safari (and other mobile browsers to a lesser extent) only
+      # fire notifications from an installed PWA — without install the
+      # API isn't really usable. The user-facing state for
+      # `!installed && mobile` is `not_installed` regardless of what
+      # `Notification.permission` would return. Pin the explicit branch.
       assert source =~ ~r/state:\s*["']not_installed["']/,
              "expected computeSupport to still return " <>
                "`state: 'not_installed'` for mobile. Without it, the " <>
@@ -115,27 +146,32 @@ defmodule DtuAppWeb.NotificationPermissionJsTest do
     } do
       # Count the `device: this.deviceType()` returns — there
       # should be exactly one per state in `computeSupport` (5
-      # states: unsupported, default, not_installed, denied,
-      # granted). The default branch now declares `device:
-      # "desktop"` inline rather than via deviceType(), so count
-      # is 4 deviceType() references + 1 inline = 5.
+      # states: unsupported, not_installed, denied, granted,
+      # default). Every state goes through `deviceType()` so the
+      # count is exactly 5.
       device_returns = Regex.scan(~r/device:\s*this\.deviceType\(\)/, source)
 
       assert length(device_returns) >= 4,
              "expected computeSupport's state payloads to include " <>
-               "`device: this.deviceType()` for every non-default " <>
-               "state. Found #{length(device_returns)} references; " <>
-               "expected at least 4 (unsupported, denied, granted, " <>
-               "and the installed-default branch)."
+               "`device: this.deviceType()` for every state. Found " <>
+               "#{length(device_returns)} references; expected at " <>
+               "least 4 (unsupported, not_installed, denied, granted, " <>
+               "default)."
     end
 
-    test "the desktop non-installed branch carries device: \"desktop\" inline", %{
+    test "no state payload hardcodes device: \"desktop\" inline", %{
       source: source
     } do
-      assert source =~ ~r/device:\s*["']desktop["']/,
-             "expected the desktop short-circuit branch to carry " <>
-               "`device: \"desktop\"` literally so the template can " <>
-               "render the platform-specific copy."
+      # Pre-refactor, the desktop short-circuit branch carried
+      # `device: "desktop"` literally. After the refactor, every
+      # payload goes through `deviceType()` — there is no
+      # desktop-only branch anymore. Pin the absence so a regression
+      # that re-adds the inline literal is caught (it would be
+      # inconsistent with the other states, all of which use the
+      # helper).
+      refute source =~ ~r/device:\s*["']desktop["']/,
+             "expected no state payload to hardcode `device: \"desktop\"` " <>
+               "inline. Every payload should go through `deviceType()`."
     end
   end
 
