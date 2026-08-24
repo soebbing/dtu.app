@@ -63,7 +63,8 @@ defmodule DtuAppWeb.Plugs.LocaleTest do
           |> Plug.Conn.put_req_header("accept-language", header)
           |> Locale.call([])
 
-        assert conn.assigns.locale == expected, "header #{inspect(header)} should resolve to #{expected}"
+        assert conn.assigns.locale == expected,
+               "header #{inspect(header)} should resolve to #{expected}"
       end
     end
 
