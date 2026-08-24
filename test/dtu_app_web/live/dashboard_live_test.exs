@@ -1556,6 +1556,82 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "display:none"
     end
 
+    test "the chart guide line and tooltip overlay paint on top of the data paths",
+         %{conn: conn, user: user} do
+      # SVG paint order is document order: a later sibling paints on
+      # top of an earlier one. Earlier in this file the guide line
+      # and tooltip `<foreignObject>` were emitted BEFORE the data
+      # `<path>` elements, so any series that crossed the cursor's
+      # column painted over the dashed guide line, and any series
+      # whose stroke crossed through the tooltip box hid the body
+      # behind the curve. The fix renders the guide line and the
+      # tooltip last in the SVG so they always sit visually on top
+      # of the graph. This test pins that ordering — a future
+      # refactor that moves them back in front of the paths will
+      # fail the byte-offset assertions below.
+      dtu =
+        device_fixture(user, %{
+          name: "Overlay Order",
+          kind: "opendtu",
+          mqtt_username: "overlay-order",
+          base_topic: "solar"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at:
+            Date.utc_today() |> DateTime.new!(~T[12:00:00]) |> Map.put(:microsecond, {0, 6})
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Locate the byte offset of every key element in the rendered
+      # SVG. The overlay elements must come AFTER every data path in
+      # the document; otherwise an earlier sibling would paint on top
+      # of them.
+      #
+      # `:binary.matches/2` returns a list of `{Pos, Length}` tuples,
+      # one per non-overlapping match in the binary. The last tuple's
+      # first element is the byte offset of the rightmost match — the
+      # rightmost data path in the SVG sits at the bottom of the
+      # paint stack we want the overlay to clear.
+      [last_path_match | _] =
+        case :binary.matches(html, ~s(<path )) do
+          [] -> raise "expected at least one <path> in the rendered SVG"
+          matches -> matches
+        end
+
+      last_path_offset = elem(last_path_match, 0)
+
+      [guide_match | _] =
+        case :binary.matches(html, ~s(id="chart-guide-line")) do
+          [] -> raise "expected chart-guide-line in the rendered SVG"
+          matches -> matches
+        end
+
+      guide_offset = elem(guide_match, 0)
+
+      [tooltip_match | _] =
+        case :binary.matches(html, ~s(id="chart-tooltip")) do
+          [] -> raise "expected chart-tooltip in the rendered SVG"
+          matches -> matches
+        end
+
+      tooltip_offset = elem(tooltip_match, 0)
+
+      assert guide_offset > last_path_offset,
+             "chart-guide-line must render after every <path> (paint order). " <>
+               "Found guide at offset #{guide_offset}, last path at #{last_path_offset}."
+
+      assert tooltip_offset > last_path_offset,
+             "chart-tooltip foreignObject must render after every <path> (paint order). " <>
+               "Found tooltip at offset #{tooltip_offset}, last path at #{last_path_offset}."
+    end
+
     test "the chart has no tinted area-fill under the curves",
          %{conn: conn, user: user} do
       # The chart used to render a tinted polygon (a green gradient fill
