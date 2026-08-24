@@ -43,6 +43,41 @@ defmodule DtuAppWeb.Plugs.LocaleTest do
       assert conn.assigns.locale == "en"
     end
 
+    test "no user, primary-subtag-only accept-language resolves via primary subtag" do
+      # Chrome's first-navigation request often arrives with only the
+      # primary subtag (e.g. "fr-FR", no q-value, no fallback), and
+      # the parser must downcase it to "fr-fr" and prefix-match
+      # against `@supported_locales` rather than exact-match — an
+      # exact match against `["en", "de", "fr"]` would reject
+      # "fr-fr" and fall back to "en". This case broke the German /
+      # French Playwright tests once when the plug was refactored to
+      # use exact-match.
+      for {header, expected} <- [
+            {"fr-FR", "fr"},
+            {"de-DE", "de"},
+            {"en-US", "en"},
+            {"de", "de"}
+          ] do
+        conn =
+          conn_with([])
+          |> Plug.Conn.put_req_header("accept-language", header)
+          |> Locale.call([])
+
+        assert conn.assigns.locale == expected, "header #{inspect(header)} should resolve to #{expected}"
+      end
+    end
+
+    test "unknown primary subtag falls back to \"en\"" do
+      # A primary subtag we don't ship a catalog for. Prefix-match
+      # against the supported set returns nil; default kicks in.
+      conn =
+        conn_with([])
+        |> Plug.Conn.put_req_header("accept-language", "klingon-KH")
+        |> Locale.call([])
+
+      assert conn.assigns.locale == "en"
+    end
+
     test "logged-in user with locale=\"de\" wins over French accept-language", %{conn: conn} do
       # The user explicitly chose German in /users/settings. The
       # request's Accept-Language is French (e.g. a coworker on a

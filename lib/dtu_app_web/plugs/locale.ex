@@ -64,6 +64,14 @@ defmodule DtuAppWeb.Plugs.Locale do
   defp parse_accept_language(conn) do
     case Plug.Conn.get_req_header(conn, "accept-language") do
       [value | _] when is_binary(value) and value != "" ->
+        # Splits "fr-FR,fr;q=0.9" into primary subtags "fr-fr"
+        # and "fr", downcases them, then maps each to a supported
+        # locale via prefix-match on the primary subtag. Exact
+        # match would reject "fr-fr" against "fr"; the original
+        # implementation's `"fr" <> _` clause used to be a
+        # dedicated case here, and we keep that semantic so the
+        # `Accept-Language: fr-FR` request Chrome sends on its
+        # first navigation (with no q-values) still resolves.
         value
         |> String.split(",")
         |> Enum.map(fn lang ->
@@ -73,7 +81,9 @@ defmodule DtuAppWeb.Plugs.Locale do
           |> String.trim()
           |> String.downcase()
         end)
-        |> Enum.find(&(&1 in @supported_locales)) || "en"
+        |> Enum.find_value("en", fn tag ->
+          Enum.find(@supported_locales, &String.starts_with?(tag, &1))
+        end)
 
       _ ->
         "en"
