@@ -73,14 +73,47 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       refute render(view) =~ "Send test notification"
     end
 
-    test "notification_state not_installed shows the install-PWA CTA", %{
+    test "notification_state not_installed on mobile shows the install-PWA CTA", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, ~p"/notifications")
 
-      render_hook(view, "notification_state", %{state: "not_installed", installed: false})
+      # Mobile + non-installed = the install advisory. Same copy as
+      # before this change; pinned here so a future regression that
+      # drops the `device` field from the payload can't accidentally
+      # stop mobile users from seeing the install hint.
+      render_hook(
+        view,
+        "notification_state",
+        %{state: "not_installed", installed: false, device: "mobile"}
+      )
 
       assert render(view) =~ "Install this site as a PWA first"
+      assert render(view) =~ "mobile"
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "notification_state not_installed on desktop falls through to the Enable CTA", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      # Desktop browsers (Chrome, Firefox, Edge on Windows / macOS /
+      # Linux) allow `new Notification(...)` in a regular tab once
+      # the user grants permission — PWA install is NOT a
+      # prerequisite. The JS hook therefore sends `state: "default"`
+      # with `installed: false` on non-installed desktops, and the
+      # template renders the Enable button exactly as if the page
+      # were already a PWA.
+      render_hook(
+        view,
+        "notification_state",
+        %{state: "default", installed: false, device: "desktop"}
+      )
+
+      assert render(view) =~ "Notifications are available, but not yet enabled"
+      assert render(view) =~ "Enable notifications"
+      refute render(view) =~ "Install this site as a PWA first"
       refute render(view) =~ "Send test notification"
     end
 

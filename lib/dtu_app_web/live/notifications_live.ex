@@ -39,7 +39,16 @@ defmodule DtuAppWeb.NotificationsLive do
     {:ok,
      socket
      |> assign(:page_title, gettext("Notifications"))
-     |> assign(:notification_state, %{"state" => "loading"})
+     # The JS hook on `#notifications-permission` overrides this
+     # `loading` placeholder on mount with one of
+     # `granted` / `denied` / `default` / `unsupported` /
+     # `not_installed`. The `device` field is added in the same
+     # push so the template can render platform-specific copy
+     # (e.g. "install as PWA" for mobile, plain Enable for
+     # desktop). Defaulting to `nil` here keeps the catch-all
+     # "Checking browser capabilities…" branch active until the
+     # hook's first push lands.
+     |> assign(:notification_state, %{"state" => "loading", "device" => nil})
      |> assign(:has_push_subscriptions, has_subscriptions)
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
@@ -194,7 +203,7 @@ defmodule DtuAppWeb.NotificationsLive do
             <% "not_installed" -> %>
               <div class="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-4 text-sm text-amber-800 dark:text-amber-200">
                 {gettext(
-                  "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission."
+                  "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission. PWA install is required on mobile devices; desktop browsers can enable notifications below without installing."
                 )}
               </div>
             <% "denied" -> %>
@@ -209,9 +218,15 @@ defmodule DtuAppWeb.NotificationsLive do
                   {gettext("Notifications are available, but not yet enabled.")}
                 </p>
                 <p class="mt-1">
-                  {gettext(
-                    "Click the button below; your browser will ask whether to allow notifications for this PWA."
-                  )}
+                  <%= if Map.get(@notification_state, "device") == "desktop" do %>
+                    {gettext(
+                      "Click the button below; your browser will ask whether to allow notifications for this site. Desktop browsers do not require a PWA install — you can install later for background (closed-tab) delivery if you want it."
+                    )}
+                  <% else %>
+                    {gettext(
+                      "Click the button below; your browser will ask whether to allow notifications for this PWA."
+                    )}
+                  <% end %>
                 </p>
                 <button
                   id="notifications-enable"
@@ -233,6 +248,14 @@ defmodule DtuAppWeb.NotificationsLive do
                       "Native push is on for this device — you'll get a system notification even when this site isn't open."
                     )}
                   </p>
+                <% else %>
+                  <%= if Map.get(@notification_state, "device") == "desktop" do %>
+                    <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                      {gettext(
+                        "Keep this tab open to receive notifications. For background delivery when the tab is closed, install this site as a PWA."
+                      )}
+                    </p>
+                  <% end %>
                 <% end %>
               </div>
             <% _ -> %>
