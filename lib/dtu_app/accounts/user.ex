@@ -38,8 +38,21 @@ defmodule DtuApp.Accounts.User do
     # `DtuApp.Devices.compute_savings/2`.
     field :cents_per_kwh, :integer
 
+    # The user's preferred UI language (ISO 639-1 short code;
+    # one of "en", "de", "fr"). Mirrored by `Plugs.Locale` (which
+    # reads it on every request and falls back to Accept-Language
+    # then "en" for signed-out visitors) and the per-event
+    # notification producers (which wrap their `gettext/1` calls in
+    # `Gettext.with_locale/2` against this value, so the broadcast
+    # payload and the service-worker push both end up in the
+    # user's language). Default "en" so existing users don't see
+    # a sudden locale change on deploy.
+    field :locale, :string, default: "en"
+
     timestamps(type: :utc_datetime)
   end
+
+  @supported_locales ~w(en de fr)
 
   @doc """
   A user changeset for registering or changing the email.
@@ -188,8 +201,10 @@ defmodule DtuApp.Accounts.User do
         _ -> nil
       end
 
+    locale = Map.get(attrs, "locale") || Map.get(attrs, :locale) || user.locale
+
     user
-    |> cast(%{"cents_per_kwh" => cents}, [:cents_per_kwh])
+    |> cast(%{"cents_per_kwh" => cents, "locale" => locale}, [:cents_per_kwh, :locale])
     |> validate_change(:cents_per_kwh, fn _, value ->
       case value do
         nil -> []
@@ -202,6 +217,9 @@ defmodule DtuApp.Accounts.User do
         _ -> [cents_per_kwh: "must be between €0.01 and €100"]
       end
     end)
+    |> validate_inclusion(:locale, @supported_locales,
+      message: "must be one of: #{Enum.join(@supported_locales, ", ")}"
+    )
   end
 
   @doc """

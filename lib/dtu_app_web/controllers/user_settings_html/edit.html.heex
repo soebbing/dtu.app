@@ -111,6 +111,30 @@
       </p>
     <% end %>
 
+    <%!-- Language for the dashboard UI, browser notifications, and
+         transactional emails. Mirrors the same set `Plugs.Locale`
+         and `User.@supported_locales` resolve against; the changeset
+         rejects anything else. Prefilled from the user's stored
+         locale so re-opening the page doesn't drop the selection. --%>
+    <.input
+      name="locale"
+      id="locale"
+      type="select"
+      label={gettext("Language")}
+      value={@current_scope.user.locale}
+      options={[
+        {gettext("English"), "en"},
+        {gettext("Deutsch"), "de"},
+        {gettext("Français"), "fr"}
+      ]}
+    />
+
+    <%= if error = Keyword.get(@settings_changeset.errors, :locale) do %>
+      <p class="mt-1 text-sm text-rose-600 dark:text-rose-400">
+        {elem(error, 0)}
+      </p>
+    <% end %>
+
     <.button variant="primary" phx-disable-with={gettext("Saving...")}>
       {gettext("Save Settings")}
     </.button>

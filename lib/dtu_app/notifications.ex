@@ -90,7 +90,23 @@ defmodule DtuApp.Notifications do
           # the caller's mailbox. Failures are logged inside the
           # dispatcher and never bubble up — broadcast/2's contract
           # is `:ok | {:error, term()}` for the PubSub side.
-          _ = Task.start(fn -> Push.deliver(user, payload) end)
+          #
+          # The Task process has no inherited locale (it doesn't
+          # share the caller's process dictionary), and the in-page
+          # PubSub payload is already in the user's language by the
+          # time it lands here — the notifier modules wrap their
+          # gettext calls in `Gettext.with_locale/2` before invoking
+          # broadcast/2. The service-worker push payload, by
+          # contrast, is built fresh inside `Push.deliver/2`, so we
+          # must set the locale in the spawned task too — otherwise
+          # users with `User.locale == "de"` would receive an
+          # English title/body in their closed-tab banner.
+          _ =
+            Task.start(fn ->
+              Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+                Push.deliver(user, payload)
+              end)
+            end)
         end
 
         :ok

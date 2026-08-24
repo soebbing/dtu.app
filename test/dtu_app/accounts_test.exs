@@ -722,4 +722,76 @@ defmodule DtuApp.AccountsTest do
       assert updated.email == user.email
     end
   end
+
+  describe "locale validation (settings_changeset/2)" do
+    # The /users/settings form posts a `locale` string from the
+    # dropdown. User.@supported_locales is the source of truth for
+    # allowed values (`"en"`, `"de"`, `"fr"`). Anything else must be
+    # rejected with the inclusion error so a malformed payload (or
+    # future addition) can't smuggle an unknown code into the DB.
+    # The Plug.Locale priority chain reads from the same list, so
+    # a locale we don't ship a .po catalog for would otherwise fall
+    # through to a gettext locale code that doesn't exist.
+
+    test "accepts each supported locale" do
+      for locale <- ~w(en de fr) do
+        # Start from a User with a different locale so the changeset
+        # records the change (otherwise `get_change/2` returns nil for
+        # a no-op write). `get_field/2` returns the value the
+        # changeset would persist — the post-cast result — and works
+        # in both cases.
+        changeset = User.settings_changeset(%User{locale: "en"}, %{"locale" => locale})
+        assert changeset.valid?, "expected locale #{inspect(locale)} to be valid"
+        assert get_field(changeset, :locale) == locale
+      end
+    end
+
+    test "rejects an unsupported locale with the inclusion error" do
+      changeset = User.settings_changeset(%User{}, %{"locale" => "klingon"})
+      refute changeset.valid?
+
+      assert errors_on(changeset).locale == ["must be one of: en, de, fr"]
+    end
+
+    test "preserves the user's existing locale when no locale is posted" do
+      # The rate form posts only `euros_per_kwh` — the locale field
+      # is omitted on the same submission. The changeset must keep
+      # the user's stored locale instead of clobbering it with nil.
+      user = %User{locale: "de"}
+      changeset = User.settings_changeset(user, %{"euros_per_kwh" => "0.32"})
+
+      assert changeset.valid?
+      # `get_field/2` returns the value the changeset would write —
+      # for unchanged fields, that's the original (the user's stored
+      # locale), not nil.
+      assert get_field(changeset, :locale) == "de"
+    end
+
+    test "persists a locale change end-to-end" do
+      user = user_fixture()
+
+      {:ok, updated} =
+        Accounts.update_user_settings(user, %{"locale" => "fr"})
+
+      assert updated.locale == "fr"
+
+      reloaded = Repo.get!(User, user.id)
+      assert reloaded.locale == "fr"
+    end
+
+    test "a locale change combined with a rate change persists both" do
+      # The form posts both fields in one PUT; the changeset must
+      # accept them together.
+      user = user_fixture()
+
+      {:ok, updated} =
+        Accounts.update_user_settings(user, %{
+          "euros_per_kwh" => "0.40",
+          "locale" => "de"
+        })
+
+      assert updated.cents_per_kwh == 40
+      assert updated.locale == "de"
+    end
+  end
 end

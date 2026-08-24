@@ -246,11 +246,23 @@ defmodule DtuApp.Notifications.SunDown do
               clear_user_state(state, user_id)
 
             user ->
-              payload = build_payload(user, Date.utc_today())
+              # The SunDown producer runs as a long-lived GenServer
+              # without a request context, so `gettext/1` would default
+              # to whatever Gettext was initialized with (≈ "en")
+              # regardless of the user's preference. Wrap the
+              # build_payload + broadcast pair in the user's locale so
+              # the title/body strings are generated in the right
+              # language — both the in-page PubSub broadcast and the
+              # service-worker push fan-out (handled inside
+              # `Notifications.broadcast/2` via its own
+              # `Gettext.with_locale/2` wrapper) carry that locale.
+              Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+                payload = build_payload(user, Date.utc_today())
 
-              if payload do
-                Notifications.broadcast(user_id, payload)
-              end
+                if payload do
+                  Notifications.broadcast(user_id, payload)
+                end
+              end)
 
               clear_user_state(state, user_id)
           end

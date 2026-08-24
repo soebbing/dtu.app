@@ -49,6 +49,7 @@ defmodule DtuApp.Notifications.DtuConnection do
   alias DtuApp.Notifications
   alias DtuApp.Repo
   alias DtuApp.Time
+  alias DtuApp.Accounts.User
 
   @presence_topic "dtu:presence"
 
@@ -87,9 +88,16 @@ defmodule DtuApp.Notifications.DtuConnection do
       nil ->
         {:noreply, state}
 
-      %{user_id: user_id, name: name, last_seen_at: last_seen_at} ->
+      %{user_id: _user_id, name: _name, last_seen_at: last_seen_at} ->
         if recently_active?(last_seen_at) do
-          fire(user_id, name, :went_offline)
+          # Route through `fire_for_status/2` so we share the
+          # User-struct lookup with the connect path — `fire/3`
+          # takes a `%User{}` (we need the user's locale to scope
+          # gettext), not a bare user_id. A stale-state race where
+          # the user has been deleted between the safe_lookup and
+          # fire_for_status is handled inside safe_get_user/1
+          # (`nil → :ok` no-op).
+          fire_for_status(device_id, :went_offline)
         end
 
         {:noreply, state}
@@ -156,18 +164,41 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   defp fire_for_status(device_id, status) do
     case safe_lookup(device_id) do
-      nil -> :ok
-      %{user_id: user_id, name: name} -> fire(user_id, name, status)
+      nil ->
+        :ok
+
+      %{user_id: user_id, name: name} ->
+        # Look up the User struct (not just the id) so `fire/3` can
+        # wrap the gettext calls in the user's locale. The producer
+        # runs as a long-lived GenServer without a request context,
+        # so a bare `gettext/1` here would default to whatever
+        # Gettext was initialized with (≈ "en") regardless of
+        # preference — see SunDownNotifier / SunUpNotifier for the
+        # parallel pattern.
+        case safe_get_user(user_id) do
+          nil -> :ok
+          user -> fire(user, name, status)
+        end
     end
   end
 
-  defp fire(user_id, name, status) do
-    Notifications.broadcast(user_id, %{
-      event: "dtu_connection",
-      title: dtu_title(status, name),
-      body: dtu_body(status, name),
-      tag: "dtu:#{name}"
-    })
+  defp fire(%User{} = user, name, status) do
+    Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+      Notifications.broadcast(user.id, %{
+        event: "dtu_connection",
+        title: dtu_title(status, name),
+        body: dtu_body(status, name),
+        tag: "dtu:#{name}"
+      })
+    end)
+  end
+
+  defp safe_get_user(user_id) do
+    try do
+      Repo.get(User, user_id)
+    rescue
+      _ -> nil
+    end
   end
 
   defp dtu_title(:went_offline, _name), do: gettext("DTU went offline")

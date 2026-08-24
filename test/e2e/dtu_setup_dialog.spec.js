@@ -65,10 +65,16 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
     });
 
     test('successfully adds DTU and displays dialog in German', async ({ page }) => {
-      // 1. Log in (German: Anmelden)
+      // 1. Log in (German: Anmelden). Use the German seed user
+      // (`test-de@example.com`) so the post-login page renders in
+      // German — with `current_scope.user.locale` winning over
+      // `Accept-Language` (introduced in PR #151), the default
+      // `test@example.com` (locale "en") would re-render the
+      // post-login `/devices` page in English and break the
+      // `text=DTU hinzufügen` click below.
       await page.goto('/');
       await page.click('text=Anmelden');
-      await page.fill('#login_form_password input[type="email"]', 'test@example.com');
+      await page.fill('#login_form_password input[type="email"]', 'test-de@example.com');
       await page.fill('#login_form_password input[type="password"]', 'password123456');
       await Promise.all([
         page.waitForNavigation(),
@@ -120,10 +126,14 @@ test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', 
     });
 
     test('successfully adds DTU and displays dialog in French', async ({ page }) => {
-      // 1. Log in (French: Se connecter)
+      // 1. Log in (French: Se connecter). Use the French seed user
+      // (`test-fr@example.com`) for the same reason as the German
+      // test above: with user.locale winning over Accept-Language,
+      // the default `test@example.com` would render `/devices` in
+      // English, breaking the `text=Ajouter une DTU` click below.
       await page.goto('/');
       await page.click('text=Se connecter');
-      await page.fill('#login_form_password input[type="email"]', 'test@example.com');
+      await page.fill('#login_form_password input[type="email"]', 'test-fr@example.com');
       await page.fill('#login_form_password input[type="password"]', 'password123456');
       await Promise.all([
         page.waitForNavigation(),

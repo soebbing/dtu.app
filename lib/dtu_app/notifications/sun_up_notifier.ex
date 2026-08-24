@@ -207,7 +207,21 @@ defmodule DtuApp.Notifications.SunUp do
                     end)
 
                   if fired_on_date != today do
-                    fire(user)
+                    # The SunUp producer runs as a long-lived GenServer
+                    # without a request context. Wrap `fire/1` (which
+                    # builds the gettext payload and calls
+                    # `Notifications.broadcast/2`) in the user's locale
+                    # so the title/body strings are generated in the
+                    # right language — both the in-page PubSub
+                    # broadcast and the service-worker push fan-out
+                    # (handled inside `Notifications.broadcast/2` via
+                    # its own `Gettext.with_locale/2` wrapper) carry
+                    # that locale.
+                    Gettext.with_locale(
+                      DtuAppWeb.Gettext,
+                      user.locale || "en",
+                      fn -> fire(user) end
+                    )
                   end
 
                   state
@@ -240,10 +254,14 @@ defmodule DtuApp.Notifications.SunUp do
     end
   end
 
-  # The user-visible payload. Title + body are gettext strings so
-  # they pick up the user's locale. The opt-in gate for native push
-  # lives in `DtuApp.Notifications.native_push_enabled?/2` — the
-  # in-page broadcast is unconditional, matching the SunDown pattern.
+  # The user-visible payload. Title + body are gettext strings, but
+  # they're wrapped in `Gettext.with_locale/2` at the call site (see
+  # `maybe_fire/2`) so they pick up the user's locale — the
+  # SunUp GenServer has no request context, so a bare `gettext/1`
+  # would default to whatever Gettext was initialized with (≈ "en")
+  # regardless of preference. The opt-in gate for native push lives
+  # in `DtuApp.Notifications.native_push_enabled?/2` — the in-page
+  # broadcast is unconditional, matching the SunDown pattern.
   defp fire(%User{} = user) do
     Notifications.broadcast(user.id, %{
       event: "sun_up",

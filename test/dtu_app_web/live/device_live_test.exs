@@ -19,18 +19,28 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert html =~ "Living Room Inverter"
     end
 
-    test "renders listing in German when accept-language is German", %{conn: conn, user: user} do
+    test "renders listing in German when the user has German locale", %{conn: conn, user: user} do
+      # The user's persisted locale wins over Accept-Language (see
+      # `Plugs.Locale` priority chain) — set it explicitly to
+      # exercise the German catalog end-to-end. Setting Accept-Language
+      # alone is no longer sufficient once a user is signed in.
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(user, %{"locale" => "de"})
+
       device_fixture(user, %{name: "Living Room Inverter"})
-      conn = Plug.Conn.put_req_header(conn, "accept-language", "de-DE,de;q=0.9")
       {:ok, _index_live, html} = live(conn, ~p"/devices")
 
-      assert html =~ "DTUs"
+      # German renders "DTUs" as the invariable noun "DTU"
+      # (singular/plural don't inflect for borrowed nouns).
+      assert html =~ "DTU"
       assert html =~ "Entfernen"
     end
 
-    test "renders listing in French when accept-language is French", %{conn: conn, user: user} do
+    test "renders listing in French when the user has French locale", %{conn: conn, user: user} do
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(user, %{"locale" => "fr"})
+
       device_fixture(user, %{name: "Living Room Inverter"})
-      conn = Plug.Conn.put_req_header(conn, "accept-language", "fr-FR,fr;q=0.9")
       {:ok, _index_live, html} = live(conn, ~p"/devices")
 
       assert html =~ "DTU"

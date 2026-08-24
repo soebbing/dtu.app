@@ -81,6 +81,12 @@ defmodule DtuApp.Emails.Layout do
     * `:body`        — list of `<p>` paragraphs (strings). Required.
     * `:button`      — `%{label: String.t(), url: String.t()}` CTA, or `nil`
     * `:note`        — small muted footer paragraph (e.g. security note), or `nil`
+    * `:lang`        — BCP-47 short code (`"en"`, `"de"`, `"fr"`) used for the
+                       `<html lang="...">` attribute. Defaults to `"en"`. The
+                       title / greeting / body / button / note strings are
+                       expected to ALREADY be translated by the caller (this
+                       module does no translation itself) — only the
+                       attribute is set here.
 
   Returns `{html_body, text_body}`.
   """
@@ -90,14 +96,20 @@ defmodule DtuApp.Emails.Layout do
     body = Keyword.fetch!(opts, :body)
     button = Keyword.get(opts, :button)
     note = Keyword.get(opts, :note)
+    # Default to "en" so a caller that forgets the option (or pre-dates
+    # the i18n-coverage change) still renders sensibly. The set of
+    # supported values is the same as `Plugs.Locale.@supported_locales`
+    # and `User.@supported_locales`; an unknown code is passed through
+    # verbatim — gettext / screen readers fall back gracefully.
+    lang = Keyword.get(opts, :lang, "en")
 
-    html = html(title, greeting, body, button, note)
+    html = html(title, greeting, body, button, note, lang)
     text = text_body(title, greeting, body, button, note)
 
     {html, text}
   end
 
-  defp html(title, greeting, body, button, note) do
+  defp html(title, greeting, body, button, note, lang) do
     # Inline styles set the LIGHT theme defaults so clients that strip <style>
     # (Gmail web, Outlook desktop) at least render something sensible. The
     # <style> block at the top of <body> overrides these with dark colors
@@ -107,7 +119,7 @@ defmodule DtuApp.Emails.Layout do
     # controls and scrollbars in the matching palette.
     ~s"""
     <!DOCTYPE html>
-    <html lang="en">
+    <html lang="#{lang}">
       <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />

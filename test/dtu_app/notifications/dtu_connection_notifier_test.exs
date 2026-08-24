@@ -149,4 +149,136 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       assert payload.tag == "dtu:Opt-out DTU"
     end
   end
+
+  describe "user locale propagation" do
+    # The producer runs as a long-lived GenServer without a request
+    # context, so a bare `gettext/1` would default to whatever
+    # Gettext was initialized with (≈ "en") regardless of the user's
+    # preference. `fire/3` wraps the gettext calls in
+    # `Gettext.with_locale/2` against `user.locale` — these tests
+    # pin that the in-page PubSub broadcast (and the title/body
+    # within it) lands in the user's language.
+    #
+    # The assertions are locale-aware: rather than pin a specific
+    # translation string (which the catalog may legitimately change),
+    # we compare the rendered title against `Gettext.gettext/2`
+    # queried directly with the same locale. If the catalog later
+    # gets a real German translation, the test follows it. If the
+    # producer ever regresses to using the wrong locale, the two
+    # values diverge and the test fails.
+    #
+    # `user_fixture/1` only casts `:email` (via register_user/1),
+    # so passing `locale: "de"` through the fixture is silently
+    # dropped. `with_locale_user/2` updates the locale AFTER the
+    # user is registered, so the producer's `safe_get_user/1`
+    # returns a User with the requested locale.
+
+    test "a German user's disconnect title matches the German catalog" do
+      user = with_locale_user(user_fixture(), "de")
+      dtu = device_fixture(user, %{name: "Mein Dach"})
+      touch_last_seen!(dtu, 0)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_loc", dtu.id}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      expected_title =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "DTU went offline")
+        end)
+
+      assert payload.title == expected_title
+      assert payload.body =~ "Mein Dach"
+    end
+
+    test "a French user's disconnect title matches the French catalog" do
+      user = with_locale_user(user_fixture(), "fr")
+      dtu = device_fixture(user, %{name: "Mon toit"})
+      touch_last_seen!(dtu, 0)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_loc", dtu.id}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      expected_title =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "DTU went offline")
+        end)
+
+      assert payload.title == expected_title
+    end
+
+    test "a French user's body uses the French translation for %{name} interpolation" do
+      user = with_locale_user(user_fixture(), "fr")
+      dtu = device_fixture(user, %{name: "Mon toit"})
+      touch_last_seen!(dtu, 0)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_loc", dtu.id}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      expected_body =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(
+            DtuAppWeb.Gettext,
+            "Your inverter %{name} has been offline for at least 5 minutes.",
+            name: "Mon toit"
+          )
+        end)
+
+      assert payload.body == expected_body
+    end
+
+    test "an English user's notification uses the source (English) string" do
+      # The English catalog has no translations (every msgstr is
+      # empty), so gettext returns the msgid verbatim. The default
+      # user already has locale: "en", so this asserts the no-op
+      # path stays intact.
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Roof inverter"})
+      touch_last_seen!(dtu, 0)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_loc", dtu.id}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      assert payload.title == "DTU went offline"
+      assert payload.body =~ "Roof inverter"
+    end
+  end
+
+  # `user_fixture/1` only persists `:email` (via the auth changeset),
+  # so passing `locale:` through it is a no-op. Update the user
+  # directly via the `settings_changeset` so the producer's
+  # `safe_get_user/1` returns a User with the requested locale.
+  defp with_locale_user(user, locale) do
+    {:ok, updated} =
+      DtuApp.Accounts.update_user_settings(user, %{"locale" => locale})
+
+    updated
+  end
 end
