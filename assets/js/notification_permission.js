@@ -176,23 +176,54 @@ const NotificationPermission = {
 
   computeSupport(installed) {
     if (typeof window === "undefined" || !("Notification" in window)) {
-      return {state: "unsupported", installed: installed}
+      return {state: "unsupported", installed: installed, device: this.deviceType()}
     }
 
     if (!installed) {
-      return {state: "not_installed", installed: false}
+      // On desktop browsers (Chrome / Firefox / Edge on Windows /
+      // macOS / Linux) the Web Notifications API works in a regular
+      // tab once the user grants permission — PWA install is NOT a
+      // prerequisite. iOS Safari (and Firefox-iOS) gate the API
+      // behind Add to Home Screen, and mobile browsers in general
+      // are unreliable without install, so we still send
+      // `not_installed` there.
+      if (!this.isMobile()) {
+        return {state: "default", installed: false, device: "desktop"}
+      }
+      return {state: "not_installed", installed: false, device: "mobile"}
     }
 
     const permission = window.Notification.permission
     if (permission === "denied") {
-      return {state: "denied", installed: true}
+      return {state: "denied", installed: true, device: this.deviceType()}
     }
 
     if (permission === "granted") {
-      return {state: "granted", installed: true}
+      return {state: "granted", installed: true, device: this.deviceType()}
     }
 
-    return {state: "default", installed: true}
+    return {state: "default", installed: true, device: this.deviceType()}
+  },
+
+  deviceType() {
+    return this.isMobile() ? "mobile" : "desktop"
+  },
+
+  isMobile() {
+    // UA-based detection — UA covers iOS / iPadOS / Android / etc.
+    // without depending on pointer/hover heuristics (a touchscreen
+    // laptop running Windows is still a desktop). The MacIntel +
+    // maxTouchPoints branch catches iPadOS, which reports as Mac
+    // with multi-touch.
+    if (typeof navigator === "undefined") return false
+    const ua = navigator.userAgent || ""
+    if (/Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua)) {
+      return true
+    }
+    if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) {
+      return true
+    }
+    return false
   },
 
   isInstalledAsPWA() {
