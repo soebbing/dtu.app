@@ -2816,49 +2816,6 @@ defmodule DtuAppWeb.DashboardLive do
                       </text>
                     <% end %>
 
-                    <!-- Vertical guide line drawn at the cursor's X
-                         position. Hidden by default; the ChartTooltip
-                         hook shows it on hover/touch. -->
-                    <line
-                      x1="0"
-                      y1="20"
-                      x2="0"
-                      y2="250"
-                      stroke="#a1a1aa"
-                      class="dark:stroke-zinc-500"
-                      stroke-width="1"
-                      stroke-dasharray="2,2"
-                      pointer-events="none"
-                      style="display:none"
-                      id="chart-guide-line"
-                    />
-
-                    <!-- Floating tooltip overlay rendered by the
-                         ChartTooltip hook. Hidden by default; positioned
-                         via the foreignObject's x/y attributes as the
-                         cursor moves. `pointer-events: none` so it
-                         never blocks hover on the chart. -->
-                    <foreignObject
-                      x="0"
-                      y="0"
-                      width="200"
-                      height="160"
-                      pointer-events="none"
-                      style="display:none;overflow:visible"
-                      id="chart-tooltip"
-                    >
-                      <div
-                        xmlns="http://www.w3.org/1999/xhtml"
-                        class="rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
-                      >
-                        <div
-                          id="chart-tooltip-body"
-                          class="font-mono text-xs text-zinc-700 dark:text-zinc-200"
-                        >
-                        </div>
-                      </div>
-                    </foreignObject>
-
                     <!-- One SVG path per inverter. Each path carries its
                          (time, power) data points as a JSON data attribute
                          so the ChartTooltip hook can look up the cursor-
@@ -2999,6 +2956,59 @@ defmodule DtuAppWeb.DashboardLive do
                         />
                       <% end %>
                     <% end %>
+
+                    <!-- Vertical guide line drawn at the cursor's X
+                         position. Hidden by default; the ChartTooltip
+                         hook shows it on hover/touch. Rendered LAST
+                         (after every data path) so the SVG paint
+                         order keeps it visually on top of the
+                         curves — earlier in document order, the
+                         strokes would paint over the dashed line
+                         wherever the cursor sits near a series. -->
+                    <line
+                      x1="0"
+                      y1="20"
+                      x2="0"
+                      y2="250"
+                      stroke="#a1a1aa"
+                      class="dark:stroke-zinc-500"
+                      stroke-width="1"
+                      stroke-dasharray="2,2"
+                      pointer-events="none"
+                      style="display:none"
+                      id="chart-guide-line"
+                    />
+
+                    <!-- Floating tooltip overlay rendered by the
+                         ChartTooltip hook. Hidden by default; positioned
+                         via the foreignObject's x/y attributes as the
+                         cursor moves. `pointer-events: none` so it
+                         never blocks hover on the chart. Rendered LAST
+                         (after every data path) so the SVG paint
+                         order keeps it visually on top of the curves
+                         — the foreignObject would otherwise be
+                         painted under the data strokes wherever a
+                         series crosses the tooltip box. -->
+                    <foreignObject
+                      x="0"
+                      y="0"
+                      width="200"
+                      height="160"
+                      pointer-events="none"
+                      style="display:none;overflow:visible"
+                      id="chart-tooltip"
+                    >
+                      <div
+                        xmlns="http://www.w3.org/1999/xhtml"
+                        class="rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
+                      >
+                        <div
+                          id="chart-tooltip-body"
+                          class="font-mono text-xs text-zinc-700 dark:text-zinc-200"
+                        >
+                        </div>
+                      </div>
+                    </foreignObject>
                   </svg>
 
                   <%!-- Legend: Total line first (the headline), then one entry
