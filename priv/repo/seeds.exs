@@ -45,6 +45,31 @@ Repo.delete_all(User)
 
 IO.puts("Created user: #{user.email}")
 
+# Per-locale seed users for the localized E2E specs in
+# `test/e2e/dtu_setup_dialog.spec.js`. Those specs log in
+# with `extraHTTPHeaders: { 'accept-language': 'de-DE' }` /
+# `'fr-FR'` and expect the post-login `/devices` page to
+# render in the matching language; with the user-priority
+# locale resolution introduced by PR #151 (`current_scope
+# .user.locale` wins over Accept-Language), that requires
+# the seed user to already have the right `locale` set.
+# The default `test@example.com` keeps locale "en" because
+# the dashboard / device-management specs all use English.
+for {email, locale} <- [
+      {"test-de@example.com", "de"},
+      {"test-fr@example.com", "fr"}
+    ] do
+  {:ok, _} =
+    %User{}
+    |> User.email_changeset(%{email: email})
+    |> User.password_changeset(%{password: "password123456"})
+    |> User.confirm_changeset()
+    |> Ecto.Changeset.change(%{locale: locale})
+    |> Repo.insert()
+
+  IO.puts("Created user: #{email} (locale=#{locale})")
+end
+
 # Register example DTUs
 {:ok, dtu1} =
   Devices.create_device(user, %{

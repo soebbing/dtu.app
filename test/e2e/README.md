@@ -38,7 +38,11 @@ and a seeded database.
 
 The tests assume the app is reachable at `http://localhost:4000` and the DB is
 seeded (`test@example.com` / `password123456`, three DTUs, today's curve plus
-~1 year of historical readings). A `globalSetup` script at
+~1 year of historical readings). The seed also creates per-locale users
+`test-de@example.com` and `test-fr@example.com` (same password) for the
+localized acceptance tests in `dtu_setup_dialog.spec.js`, since the
+`User.locale` priority introduced in PR #151 makes the post-login page
+render in the user's stored language rather than the browser's Accept-Language. A `globalSetup` script at
 `test/e2e/_setup/global-setup.js` re-seeds the database via
 `mix run priv/repo/seeds.exs` automatically before the suite runs, so you
 don't have to remember to do it manually. The easiest way to get the rest of
