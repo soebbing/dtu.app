@@ -5,6 +5,8 @@ defmodule DtuApp.Accounts.UserNotifier do
   `DtuApp.Emails.Layout` and a plain-text fallback.
   """
 
+  use Gettext, backend: DtuAppWeb.Gettext
+
   import Swoosh.Email
 
   alias DtuApp.Emails.Layout
@@ -15,15 +17,17 @@ defmodule DtuApp.Accounts.UserNotifier do
   Deliver instructions to update a user email.
   """
   def deliver_update_email_instructions(user, url) do
-    deliver(user.email, "Update email instructions",
-      title: "Update your email",
-      greeting: "Hi #{user.email},",
+    deliver(user, gettext("Update email instructions"),
+      title: gettext("Update your email"),
+      greeting: gettext("Hi %{email},", email: user.email),
       body: [
-        "You can change your email address by clicking the button below. This link expires shortly.",
-        "If the button doesn't work, copy and paste this link into your browser:"
+        gettext(
+          "You can change your email address by clicking the button below. This link expires shortly."
+        ),
+        gettext("If the button doesn't work, copy and paste this link into your browser:")
       ],
-      button: %{label: "Update email", url: url},
-      note: "If you didn't request this change, you can safely ignore this email."
+      button: %{label: gettext("Update email"), url: url},
+      note: gettext("If you didn't request this change, you can safely ignore this email.")
     )
   end
 
@@ -38,40 +42,53 @@ defmodule DtuApp.Accounts.UserNotifier do
   end
 
   defp deliver_magic_link_instructions(user, url) do
-    deliver(user.email, "Log in to dtu.app",
-      title: "Log in",
-      greeting: "Hi #{user.email},",
+    deliver(user, gettext("Log in to dtu.app"),
+      title: gettext("Log in"),
+      greeting: gettext("Hi %{email},", email: user.email),
       body: [
-        "Click the button below to log in to your account. This link can only be used once and expires shortly.",
-        "If the button doesn't work, copy and paste this link into your browser:"
+        gettext(
+          "Click the button below to log in to your account. This link can only be used once and expires shortly."
+        ),
+        gettext("If the button doesn't work, copy and paste this link into your browser:")
       ],
-      button: %{label: "Log in", url: url},
+      button: %{label: gettext("Log in"), url: url},
       note:
-        "If you didn't try to log in, you can safely ignore this email — no one else can access your account without this link."
+        gettext(
+          "If you didn't try to log in, you can safely ignore this email — no one else can access your account without this link."
+        )
     )
   end
 
   defp deliver_confirmation_instructions(user, url) do
-    deliver(user.email, "Confirm your dtu.app account",
-      title: "Confirm your account",
-      greeting: "Hi #{user.email},",
+    deliver(user, gettext("Confirm your dtu.app account"),
+      title: gettext("Confirm your account"),
+      greeting: gettext("Hi %{email},", email: user.email),
       body: [
-        "Welcome to dtu.app! Confirm your email address to activate your account by clicking the button below.",
-        "If the button doesn't work, copy and paste this link into your browser:"
+        gettext(
+          "Welcome to dtu.app! Confirm your email address to activate your account by clicking the button below."
+        ),
+        gettext("If the button doesn't work, copy and paste this link into your browser:")
       ],
-      button: %{label: "Confirm account", url: url},
-      note: "If you didn't create an account with us, you can safely ignore this email."
+      button: %{label: gettext("Confirm account"), url: url},
+      note: gettext("If you didn't create an account with us, you can safely ignore this email.")
     )
   end
 
   # Delivers the email using the application mailer. `opts` describe the content
   # (see DtuApp.Emails.render/1); both an HTML and a plain-text body are set.
-  defp deliver(recipient, subject, opts) do
-    {html, text} = Layout.render(opts)
+  #
+  # `lang` (default "en") is propagated to `Emails.Layout.render/1` so the
+  # rendered HTML carries the correct `<html lang="...">` for screen readers
+  # and spam-classifier heuristics. The textual strings above are already
+  # translated by the gettext calls in the public functions — this module
+  # relies on `Plugs.Locale` setting the process-wide locale before it runs
+  # (which it does on every request that flows through the :browser pipeline).
+  defp deliver(user, subject, opts) do
+    {html, text} = Layout.render(Keyword.put(opts, :lang, user.locale || "en"))
 
     email =
       new()
-      |> to(recipient)
+      |> to(user.email)
       |> from(mail_from())
       |> subject(subject)
       |> html_body(html)
@@ -84,7 +101,7 @@ defmodule DtuApp.Accounts.UserNotifier do
 
   # Sender address, configured via MAIL_FROM (see config/runtime.exs). Must be
   # on a domain verified by the transactional provider (Resend). Accepts a
-  # plain address ("a@b.com") or a named form ("Name <a@b.com>"); the latter is
+  # plain address ("a@b.com") or a named form ("Name <a@b.com"); the latter is
   # parsed into the {"Name", "a@b.com"} tuple Swoosh's from/1 expects.
   defp mail_from do
     mail_from = Application.get_env(:dtu_app, :mail_from, "dtu.app <noreply@localhost>")

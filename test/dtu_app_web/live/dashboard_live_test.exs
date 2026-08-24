@@ -26,22 +26,35 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "No power readings logged for this day."
     end
 
-    test "renders dashboard in German when accept-language is German", %{conn: conn, user: user} do
+    test "renders dashboard in German when the user has German locale", %{conn: conn, user: user} do
+      # The user's persisted locale wins over Accept-Language
+      # (see `Plugs.Locale` priority chain) — set it explicitly to
+      # exercise the German catalog end-to-end. Setting Accept-Language
+      # alone is no longer sufficient once a user is signed in.
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(user, %{"locale" => "de"})
+
       _dtu =
         device_fixture(user, %{name: "Test Inverter", kind: "opendtu", mqtt_username: "test-inv"})
 
-      conn = Plug.Conn.put_req_header(conn, "accept-language", "de-DE,de;q=0.9")
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
+      # The German catalog has "PV Power Dashboard" → "PV-Power-Dashboard"
+      # (catalog entries aren't all proper German; some are borrowed
+      # English terms with German hyphenation). The test pins the
+      # catalog as it stands today — if the catalog gets a proper
+      # German translation later, this assertion should follow it.
       assert html =~ "PV-Power-Dashboard"
       assert html =~ "Aktuelle Erzeugung"
     end
 
-    test "renders dashboard in French when accept-language is French", %{conn: conn, user: user} do
+    test "renders dashboard in French when the user has French locale", %{conn: conn, user: user} do
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(user, %{"locale" => "fr"})
+
       _dtu =
         device_fixture(user, %{name: "Test Inverter", kind: "opendtu", mqtt_username: "test-inv"})
 
-      conn = Plug.Conn.put_req_header(conn, "accept-language", "fr-FR,fr;q=0.9")
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "Tableau de bord de puissance photovoltaïque"
@@ -58,6 +71,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # matching the convention `format_savings/1` already used for the
       # "Saved this period" card. Today's Total Yield uses `decimals: 1`,
       # so 1_250 Wh (1.25 kWh) renders as "1,3 kWh" in `de`, not "1.3 kWh".
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(user, %{"locale" => "de"})
+
       dtu =
         device_fixture(user, %{
           name: "Locale DTU",
@@ -75,7 +91,6 @@ defmodule DtuAppWeb.DashboardLiveTest do
           inserted_at: DateTime.utc_now()
         })
 
-      conn = Plug.Conn.put_req_header(conn, "accept-language", "de-DE,de;q=0.9")
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # German-style comma decimal, dot thousands separator.

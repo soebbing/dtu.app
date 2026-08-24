@@ -195,6 +195,92 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
     end
   end
 
+  describe "PUT /users/settings (language dropdown)" do
+    # The locale `<.input type="select">` posts a top-level `locale`
+    # value alongside `euros_per_kwh` (or on its own). The
+    # `settings_changeset/2` reads `attrs["locale"]` directly, casts
+    # it against `@supported_locales`, and persists via the standard
+    # update path. This shape mirrors the energy-rate test above:
+    # one form, two optional fields, same routing.
+
+    test "persists the chosen locale and prefills it on subsequent GETs", %{
+      conn: conn,
+      user: user
+    } do
+      # The fixture user starts with locale "en" (the column default).
+      assert user.locale == "en"
+
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_settings",
+          "locale" => "de"
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Settings updated successfully"
+
+      assert Accounts.get_user!(user.id).locale == "de"
+
+      # Re-fetch the page — the dropdown must reflect the new value
+      # so the user can see their choice persisted (and re-submit to
+      # change it back without losing context).
+      conn = get(conn, ~p"/users/settings")
+      response = html_response(conn, 200)
+
+      # Phoenix's <.input type="select"> renders the active option
+      # as `<option selected value="de">Deutsch</option>` (note:
+      # attribute order is `selected` before `value`, no space
+      # before the closing `>`). We assert the right option is
+      # marked selected — the user-visible labels are gettext strings
+      # whose rendered form depends on the current process locale
+      # (the test fixture's user is "de" by the time this assertion
+      # runs, so the labels render in German), so we don't pin them.
+      assert response =~ ~r|<option\s+selected\s+value="de">[^<]*</option>|
+
+      # And the other two options are NOT selected.
+      refute response =~ ~r|<option\s+selected\s+value="en">|
+      refute response =~ ~r|<option\s+selected\s+value="fr">|
+    end
+
+    test "submitting a rate and a locale together persists both", %{conn: conn, user: user} do
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_settings",
+          "euros_per_kwh" => "0.30",
+          "locale" => "fr"
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+
+      reloaded = Accounts.get_user!(user.id)
+      assert reloaded.cents_per_kwh == 30
+      assert reloaded.locale == "fr"
+    end
+
+    test "submitting an unsupported locale redisplayes the form with the inclusion error", %{
+      conn: conn,
+      user: user
+    } do
+      # The select dropdown only offers supported locales, but a
+      # hand-crafted curl POST (or a future addition to the dropdown
+      # that wasn't validated upstream) must still hit the changeset
+      # guard. The user keeps their stored locale and sees the
+      # friendly error.
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_settings",
+          "locale" => "klingon"
+        })
+
+      response = html_response(conn, 200)
+      assert response =~ "must be one of: en, de, fr"
+
+      # Locale unchanged — the failed cast must NOT have written
+      # anything to the row.
+      assert Accounts.get_user!(user.id).locale == user.locale
+    end
+  end
+
   describe "GET /users/settings/confirm-email/:token" do
     setup %{user: user} do
       email = unique_user_email()

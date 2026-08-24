@@ -193,6 +193,66 @@ defmodule DtuApp.Notifications.SunUpTest do
     end
   end
 
+  describe "user locale propagation" do
+    # The producer's `fire/1` builds the `sun_up` payload with
+    # `gettext/1` calls for the playful title and body. As a long-lived
+    # GenServer without a request context, a bare `gettext/1` would
+    # default to whatever Gettext was initialized with (≈ "en")
+    # regardless of the user's preference. The producer wraps
+    # `fire/1` in `Gettext.with_locale/2` against `user.locale`,
+    # and the assertion below checks the rendered title matches
+    # what `Gettext.gettext/2` returns in the same locale.
+    #
+    # `user_fixture/1` only persists `:email`, so we update the
+    # locale separately via `Accounts.update_user_settings/2`.
+
+    test "a French user's sun_up title matches the French catalog" do
+      {:ok, user} =
+        DtuApp.Accounts.update_user_settings(
+          user_fixture(%{notify_sun_up: true}),
+          %{"locale" => "fr"}
+        )
+
+      dtu = device_fixture(user, %{name: "Toit"})
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_loc", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 80.0}}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      expected_title =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "☀️ The sun's awake!")
+        end)
+
+      assert payload.title == expected_title
+    end
+
+    test "an English user's sun_up title is the source string" do
+      # English has no translations; gettext returns the msgid
+      # verbatim. Asserts the no-op path stays intact.
+      user = user_fixture(%{notify_sun_up: true})
+      dtu = device_fixture(user, %{name: "Roof"})
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_loc", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 80.0}}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+
+      assert payload.title == "☀️ The sun's awake!"
+    end
+  end
+
   describe "local_date/2" do
     test "returns the shifted calendar date for a positive (east) offset" do
       # 2026-08-23T22:00:00Z in CEST (+7200) is 2026-08-24T00:00 local.
