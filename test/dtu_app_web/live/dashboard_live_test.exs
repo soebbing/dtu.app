@@ -3438,6 +3438,37 @@ defmodule DtuAppWeb.DashboardLiveTest do
       )
     end
 
+    # Insert into the `readings` hypertable with `now()` as the
+    # timestamp so the row lands inside the 2-minute freshness window
+    # that `Devices.compute_peak_watts_in_period/4` / `current_power`
+    # use. `readings_5m` rows lag 5 minutes behind real time, so the
+    # only way to populate `current_power` in tests is a fresh
+    # `readings` row. The composite PK (dtu_id, inverter_serial,
+    # mppt_index, inserted_at) means callers must pass a unique
+    # `(serial, mppt_index)` pair per row.
+    defp insert_live_reading(dtu_id, serial, ac_power, opts \\ []) do
+      mppt_index = Keyword.get(opts, :mppt_index, 0)
+
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings
+          (dtu_id, inverter_serial, mppt_index, inverter_name, power_type,
+           ac_power, yield_day, yield_total, frequency, producing,
+           reachable, inserted_at)
+        VALUES ($1, $2, $3, $4, 'production', $5, $6, $7, 50.0, true, true, now())
+        """,
+        [
+          dtu_id,
+          serial,
+          mppt_index,
+          serial,
+          ac_power,
+          ac_power * 0.1,
+          1000.0
+        ]
+      )
+    end
+
     test "1D view renders a ghost path for yesterday's curve", %{
       conn: conn,
       user: user
@@ -3664,6 +3695,122 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       refute html =~ ~s(id="stat-saved"),
              "savings card must be hidden without a configured rate"
+    end
+  end
+
+  describe "Current Power tile (1D-only)" do
+    # Restores the live "Current Power" signal that the 4-up row used
+    # to carry. The tile is period-scoped to 1D because historical
+    # periods don't have a "right now" reading. Hidden when the
+    # inverter isn't producing anything (`current_power == 0`) so a
+    # quiet system doesn't render a misleading "0 W" headline.
+
+    test "renders Current Power tile when the user is on the 1D preset and current_power > 0", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Current Power DTU",
+          kind: "opendtu",
+          mqtt_username: "current-power"
+        })
+
+      # Seed a live reading within the 2-minute freshness window so
+      # `current_power` is non-zero.
+      insert_live_reading(dtu.id, "INV-CP", 750.0)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="stat-current-power"),
+             "Current Power tile must render on 1D"
+
+      assert html =~ ~r/id="stat-current-power"[^>]*>\s*\d[\d,. \s]*\s*W\s*</
+    end
+
+    test "hides Current Power tile on 7D/30D/YTD/Custom presets", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "Current Power Hidden DTU",
+          kind: "opendtu",
+          mqtt_username: "current-power-hidden"
+        })
+
+      # Seed a live reading so the tile is visible on the default
+      # 1D view — then assert it disappears as the user switches
+      # presets.
+      insert_live_reading(dtu.id, "INV-CPH", 500.0)
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+      assert html =~ ~s(id="stat-current-power")
+
+      # Switch to 7D — historical periods have no live reading.
+      view |> element("#btn-range-7d") |> render_click()
+      html = render(view)
+
+      refute html =~ ~s(id="stat-current-power"),
+             "Current Power tile must not render on 7D"
+
+      # 30D, YTD, Custom — same expectation.
+      for id <- ["#btn-range-30d", "#btn-range-ytd", "#btn-range-custom"] do
+        view |> element(id) |> render_click()
+        html = render(view)
+
+        refute html =~ ~s(id="stat-current-power"),
+               "Current Power tile must not render after clicking #{id}"
+      end
+    end
+
+    test "hides Current Power tile when current_power is 0 (quiet inverter)", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Quiet DTU",
+          kind: "opendtu",
+          mqtt_username: "quiet-dtu"
+        })
+
+      # No fresh reading within the 2-minute freshness window — the
+      # dashboard falls back to 0 W via `Enum.filter`.
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ ~s(id="stat-current-power"),
+             "Current Power tile must stay hidden when current_power == 0"
+    end
+  end
+
+  describe "Navbar layout — Dashboard/DTUs removed, Manage Devices remains" do
+    # PR #5: removed the top-nav "Dashboard" and "DTUs" links.
+    # Dashboard is reachable through the logo (the root route
+    # redirects authenticated users to /dashboard) and DTU
+    # management lives under "Manage Devices" in the right-side
+    # cluster (and in the burger menu on mobile).
+
+    test "navbar omits the Dashboard and DTUs links", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # `Dashboard` text used to live in the top nav as a dedicated
+      # link. The root layout still renders "Dashboard" inside the
+      # browser <title> on the dashboard page, so we scope to the
+      # top-nav container (`nav.flex.items-center.gap-6`) to assert
+      # the link removal specifically.
+      refute html =~ ~r|<nav[^>]*href="[^"]*/dashboard"[^>]*>[^<]*Dashboard[^<]*</a>|
+
+      # `DTUs` text used to live in the top nav as a dedicated link
+      # to /devices. Manage Devices is the new top-level entry, so
+      # no DTU-only anchor should remain in the nav cluster.
+      refute html =~ ~r|<nav[^>]*href="[^"]*/devices"[^>]*>[^<]*DTUs[^<]*</a>|
+    end
+
+    test "navbar still exposes the Manage Devices link", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~r|href="[^"]*/devices"[^>]*>Manage Devices|
     end
   end
 end
