@@ -490,6 +490,12 @@ defmodule DtuAppWeb.DashboardLive do
          dtu_id,
          opts \\ []
        ) do
+    # `:live?` flips on the yesterday-ghost overlay. Only the 1D (today)
+    # preset shows it — historical day/week/month/year views keep the
+    # chart scoped to their selected period. The historical-day caller
+    # still gets a clean chart without a confusing ghost line.
+    live? = Keyword.get(opts, :live?, socket.assigns[:live] == true)
+
     {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
     # Read from the `readings_5m` continuous aggregate (older buckets)
     # unioned with a 5-minute live tail from raw rows; collapses the
@@ -726,6 +732,59 @@ defmodule DtuAppWeb.DashboardLive do
         {series, path}
       end)
       |> Map.new()
+
+    # Yesterday's ghost overlay — only on the 1D (live) view. The
+    # ghost reuses the same X/Y scale as today's chart so it sits on
+    # the same baseline visually; same per-series grouping so the
+    # ghost line picks up the same inverter colour (just rendered
+    # translucent + dashed in the template). Empty when there's no
+    # yesterday data — e.g. a brand-new install — so the template can
+    # render nothing instead of a misleading zero line.
+    yesterday_paths =
+      if live? do
+        yesterday_chart_points =
+          user
+          |> Devices.list_yesterday_chart_data_for_dashboard(utc_start, utc_end, dtu_id)
+          |> Enum.filter(fn pt ->
+            pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+          end)
+          |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
+
+        yesterday_chart_points
+        |> Enum.group_by(& &1.series)
+        |> Enum.map(fn {series, pts} ->
+          coords =
+            pts
+            |> Enum.map(fn %{time: time, power: power} ->
+              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
+
+              local_seconds =
+                utc_seconds + tz_offset_seconds
+                |> rem(86_400 * 4)
+                |> rem(86_400)
+
+              x = (local_seconds - x_min_seconds) / x_span * 800.0
+              y = zero_y - power * pixels_per_watt_positive
+              {Float.round(x, 1), Float.round(y, 1)}
+            end)
+            |> Enum.sort_by(&elem(&1, 0))
+
+          path =
+            case coords do
+              [] ->
+                ""
+
+              [{fx, fy} | rest] ->
+                "M #{fx} #{fy} " <>
+                  Enum.map_join(rest, " ", fn {x, y} -> "L #{x} #{y}" end)
+            end
+
+          {series, path}
+        end)
+        |> Map.new()
+      else
+        %{}
+      end
 
     # Color palette per series. Each series is now one line per
     # inverter (mppt_index = 0 only), so we just need the per-inverter
@@ -981,6 +1040,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:y_min, y_min)
     |> assign(:zero_y, zero_y)
     |> assign(:series_paths, series_paths)
+    |> assign(:yesterday_paths, yesterday_paths)
     |> assign(:series_palette, series_palette)
     |> assign(:series_legend, series_legend)
     |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
@@ -3039,6 +3099,31 @@ defmodule DtuAppWeb.DashboardLive do
                       </text>
                     <% end %>
 
+                    <!-- Yesterday ghost overlay (1D / live view only):
+                         translucent, dashed per-inverter paths that sit
+                         BEHIND today's solid curves so the day-over-day
+                         comparison reads at a glance. Rendered first
+                         (before @series_paths below) so today's line
+                         paints on top. Hidden on historical day/week/
+                         month/year views, where the selected period's
+                         own curve is the comparison the user asked for. -->
+                    <%= for {series, path} <- @yesterday_paths do %>
+                      <% {ybase, yshade} = Map.get(@series_palette, series, {"zinc", "400"}) %>
+                      <% ystroke_hex = tooltip_to_hex(ybase, yshade) %>
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke={ystroke_hex}
+                        stroke-width="1.5"
+                        stroke-opacity="0.35"
+                        stroke-dasharray="4 3"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        data-ghost="true"
+                        data-legend-key={"yesterday:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}"}
+                      />
+                    <% end %>
+
                     <!-- One SVG path per inverter. Each path carries its
                          (time, power) data points as a JSON data attribute
                          so the ChartTooltip hook can look up the cursor-
@@ -3240,7 +3325,7 @@ defmodule DtuAppWeb.DashboardLive do
                        keyboard- and screen-reader-accessible; the
                        ChartTooltip hook toggles the matching path's hidden
                        class on click. --%>
-                  <%= if map_size(@series_legend) > 0 or @total_path != "" or @consumption_path != "" do %>
+                  <%= if map_size(@series_legend) > 0 or @total_path != "" or @consumption_path != "" or map_size(@yesterday_paths) > 0 do %>
                     <div
                       class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
                       id="chart-legend"
@@ -3295,6 +3380,20 @@ defmodule DtuAppWeb.DashboardLive do
                             {gettext("Net flow")}
                           </span>
                         </button>
+                      <% end %>
+                      <%= if map_size(@yesterday_paths) > 0 do %>
+                        <span
+                          class="inline-flex items-center gap-1.5 rounded px-1 py-0.5 text-zinc-500 dark:text-zinc-400"
+                          aria-label={gettext("Yesterday (day-over-day comparison)")}
+                        >
+                          <span
+                            class="inline-block h-0.5 w-4 rounded border-t border-dashed border-zinc-400 dark:border-zinc-500"
+                            aria-hidden="true"
+                          />
+                          <span class="text-xs">
+                            {gettext("Yesterday")}
+                          </span>
+                        </span>
                       <% end %>
                       <%= for {series, label} <- @series_legend do %>
                         <% {base, shade} = Map.get(@series_palette, series) %>

@@ -790,6 +790,95 @@ defmodule DtuApp.Devices do
     end
   end
 
+  # Live-today ghost chart: yesterday's closed-bucket chart points for
+  # the user's DTU scope. Backs the dashboard's "yesterday ghost line"
+  # overlay behind today's curve.
+  #
+  # Returns the same `%{time, series, power}` shape as
+  # `list_day_chart_data_for_dashboard/4`. Yesterday is fully closed
+  # (no live tail needed — there's no 5-min raw tail for a day that's
+  # already past midnight), so this reads from `readings_5m` only.
+  # Falls back to `list_day_chart_data/4` against the same window when
+  # the aggregate is empty (cold installs, fresh test DBs).
+  @doc """
+  Returns yesterday's per-bucket chart points for the same scope
+  (`dtu_id`) and time window as `list_day_chart_data_for_dashboard/4`,
+  shifted by -1 day. Used by the dashboard's 1D live view to render
+  a translucent ghost line behind today's curve.
+
+  The window is computed by subtracting 1 day from the supplied
+  `utc_start` / `utc_end`, so callers can reuse their today's-window
+  DateTimes without re-deriving them. `dtu_id` filters the same way
+  it does in the today function (nil = fleet-wide).
+
+  Returns `[]` when the user has no devices or no readings in the
+  yesterday window.
+  """
+  @spec list_yesterday_chart_data_for_dashboard(
+          User.t(),
+          DateTime.t(),
+          DateTime.t(),
+          integer() | nil
+        ) :: [chart_point()]
+  def list_yesterday_chart_data_for_dashboard(
+        %User{} = user,
+        utc_start,
+        utc_end,
+        dtu_id \\ nil
+      )
+      when is_struct(utc_start, DateTime) and is_struct(utc_end, DateTime) do
+    # Shift the window back by one day so callers can reuse the same
+    # DateTimes they pass to `list_day_chart_data_for_dashboard/4`.
+    yesterday_start = DateTime.add(utc_start, -86_400, :second)
+    yesterday_end = DateTime.add(utc_end, -86_400, :second)
+
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      []
+    else
+      # Yesterday is past — every bucket is closed. No live tail to
+      # union with; the aggregate alone covers the full window.
+      # We still apply the same defensive contract as the today path:
+      # the cold-aggregate fallback keeps a fresh test DB / brand-new
+      # install from rendering an empty ghost when raw rows exist.
+      aggregate_points =
+        Repo.all(
+          from a in "readings_5m",
+            where:
+              a.dtu_id in ^dtu_ids and
+                a.bucket >= ^yesterday_start and a.bucket <= ^yesterday_end,
+            select: %{
+              time: a.bucket,
+              dtu_id: a.dtu_id,
+              inverter_serial: a.inverter_serial,
+              mppt_index: a.mppt_index,
+              inverter_name: a.inverter_name,
+              power: a.avg_ac_power
+            }
+        )
+        |> Enum.map(fn pt ->
+          %{
+            time: pt.time,
+            series: {pt.dtu_id, pt.inverter_serial, pt.mppt_index, pt.inverter_name},
+            power: pt.power
+          }
+        end)
+        |> Enum.map(fn pt ->
+          case pt.time do
+            %DateTime{} -> pt
+            %NaiveDateTime{} -> %{pt | time: DateTime.from_naive!(pt.time, "Etc/UTC")}
+          end
+        end)
+
+      if aggregate_points == [] do
+        list_day_chart_data(user, yesterday_start, yesterday_end, dtu_id)
+      else
+        aggregate_points
+      end
+    end
+  end
+
   # Returns the chart's bucket-mean shape for raw rows whose
   # `inserted_at >= utc_tail_start`. Aggregated by
   # `(bucket, dtu_id, inverter_serial, mppt_index)` via `time_bucket`
