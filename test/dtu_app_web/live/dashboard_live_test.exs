@@ -3813,4 +3813,282 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~r|href="[^"]*/devices"[^>]*>Manage Devices|
     end
   end
+
+  describe "Dashboard production-row grid spacing adapts to visible panel count" do
+    # Regression for the "four/five panels with spacing for six" bug:
+    # the production-row grid used to hard-code `lg:grid-cols-6`
+    # on the 1D preset and `lg:grid-cols-5` everywhere else, which
+    # left empty grid columns for users without the savings or
+    # current-power cards. The grid now computes its `lg:` column
+    # count from the same predicates that gate the conditional
+    # cards (current_power, savings, self-consumption, current
+    # consumption), so a user without savings sees a 4-up grid on
+    # 1D (current power + 3 baseline) instead of a 6-up grid with
+    # two empty cells.
+
+    test "1D with no savings: production row uses lg:grid-cols-4 (current power + 3 baseline)", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "1D No Rate",
+          kind: "opendtu",
+          mqtt_username: "1d-no-rate"
+        })
+
+      # Live reading → current_power tile renders.
+      insert_live_reading(dtu.id, "INV-1D-NR", 600.0)
+
+      # Default cents_per_kwh is nil → @savings is nil → savings card
+      # stays hidden. Three baseline cards (yield, peak power, peak
+      # time) + current_power = 4 → `lg:grid-cols-4`.
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="stat-current-power"),
+             "Current Power tile must render on 1D with a live reading"
+
+      assert html =~ ~s(id="stat-yield-kwh")
+
+      assert html =~ ~s(id="stat-peak-watts")
+
+      assert html =~ ~s(id="stat-peak-time")
+
+      refute html =~ ~s(id="stat-saved"),
+             "Savings card must stay hidden without a configured rate"
+
+      # Production row uses the exact class signature
+      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4`
+      # (HEEx compiles the grid div's class list as one string).
+      # Without a Shelly, no other grid on the page carries
+      # `lg:grid-cols-4`, so the literal class match uniquely
+      # identifies the production row.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"/,
+             "production row grid must use lg:grid-cols-4 (1D, current power + 3 baseline, no savings)"
+
+      # The current-power card lives inside that grid. Allow any
+      # characters (including HEEx comments and nested wrappers)
+      # between the grid div and the leaf id.
+      assert html =~ ~r/lg:grid-cols-4[\s\S]*?id="stat-current-power"/
+    end
+
+    test "1D with savings configured: production row uses lg:grid-cols-5", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          name: "1D With Rate",
+          kind: "opendtu",
+          mqtt_username: "1d-with-rate"
+        })
+
+      insert_live_reading(dtu.id, "INV-1D-WR", 800.0)
+
+      # Configure a rate via `update_user_settings/2`. The form
+      # field is `euros_per_kwh`; the settings changeset converts
+      # it to integer `cents_per_kwh`. Passing `cents_per_kwh`
+      # directly would be silently overwritten by the changeset
+      # (which reads `euros_per_kwh` first).
+      {:ok, _user} =
+        DtuApp.Accounts.update_user_settings(user, %{"euros_per_kwh" => "0.32"})
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="stat-current-power"),
+             "Current Power tile must render on 1D"
+
+      assert html =~ ~s(id="stat-saved"),
+             "Savings card must render once a rate is configured"
+
+      # Three baseline + current_power + savings = 5 → `lg:grid-cols-5`.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
+             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + savings)"
+
+      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
+
+      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-saved"/
+
+      # The stale `lg:grid-cols-6` must NOT be applied to the
+      # production row — that was the bug.
+      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
+    end
+
+    test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)",
+         %{
+           conn: conn,
+           user: user
+         } do
+      _dtu =
+        device_fixture(user, %{
+          name: "7D Baseline",
+          kind: "opendtu",
+          mqtt_username: "7d-baseline"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Switch to 7D — drops the live tile.
+      view |> element("#btn-range-7d") |> render_click()
+      html = render(view)
+
+      refute html =~ ~s(id="stat-current-power"),
+             "Current Power tile must stay hidden on 7D"
+
+      refute html =~ ~s(id="stat-saved"),
+             "Savings card stays hidden without a configured rate"
+
+      # Three baseline cards (yield, peak power, peak time) → 3-up.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"/,
+             "production row grid must use lg:grid-cols-3 (7D, 3 baseline, no current power, no savings)"
+
+      assert html =~ ~r/lg:grid-cols-3[\s\S]*?id="stat-yield-kwh"/
+
+      # The stale `lg:grid-cols-5` / `lg:grid-cols-6` must NOT be
+      # applied here either.
+      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/
+
+      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
+    end
+  end
+
+  describe "Preset-button spinner (no SVG-as-text regression)" do
+    # Regression for the "loading animation renders its SVG markup as
+    # text on the page" bug: when a user clicked a quick-range button
+    # (1D, 7D, 30D, YTD, Custom), the LiveView round-trip used to
+    # call `el.textContent = disableText` on the button, which wrote
+    # the literal string `<svg ...>...</svg>` into the DOM as text
+    # (visible on screen and copy-pasteable). Rapid clicks before the
+    # previous round-trip resolved stacked the literal SVG markup in
+    # the page.
+    #
+    # The fix keeps the label AND the spinner in the DOM at all times
+    # and toggles them via the LiveView-managed `.phx-click-loading`
+    # class plus a Tailwind 4 `@custom-variant` declared in
+    # `assets/css/app.css`. The literal `<svg>` markup must never
+    # appear as text content on the dashboard.
+
+    test "preset buttons never render literal <svg> markup as text content", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Spinner Test",
+          kind: "opendtu",
+          mqtt_username: "spinner-test"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The spinner SVG (Heroicons `hero-arrow-path`, rendered by
+      # `<.icon name="hero-arrow-path" />`) is part of the page DOM
+      # inside the button — wrapped in a
+      # `<span class="hidden phx-click-loading:inline-flex">` that's
+      # hidden by default. The bug was that LiveView's
+      # `phx-disable-with` attribute used to write the spinner SVG
+      # markup via `el.textContent`, which renders the literal
+      # `<svg>...</svg>` as visible text on the page (and copy-
+      # pasteable as text). After the fix, the spinner only renders
+      # as a real DOM element, never as text content.
+      #
+      # We extract each button's body via String.split/2 (regex
+      # splitting on `<button ... id="btn-range-N" ...>` and the
+      # matching `</button>`), then strip all tags from the body
+      # via a tag-removal regex to recover its text content. The
+      # literal `<svg` substring must never appear in that text.
+      for {id, label} <- [
+            {"btn-range-1d", "1D"},
+            {"btn-range-7d", "7D"},
+            {"btn-range-30d", "30D"},
+            {"btn-range-ytd", "YTD"},
+            {"btn-range-custom", "Custom"}
+          ] do
+        # Find the start of the button via a regex match (the
+        # `[^>]*` only matches characters that aren't `>`, so the
+        # match stops at the end of the opening tag). The `[_, {start, len}]`
+        # tuple from `return: :index` gives us the byte offset of
+        # the opening tag; the next `</button>` after that offset
+        # closes the body.
+        start_pattern = ~r/<button[^>]*id="#{id}"[^>]*>/
+
+        [{start_offset, _len}] =
+          Regex.run(start_pattern, html, return: :index) ||
+            flunk("could not locate opening <button ... id=\"#{id}\" ...> in HTML")
+
+        after_start = String.slice(html, start_offset + 1, byte_size(html) - start_offset - 1)
+
+        [body | _] =
+          case String.split(after_start, "</button>", parts: 2) do
+            [body_, _rest] -> [body_]
+            _ -> [flunk("could not find closing </button> for ##{id}")]
+          end
+
+        # Strip every HTML tag from the body to recover its text
+        # content. A bare `<` followed by anything but whitespace
+        # (i.e. an actual tag) gets replaced; the literal `<svg`
+        # markup from the bug pattern shows up as text here.
+        text_content = Regex.replace(~r/<[^>]+>/, body, "")
+
+        refute text_content =~ "<svg",
+               "button ##{id} must not have literal <svg markup as text content " <>
+                 "(regression for the spinner-rendered-as-text bug); got: #{inspect(text_content)}"
+
+        # And the label must still be present.
+        assert text_content =~ label,
+               "button ##{id} must keep its label '#{label}' as text content; got: #{inspect(text_content)}"
+      end
+    end
+
+    test "rapid clicks don't accumulate spinner SVG markup in the DOM", %{conn: conn, user: user} do
+      # The original report mentioned literal `<svg>` markup piling up
+      # when the user clicked a few presets in quick succession before
+      # the previous round-trip landed. The Tailwind-4 variant fix
+      # keeps both the label and spinner in the DOM at all times, so
+      # the button's structural HTML is identical before, between, and
+      # after rapid clicks — no transient text content ever appears.
+      _dtu =
+        device_fixture(user, %{
+          name: "Rapid Click DTU",
+          kind: "opendtu",
+          mqtt_username: "rapid-click"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # Snapshot the 1D button's body before the clicks.
+      before = Regex.run(~r|<button[^>]*id="btn-range-1d"[^>]*>(.*?)</button>|s, html)
+
+      # Fire a few preset clicks back-to-back; the prior round-trip
+      # may still be in flight when the next one starts (the bug
+      # pattern from the user report).
+      for id <- ["#btn-range-7d", "#btn-range-30d", "#btn-range-1d", "#btn-range-ytd"] do
+        view |> element(id) |> render_click()
+      end
+
+      html_after = render(view)
+
+      after_html = Regex.run(~r|<button[^>]*id="btn-range-1d"[^>]*>(.*?)</button>|s, html_after)
+
+      # The 1D button's body must still be parseable (it's a real
+      # element, not raw `<svg>` text pasted into the DOM).
+      assert is_list(before), "1D button must be a real <button> element before clicks"
+
+      assert is_list(after_html),
+             "1D button must still be a real <button> element after rapid clicks"
+
+      [_, before_body] = before
+      [_, after_body] = after_html
+
+      # No literal `<svg>` text in either snapshot.
+      refute before_body =~ "<svg",
+             "1D button body must not contain literal <svg> text before clicks"
+
+      refute after_body =~ "<svg",
+             "1D button body must not contain literal <svg> text after rapid clicks"
+    end
+  end
 end
