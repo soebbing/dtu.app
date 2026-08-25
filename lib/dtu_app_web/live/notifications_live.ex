@@ -19,8 +19,11 @@ defmodule DtuAppWeb.NotificationsLive do
   alias DtuApp.Accounts
   alias DtuApp.Notifications
   alias DtuApp.PushSubscriptions
+  alias DtuApp.Time
 
   require Logger
+
+  @history_page_size 50
 
   @impl true
   def mount(_params, _session, socket) do
@@ -50,14 +53,75 @@ defmodule DtuAppWeb.NotificationsLive do
      # hook's first push lands.
      |> assign(:notification_state, %{"state" => "loading", "device" => nil})
      |> assign(:has_push_subscriptions, has_subscriptions)
+     |> assign_history(user, 1)
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
+  end
+
+  # Load the first page of the user's notification history into
+  # `:history_items` / `:history_page` / `:history_total_pages`.
+  # Called from mount/3 and after every mutation (delete, clear-all,
+  # paginate) so the UI always reflects DB state without needing a
+  # local cache that could drift.
+  defp assign_history(socket, user, page) do
+    total = Notifications.count_user_notifications(user)
+    total_pages = max(1, div(total + @history_page_size - 1, @history_page_size))
+    page = min(max(1, page), total_pages)
+    items = Notifications.list_user_notifications(user, page, @history_page_size)
+
+    socket
+    |> assign(:history_items, items)
+    |> assign(:history_page, page)
+    |> assign(:history_total_pages, total_pages)
+    |> assign(:history_total, total)
   end
 
   @impl true
   def handle_info({:notification, payload}, socket) do
     # Forward the server-computed payload to the JS hook. The hook
     # formats the title/body and dedups against localStorage.
-    {:noreply, push_event(socket, "notify", payload)}
+    #
+    # The history list refreshes on the same event so a fresh
+    # broadcast shows up at the top of page 1 immediately. If the
+    # user is currently on a non-first page, we keep them there and
+    # just refresh that page's contents — pagination state survives
+    # a new event without snapping the user back to page 1.
+    socket =
+      socket
+      |> push_event("notify", payload)
+      |> assign_history(socket.assigns.current_scope.user, socket.assigns.history_page)
+
+    {:noreply, socket}
+  end
+
+  def handle_event("set_history_page", %{"page" => page}, socket) do
+    user = socket.assigns.current_scope.user
+    page = page |> to_string() |> String.to_integer()
+
+    {:noreply, assign_history(socket, user, page)}
+  end
+
+  def handle_event("delete_notification", %{"id" => id}, socket) do
+    user = socket.assigns.current_scope.user
+    id = id |> to_string() |> String.to_integer()
+
+    _ = Notifications.delete(user, id)
+
+    # After deleting, the current page may now be empty. Stay on
+    # the same page index; `assign_history/3` clamps it back into
+    # range so we never render a phantom page.
+    {:noreply, assign_history(socket, user, socket.assigns.history_page)}
+  end
+
+  def handle_event("clear_all_notifications", _payload, socket) do
+    user = socket.assigns.current_scope.user
+    _ = Notifications.clear_all(user)
+
+    socket =
+      socket
+      |> assign_history(user, 1)
+      |> put_flash(:info, gettext("Notification history cleared."))
+
+    {:noreply, socket}
   end
 
   def handle_event("notification_state", params, socket) do
@@ -367,8 +431,130 @@ defmodule DtuAppWeb.NotificationsLive do
             </button>
           </div>
         <% end %>
+
+        <%!--
+          Notification history. Persisted by `DtuApp.Notifications.broadcast/2`
+          so the user can review every notification the server sent — sun-up,
+          sun-down, dtu_connection, and the synthetic test events fired from
+          the button above. Renders newest-first with 50 items per page; live
+          updates refresh in place when the page is open and a new broadcast
+          arrives (handled in `handle_info({:notification, ...})`).
+        --%>
+        <div
+          id="notification-history"
+          class="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-6 space-y-4"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">
+              {gettext("Recent notifications")}
+            </h2>
+            <%= if @history_total > 0 do %>
+              <button
+                type="button"
+                phx-click="clear_all_notifications"
+                data-confirm={gettext("Clear all notifications? This cannot be undone.")}
+                class="text-xs font-medium text-rose-600 hover:text-rose-500 dark:text-rose-400 dark:hover:text-rose-300 transition"
+              >
+                {gettext("Clear all")}
+              </button>
+            <% end %>
+          </div>
+
+          <%= if @history_total == 0 do %>
+            <p class="text-sm text-zinc-500 dark:text-zinc-400">
+              {gettext(
+                "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
+              )}
+            </p>
+          <% else %>
+            <ul role="list" class="divide-y divide-zinc-100 dark:divide-zinc-700">
+              <%= for n <- @history_items do %>
+                <li
+                  id={"notification-row-#{n.id}"}
+                  class="flex items-start gap-3 py-3"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2">
+                      <span class="truncate text-sm font-semibold text-zinc-900 dark:text-white">
+                        {n.title}
+                      </span>
+                      <span class="shrink-0 rounded-full bg-zinc-100 dark:bg-zinc-700 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600 dark:text-zinc-300">
+                        {n.event}
+                      </span>
+                      <span class="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+                        {format_relative_time(n.delivered_at)}
+                      </span>
+                    </div>
+                    <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300 break-words">
+                      {n.body}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    phx-click="delete_notification"
+                    phx-value-id={n.id}
+                    aria-label={gettext("Delete notification")}
+                    title={gettext("Delete notification")}
+                    class="shrink-0 rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-rose-500 dark:hover:bg-zinc-700 dark:hover:text-rose-400 transition"
+                  >
+                    <.icon name="hero-x-mark" class="h-4 w-4" />
+                  </button>
+                </li>
+              <% end %>
+            </ul>
+
+            <%= if @history_total_pages > 1 do %>
+              <div class="flex items-center justify-between border-t border-zinc-100 dark:border-zinc-700 pt-3 text-sm">
+                <button
+                  type="button"
+                  phx-click="set_history_page"
+                  phx-value-page={@history_page - 1}
+                  disabled={@history_page <= 1}
+                  class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed dark:text-zinc-300 dark:hover:bg-zinc-700 transition"
+                >
+                  <.icon name="hero-chevron-left" class="h-4 w-4" />
+                  {gettext("Previous")}
+                </button>
+                <span class="text-xs text-zinc-500 dark:text-zinc-400">
+                  {gettext("Page %{page} of %{total}",
+                    page: @history_page,
+                    total: @history_total_pages
+                  )}
+                </span>
+                <button
+                  type="button"
+                  phx-click="set_history_page"
+                  phx-value-page={@history_page + 1}
+                  disabled={@history_page >= @history_total_pages}
+                  class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-zinc-600 hover:bg-zinc-100 disabled:opacity-40 disabled:cursor-not-allowed dark:text-zinc-300 dark:hover:bg-zinc-700 transition"
+                >
+                  {gettext("Next")}
+                  <.icon name="hero-chevron-right" class="h-4 w-4" />
+                </button>
+              </div>
+            <% end %>
+          <% end %>
+        </div>
       </div>
     </Layouts.app>
     """
+  end
+
+  # Human-readable "X ago" label for a notification's `delivered_at`.
+  # Mirrors `DtuAppWeb.DeviceLive.Details.format_relative_time/1` so the
+  # history page reads consistently with the device-details "last
+  # seen" column. Future-dated rows (clock skew between DB and a
+  # user's browser) are clamped to "just now" rather than rendering
+  # negative values.
+  @spec format_relative_time(DateTime.t()) :: String.t()
+  defp format_relative_time(%DateTime{} = dt) do
+    diff = DateTime.diff(Time.utc_now(), dt, :second) |> max(0)
+
+    cond do
+      diff < 60 -> gettext("just now")
+      diff < 3600 -> gettext("%{n} minutes ago", n: div(diff, 60))
+      diff < 86_400 -> gettext("%{n} hours ago", n: div(diff, 3600))
+      true -> gettext("%{n} days ago", n: div(diff, 86_400))
+    end
   end
 end
