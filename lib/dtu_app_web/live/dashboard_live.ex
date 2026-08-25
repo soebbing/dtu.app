@@ -1516,28 +1516,37 @@ defmodule DtuAppWeb.DashboardLive do
       phx-click="select_quick_range"
       phx-value-range={@range}
       id={@id}
-      phx-disable-with={quick_range_spinner()}
       class={[
-        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250 cursor-pointer disabled:cursor-wait disabled:opacity-80",
+        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250 cursor-pointer disabled:cursor-wait disabled:opacity-80 inline-flex items-center justify-center",
         @active &&
           "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
         !@active &&
           "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
       ]}
     >
-      {render_slot(@inner_block)}
+      <%!-- The label and the spinner are *both* in the DOM at all
+           times. LiveView's `phx-click-loading` class is added to the
+           button while the round-trip is in flight, and the project's
+           Tailwind 4 setup declares a `@custom-variant phx-click-loading`
+           (assets/css/app.css) so the label hides and the spinner shows
+           exactly for that window. We can't use `phx-disable-with` here
+           because LiveView sets its value via `el.textContent`, which
+           renders any embedded HTML markup as visible text instead of
+           parsed HTML — that was the "literal <svg>…</svg> on the page"
+           bug. Keeping both elements in the DOM and toggling them via
+           the LiveView-managed class also handles rapid clicks: the
+           class is added on click and removed when the response
+           arrives, so no leftover text accumulates. --%>
+      <span class="phx-click-loading:hidden">
+        {render_slot(@inner_block)}
+      </span>
+      <span
+        class="hidden phx-click-loading:inline-flex items-center justify-center"
+        aria-hidden="true"
+      >
+        <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
+      </span>
     </button>
-    """
-  end
-
-  # Inline SVG used as the `phx-disable-with` content while a preset
-  # click is in flight. The `animate-spin` Tailwind class rotates it
-  # so the user gets a visible "loading" signal without the button
-  # shape changing. `phx-disable-with` swaps the button's innerHTML
-  # for this string until the LiveView round-trip completes.
-  defp quick_range_spinner do
-    """
-    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-4 w-4 animate-spin inline-block"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>\
     """
   end
 
@@ -2410,22 +2419,65 @@ defmodule DtuAppWeb.DashboardLive do
             clicks through presets; the period context lives in the
             card sub-label below the headline number.
 
-            Cards:
+            Cards (always rendered):
               1. Yield (kWh)            — period total
               2. Peak Power (W)         — highest 5-min bucket in window
               3. Peak Time              — when the peak happened, local HH:MM
-              4. Self-consumption (%)   — period, hidden without a Shelly
-              5. Saved this period (€)   — period, hidden without a rate
-            Plus the live "Current Consumption" card when a Shelly is
-            paired (sits in the same row because it's also a top-of-
-            dashboard headline — and a 5-up + 1 conditional is fine on
-            `lg:grid-cols-5`).
+
+            Conditional cards (rendered when their predicate holds):
+              4. Current Power (W)      — 1D-only, > 0 W
+              5. Saved this period (€)  — rate configured, non-nil
+              6. Self-consumption (%)   — Shelly paired, helper returned a number
+              7. Current Consumption (W) — Shelly paired, > 0 W
+
+            The grid's `lg:` column count is computed from the same
+            predicates (see `cols` / `cols_class` below) so a user
+            without, say, savings doesn't see a 6-up grid with two
+            empty columns.
           --%>
           <%= if @has_inverter? do %>
+            <%!-- The grid's `lg:` column count must match the actual
+                 number of cards rendered below, otherwise users without
+                 the conditional cards (savings without a configured rate,
+                 self-consumption without a Shelly, etc.) see a row of
+                 three cards with three empty grid columns. Three baseline
+                 cards (yield, peak power, peak time) plus up to four
+                 conditional cards (current power on 1D, savings when a rate
+                 is set, current consumption when a Shelly is paired,
+                 self-consumption when a Shelly is paired and the helper
+                 returned a number).
+
+                 Each possible `cols` value maps to a literal Tailwind
+                 class below — Tailwind v4's source-based JIT doesn't
+                 detect interpolated class strings, so we list them
+                 statically via `cond`. The `cond` arms map to
+                 `lg:grid-cols-3` … `lg:grid-cols-7`; a user with every
+                 card visible lands on 7. --%>
+            <% cols =
+              3 +
+                if(@range_preset == "1d" and @stats.current_power > 0,
+                  do: 1,
+                  else: 0
+                ) +
+                if(@savings, do: 1, else: 0) +
+                if(@consumption_stats.current_consumption > 0, do: 1, else: 0) +
+                if(
+                  is_number(@stats[:self_consumption_pct]) and
+                    @consumption_stats.current_consumption > 0,
+                  do: 1,
+                  else: 0
+                ) %>
+            <% cols_class =
+              cond do
+                cols <= 3 -> "lg:grid-cols-3"
+                cols == 4 -> "lg:grid-cols-4"
+                cols == 5 -> "lg:grid-cols-5"
+                cols == 6 -> "lg:grid-cols-6"
+                true -> "lg:grid-cols-7"
+              end %>
             <div class={[
               "grid grid-cols-1 gap-5 sm:grid-cols-2",
-              @range_preset == "1d" && "lg:grid-cols-6",
-              @range_preset != "1d" && "lg:grid-cols-5"
+              cols_class
             ]}>
               <%!-- Card 0: Current Power (W). 1D-only — a live
                  "what's the inverter producing right now" signal that
