@@ -1188,6 +1188,49 @@ defmodule DtuAppWeb.DashboardLive do
   defp hd_or_first_key(map) when map_size(map) == 0, do: nil
   defp hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
 
+  # Format a UTC DateTime as the user's local HH:MM. Falls back to `—`
+  # when the time is nil (the bucket-peak helper returns nil for an
+  # empty window — no buckets means no peak time). The shift uses the
+  # same `tz_offset_seconds` channel as the chart axis labels so the
+  # peak-time card and the chart agree on what "13:42" means.
+  @spec format_peak_time(DateTime.t() | nil, integer()) :: String.t()
+  def format_peak_time(nil, _tz_offset_seconds), do: "—"
+
+  def format_peak_time(%DateTime{} = dt, tz_offset_seconds) do
+    dt
+    |> DateTime.add(tz_offset_seconds, :second)
+    |> format_time_hhmm()
+  end
+
+  defp format_time_hhmm(%DateTime{} = dt) do
+    :io_lib.format("~2..0B:~2..0B", [dt.hour, dt.minute])
+    |> IO.iodata_to_binary()
+  end
+
+  # Human-readable label for the active period. Drives the sub-caption
+  # under the Yield card's headline ("Last 7 days", "Year to date", …)
+  # so the user can see what window the kWh figure covers at a glance.
+  # The full mapping mirrors the chart-title copy in `chart_title/2`.
+  @spec period_label(String.t() | nil, String.t()) :: String.t()
+  def period_label("1d", _time_range), do: gettext("Today")
+  def period_label("7d", _time_range), do: gettext("Last 7 days")
+  def period_label("30d", _time_range), do: gettext("Last 30 days")
+  def period_label("ytd", _time_range), do: gettext("Year to date")
+  def period_label("custom", "day"), do: gettext("Selected day")
+  def period_label("custom", "week"), do: gettext("Selected week")
+  def period_label("custom", "month"), do: gettext("Selected month")
+  def period_label("custom", "year"), do: gettext("Selected year")
+
+  def period_label(_other, time_range),
+    do: Gettext.gettext(DtuAppWeb.Gettext, period_fallback(time_range))
+
+  defp period_fallback("today"), do: "Today"
+  defp period_fallback("day"), do: "Selected day"
+  defp period_fallback("week"), do: "Selected week"
+  defp period_fallback("month"), do: "Selected month"
+  defp period_fallback("year"), do: "Selected year"
+  defp period_fallback(_), do: "Selected period"
+
   # Deterministic palette: assign each (dtu_id, inverter_serial) pair a
   # base hue from a fixed set, in the order they first appear. Stable
   # across requests so the chart doesn't flicker.
@@ -1610,8 +1653,37 @@ defmodule DtuAppWeb.DashboardLive do
 
         stats = Devices.get_daily_stats(user, dtu_id, Date.utc_today(), today_chart_points)
 
+        # The 5-up stat-card row's "Yield" tile reads `@stats.total_yield`
+        # uniformly across all 8 time_range branches. For the day / week
+        # / month / year / 7d / 30d / ytd branches, `compute_day_period_stats/2`
+        # and `compute_range_period_stats/2` already return
+        # `:total_yield` as the period's kWh sum. But `get_daily_stats/4`
+        # uses `:total_yield` for the **lifetime** cumulative yield
+        # (firmware `yield_total`) and `:today_yield` for the day's
+        # sum-of-latest-`yield_day`. Overwrite `:total_yield` here so
+        # the 1D view matches the period semantics the other branches
+        # use — otherwise the Yield card on 1D would show the lifetime
+        # number instead of today's kWh.
+        stats =
+          Map.put(stats, :total_yield, stats.today_yield)
+
+        # Self-consumption is a single-period value: today's export
+        # divided by today's production. Compute alongside the rest
+        # of the today branch so the stat card row's "self-consumption
+        # %" tile renders without a second mount round-trip.
+        today_self_consumption_pct =
+          Devices.compute_self_consumption_pct(
+            user,
+            dtu_id,
+            today_utc_start,
+            today_utc_end
+          )
+
+        stats_with_self_consumption =
+          Map.put(stats, :self_consumption_pct, today_self_consumption_pct)
+
         socket
-        |> assign(:stats, stats)
+        |> assign(:stats, stats_with_self_consumption)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:net_flow_stats, net_flow_stats)
@@ -1644,9 +1716,19 @@ defmodule DtuAppWeb.DashboardLive do
         yields = Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id)
         stats = Devices.compute_day_period_stats(yields, points)
 
+        # Self-consumption % for the historical day. Same
+        # computation as the today branch — `(production - exported)
+        # / production × 100` — so a user drilling back into "last
+        # Tuesday" gets the same headline number for that day.
+        day_self_consumption_pct =
+          Devices.compute_self_consumption_pct(user, dtu_id, utc_start, utc_end)
+
+        stats_with_self_consumption =
+          Map.put(stats, :self_consumption_pct, day_self_consumption_pct)
+
         socket
         |> assign(:selected_period, date)
-        |> assign(:stats, stats)
+        |> assign(:stats, stats_with_self_consumption)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:net_flow_stats, net_flow_stats)
@@ -1667,10 +1749,29 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         sunday = Date.add(monday, 6)
-        {monday_utc, _} = Devices.local_day_utc_range(monday, tz_offset_seconds)
-        {sunday_utc, _} = Devices.local_day_utc_range(sunday, tz_offset_seconds)
-        yields = Devices.list_range_yield_data(user, monday_utc, sunday_utc, dtu_id)
+
+        {monday_utc, sunday_utc_end} =
+          {elem(Devices.local_day_utc_range(monday, tz_offset_seconds), 0),
+           elem(Devices.local_day_utc_range(sunday, tz_offset_seconds), 1)}
+
+        yields = Devices.list_range_yield_data(user, monday_utc, sunday_utc_end, dtu_id)
         stats = Devices.compute_range_period_stats(yields, 7)
+
+        # Peak watts + time across the week, plus self-consumption %.
+        # `compute_peak_watts_in_period/4` reads from readings_5m and
+        # the live tail — same source as the chart, so the dashboard's
+        # peak wattage matches what the chart shows for the same window.
+        {week_peak_w, week_peak_time} =
+          Devices.compute_peak_watts_in_period(user, dtu_id, monday_utc, sunday_utc_end)
+
+        week_self_consumption_pct =
+          Devices.compute_self_consumption_pct(user, dtu_id, monday_utc, sunday_utc_end)
+
+        stats =
+          stats
+          |> Map.put(:peak_power, week_peak_w)
+          |> Map.put(:peak_time, week_peak_time)
+          |> Map.put(:self_consumption_pct, week_self_consumption_pct)
 
         yield_map = Map.new(yields)
 
@@ -1705,11 +1806,26 @@ defmodule DtuAppWeb.DashboardLive do
           end
 
         last_day = Date.end_of_month(first_day)
-        {first_utc, _} = Devices.local_day_utc_range(first_day, tz_offset_seconds)
-        {last_utc, _} = Devices.local_day_utc_range(last_day, tz_offset_seconds)
-        yields = Devices.list_range_yield_data(user, first_utc, last_utc, dtu_id)
+
+        {first_utc, last_utc_end} =
+          {elem(Devices.local_day_utc_range(first_day, tz_offset_seconds), 0),
+           elem(Devices.local_day_utc_range(last_day, tz_offset_seconds), 1)}
+
+        yields = Devices.list_range_yield_data(user, first_utc, last_utc_end, dtu_id)
         total_days = Date.diff(last_day, first_day) + 1
         stats = Devices.compute_range_period_stats(yields, total_days)
+
+        {month_peak_w, month_peak_time} =
+          Devices.compute_peak_watts_in_period(user, dtu_id, first_utc, last_utc_end)
+
+        month_self_consumption_pct =
+          Devices.compute_self_consumption_pct(user, dtu_id, first_utc, last_utc_end)
+
+        stats =
+          stats
+          |> Map.put(:peak_power, month_peak_w)
+          |> Map.put(:peak_time, month_peak_time)
+          |> Map.put(:self_consumption_pct, month_self_consumption_pct)
 
         yield_map = Map.new(yields)
 
@@ -1748,10 +1864,25 @@ defmodule DtuAppWeb.DashboardLive do
 
         start_date = Date.new!(year, 1, 1)
         end_date = Date.new!(year, 12, 31)
-        {start_utc, _} = Devices.local_day_utc_range(start_date, tz_offset_seconds)
-        {end_utc, _} = Devices.local_day_utc_range(end_date, tz_offset_seconds)
-        yields = Devices.list_range_yield_data(user, start_utc, end_utc, dtu_id)
+
+        {start_utc, end_utc_end} =
+          {elem(Devices.local_day_utc_range(start_date, tz_offset_seconds), 0),
+           elem(Devices.local_day_utc_range(end_date, tz_offset_seconds), 1)}
+
+        yields = Devices.list_range_yield_data(user, start_utc, end_utc_end, dtu_id)
         stats = Devices.compute_range_period_stats(yields, 12)
+
+        {year_peak_w, year_peak_time} =
+          Devices.compute_peak_watts_in_period(user, dtu_id, start_utc, end_utc_end)
+
+        year_self_consumption_pct =
+          Devices.compute_self_consumption_pct(user, dtu_id, start_utc, end_utc_end)
+
+        stats =
+          stats
+          |> Map.put(:peak_power, year_peak_w)
+          |> Map.put(:peak_time, year_peak_time)
+          |> Map.put(:self_consumption_pct, year_self_consumption_pct)
 
         yield_map = Map.new(yields)
 
@@ -1790,8 +1921,38 @@ defmodule DtuAppWeb.DashboardLive do
         # span (7) so the average matches what the user gets on a custom
         # week view, not just the days that have data.
         stats = Devices.compute_range_period_stats(yields, 7)
-        yield_map = Map.new(yields)
+
+        # `local_day_utc_range/2` returns {utc_start, utc_end}; for a
+        # rolling 7-day window we anchor on `today_local` so the peak
+        # watts query covers the same span the bar chart plots.
         today_local = local_today(tz_offset_seconds)
+
+        {seven_day_utc_start, seven_day_utc_end} =
+          Devices.local_day_utc_range(today_local, tz_offset_seconds)
+
+        {seven_day_peak_w, seven_day_peak_time} =
+          Devices.compute_peak_watts_in_period(
+            user,
+            dtu_id,
+            DateTime.add(seven_day_utc_start, -6 * 86_400, :second),
+            seven_day_utc_end
+          )
+
+        seven_day_self_consumption_pct =
+          Devices.compute_self_consumption_pct(
+            user,
+            dtu_id,
+            DateTime.add(seven_day_utc_start, -6 * 86_400, :second),
+            seven_day_utc_end
+          )
+
+        stats =
+          stats
+          |> Map.put(:peak_power, seven_day_peak_w)
+          |> Map.put(:peak_time, seven_day_peak_time)
+          |> Map.put(:self_consumption_pct, seven_day_self_consumption_pct)
+
+        yield_map = Map.new(yields)
 
         bar_data =
           for day_offset <- -6..0 do
@@ -1817,8 +1978,35 @@ defmodule DtuAppWeb.DashboardLive do
           Devices.list_last_n_days_yield_data(user, 30, tz_offset_seconds, dtu_id)
 
         stats = Devices.compute_range_period_stats(yields, 30)
-        yield_map = Map.new(yields)
+
         today_local = local_today(tz_offset_seconds)
+
+        {thirty_day_utc_start, thirty_day_utc_end} =
+          Devices.local_day_utc_range(today_local, tz_offset_seconds)
+
+        {thirty_day_peak_w, thirty_day_peak_time} =
+          Devices.compute_peak_watts_in_period(
+            user,
+            dtu_id,
+            DateTime.add(thirty_day_utc_start, -29 * 86_400, :second),
+            thirty_day_utc_end
+          )
+
+        thirty_day_self_consumption_pct =
+          Devices.compute_self_consumption_pct(
+            user,
+            dtu_id,
+            DateTime.add(thirty_day_utc_start, -29 * 86_400, :second),
+            thirty_day_utc_end
+          )
+
+        stats =
+          stats
+          |> Map.put(:peak_power, thirty_day_peak_w)
+          |> Map.put(:peak_time, thirty_day_peak_time)
+          |> Map.put(:self_consumption_pct, thirty_day_self_consumption_pct)
+
+        yield_map = Map.new(yields)
 
         bar_data =
           for day_offset <- -29..0 do
@@ -1863,6 +2051,26 @@ defmodule DtuAppWeb.DashboardLive do
             end),
             months_in_window
           )
+
+        # Peak watts + self-consumption across Jan 1 → today (the
+        # YTD window). Uses the user's tz offset so the boundaries
+        # line up with the bar chart's first bar (January).
+        ytd_start_date = Date.new!(today.year, 1, 1)
+
+        {ytd_utc_start, ytd_utc_end} =
+          Devices.local_day_utc_range(ytd_start_date, tz_offset_seconds)
+
+        {ytd_peak_w, ytd_peak_time} =
+          Devices.compute_peak_watts_in_period(user, dtu_id, ytd_utc_start, ytd_utc_end)
+
+        ytd_self_consumption_pct =
+          Devices.compute_self_consumption_pct(user, dtu_id, ytd_utc_start, ytd_utc_end)
+
+        stats =
+          stats
+          |> Map.put(:peak_power, ytd_peak_w)
+          |> Map.put(:peak_time, ytd_peak_time)
+          |> Map.put(:self_consumption_pct, ytd_self_consumption_pct)
 
         bar_data =
           for month <- 1..months_in_window do
@@ -2174,202 +2382,156 @@ defmodule DtuAppWeb.DashboardLive do
 
           <!-- Stats Grid -->
           <%!--
-            Production row of the stat-card grid: visible only when the user
-            has at least one inverter-kind DTU (`kind in [:opendtu, :ahoydtu]`).
+            Headline stat-card row: visible only when the user has at
+            least one inverter-kind DTU (`kind in [:opendtu, :ahoydtu]`).
             A Shelly-only user has no production telemetry, so this row
-            would render four "0 W / 0.0 kWh / €0.00" placeholders that
-            confuse rather than inform. The consumption row beneath still
-            shows their household draw, and the consumption overlay on the
-            chart still plots.
+            would render three "0 W / 0.0 kWh / 00:00" placeholders that
+            confuse rather than inform. The consumption row beneath
+            still shows their household draw, and the consumption
+            overlay on the chart still plots.
+
+            The row is period-driven — yield, peak watts, peak time, and
+            self-consumption % all recompute on every preset change so
+            the headline reflects whatever window the user picked. Card
+            labels stay period-stable ("Yield", "Peak Power", "Peak
+            Time") so the row's identity doesn't shift as the user
+            clicks through presets; the period context lives in the
+            card sub-label below the headline number.
+
+            Cards:
+              1. Yield (kWh)            — period total
+              2. Peak Power (W)         — highest 5-min bucket in window
+              3. Peak Time              — when the peak happened, local HH:MM
+              4. Self-consumption (%)   — period, hidden without a Shelly
+              5. Saved this period (€)   — period, hidden without a rate
+            Plus the live "Current Consumption" card when a Shelly is
+            paired (sits in the same row because it's also a top-of-
+            dashboard headline — and a 5-up + 1 conditional is fine on
+            `lg:grid-cols-5`).
           --%>
           <%= if @has_inverter? do %>
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-              <%!-- First slot: live view shows "Current Generation" (the
-                 AC aggregate across all the user's inverters — the
-                 headline instantaneous wattage). Historical day view
-                 swaps in "Total Yield" (the day's kWh total, which
-                 the line chart doesn't directly show). The matching
-                 "Current Consumption" card inside the "Power consumption"
-                 area below is rendered without its first slot in this
-                 commit — users wanted the live draw to read as "Current
-                 Generation" at the top and the consumption area to lead
-                 with the kWh figures instead. --%>
-              <%= if @live do %>
-                <!-- Current Power (Today only) -->
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Current Generation")}
-                          </dt>
-                          <dd class="flex items-baseline space-x-2">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-current-power"
-                            >
-                              {Devices.format_number(@stats.current_power, 0, @locale)} W
-                            </div>
-                            <%= if @stats.current_power > 0 do %>
-                              <span class="flex h-2 w-2 relative" id="pulse-current-power">
-                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                              </span>
-                            <% end %>
-                          </dd>
-                        </dl>
-                      </div>
+            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+              <%!-- Card 1: Yield (kWh). The headline number stays the
+                 same shape — `total_yield` rounded to one decimal —
+                 whether the period is today, a week, a month, or a
+                 year. The sub-label below the headline names the
+                 period ("Today", "Last 7 days", etc.) so the user
+                 knows what window the kWh figure covers. --%>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
+                      <.icon name="hero-bolt" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Yield")}
+                        </dt>
+                        <dd class="flex flex-col">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-yield-kwh"
+                          >
+                            {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
+                          </div>
+                          <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">
+                            {period_label(@range_preset, @time_range)}
+                          </div>
+                        </dd>
+                      </dl>
                     </div>
                   </div>
                 </div>
-              <% else %>
-                <!-- Total Yield (Historical day view) -->
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Total Yield")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-total-yield"
-                            >
-                              {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
+              </div>
+
+              <%!-- Card 2: Peak Power (W). The same headline number
+                 across all presets — `stats.peak_power` — but the
+                 underlying query changes (today's `bucket_max` vs the
+                 range-wide peak via `compute_peak_watts_in_period/4`).
+                 A user on 7D sees the highest single bucket over the
+                 last 7 days, not the daily peak. --%>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+                      <.icon name="hero-chart-bar" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Peak Power")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-peak-watts"
+                          >
+                            {Devices.format_number(@stats.peak_power, 0, @locale)} W
+                          </div>
+                        </dd>
+                      </dl>
                     </div>
                   </div>
                 </div>
-              <% end %>
+              </div>
 
-              <!-- Middle Card: Today Yield (Today) vs Avg Power (Day) vs Daily Avg Yield (Week/Month/Year) -->
-              <%= cond do %>
-                <% @live -> %>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                          <.icon name="hero-sun" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Today's Total Yield")}
-                            </dt>
-                            <dd class="flex items-baseline">
-                              <div
-                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-today-yield"
-                              >
-                                {Devices.format_number(@stats.today_yield, 1, @locale)} kWh
-                              </div>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
+              <%!-- Card 3: Peak Time. The bucket time of the peak
+                 wattage above, formatted in the user's local timezone
+                 (the underlying DateTime is UTC; `format_peak_time/2`
+                 adds the tz offset and emits HH:MM). The card falls
+                 back to `—` when the window has no readings. --%>
+              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <div class="px-4 py-5 sm:p-6">
+                  <div class="flex items-center">
+                    <div class="p-3 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-400">
+                      <.icon name="hero-clock" class="h-6 w-6" />
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                          {gettext("Peak Time")}
+                        </dt>
+                        <dd class="flex items-baseline">
+                          <div
+                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                            id="stat-peak-time"
+                          >
+                            {format_peak_time(@stats.peak_time, @user_tz_offset_seconds)}
+                          </div>
+                        </dd>
+                      </dl>
                     </div>
                   </div>
-                <% @time_range == "day" -> %>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                          <.icon name="hero-bolt" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Average Power")}
-                            </dt>
-                            <dd class="flex items-baseline">
-                              <div
-                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-avg-power"
-                              >
-                                {Devices.format_number(@stats.avg_power, 0, @locale)} W
-                              </div>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                <% true -> %>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                          <.icon name="hero-calculator" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Daily Average Yield")}
-                            </dt>
-                            <dd class="flex items-baseline">
-                              <div
-                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-avg-yield"
-                              >
-                                {Devices.format_number(@stats.avg_yield, 1, @locale)} kWh
-                              </div>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-              <% end %>
+                </div>
+              </div>
 
-              <%!-- Total Yield lifetime card (live view only): the cumulative
-                 kWh the inverters have produced since commissioning, sourced
-                 from the firmware's `YieldTotal` MQTT field (AhoyDTU's
-                 `YieldTotal` JSON / numeric topic and OpenDTU's
-                 `AC.YieldTotal.v` JSON / per-MPPT `yieldtotal` scalar — both
-                 land in `readings.yield_total`). Hidden on the historical day
-                 / week / month / year views, where the headline slot already
-                 carries the period total (`compute_*_period_stats`) and the
-                 lifetime counter wouldn't change across those windows.
-                 Rendered AFTER the "Today's Total Yield" / "Average Power" /
-                 "Daily Average Yield" middle slot so on the live view the row
-                 reads as: Current Generation | Today's Total Yield | Total
-                 Yield (lifetime) | Peak Power — placing the daily-kWh figure
-                 next to the live generation wattage (the two numbers share a
-                 day-grain semantic) and pushing the lifetime total to the
-                 slot before Peak Power. The amber `hero-bolt` badge echoes
-                 "Today's Total Yield" so the production row reads as a single
-                 amber cluster on the live view; the distinct label and `id`
-                 keep it addressable for the dashboard's tests. --%>
-              <%= if @live do %>
+              <%!-- Card 4: Self-consumption (%). Period-aware:
+                 `(production - exported) / production × 100`. Hidden
+                 when the user has no consumption devices (no Shelly
+                 paired) — `self_consumption_pct == nil` is the helper's
+                 "no scope" signal, the consumption card's
+                 `current_consumption > 0` is the dashboard-level
+                 guard. The card clamps at 0 % (not negative) when
+                 export exceeds production (battery edge case). --%>
+              <%= if is_number(@stats[:self_consumption_pct]) and @consumption_stats.current_consumption > 0 do %>
                 <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                   <div class="px-4 py-5 sm:p-6">
                     <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      <div class="p-3 rounded-md bg-teal-50 dark:bg-teal-950/30 text-teal-600 dark:text-teal-400">
+                        <.icon name="hero-recycle" class="h-6 w-6" />
                       </div>
                       <div class="ml-5 w-0 flex-1">
                         <dl>
                           <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Total Yield")}
+                            {gettext("Self-consumption")}
                           </dt>
                           <dd class="flex items-baseline">
                             <div
                               class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-total-yield-lifetime"
+                              id="stat-self-consumption"
                             >
-                              {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
+                              {Devices.format_number(@stats.self_consumption_pct, 1, @locale)} %
                             </div>
                           </dd>
                         </dl>
@@ -2379,74 +2541,11 @@ defmodule DtuAppWeb.DashboardLive do
                 </div>
               <% end %>
 
-              <!-- Right Card: Peak Power (Today/Day) vs Peak Yield Day (Week/Month/Year) -->
-              <%= cond do %>
-                <% @live or @time_range == "day" -> %>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                          <.icon name="hero-chart-bar" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Peak Power")}
-                            </dt>
-                            <dd class="flex items-baseline">
-                              <div
-                                class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-peak-power"
-                              >
-                                {Devices.format_number(@stats.peak_power, 0, @locale)} W
-                              </div>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                <% true -> %>
-                  <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                    <div class="px-4 py-5 sm:p-6">
-                      <div class="flex items-center">
-                        <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                          <.icon name="hero-fire" class="h-6 w-6" />
-                        </div>
-                        <div class="ml-5 w-0 flex-1">
-                          <dl>
-                            <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                              {gettext("Peak Yield Day")}
-                            </dt>
-                            <dd class="flex flex-col">
-                              <div
-                                class="text-2xl font-semibold text-zinc-900 dark:text-white"
-                                id="stat-peak-yield"
-                              >
-                                {Devices.format_number(@stats.peak_val, 1, @locale)} kWh
-                              </div>
-                              <%= if @stats.peak_date do %>
-                                <div
-                                  class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5"
-                                  id="stat-peak-yield-date"
-                                >
-                                  {gettext("on %{date}", date: @stats.peak_date)}
-                                </div>
-                              <% end %>
-                            </dd>
-                          </dl>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-              <% end %>
-
-              <%!-- Savings card: visible only when the user has set an energy
-                 rate on /users/settings. Reads @savings (euro cents, an
+              <%!-- Card 5: Savings (€). Reads `@savings` (euro cents, an
                  integer assigned by assign_dashboard_data/5 via
-                 Devices.compute_savings/2) and formats it as €X.XX. Hidden
-                 when nil so a brand-new user without a rate doesn't see a
-                 misleading "€0.00 saved" claim. --%>
+                 `Devices.compute_savings/2`) and formats it as €X.XX.
+                 Hidden when nil so a brand-new user without a rate
+                 doesn't see a misleading "€0.00 saved" claim. --%>
               <%= if @savings do %>
                 <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                   <div class="px-4 py-5 sm:p-6">
@@ -2470,13 +2569,6 @@ defmodule DtuAppWeb.DashboardLive do
                         </dl>
                         <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
                           {gettext("at %{rate}",
-                            # The energy rate for this user, formatted
-                            # via the same locale-aware helper that
-                            # powers the headline amount. The rate is
-                            # rendered without a trailing `€/kWh` unit
-                            # because the dashboard puts the unit on the
-                            # savings card once, near the headline; this
-                            # caption slot just shows the number.
                             rate:
                               if(is_integer(@cents_per_kwh),
                                 do: Devices.format_savings(@cents_per_kwh),
@@ -2490,11 +2582,11 @@ defmodule DtuAppWeb.DashboardLive do
                 </div>
               <% end %>
 
-              <%!-- Consumption cards: only visible when the user has paired a
-                 Shelly Plus 3EM (Gen3+) energy meter. The helpers return
-                 zeros when no consumption rows exist, so the conditional
-                 guards keep the slots empty for users without a Shelly
-                 device. --%>
+              <%!-- Current Consumption card: only visible when the user
+                 has paired a Shelly Plus 3EM (Gen3+) energy meter.
+                 Sits in the same headline row because it's also a top-
+                 of-dashboard signal — a 5-up grid can absorb one
+                 conditional card cleanly on lg screens. --%>
               <%= if @consumption_stats.current_consumption > 0 do %>
                 <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
                   <div class="px-4 py-5 sm:p-6">
@@ -2525,19 +2617,6 @@ defmodule DtuAppWeb.DashboardLive do
                   </div>
                 </div>
               <% end %>
-              <%!-- Today's Consumption (kWh) used to render here as a
-                   top-row card mirroring the "Current Consumption" panel
-                   immediately above. PR #76 added the dedicated
-                   "Power consumption" row (Current / Today / Peak)
-                   further down, and PR #80 wired `today_consumption`
-                   to the bucket-mean integration that drives the
-                   dedicated card. The top-row card was therefore
-                   duplicating the same kWh number with the
-                   same icon and rose palette, and the row's
-                   "Current Consumption" already wins the
-                   `current_consumption` card slot — leaving this
-                   top-row card would show two identical "Today's
-                   Consumption" figures at once. Removed. --%>
             </div>
           <% end %>
 

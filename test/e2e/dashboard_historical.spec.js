@@ -56,13 +56,12 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Live (Today) view is the default landing state.
     await expect(page.locator('#quick-range-switcher #btn-range-1d')).toBeVisible();
 
-    // First verify we're in live mode by checking the stat-current-power exists
-    await expect(page.locator('#stat-current-power')).toBeVisible();
+    // First verify we're in live mode by checking the Yield tile exists.
+    await expect(page.locator('#stat-yield-kwh')).toBeVisible();
 
-    // Live stat cards: current power, today's yield, peak power.
-    await expect(page.locator('#stat-current-power')).toContainText(/W/);
-    await expect(page.locator('#stat-today-yield')).toContainText(/kWh/);
-    await expect(page.locator('#stat-peak-power')).toContainText(/W/);
+    // Live stat cards: today's yield (kWh) and peak power (W).
+    await expect(page.locator('#stat-yield-kwh')).toContainText(/kWh/);
+    await expect(page.locator('#stat-peak-watts')).toContainText(/W/);
 
     // Seeded today's readings (06:00–19:00 sine arc) must produce a chart, not the empty state.
     await expect(page.locator('#solar-chart-svg')).toBeVisible();
@@ -84,73 +83,20 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Wait for the select value to actually change
     await expect(selectElement).toHaveValue('day');
 
-    // Add debugging to see what's happening with LiveView
-    const debugInfo = await page.evaluate(() => {
-      const currentPower = document.querySelector('#stat-current-power');
-      const totalYield = document.querySelector('#stat-total-yield');
-      return {
-        currentPowerExists: currentPower !== null,
-        totalYieldExists: totalYield !== null,
-        selectValue: (document.querySelector('#select-granularity')).value
-      };
-    });
-
-    console.log('After selecting day granularity:', debugInfo);
-
-    // Wait for LiveView to process the change - the stat card should transition
-    // Use a more permissive approach with retries
-    let attempts = 0;
-    const maxAttempts = 10;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        const currentPower = document.querySelector('#stat-current-power');
-        const totalYield = document.querySelector('#stat-total-yield');
-        return {
-          currentPowerExists: currentPower !== null,
-          totalYieldExists: totalYield !== null
-        };
-      });
-
-      if (!state.currentPowerExists && state.totalYieldExists) {
-        break; // Success! The transition happened
-      }
-
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
-
-    // Day view replaces the live "Current Generation" card with "Total Yield",
-    // and the middle card becomes "Average Power".
-    await expect(page.locator('#stat-total-yield')).toBeVisible();
-    await expect(page.locator('#stat-avg-power')).toBeVisible();
-    await expect(page.locator('#stat-peak-power')).toBeVisible();
+    // Day view: the period-stable Yield card (#stat-yield-kwh) is
+    // present in both the live and historical layouts — it surfaces
+    // the day's kWh total instead of today's last reading. Peak
+    // Power stays the same.
+    await expect(page.locator('#stat-yield-kwh')).toBeVisible();
+    await expect(page.locator('#stat-peak-watts')).toBeVisible();
     await expect(page.locator('#chart-title')).toContainText('Production Curve for');
 
     // Return to the live Today view via the quick-range tab.
     await page.locator('#btn-range-1d').click();
 
-    // Wait for the transition back to live view with same retry approach
-    attempts = 0;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        const currentPower = document.querySelector('#stat-current-power');
-        const totalYield = document.querySelector('#stat-total-yield');
-        return {
-          currentPowerExists: currentPower !== null,
-          totalYieldExists: totalYield !== null
-        };
-      });
-
-      if (state.currentPowerExists && !state.totalYieldExists) {
-        break; // Success! The transition happened
-      }
-
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
-
-    // Now verify the live stat cards are visible
-    await expect(page.locator('#stat-current-power')).toBeVisible();
+    // Yield tile remains present (period-stable label across all
+    // presets).
+    await expect(page.locator('#stat-yield-kwh')).toBeVisible();
   });
 
   test('Week / Month / Year granularities show Daily/Monthly aggregate stats', async ({ page }) => {
@@ -161,22 +107,14 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     for (const gran of ['week', 'month', 'year']) {
       await page.locator('#select-granularity').selectOption(gran);
 
-      // Wait for the transition to historical mode with retry approach
-      let attempts = 0;
-      const maxAttempts = 10;
-      while (attempts < maxAttempts) {
-        const state = await page.evaluate(() => {
-          return document.querySelector('#stat-current-power') === null;
-        });
-        if (state) break;
-        attempts++;
-        await page.waitForTimeout(1000);
-      }
-
-      // Aggregate views: Total Yield, Daily Average Yield, Peak Yield Day.
-      await expect(page.locator('#stat-total-yield')).toContainText(/kWh/);
-      await expect(page.locator('#stat-avg-yield')).toContainText(/kWh/);
-      await expect(page.locator('#stat-peak-yield')).toContainText(/kWh/);
+      // Aggregate views: the period-stable Yield tile shows the period
+      // total in kWh (week total / month total / year total), and the
+      // Peak Power tile shows the period's peak wattage. The Yield
+      // card stays present across every preset — period-stable — so
+      // we just assert its kWh content and the Peak Power tile's
+      // visibility after the LiveView re-render settles.
+      await expect(page.locator('#stat-yield-kwh')).toContainText(/kWh/);
+      await expect(page.locator('#stat-peak-watts')).toBeVisible();
 
       // Chart switches to a bar chart for these granularities.
       await expect(page.locator('#solar-chart-svg')).toBeVisible();
@@ -193,17 +131,11 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
     await page.locator('#select-granularity').selectOption('day');
 
-    // Wait for LiveView to process the granularity change with retry approach
-    let attempts = 0;
-    const maxAttempts = 10;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        return document.querySelector('#stat-total-yield') !== null;
-      });
-      if (state) break;
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
+    // Wait for LiveView to re-render the Day-granular historical chart.
+    // The stat cards are period-stable, so we wait for the chart title to
+    // flip from the 1D "Today's Production Curve" wording to the historical
+    // "Production Curve for ..." wording instead.
+    await expect(page.locator('#chart-title')).toContainText('Production Curve for');
 
     await expect(page.locator('#solar-chart-svg')).toBeVisible();
 
@@ -228,17 +160,10 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Stepping back (prev) returns to a period with data.
     await page.locator('#btn-history-prev').click();
 
-    // Wait for the chart to reappear after stepping back with retry approach
-    attempts = 0;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        return document.querySelector('#empty-chart') === null &&
-               document.querySelector('#solar-chart-svg') !== null;
-      });
-      if (state) break;
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
+    // Wait for the line chart to reappear after stepping back. The empty
+    // placeholder should disappear once we land back on a seeded day.
+    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await expect(page.locator('#empty-chart')).toHaveCount(0);
   });
 
   // NOTE: the Year granularity stepper is currently broken in the app —

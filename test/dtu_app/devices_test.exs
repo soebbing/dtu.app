@@ -4,6 +4,27 @@ defmodule DtuApp.DevicesTest do
   alias DtuApp.Devices
   alias DtuApp.DevicesFixtures
 
+  # Insert a consumption reading on the user's first Shelly. Used by
+  # `compute_self_consumption_pct/4` tests — the helper queries
+  # `readings` filtered by `power_type == "consumption"`, scoped to
+  # the user's owned DTUs, so we just need one row on the Shelly.
+  defp shelly_consumption_reading(user, inserted_at, consumption_power) do
+    shelly =
+      Enum.find(Devices.list_devices(user), fn d -> to_string(d.kind) == "shelly3em" end)
+
+    {:ok, _} =
+      Devices.create_reading(%{
+        dtu_id: shelly.id,
+        inverter_serial: "em:0",
+        mppt_index: 0,
+        power_type: "consumption",
+        consumption_power: consumption_power,
+        inserted_at: inserted_at
+      })
+
+    :ok
+  end
+
   # Build a DateTime anchored on today's UTC date with the given HH:MM:SS.
   # Used by the net-flow regression tests so all readings fall inside
   # today's UTC window without needing per-test anchor dates.
@@ -2037,6 +2058,7 @@ defmodule DtuApp.DevicesTest do
       assert stats == %{
                total_yield: 0.0,
                peak_power: 0.0,
+               peak_time: nil,
                avg_power: 0.0
              }
     end
@@ -3959,6 +3981,236 @@ defmodule DtuApp.DevicesTest do
     test "returns [] when the user has no DTUs" do
       user = DtuApp.AccountsFixtures.user_fixture()
       assert Devices.list_ytd_yield_data(user) == []
+    end
+  end
+
+  describe "compute_peak_watts_in_period/4 — period-aware peak watts for the stat-card row" do
+    # Powers the "Peak Power" tile on the new 5-up stat-card row for the
+    # 7D / 30D / YTD / custom presets. The helper reads from readings_5m
+    # (the bucketed continuous aggregate) plus a live tail from the raw
+    # `readings` table for the most recent 5 minutes — so a user who
+    # clicks 7D at 14:00 sees the highest single 5-minute bucket from
+    # the last 7 days, not just the older buckets.
+
+    test "returns {0.0, nil} when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      now = DateTime.utc_now()
+
+      assert Devices.compute_peak_watts_in_period(
+               user,
+               nil,
+               DateTime.add(now, -86_400, :second),
+               now
+             ) ==
+               {0.0, nil}
+    end
+
+    test "returns the highest bucket's power and time across the window" do
+      # Seed three buckets at distinct times in YESTERDAY (so they fall
+      # well outside the 5-minute "live tail" window that the helper
+      # reads from the raw `readings` table instead of `readings_5m`).
+      # The max-power bucket is the 13:00 one (1_200 W); the 10:00 and
+      # 16:00 buckets are lower. The helper should return 1_200 W
+      # with the 13:00 bucket time.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          name: "Peak Period DTU",
+          kind: "opendtu",
+          mqtt_username: "peak-period"
+        })
+
+      yesterday = Date.add(Date.utc_today(), -1)
+
+      for {hour, power} <- [{10, 800.0}, {13, 1_200.0}, {16, 600.0}] do
+        bucket_time =
+          DateTime.new!(yesterday, ~T[00:00:00], "Etc/UTC")
+          |> DateTime.add(hour * 3_600, :second)
+
+        DtuApp.Repo.query!(
+          """
+          INSERT INTO readings_5m
+            (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+             inverter_serial, mppt_index, inverter_name)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          """,
+          [bucket_time, dtu.id, power, power, 1.0, 100.0, "INV-PEAK", 0, "INV-PEAK"]
+        )
+      end
+
+      utc_start = DateTime.new!(yesterday, ~T[00:00:00], "Etc/UTC")
+      utc_end = DateTime.new!(yesterday, ~T[23:59:59], "Etc/UTC")
+
+      {peak_w, peak_time} = Devices.compute_peak_watts_in_period(user, dtu.id, utc_start, utc_end)
+
+      assert peak_w == 1_200.0
+      assert peak_time != nil
+      # The peak time should fall inside the seeded window.
+      assert DateTime.compare(peak_time, utc_start) in [:gt, :eq]
+      assert DateTime.compare(peak_time, utc_end) in [:lt, :eq]
+    end
+
+    test "returns {0.0, nil} when the window has no buckets" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      _dtu =
+        DevicesFixtures.device_fixture(user, %{
+          name: "Empty Window DTU",
+          kind: "opendtu",
+          mqtt_username: "empty-window"
+        })
+
+      # Use a window well in the past so any leftover buckets from
+      # other tests can't accidentally fall inside.
+      far_past = DateTime.add(DateTime.utc_now(), -365 * 86_400, :second)
+      utc_start = far_past
+      utc_end = DateTime.add(far_past, 86_400, :second)
+
+      assert Devices.compute_peak_watts_in_period(user, nil, utc_start, utc_end) ==
+               {0.0, nil}
+    end
+  end
+
+  describe "compute_self_consumption_pct/4 — period-aware self-consumption for the stat-card row" do
+    # Powers the "Self-consumption" tile on the 5-up stat-card row.
+    # Formula: `(production - exported) / production × 100` (clamped at
+    # 0–100). Hidden when no Shelly is paired — the helper returns nil
+    # in that case so the template's `is_number(...)` guard hides the
+    # card.
+
+    test "returns nil when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      now = DateTime.utc_now()
+
+      assert Devices.compute_self_consumption_pct(
+               user,
+               nil,
+               DateTime.add(now, -86_400, :second),
+               now
+             ) ==
+               nil
+    end
+
+    test "returns 100.0 when there is production but no export" do
+      # All production is consumed on-site: production = 1_000 Wh,
+      # exported = 0 Wh → self_consumption_pct = 100.0.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-100-#{System.unique_integer([:positive])}",
+          name: "Self-Cons 100"
+        })
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-100",
+          mppt_index: 0,
+          ac_power: 200.0,
+          yield_day: 1_000.0,
+          yield_total: 100_000.0,
+          inserted_at: yesterday
+        })
+
+      pct = Devices.compute_self_consumption_pct(user, dtu.id, yesterday, now)
+      assert pct == 100.0
+    end
+
+    test "returns ~50.0 when half the production is exported" do
+      # Production = 1_000 Wh, exported = ~500 Wh → ~50% self-consumption.
+      # The helper takes dtu_id=nil so it sees both the inverter's
+      # production reading AND the Shelly's consumption reading —
+      # scoped to one DTU it would only see one of the two sides.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-50-#{System.unique_integer([:positive])}",
+          name: "Self-Cons 50"
+        })
+
+      _shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-50-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons 50 Shelly"
+        })
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      # Production reading: 1_000 Wh produced today.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-50",
+          mppt_index: 0,
+          ac_power: 200.0,
+          yield_day: 1_000.0,
+          yield_total: 100_000.0,
+          inserted_at: yesterday
+        })
+
+      # Shelly consumption reading: -6_000 W (i.e. 6 kW export) at
+      # the same instant. The helper converts to Wh using a fixed
+      # 5-minute bucket width — for a single point that's 6_000 W ×
+      # (5/60) h = 500 Wh exported. Self-consumption = 1 - 500/1000
+      # = 50%.
+      _ = shelly_consumption_reading(user, yesterday, -6_000.0)
+
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
+      # Allow small tolerance — rounding / time-boundary effects.
+      assert_in_delta pct, 50.0, 0.5
+    end
+
+    test "clamps at 0.0 when export exceeds production (battery edge case)" do
+      # A battery can briefly make exported kWh > produced kWh.
+      # The helper should NOT return a negative percentage; it
+      # should clamp at 0.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-clamp-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Clamp"
+        })
+
+      _shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-clamp-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Clamp Shelly"
+        })
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-CLAMP",
+          mppt_index: 0,
+          ac_power: 100.0,
+          yield_day: 100.0,
+          yield_total: 50_000.0,
+          inserted_at: yesterday
+        })
+
+      # Massive export — 60 kW for 5 minutes = 5_000 Wh exported,
+      # vastly exceeding 100 Wh produced.
+      _ = shelly_consumption_reading(user, yesterday, -60_000.0)
+
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
+      # Production (100 Wh) is dominated by exported Wh — clamp at 0.
+      assert pct == 0.0
     end
   end
 end
