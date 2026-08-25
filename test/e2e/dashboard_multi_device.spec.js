@@ -431,6 +431,11 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // rows). So the Total view at this day shows:
     //   * 2 inverter paths (Roof serial 116180123456 + Balcony 223344556677)
     //   * 1 Total line (>1 inverter in scope)
+    // The range-presets toolbar hides the historical stepper until
+    // the user picks Custom; reveal it first.
+    await page.locator('#btn-range-custom').click();
+    await expect(page.locator('#history-picker')).toBeVisible();
+
     await page.locator('#select-granularity').selectOption('day');
 
     // LiveView swaps from live stat cards (`#stat-current-power`)

@@ -14,6 +14,11 @@ and a seeded database.
   stat cards, the granularity stepper (Day/Week/Month/Year) swapping stat cards
   and chart title, the prev/next stepper hitting the empty state past the data
   horizon, and the DTU switcher filtering between a single device and Total.
+- `dashboard_range_presets.spec.js` — the new unified preset toolbar
+  (1D / 7D / 30D / YTD / Custom) at the top of the dashboard: default
+  state lands on 1D with the historical stepper hidden, each preset
+  click updates the chart title, the stepper only reveals itself on
+  the Custom preset, and clicking back to 1D restores the live view.
 - `dashboard_multi_device.spec.js` — multi-device behaviour: the DTU switcher
   lists every device plus the Total button, switching between devices narrows
   the chart to that device's inverters and updates the fleet-Total line, the

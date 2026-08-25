@@ -2278,13 +2278,21 @@ defmodule DtuAppWeb.DashboardLiveTest do
     # goes through `chart_power_for_mppt/1` (which returns `0.0`
     # for nil — not nil), so a normal sandbox test that only
     # seeds raw rows would never trigger the bug. The bug fires
-    # exclusively via the `readings_5m` aggregate path. The cleanest
-    # way to populate `readings_5m` in a sandbox test is a direct
-    # `INSERT INTO readings_5m` — TimescaleDB accepts it in the
-    # test environment (continuous aggregates reject manual writes
-    # in production but accept them here because the test DB has
-    # no hypertable chunk restrictions). The insert lives in the
-    # test's sandbox transaction and rolls back at teardown.
+    # exclusively via the `readings_5m` aggregate path. The
+    # cleanest way to populate `readings_5m` in a sandbox test is
+    # a direct `INSERT INTO readings_5m` — the row is visible to
+    # subsequent SELECTs on the same sandbox connection (verified
+    # in `timescale/timescaledb:latest-pg16`), and the INSERT
+    # rolls back at the sandbox's teardown.
+    #
+    # Bucket times are pinned to today's UTC midnight (00:00) and
+    # 00:05 — early enough on the day to be in the past whenever
+    # `now > 00:05 UTC`, and to always fall inside today's day
+    # window, regardless of when the test runs. A relative offset
+    # like `now - 6h` lands at, say, 00:40 UTC when CI happens to
+    # run at 06:40, and `nil_bucket - 1h` then falls into yesterday,
+    # where the day-window query filters it out — that was the
+    # original CI flake this revision pins.
 
     test "dashboard mounts without 500 when readings_5m has a nil-power bucket", %{
       conn: conn,
@@ -2297,21 +2305,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
           base_topic: "inverter"
         })
 
-      # Seed the same nil-power chart-point the production
-      # `readings_5m` aggregate produces for an AhoyDTU yield-only
-      # flush — `avg_ac_power: NULL`, the AC reading never arrived.
-      #
-      # Bucket must be MORE than 5 minutes in the past so the
-      # dashboard's day-window query picks it up via the aggregate
-      # path (live tail only covers the last 5 minutes). The test
-      # runs at whatever wall-clock the CI box happens to be at, so
-      # we pin the bucket to 6 hours ago — well outside the live
-      # tail even if the box's clock is skewed forward.
-      bucket_time =
-        DateTime.utc_now()
-        |> DateTime.add(-6 * 3600, :second)
-        |> DateTime.truncate(:second)
-        |> DateTime.add(-rem(DateTime.utc_now().minute, 5) * 60, :second)
+      bucket_time = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
 
       DtuApp.Repo.query!(
         """
@@ -2366,6 +2360,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # handled). The mix pins that the fix preserves the real
       # max (`250.0`) while ignoring the nil, instead of letting
       # the nil poison the max to `nil`.
+      #
+      # The nil-coalesce itself is also covered by a direct unit
+      # test on `Devices.bucket_max_from_chart_points/1` in
+      # `test/dtu_app/devices_test.exs` — this LiveView test
+      # complements that by walking the chart pipeline all the way
+      # to the rendered Y-axis label, so a regression at any
+      # stage between the aggregate row and the SVG would be
+      # caught here.
       dtu =
         device_fixture(user, %{
           kind: "ahoydtu",
@@ -2373,24 +2375,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
           base_topic: "inverter"
         })
 
-      now = DateTime.utc_now()
+      # Today's 00:00 and 00:05 UTC buckets — both always in the
+      # past whenever `now > 00:05 UTC` and both always inside
+      # the dashboard's today-UTC day window. Two distinct 5-min
+      # buckets, so they show up as separate chart points.
+      nil_bucket = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+      numeric_bucket = DateTime.new!(Date.utc_today(), ~T[00:05:00], "Etc/UTC")
 
-      # Both buckets well outside the 5-minute live tail so the
-      # aggregate path (which is the path that produced the nil)
-      # is the one that surfaces the chart points.
-      nil_bucket =
-        now
-        |> DateTime.add(-6 * 3600, :second)
-        |> DateTime.truncate(:second)
-        |> DateTime.add(-rem(now.minute, 5) * 60, :second)
-
-      numeric_bucket =
-        nil_bucket
-        |> DateTime.add(-3600, :second)
-        |> DateTime.truncate(:second)
-        |> DateTime.add(-rem(DateTime.utc_now().minute, 5) * 60, :second)
-
-      # One nil-power bucket 6 hours ago.
+      # One nil-power bucket at 00:00 UTC today.
       DtuApp.Repo.query!(
         """
         INSERT INTO readings_5m
@@ -2401,7 +2393,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
         [nil_bucket, dtu.id, 10.0, 100.0, "INV-1", 0, "INV-1"]
       )
 
-      # One numeric bucket 1 hour before that with a 250 W mean.
+      # One numeric bucket at 00:05 UTC today with a 250 W mean.
       DtuApp.Repo.query!(
         """
         INSERT INTO readings_5m
@@ -3253,6 +3245,117 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Sink card has its badge.
       assert html =~ ~s(id="dtu-sink-badge-#{sink.id}"),
              "sink device card must render its sink badge"
+    end
+  end
+
+  describe "Range presets toolbar" do
+    test "renders five preset buttons (1D / 7D / 30D / YTD / Custom) and the 1D tab is active by default",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="btn-range-1d")
+      assert html =~ ~s(id="btn-range-7d")
+      assert html =~ ~s(id="btn-range-30d")
+      assert html =~ ~s(id="btn-range-ytd")
+      assert html =~ ~s(id="btn-range-custom")
+
+      # The historical stepper is hidden until the user picks Custom.
+      refute html =~ ~s(id="history-picker")
+    end
+
+    test "clicking 7D renders the 'Last 7 days' chart title and shows the historical stepper only after Custom",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-7d") |> render_click()
+      assert html =~ "Last 7 days"
+      # The historical stepper stays hidden — 7D already encodes its
+      # window, the user has no date to pick.
+      refute html =~ ~s(id="history-picker")
+    end
+
+    test "clicking 30D renders the 'Last 30 days' chart title",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-30d") |> render_click()
+      assert html =~ "Last 30 days"
+    end
+
+    test "clicking YTD renders the 'Year to date' chart title",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-ytd") |> render_click()
+      assert html =~ "Year to date"
+    end
+
+    test "clicking Custom reveals the historical stepper",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Stepper is hidden before clicking Custom.
+      refute render(view) =~ ~s(id="history-picker")
+
+      html = view |> element("#btn-range-custom") |> render_click()
+      assert html =~ ~s(id="history-picker")
+    end
+
+    test "legacy range=today payload still toggles the 1D preset",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # First leave the default 1D view, then send the legacy payload
+      # directly. The back-compat clause must map it to the 1D branch.
+      view |> element("#btn-range-7d") |> render_click()
+
+      html =
+        render_click(view, "select_quick_range", %{"range" => "today"})
+
+      assert html =~ ~s(id="btn-range-1d")
+      assert html =~ "Today&#39;s Production Curve"
     end
   end
 end
