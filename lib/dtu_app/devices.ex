@@ -2307,11 +2307,13 @@ defmodule DtuApp.Devices do
   `today_yield` (sum of each inverter's last `yield_day` of the window).
 
   `exported_kwh` is the positive-net-flow energy that left the home,
-  computed by summing 5-min-bucket-equivalents from the Shelly's signed
-  `total_act_power` readings (negative readings = export). The
-  approximation uses one bucket-equivalent per distinct uplink to avoid
-  10× overcount from the Shelly's bursty uplink rate. The result is a
-  headline number for the stat card, not an audit figure.
+  computed by summing bucket-mean wattage (one mean per Shelly device
+  per 5-min window) across all windows in the period — see
+  `integrate_export_kwh/4`. The bucket-mean approach mirrors
+  `integrate_consumption_kwh/4` and `list_consumption_chart_data/4` so
+  bursty Shelly uplinks (which can fire every few seconds) don't get
+  multiplied up into fake export. The result is a headline number for
+  the stat card, not an audit figure.
 
   Edge cases:
   * No production at all → returns `0.0` (the card shows "0 %", not
@@ -2342,38 +2344,84 @@ defmodule DtuApp.Devices do
         |> Enum.map(fn row -> row.yield_day || 0.0 end)
         |> Enum.sum()
 
-      exported_wh =
-        Repo.all(
-          from r in Reading,
-            where:
-              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
-                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
-            distinct: [r.dtu_id, desc: r.inserted_at],
-            order_by: [r.dtu_id, desc: r.inserted_at],
-            select: %{consumption_power: r.consumption_power}
-        )
-        |> Enum.reduce(0.0, fn r, acc ->
-          # Shelly sign convention: positive = importing, negative =
-          # exporting. `consumption_power == nil` means the meter
-          # hasn't reported yet — skip the row entirely so we don't
-          # 0× the partial total.
-          if r.consumption_power == nil do
-            acc
-          else
-            export_w = max(0.0, -(r.consumption_power || 0.0))
-            # One 5-min-bucket-equivalent per distinct uplink.
-            acc + export_w * (5.0 / 60.0)
-          end
-        end)
-
+      exported_kwh = integrate_export_kwh(user, dtu_id, utc_start, utc_end)
       production_kwh = production_wh / 1000.0
-      exported_kwh = exported_wh / 1000.0
 
       cond do
         production_kwh <= 0.0 -> 0.0
         exported_kwh <= 0.0 -> 100.0
         exported_kwh >= production_kwh -> 0.0
         true -> Float.round((1.0 - exported_kwh / production_kwh) * 100.0, 1)
+      end
+    end
+  end
+
+  # Sum of bucket-mean negative `consumption_power` across all 5-min
+  # windows in a UTC period, expressed in kWh. The Shelly's signed
+  # reading means negative = exporting (solar pushing into the grid),
+  # positive = importing (household drawing from the grid); only the
+  # negative bucket-means contribute to exported energy.
+  #
+  # Mirrors `integrate_consumption_kwh/4` (which floors at 0 for
+  # the household-draw chart) but inverts the sign so export survives
+  # the clamp. Bucket-mean × 5 min gives one Wh figure per
+  # (bucket, device), summed across the period.
+  #
+  # This is the same approach `list_consumption_chart_data/4` uses
+  # for the consumption chart — without it, a Shelly that sends N
+  # uplinks per real-time minute would overcount export by a factor
+  # of N × (5/60) hours-of-energy per real-time minute, clamping
+  # the self-consumption percentage at 0 % even when the user is
+  # actually self-consuming most of their solar.
+  defp integrate_export_kwh(%User{} = user, dtu_id, utc_start, utc_end) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      0.0
+    else
+      readings =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end and
+                not is_nil(r.consumption_power),
+            select: %{
+              inserted_at: r.inserted_at,
+              consumption_power: r.consumption_power,
+              dtu_id: r.dtu_id
+            }
+        )
+
+      if readings == [] do
+        0.0
+      else
+        readings
+        |> Enum.group_by(fn r -> div(DateTime.to_unix(r.inserted_at), 300) end)
+        |> Enum.reduce(0.0, fn {_bucket, bucket_readings}, acc ->
+          # Per (bucket, dtu_id), take the signed mean and only
+          # count it if negative (export). Sum the per-device
+          # contributions into one bucket export figure, add to
+          # accumulator. 5-min bucket × 5/60 h = Wh contributed.
+          bucket_export_wh =
+            bucket_readings
+            |> Enum.group_by(& &1.dtu_id)
+            |> Enum.reduce(0.0, fn {_dtu_id, series}, device_acc ->
+              mean_power =
+                Enum.sum(Enum.map(series, & &1.consumption_power)) /
+                  length(series)
+
+              if mean_power < 0.0 do
+                device_acc + abs(mean_power) * (5.0 / 60.0)
+              else
+                device_acc
+              end
+            end)
+
+          acc + bucket_export_wh
+        end)
+        |> Kernel./(1000)
+        |> Float.round(2)
       end
     end
   end

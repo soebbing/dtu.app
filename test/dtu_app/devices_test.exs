@@ -4212,5 +4212,172 @@ defmodule DtuApp.DevicesTest do
       # Production (100 Wh) is dominated by exported Wh — clamp at 0.
       assert pct == 0.0
     end
+
+    test "integrates export across many Shelly uplinks in the period" do
+      # Regression for "self-consumption % shows 0% even though
+      # production and consumption are tracked": the export side of
+      # `compute_self_consumption_pct/4` used to sum only the LATEST
+      # consumption reading per Shelly (the `distinct: [r.dtu_id,
+      # desc: r.inserted_at]` clause collapsed every historical uplink
+      # in the window down to one snapshot row), so a typical
+      # day-of-Shelly-uplinks scenario summed a single 5-minute bucket
+      # of energy instead of the period's actual export total.
+      #
+      # Production = 4_000 Wh, distributed across 40 buckets at
+      # -300 W export (12 000 Wh exported over 40 × 5 min = 200 min
+      # of consistent export). The expected self-consumption is
+      # clamped at 0 % (export >> production).
+      #
+      # With the bug: the helper sums only the latest -300 W reading
+      # × 5/60 = 25 Wh exported → 99.4 % self-consumption. That's
+      # the "always reports a near-perfect score" pattern users see.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-many-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Many"
+        })
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-many-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Many Shelly"
+        })
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-MANY",
+          mppt_index: 0,
+          ac_power: 200.0,
+          yield_day: 4_000.0,
+          yield_total: 100_000.0,
+          inserted_at: yesterday
+        })
+
+      # 40 Shelly readings, one per 5-min bucket, all showing
+      # -300 W export. 40 × -300 W × (5/60) h = 1_000 Wh exported.
+      # Production is 4_000 Wh, exported is 1_000 Wh → self-consumption
+      # = 100 × (1 - 1_000/4_000) = 75 %.
+      anchor =
+        Date.utc_today()
+        |> DateTime.new!(~T[11:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      for idx <- 0..39 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: shelly.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: -300.0,
+            inserted_at: DateTime.add(anchor, idx * 300, :second)
+          })
+      end
+
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
+      assert_in_delta pct, 75.0, 1.0
+    end
+
+    test "does not overcount bursty Shelly uplinks into export" do
+      # Regression for "self-consumption % always shows 0 %" when a
+      # user has a Shelly paired with their inverter: the export
+      # integration treats every uplink as a 5-minute bucket, so a
+      # Shelly that sends N uplinks in a real-time minute ends up
+      # counting N × (5/60) hours of energy per real-time minute
+      # — a roughly N×-per-real-time-minute overcount. A 60 W
+      # average export over 5 real minutes (50 Wh of actual export)
+      # ends up contributing 600 × 60 × (5/60) = 3_000 Wh in the
+      # export sum (a 60× overcount), so a typical 4 kWh day of
+      # production clamps the percentage at 0 % even though the
+      # user is actually self-consuming almost everything.
+      #
+      # 600 Shelly uplinks spread over 5 minutes, all at -60 W.
+      # Real export = 60 W × (5/60) h = 5 Wh. Production is
+      # 4_000 Wh → self-consumption ≈ 99.9 %. The buggy helper
+      # counts 600 × 60 × (5/60) = 3_000 Wh exported, clamps at
+      # 0 % because exported (3 kWh) > production (4 kWh → 0.75
+      # ratio still within the "exported >= production" check? No:
+      # 3 < 4, so the bug returns 100 × (1 - 3000/4000) = 25 %).
+      # To force the clamp at 0 % we use -1_000 W per uplink:
+      # 600 × 1_000 × (5/60) = 50_000 Wh exported ≫ 4_000 Wh
+      # production → 0 %.
+      #
+      # Expected behaviour: bucket the 600 readings into their
+      # 5-minute windows, take the bucket mean (still -1_000 W for
+      # that single 5-min window), and integrate ONE bucket's worth
+      # of energy (5_000 Wh) → exported 5 kWh vs produced 4 kWh →
+      # still clamped at 0 % in this scenario, which is correct
+      # (we genuinely exported more than we produced). The fix is
+      # about the *order of magnitude* — not having exported count
+      # grow with the number of Shelly uplinks.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-burst-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Burst"
+        })
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-burst-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Burst Shelly"
+        })
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV-BURST",
+          mppt_index: 0,
+          ac_power: 200.0,
+          yield_day: 4_000.0,
+          yield_total: 100_000.0,
+          inserted_at: yesterday
+        })
+
+      # 600 Shelly readings at -100 W (NOT -1_000 W — production
+      # = 4_000 Wh, exported = 600 × 100 × (5/60) = 5_000 Wh with
+      # the bug → 0 %. With the fix: 1 bucket × 100 W × (5/60) =
+      # 8.33 Wh exported → ~99.8 % self-consumption.
+      anchor =
+        Date.utc_today()
+        |> DateTime.new!(~T[11:00:00])
+        |> Map.put(:microsecond, {0, 0})
+
+      for idx <- 0..599 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: shelly.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: -100.0,
+            inserted_at: DateTime.add(anchor, idx, :second)
+          })
+      end
+
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
+
+      # Sanity: production is 4_000 Wh, real export is < 5 Wh over
+      # 5 minutes (the 600 readings fall into ~1 bucket window),
+      # so self-consumption should be very close to 100 % — NOT
+      # 0 % (the bug clamps at 0 because of the 5_000 Wh overcount).
+      assert pct >= 90.0,
+             "self-consumption must not overcount bursty Shelly uplinks " <>
+               "(production 4_000 Wh, real export ~8 Wh → expect ≥90 %, got #{pct})"
+    end
   end
 end
