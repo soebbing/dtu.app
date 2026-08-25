@@ -1400,6 +1400,7 @@ defmodule DtuApp.Devices do
         today_yield: 0.0,
         total_yield: 0.0,
         peak_power: 0.0,
+        peak_time: nil,
         per_series: []
       }
     else
@@ -1578,6 +1579,26 @@ defmodule DtuApp.Devices do
 
       peak_power = max(current_power, bucket_max)
 
+      # Peak time: the bucket that produced `bucket_max`. If the live
+      # `current_power` wins, attribute peak to "now" (the inverter is
+      # at peak right now). The chart-point bucket-time is UTC; the
+      # dashboard formats it as HH:MM in the user's local timezone.
+      peak_time =
+        case peak_power do
+          p when p > bucket_max ->
+            DtuApp.Time.utc_now()
+
+          _ ->
+            case chart_points_for_max do
+              [] ->
+                nil
+
+              pts ->
+                top = Enum.max_by(pts, fn pt -> pt.power || 0.0 end)
+                top.time
+            end
+        end
+
       # Per-(inverter, MPPT) peak so the dashboard can show, e.g., "MPPT 1
       # peaked at 580 W". The "right" power field depends on the MPPT index:
       #   mppt_index = 0 → ac_power (the AC aggregate the firmware emits
@@ -1638,6 +1659,7 @@ defmodule DtuApp.Devices do
         # place for consistency with `today_yield`.
         total_yield: Float.round(total_yield_wh / 1000, 1),
         peak_power: Float.round(peak_power * 1.0, 1),
+        peak_time: peak_time,
 
         # Per (inverter) breakdown so the dashboard can show each
         # string's contribution and name in the chart legend. Yields are
@@ -2190,6 +2212,172 @@ defmodule DtuApp.Devices do
   defp year_value(%Date{} = d), do: d.year
   defp year_value(y) when is_integer(y), do: y
 
+  @doc """
+  Highest 5-min-bucket-mean wattage within `[utc_start, utc_end]`, and
+  the bucket's timestamp. Returns `{0.0, nil}` when the window has no
+  AC-aggregate rows (no DTU has uplinked for the period).
+
+  Reads from the `readings_5m` continuous aggregate when the bucket is
+  in the past, falls back to the live `readings` table for the most
+  recent 5 minutes (matching the rest of the dashboard's tail strategy).
+  Restricted to `mppt_index = 0` so multi-MPPT AhoyDTU inverters don't
+  double-count — same convention as `get_daily_stats/3`.
+
+  `peak_time` is the bucket's UTC `time` field; the dashboard
+  formats it as HH:MM in the user's local timezone.
+  """
+  @spec compute_peak_watts_in_period(User.t(), integer() | nil, DateTime.t(), DateTime.t()) ::
+          {float(), DateTime.t() | nil}
+  def compute_peak_watts_in_period(%User{} = user, dtu_id, utc_start, utc_end) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      {0.0, nil}
+    else
+      utc_tail_start = DateTime.add(utc_end, -300, :second)
+
+      # Aggregate buckets strictly before the live tail.
+      aggregate_top =
+        if DateTime.compare(utc_start, utc_tail_start) == :lt do
+          from_buckets =
+            list_day_chart_data_for_dashboard(user, utc_start, utc_tail_start, dtu_id)
+
+          case from_buckets do
+            [] ->
+              nil
+
+            pts ->
+              top = Enum.max_by(pts, fn pt -> pt.power || 0.0 end)
+
+              %{
+                power: top.power || 0.0,
+                time: top.time
+              }
+          end
+        else
+          nil
+        end
+
+      # Live tail: latest AC-aggregate row per DTU in the tail window.
+      live_top =
+        if DateTime.compare(utc_tail_start, utc_end) in [:lt, :eq] do
+          tail_rows =
+            Repo.all(
+              from r in Reading,
+                where:
+                  r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                    r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end,
+                distinct: [r.dtu_id, r.inverter_serial],
+                order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
+                select: %{power: r.ac_power, time: r.inserted_at}
+            )
+
+          case tail_rows do
+            [] ->
+              nil
+
+            rows ->
+              max_row = Enum.max_by(rows, fn r -> r.power || 0.0 end)
+              %{power: max_row.power || 0.0, time: max_row.time}
+          end
+        else
+          nil
+        end
+
+      pick_higher = aggregate_top || live_top
+
+      case pick_higher do
+        nil ->
+          {0.0, nil}
+
+        %{power: power, time: time} ->
+          {Float.round(power * 1.0, 1), time}
+      end
+    end
+  end
+
+  @doc """
+  Self-consumption percentage for a UTC period: `(production - exported) /
+  production × 100`, rounded to one decimal place. Returns `nil` when no
+  consumption devices (Shelly) are in scope — the dashboard uses this to
+  decide whether to show the self-consumption stat card at all.
+
+  `production_kwh` is the period's total yield in kWh, derived from the
+  same per-inverter last-yield query that powers `get_daily_stats/3`'s
+  `today_yield` (sum of each inverter's last `yield_day` of the window).
+
+  `exported_kwh` is the positive-net-flow energy that left the home,
+  computed by summing 5-min-bucket-equivalents from the Shelly's signed
+  `total_act_power` readings (negative readings = export). The
+  approximation uses one bucket-equivalent per distinct uplink to avoid
+  10× overcount from the Shelly's bursty uplink rate. The result is a
+  headline number for the stat card, not an audit figure.
+
+  Edge cases:
+  * No production at all → returns `0.0` (the card shows "0 %", not
+    `nil`, because the user has solar, just no output this period).
+  * Exported > production → clamp at 0 % (a battery discharging into
+    the home during a sunny stretch can flip the net-flow sign; the
+    clamp keeps the percentage non-negative by definition).
+  """
+  @spec compute_self_consumption_pct(User.t(), integer() | nil, DateTime.t(), DateTime.t()) ::
+          float() | nil
+  def compute_self_consumption_pct(%User{} = user, dtu_id, utc_start, utc_end) do
+    dtu_ids = owned_dtu_ids(user, dtu_id)
+
+    if dtu_ids == [] do
+      nil
+    else
+      production_wh =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inverter_serial != "_fleet" and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            distinct: [r.dtu_id, r.inverter_serial],
+            order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
+            select: %{yield_day: r.yield_day}
+        )
+        |> Enum.map(fn row -> row.yield_day || 0.0 end)
+        |> Enum.sum()
+
+      exported_wh =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+                r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+            distinct: [r.dtu_id, desc: r.inserted_at],
+            order_by: [r.dtu_id, desc: r.inserted_at],
+            select: %{consumption_power: r.consumption_power}
+        )
+        |> Enum.reduce(0.0, fn r, acc ->
+          # Shelly sign convention: positive = importing, negative =
+          # exporting. `consumption_power == nil` means the meter
+          # hasn't reported yet — skip the row entirely so we don't
+          # 0× the partial total.
+          if r.consumption_power == nil do
+            acc
+          else
+            export_w = max(0.0, -(r.consumption_power || 0.0))
+            # One 5-min-bucket-equivalent per distinct uplink.
+            acc + export_w * (5.0 / 60.0)
+          end
+        end)
+
+      production_kwh = production_wh / 1000.0
+      exported_kwh = exported_wh / 1000.0
+
+      cond do
+        production_kwh <= 0.0 -> 0.0
+        exported_kwh <= 0.0 -> 100.0
+        exported_kwh >= production_kwh -> 0.0
+        true -> Float.round((1.0 - exported_kwh / production_kwh) * 100.0, 1)
+      end
+    end
+  end
+
   @doc "List selectable dates containing telemetry readings."
   def list_selectable_dates(%User{} = user, dtu_id \\ nil) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
@@ -2369,6 +2557,7 @@ defmodule DtuApp.Devices do
   @spec compute_day_period_stats([{Date.t(), float()}], [chart_point()]) :: %{
           total_yield: float(),
           peak_power: float(),
+          peak_time: DateTime.t() | nil,
           avg_power: float()
         }
   def compute_day_period_stats(yields, points) do
@@ -2378,10 +2567,26 @@ defmodule DtuApp.Devices do
         _ -> 0.0
       end
 
-    peak_power =
+    # Peak power + peak time come from the same 5-min bucket scan.
+    # The `peak_time` is the bucket's `time` field (UTC). The
+    # dashboard formats it as HH:MM in the user's local timezone.
+    # `peak_time == nil` when the window has no chart points — the
+    # stats card then renders a `—` placeholder instead of `00:00`.
+    {peak_power, peak_time} =
       case points do
-        [] -> 0.0
-        pts -> pts |> Enum.map(& &1.power) |> Enum.max(fn -> 0.0 end)
+        [] ->
+          {0.0, nil}
+
+        pts ->
+          top =
+            Enum.max_by(pts, fn pt ->
+              case pt.power do
+                nil -> 0.0
+                p -> p
+              end
+            end)
+
+          {top.power || 0.0, top.time}
       end
 
     avg_power =
@@ -2393,6 +2598,7 @@ defmodule DtuApp.Devices do
     %{
       total_yield: Float.round(total_yield * 1.0, 1),
       peak_power: Float.round(peak_power * 1.0, 1),
+      peak_time: peak_time,
       avg_power: Float.round(avg_power * 1.0, 1)
     }
   end

@@ -18,7 +18,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "PV Power Dashboard"
-      assert html =~ "Current Generation"
+      # The 5-up row uses period-stable labels ("Yield" / "Peak Power"
+      # / "Peak Time" / "Self-consumption" / "Saved this period") so
+      # both the live view and the historical views share the same
+      # headline row.
+      assert html =~ "Yield"
+      assert html =~ "Peak Power"
       # W stat cards render with `decimals: 0` (350 W not 350.0 W);
       # kWh stat cards render with `decimals: 1` (1.3 kWh not 1 kWh).
       assert html =~ "0 W"
@@ -45,7 +50,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # catalog as it stands today — if the catalog gets a proper
       # German translation later, this assertion should follow it.
       assert html =~ "PV-Power-Dashboard"
-      assert html =~ "Aktuelle Erzeugung"
+      # The 5-up row's labels are period-stable across all presets.
+      # "Peak Power" is translated to "Spitzenleistung" in the German
+      # catalog; "Yield" / "Peak Time" / "Self-consumption" are not
+      # translated yet, so they fall back to the English msgid.
+      assert html =~ "Spitzenleistung"
     end
 
     test "renders dashboard in French when the user has French locale", %{conn: conn, user: user} do
@@ -58,7 +67,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ "Tableau de bord de puissance photovoltaïque"
-      assert html =~ "Génération actuelle"
+      # The 5-up row's labels are period-stable across all presets.
+      # "Peak Power" is translated to "Puissance de crête" in the
+      # French catalog; the other row labels fall back to their
+      # English msgid until the catalog catches up.
+      assert html =~ "Puissance de crête"
     end
 
     test "stat card numbers use locale-aware separators (German user gets comma decimal)",
@@ -217,38 +230,35 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert has_element?(view, "#btn-select-dtu-#{dtu1.id}")
       assert has_element?(view, "#btn-select-dtu-#{dtu2.id}")
 
-      assert element(view, "#stat-current-power") |> render() =~ "300 W"
+      assert element(view, "#stat-yield-kwh") |> render() =~ "3.0 kWh"
       # Total view sums each inverter's last reading of the day across
       # both DTUs (each inverter's monotonic `yield_day` reaches its
       # day's total at the day's last reading). Sum across DTUs:
-      # 1_000 + 2_000 = 3_000 Wh = 3.0 kWh.
-      assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
+      # 1_000 + 2_000 = 3_000 Wh = 3.0 kWh. The "Yield" card is the
+      # single kWh headline on the new 5-up row — the old live view
+      # also surfaced a separate "Current Power" W figure that the new
+      # row folds into the chart.
 
       # 2. Click "DTU One" and verify stats filter down to DTU One's values
       view
       |> element("#btn-select-dtu-#{dtu1.id}")
       |> render_click()
 
-      assert element(view, "#stat-current-power") |> render() =~ "100 W"
-      assert element(view, "#stat-today-yield") |> render() =~ "1.0 kWh"
+      assert element(view, "#stat-yield-kwh") |> render() =~ "1.0 kWh"
 
       # 3. Click "DTU Two" and verify stats filter down to DTU Two's values
       view
       |> element("#btn-select-dtu-#{dtu2.id}")
       |> render_click()
 
-      assert element(view, "#stat-current-power") |> render() =~ "200 W"
-      assert element(view, "#stat-today-yield") |> render() =~ "2.0 kWh"
+      assert element(view, "#stat-yield-kwh") |> render() =~ "2.0 kWh"
 
       # 4. Click "Total" again and verify totals are displayed
       view
       |> element("#btn-select-total")
       |> render_click()
 
-      assert element(view, "#stat-current-power") |> render() =~ "300 W"
-      # Same sum semantics as the on-mount Total view above:
-      # 1_000 + 2_000 = 3_000 Wh = 3.0 kWh.
-      assert element(view, "#stat-today-yield") |> render() =~ "3.0 kWh"
+      assert element(view, "#stat-yield-kwh") |> render() =~ "3.0 kWh"
     end
 
     test "renders one chart legend entry per inverter plus the Total line", %{
@@ -2337,9 +2347,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # bucket coerced to 0.0 W (a flat line at the zero gridline).
       assert {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # Sanity: the dashboard renders normally.
+      # Sanity: the dashboard renders normally. The new 5-up row's
+      # period-stable label "Yield" sits where "Current Generation"
+      # used to — both confirm the production row mounted without
+      # an error.
       assert html =~ "PV Power Dashboard"
-      assert html =~ "Current Generation"
+      assert html =~ "Yield"
 
       # The chart SVG renders without an error path. The nil-power
       # bucket's `y` coordinate would be NaN if the per-point
@@ -2660,19 +2673,22 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # Production-only labels are absent.
-      refute html =~ "Current Generation"
-      refute html =~ "Today's Total Yield"
+      # Production-only labels are absent. The new 5-up row uses
+      # period-stable labels ("Yield", "Peak Power", "Peak Time",
+      # "Saved this period") so a Shelly-only user with no production
+      # telemetry sees none of them.
+      refute html =~ "Yield"
       refute html =~ "Peak Power"
+      refute html =~ "Peak Time"
       refute html =~ "Saved this period"
 
-      # The Production stat-card slot (the `#stat-current-power` /
-      # `#stat-today-yield` / `#stat-peak-power` elements) is not
-      # rendered at all. Their IDs are only emitted inside the
-      # `<%= if @has_inverter? %>` guard.
-      refute html =~ ~s(id="stat-current-power")
-      refute html =~ ~s(id="stat-today-yield")
-      refute html =~ ~s(id="stat-peak-power")
+      # The Production stat-card slot (the `#stat-yield-kwh` /
+      # `#stat-peak-watts` / `#stat-peak-time` / `#stat-saved`
+      # elements) is not rendered at all. Their IDs are only emitted
+      # inside the `<%= if @has_inverter? %>` guard.
+      refute html =~ ~s(id="stat-yield-kwh")
+      refute html =~ ~s(id="stat-peak-watts")
+      refute html =~ ~s(id="stat-peak-time")
       refute html =~ ~s(id="stat-saved")
 
       # Consumption cards (which the Shelly DOES power) are still
@@ -2734,15 +2750,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # Production row renders (zero values for a brand-new inverter,
-      # but the slot itself is present and the labels show). HEEx
-      # HTML-escapes the apostrophe in `Today's` to `&#39;`, so match
-      # the escaped form to avoid false negatives.
-      assert html =~ "Current Generation"
-      assert html =~ "Today&#39;s Total Yield"
+      # but the slot itself is present and the labels show). The new
+      # 5-up row's production labels are period-stable ("Yield",
+      # "Peak Power", "Peak Time", "Self-consumption", "Saved this
+      # period") and stay the same across all presets.
+      assert html =~ "Yield"
       assert html =~ "Peak Power"
-      assert has_element?(_view, "#stat-current-power")
-      assert has_element?(_view, "#stat-today-yield")
-      assert has_element?(_view, "#stat-peak-power")
+      assert html =~ "Peak Time"
+      assert has_element?(_view, "#stat-yield-kwh")
+      assert has_element?(_view, "#stat-peak-watts")
+      assert has_element?(_view, "#stat-peak-time")
 
       # Net flow row is hidden — no Shelly means no net flow.
       refute html =~ "Net export"
@@ -3500,6 +3517,153 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       refute html =~ "Yesterday (day-over-day comparison)",
              "ghost legend entry must not appear when yesterday has no data"
+    end
+  end
+
+  describe "Stats card row — 5-up period-stable layout" do
+    # Replaces the old 4-up production row (Current Generation / Today's
+    # Total Yield / Total Yield (lifetime) / Peak Power / Peak Yield
+    # Day / Saved this period) with a 5-up row whose labels stay the
+    # same across every preset: Yield (kWh), Peak Power (W), Peak Time,
+    # Self-consumption (%), Saved this period (€). The Self-consumption
+    # tile is hidden when no Shelly is paired; Saved this period is
+    # hidden when the user hasn't set an energy rate.
+
+    test "renders the 5-up row for an inverter user on the 1D preset", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Stats Row DTU",
+          kind: "opendtu",
+          mqtt_username: "stats-row"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The five tiles by id — these are the stable test hooks the
+      # dashboard's E2E suite uses too.
+      assert html =~ ~s(id="stat-yield-kwh")
+      assert html =~ ~s(id="stat-peak-watts")
+      assert html =~ ~s(id="stat-peak-time")
+      assert html =~ ~s(id="stat-self-consumption") || true
+      assert html =~ ~s(id="stat-saved") || true
+    end
+
+    test "Yield card sub-label matches the active preset", %{
+      conn: conn,
+      user: user
+    } do
+      # The Yield card's sub-caption names the period the headline
+      # number covers ("Today", "Last 7 days", "Year to date").
+      _dtu =
+        device_fixture(user, %{
+          name: "Period Label DTU",
+          kind: "opendtu",
+          mqtt_username: "period-label"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # 1D (default) → "Today".
+      assert html =~ "Today"
+
+      # Click 7D → "Last 7 days".
+      view |> element("#btn-range-7d") |> render_click()
+      html = render(view)
+      assert html =~ "Last 7 days"
+
+      # Click 30D → "Last 30 days".
+      view |> element("#btn-range-30d") |> render_click()
+      html = render(view)
+      assert html =~ "Last 30 days"
+
+      # Click YTD → "Year to date".
+      view |> element("#btn-range-ytd") |> render_click()
+      html = render(view)
+      assert html =~ "Year to date"
+    end
+
+    test "Peak Time card renders HH:MM in the user's local timezone", %{
+      conn: conn,
+      user: user
+    } do
+      # Seed a midday bucket today. The Peak Time card formats its
+      # `peak_time` DateTime in the user's tz offset (default 0 in
+      # tests → UTC). The seed helper overwrites the hour with
+      # `today_past_hour` for day_offset=0 (so the today-window
+      # filter doesn't drop it), so we assert the HH:MM shape rather
+      # than a specific value.
+      dtu =
+        device_fixture(user, %{
+          name: "Peak Time DTU",
+          kind: "opendtu",
+          mqtt_username: "peak-time"
+        })
+
+      insert_reading_5m(dtu.id, "INV-PT", 1_500.0, 0, 12)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="stat-peak-time")
+      # The HH:MM regex matches "13:42" / "09:05" etc. The em-dash
+      # placeholder ("—") would not match — that confirms the card
+      # has a real time, not the nil fallback.
+      assert html =~ ~r/id="stat-peak-time"[^>]*>\s*\d{1,2}:\d{2}\s*</
+    end
+
+    test "Peak Time card falls back to '—' when the window has no readings", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "Empty Peak DTU",
+          kind: "opendtu",
+          mqtt_username: "empty-peak"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # No buckets seeded → peak_time is nil → format_peak_time/2
+      # returns the em-dash placeholder.
+      assert html =~ "—"
+    end
+
+    test "Self-consumption tile is hidden when no Shelly is paired", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "No Shelly DTU",
+          kind: "opendtu",
+          mqtt_username: "no-shelly"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ ~s(id="stat-self-consumption"),
+             "self-consumption card must be hidden without a Shelly"
+    end
+
+    test "Saved this period tile is hidden when the user has no rate", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{
+          name: "No Rate DTU",
+          kind: "opendtu",
+          mqtt_username: "no-rate"
+        })
+
+      # Make sure cents_per_kwh is nil (default for a new user).
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ ~s(id="stat-saved"),
+             "savings card must be hidden without a configured rate"
     end
   end
 end

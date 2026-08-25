@@ -24,6 +24,14 @@ and a seeded database.
   default 1D view, asserts 7D must not render the `data-ghost`
   path or the legend entry, and a round-trip 1D → 7D → 1D
   preserves the structure.
+- `dashboard_stats_card_row.spec.js` — the new 5-up stats card row
+  above the chart. Asserts the three period-stable tiles
+  (`#stat-yield-kwh`, `#stat-peak-watts`, `#stat-peak-time`) render
+  for an inverter-only user, the Yield sub-label updates as the
+  user clicks presets (Today / Last 7 days / Last 30 days / Year to
+  date), and the Peak Power / Peak Time tiles surface their
+  formatted figures (or the em-dash placeholder on an empty
+  window).
 - `dashboard_multi_device.spec.js` — multi-device behaviour: the DTU switcher
   lists every device plus the Total button, switching between devices narrows
   the chart to that device's inverters and updates the fleet-Total line, the
