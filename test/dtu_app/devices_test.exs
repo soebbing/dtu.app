@@ -1201,7 +1201,13 @@ defmodule DtuApp.DevicesTest do
 
     test "returns [] when the user has no devices in scope" do
       user = DtuApp.AccountsFixtures.user_fixture()
-      assert Devices.list_yesterday_chart_data_for_dashboard(user, today_at(0), today_end_of_day(), nil) == []
+
+      assert Devices.list_yesterday_chart_data_for_dashboard(
+               user,
+               today_at(0),
+               today_end_of_day(),
+               nil
+             ) == []
     end
 
     test "returns [] when yesterday has no readings" do

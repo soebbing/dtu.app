@@ -759,7 +759,7 @@ defmodule DtuAppWeb.DashboardLive do
               utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
 
               local_seconds =
-                utc_seconds + tz_offset_seconds
+                (utc_seconds + tz_offset_seconds)
                 |> rem(86_400 * 4)
                 |> rem(86_400)
 
