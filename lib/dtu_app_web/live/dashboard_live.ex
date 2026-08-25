@@ -54,6 +54,10 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:live, true)
       |> assign(:granularity, "day")
       |> assign(:time_range, "today")
+      # Top-level preset chosen in the toolbar: 1D (today, live) / 7D / 30D /
+      # YTD / custom (delegates to the historical stepper). Defaults to 1D
+      # so a fresh mount lands on the auto-refreshing view.
+      |> assign(:range_preset, "1d")
       |> assign(:selected_period, nil)
       |> assign(:has_push_subscriptions, has_push_subscriptions)
       # Default to UTC (offset 0). The client-side `.SetTimezone`
@@ -118,18 +122,81 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, socket}
   end
 
-  # The Today quick-range: switch to the live, auto-refreshing view.
+  # Top-level preset toolbar dispatch. Each preset picks a different
+  # branch in `assign_dashboard_data/5`; the `range` value IS the
+  # `time_range` value used downstream (so existing `today` / `day` /
+  # `week` / `month` / `year` branches keep working) plus the new
+  # `7d` / `30d` / `ytd` values for the trailing-N-days presets.
+  #
+  # `1d` keeps the legacy "today" branch (live, auto-refreshing). The
+  # `custom` preset stays on whatever granularity + period the user had
+  # previously selected — the stepper's prev/next/calendar events
+  # already mutate those assigns, so we just need to flip `range_preset`
+  # and let `assign_dashboard_data/5` re-render for the current state.
   @impl true
-  def handle_event("select_quick_range", %{"range" => "today"}, socket) do
+  def handle_event("select_quick_range", %{"range" => range}, socket)
+      when range in ~w(1d 7d 30d ytd custom) do
     user = socket.assigns.current_scope.user
     dtu_id = socket.assigns.selected_dtu_id
 
-    {:noreply,
-     socket
-     |> assign(:live, true)
-     |> assign(:time_range, "today")
-     |> assign(:selected_period, nil)
-     |> assign_dashboard_data(user, dtu_id, "today", nil)}
+    socket =
+      case range do
+        "1d" ->
+          socket
+          |> assign(:range_preset, "1d")
+          |> assign(:live, true)
+          |> assign(:time_range, "today")
+          |> assign(:selected_period, nil)
+          |> assign_dashboard_data(user, dtu_id, "today", nil)
+
+        "7d" ->
+          socket
+          |> assign(:range_preset, "7d")
+          |> assign(:live, false)
+          |> assign(:time_range, "7d")
+          |> assign(:selected_period, nil)
+          |> assign_dashboard_data(user, dtu_id, "7d", nil)
+
+        "30d" ->
+          socket
+          |> assign(:range_preset, "30d")
+          |> assign(:live, false)
+          |> assign(:time_range, "30d")
+          |> assign(:selected_period, nil)
+          |> assign_dashboard_data(user, dtu_id, "30d", nil)
+
+        "ytd" ->
+          socket
+          |> assign(:range_preset, "ytd")
+          |> assign(:live, false)
+          |> assign(:time_range, "ytd")
+          |> assign(:selected_period, nil)
+          |> assign_dashboard_data(user, dtu_id, "ytd", nil)
+
+        "custom" ->
+          # Keep the existing granularity + period; the stepper already
+          # drives `selected_period` / `granularity`. If neither has
+          # ever been set (e.g. user clicks Custom on a fresh mount),
+          # fall back to Day granularity on the most recent period.
+          granularity = socket.assigns.granularity || "day"
+          period = socket.assigns.selected_period || Date.utc_today()
+
+          socket
+          |> assign(:range_preset, "custom")
+          |> assign(:live, false)
+          |> assign(:time_range, granularity)
+          |> assign_dashboard_data(user, dtu_id, granularity, period)
+      end
+
+    {:noreply, socket}
+  end
+
+  # Back-compat: a stray `range=today` value (the original single
+  # button's payload) maps to the `1d` preset. Once the template is
+  # updated to emit `1d`, this clause can be removed.
+  @impl true
+  def handle_event("select_quick_range", %{"range" => "today"}, socket) do
+    handle_event("select_quick_range", %{"range" => "1d"}, socket)
   end
 
   # Granularity dropdown in the historical stepper (day/week/month/year).
@@ -1650,6 +1717,115 @@ defmodule DtuAppWeb.DashboardLive do
         |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
         |> assign(:chart_type, :bar)
         |> assign_bar_chart_data(bar_data)
+
+      "7d" ->
+        # Last 7 days ending today, daily yields → bar chart. Anchored on
+        # the user's tz offset so a CET user at 01:00 local on Monday sees
+        # the window start at the previous Tuesday's local midnight
+        # (matching the dashboard's other local-day boundaries).
+        yields =
+          Devices.list_last_n_days_yield_data(user, 7, tz_offset_seconds, dtu_id)
+
+        # Stats use the range period helper — divisor is the calendar
+        # span (7) so the average matches what the user gets on a custom
+        # week view, not just the days that have data.
+        stats = Devices.compute_range_period_stats(yields, 7)
+        yield_map = Map.new(yields)
+        today_local = local_today(tz_offset_seconds)
+
+        bar_data =
+          for day_offset <- -6..0 do
+            d = Date.add(today_local, day_offset)
+            label = Calendar.strftime(d, "%a")
+            value = Map.get(yield_map, d, 0.0)
+            %{label: label, value: value}
+          end
+
+        socket
+        |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
+
+      "30d" ->
+        # Last 30 days ending today, daily yields → bar chart. Same
+        # boundary handling as `7d` above; just a wider window.
+        yields =
+          Devices.list_last_n_days_yield_data(user, 30, tz_offset_seconds, dtu_id)
+
+        stats = Devices.compute_range_period_stats(yields, 30)
+        yield_map = Map.new(yields)
+        today_local = local_today(tz_offset_seconds)
+
+        bar_data =
+          for day_offset <- -29..0 do
+            d = Date.add(today_local, day_offset)
+            # %-d → no zero-pad; with 30 bars the wider "%b %-d" format
+            # keeps each label readable on a tight x-axis.
+            label = Calendar.strftime(d, "%b %-d")
+            value = Map.get(yield_map, d, 0.0)
+            %{label: label, value: value}
+          end
+
+        socket
+        |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
+
+      "ytd" ->
+        # Year-to-date (Jan 1 of current year → today), monthly yields →
+        # bar chart. Same shape as the existing `year` branch above but
+        # window starts on Jan 1 (not Jan 1 of an arbitrary year), so the
+        # bars stop at the current month rather than going all the way to
+        # December.
+        monthly_yields = Devices.list_ytd_yield_data(user, dtu_id)
+        today = Date.utc_today()
+        months_in_window = today.month
+
+        # `Devices.list_ytd_yield_data/2` returns
+        # `[{{year, month}, kwh}]` — the range-period stats helper
+        # expects `[{Date.t(), float()}]` so we widen the tuple back
+        # into a first-of-month `Date`. Multi-year installs (rare:
+        # one full January's worth of cross-year data is the only
+        # case where the same `{year, month}` would collide) collapse
+        # cleanly because we group by `month` only below for the bars.
+        stats =
+          Devices.compute_range_period_stats(
+            Enum.map(monthly_yields, fn {{year, month}, kwh} ->
+              {Date.new!(year, month, 1), kwh}
+            end),
+            months_in_window
+          )
+
+        bar_data =
+          for month <- 1..months_in_window do
+            first_day = Date.new!(today.year, month, 1)
+            label = Calendar.strftime(first_day, "%b")
+
+            value =
+              monthly_yields
+              |> Enum.filter(fn {{_y, m}, _} -> m == month end)
+              |> Enum.map(fn {_, kwh} -> kwh end)
+              |> Enum.sum()
+
+            %{label: label, value: value}
+          end
+
+        socket
+        |> assign(:stats, stats)
+        |> assign(:consumption_stats, consumption_stats)
+        |> assign(:consumption_period_stats, consumption_period_stats)
+        |> assign(:net_flow_stats, net_flow_stats)
+        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
+        |> assign(:chart_type, :bar)
+        |> assign_bar_chart_data(bar_data)
     end
   end
 
@@ -1814,84 +1990,125 @@ defmodule DtuAppWeb.DashboardLive do
                  side on desktop and wrap below each other on narrow
                  viewports. -->
             <div class="flex flex-wrap items-center gap-4">
-              <!-- Quick ranges: live, auto-refreshing views -->
+              <!-- Quick ranges: 1D (live, auto-refreshing) / 7D / 30D / YTD /
+                   Custom (delegates to the historical stepper below). The
+                   active preset is the one matching @range_preset; the
+                   `1d` preset mirrors @live so legacy tests/clicks still
+                   highlight the first button. -->
               <div
                 class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
                 id="quick-range-switcher"
               >
-                <.quick_range_btn id="btn-range-today" range="today" active={@live}>
-                  {gettext("Today")}
+                <.quick_range_btn
+                  id="btn-range-1d"
+                  range="1d"
+                  active={@range_preset == "1d"}
+                >
+                  {gettext("1D")}
+                </.quick_range_btn>
+                <.quick_range_btn
+                  id="btn-range-7d"
+                  range="7d"
+                  active={@range_preset == "7d"}
+                >
+                  {gettext("7D")}
+                </.quick_range_btn>
+                <.quick_range_btn
+                  id="btn-range-30d"
+                  range="30d"
+                  active={@range_preset == "30d"}
+                >
+                  {gettext("30D")}
+                </.quick_range_btn>
+                <.quick_range_btn
+                  id="btn-range-ytd"
+                  range="ytd"
+                  active={@range_preset == "ytd"}
+                >
+                  {gettext("YTD")}
+                </.quick_range_btn>
+                <.quick_range_btn
+                  id="btn-range-custom"
+                  range="custom"
+                  active={@range_preset == "custom"}
+                >
+                  {gettext("Custom")}
                 </.quick_range_btn>
               </div>
 
-              <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › -->
-              <div
-                class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
-                id="history-picker"
-              >
-                <button
-                  phx-click="navigate_period"
-                  phx-value-dir="prev"
-                  id="btn-history-prev"
-                  aria-label={gettext("Previous period")}
-                  class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
+              <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › — only rendered
+                   when the user picked the `Custom` preset; the
+                   1D/7D/30D/YTD presets already encode their own
+                   window and don't need the stepper UI. -->
+              <%= if @range_preset == "custom" do %>
+                <div
+                  class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
+                  id="history-picker"
                 >
-                  <.icon name="hero-chevron-left" class="size-4" />
-                </button>
-
-                <form phx-change="set_granularity" id="form-granularity" class="inline-block">
-                  <select
-                    name="granularity"
-                    id="select-granularity"
-                    class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+                  <button
+                    phx-click="navigate_period"
+                    phx-value-dir="prev"
+                    id="btn-history-prev"
+                    aria-label={gettext("Previous period")}
+                    class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
                   >
-                    <%= for {label, value} <- [
+                    <.icon name="hero-chevron-left" class="size-4" />
+                  </button>
+
+                  <form phx-change="set_granularity" id="form-granularity" class="inline-block">
+                    <select
+                      name="granularity"
+                      id="select-granularity"
+                      class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
+                    >
+                      <%= for {label, value} <- [
                       {gettext("Day"), "day"},
                       {gettext("Week"), "week"},
                       {gettext("Month"), "month"},
                       {gettext("Year"), "year"}
                     ] do %>
-                      <option value={value} selected={value == @granularity}>
-                        {label}
-                      </option>
-                    <% end %>
-                  </select>
-                </form>
+                        <option value={value} selected={value == @granularity}>
+                          {label}
+                        </option>
+                      <% end %>
+                    </select>
+                  </form>
 
-                <!-- Date label: clicking reveals the native calendar -->
-                <label
-                  class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
-                  title={gettext("Choose date")}
-                >
-                  <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
-                  <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
-                  <input
-                    type="date"
-                    phx-change="set_date"
-                    id="history-date-input"
-                    value={date_input_value(@selected_period)}
-                    min={date_min_bound(@selectable_dates)}
-                    max={date_max_bound(@selectable_dates)}
-                    class="absolute inset-0 opacity-0 cursor-pointer"
-                  />
-                </label>
+                  <!-- Date label: clicking reveals the native calendar -->
+                  <label
+                    class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
+                    title={gettext("Choose date")}
+                  >
+                    <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
+                    <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
+                    <input
+                      type="date"
+                      phx-change="set_date"
+                      id="history-date-input"
+                      value={date_input_value(@selected_period)}
+                      min={date_min_bound(@selectable_dates)}
+                      max={date_max_bound(@selectable_dates)}
+                      class="absolute inset-0 opacity-0 cursor-pointer"
+                    />
+                  </label>
 
-                <button
-                  phx-click="navigate_period"
-                  phx-value-dir="next"
-                  id="btn-history-next"
-                  aria-label={gettext("Next period")}
-                  class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
-                >
-                  <.icon name="hero-chevron-right" class="size-4" />
-                </button>
+                  <button
+                    phx-click="navigate_period"
+                    phx-value-dir="next"
+                    id="btn-history-next"
+                    aria-label={gettext("Next period")}
+                    class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
+                  >
+                    <.icon name="hero-chevron-right" class="size-4" />
+                  </button>
 
-                <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
-                  <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
-                    {gettext("No historical data for this period.")}
-                  </span>
-                <% end %>
-              </div>
+                  <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
+                    <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
+                      {gettext("No historical data for this period.")}
+                    </span>
+                  <% end %>
+                </div>
+              <% end %>
             </div>
           </div>
 
@@ -2630,6 +2847,12 @@ defmodule DtuAppWeb.DashboardLive do
                   )}
                 <% @time_range == "year" -> %>
                   {gettext("Monthly Yields for %{year} (kWh)", year: @selected_period.year)}
+                <% @time_range == "7d" -> %>
+                  {gettext("Daily Yields — Last 7 days (kWh)")}
+                <% @time_range == "30d" -> %>
+                  {gettext("Daily Yields — Last 30 days (kWh)")}
+                <% @time_range == "ytd" -> %>
+                  {gettext("Monthly Yields — Year to date (kWh)")}
               <% end %>
             </h2>
 

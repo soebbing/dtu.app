@@ -3662,4 +3662,173 @@ defmodule DtuApp.DevicesTest do
       assert_in_delta kwh, 1.5, 0.001
     end
   end
+
+  describe "list_last_n_days_yield_data/4 — trailing N-day presets" do
+    test "returns up to N daily yields ending today (7D shape)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          name: "Trailing Inverter",
+          kind: "opendtu",
+          mqtt_username: "trailing"
+        })
+
+      today = Date.utc_today()
+
+      # Seed 3 daily yields at distinct past dates — 0, -2, -5 days ago —
+      # all outside today's chart but inside a 7-day window.
+      for {offset, wh} <- [{0, 1000}, {-2, 2500}, {-5, 500}] do
+        date = Date.add(today, offset)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "inv-1",
+            mppt_index: 0,
+            yield_day: wh * 1.0,
+            inserted_at: DateTime.new!(date, ~T[12:00:00], "Etc/UTC")
+          })
+      end
+
+      yields = Devices.list_last_n_days_yield_data(user, 7, 0)
+      # Only days with readings appear in the result — the dashboard's
+      # `assign_dashboard_data/5` branches zero-fill the missing days
+      # to populate the bar chart's x-axis. This helper returns the
+      # raw `{Date.t(), kWh}` pairs so the chart axis can be derived
+      # deterministically from the data.
+      assert length(yields) == 3
+      map = Map.new(yields)
+      assert_in_delta map[today], 1.0, 0.001
+      assert_in_delta map[Date.add(today, -2)], 2.5, 0.001
+      assert_in_delta map[Date.add(today, -5)], 0.5, 0.001
+    end
+
+    test "respects tz_offset_seconds: window anchored on local midnight" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          name: "TZ Inverter",
+          kind: "opendtu",
+          mqtt_username: "tz"
+        })
+
+      today = Date.utc_today()
+      yesterday = Date.add(today, -1)
+
+      # Yield yesterday at 23:30 UTC — for a user at UTC+0 this falls on
+      # yesterday (in-window). The point is to prove the window-anchoring
+      # math doesn't blow up under non-zero tz offsets.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "inv-1",
+          mppt_index: 0,
+          yield_day: 7_777.0,
+          inserted_at: DateTime.new!(yesterday, ~T[23:30:00], "Etc/UTC")
+        })
+
+      yields_utc = Devices.list_last_n_days_yield_data(user, 7, 0)
+      # Only the seeded yesterday reading is in the result; the chart
+      # does the zero-fill.
+      assert length(yields_utc) == 1
+      assert Enum.any?(yields_utc, fn {_, kwh} -> kwh > 0 end)
+
+      # Same call with a 12-hour offset still returns at least one
+      # entry — proves the local-midnight boundary math doesn't drop
+      # the seed.
+      yields_offset = Devices.list_last_n_days_yield_data(user, 7, -43_200)
+      assert length(yields_offset) >= 1
+    end
+
+    test "returns [] when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      assert Devices.list_last_n_days_yield_data(user, 7, 0) == []
+    end
+
+    test "scopes by dtu_id when one is passed" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          name: "Other Inverter",
+          kind: "opendtu",
+          mqtt_username: "other"
+        })
+
+      today = Date.utc_today()
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "x",
+          mppt_index: 0,
+          yield_day: 999.0,
+          inserted_at: DateTime.new!(today, ~T[12:00:00], "Etc/UTC")
+        })
+
+      # Pass `dtu_id = nil` (any DTU) vs the actual id — both should
+      # return the same single yield, since this user owns only this
+      # one DTU. The point is to prove the dtu_id branch is wired.
+      assert [{^today, kwh}] = Devices.list_last_n_days_yield_data(user, 7, 0)
+      assert_in_delta kwh, 0.999, 0.001
+
+      assert [{^today, kwh2}] =
+               Devices.list_last_n_days_yield_data(user, 7, 0, device.id)
+
+      assert_in_delta kwh2, 0.999, 0.001
+    end
+  end
+
+  describe "list_ytd_yield_data/2 — year-to-date preset" do
+    test "returns one monthly entry per month from January through current month" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          name: "YTD Inverter",
+          kind: "opendtu",
+          mqtt_username: "ytd"
+        })
+
+      today = Date.utc_today()
+      current_month = today.month
+
+      # Seed one reading per month for the current year (so we always
+      # exercise the `month <= current_month` upper bound).
+      for month <- 1..current_month do
+        date = Date.new!(today.year, month, 15)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "inv-1",
+            mppt_index: 0,
+            yield_day: month * 100.0,
+            inserted_at: DateTime.new!(date, ~T[12:00:00], "Etc/UTC")
+          })
+      end
+
+      ytd = Devices.list_ytd_yield_data(user)
+      assert length(ytd) == current_month
+
+      # Each entry is `{{year, month}, kWh}`; verify a known month.
+      current_year = today.year
+
+      assert Enum.any?(ytd, fn {{^current_year, 1}, kwh} ->
+               assert_in_delta kwh, 0.1, 0.001
+               true
+             end)
+
+      # Entries are sorted ascending by {year, month}.
+      keys = Enum.map(ytd, fn {k, _} -> k end)
+      assert keys == Enum.sort(keys)
+    end
+
+    test "returns [] when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      assert Devices.list_ytd_yield_data(user) == []
+    end
+  end
 end

@@ -3255,4 +3255,115 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "sink device card must render its sink badge"
     end
   end
+
+  describe "Range presets toolbar" do
+    test "renders five preset buttons (1D / 7D / 30D / YTD / Custom) and the 1D tab is active by default",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(id="btn-range-1d")
+      assert html =~ ~s(id="btn-range-7d")
+      assert html =~ ~s(id="btn-range-30d")
+      assert html =~ ~s(id="btn-range-ytd")
+      assert html =~ ~s(id="btn-range-custom")
+
+      # The historical stepper is hidden until the user picks Custom.
+      refute html =~ ~s(id="history-picker")
+    end
+
+    test "clicking 7D renders the 'Last 7 days' chart title and shows the historical stepper only after Custom",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-7d") |> render_click()
+      assert html =~ "Last 7 days"
+      # The historical stepper stays hidden — 7D already encodes its
+      # window, the user has no date to pick.
+      refute html =~ ~s(id="history-picker")
+    end
+
+    test "clicking 30D renders the 'Last 30 days' chart title",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-30d") |> render_click()
+      assert html =~ "Last 30 days"
+    end
+
+    test "clicking YTD renders the 'Year to date' chart title",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      html = view |> element("#btn-range-ytd") |> render_click()
+      assert html =~ "Year to date"
+    end
+
+    test "clicking Custom reveals the historical stepper",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Stepper is hidden before clicking Custom.
+      refute render(view) =~ ~s(id="history-picker")
+
+      html = view |> element("#btn-range-custom") |> render_click()
+      assert html =~ ~s(id="history-picker")
+    end
+
+    test "legacy range=today payload still toggles the 1D preset",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Preset Inverter",
+          kind: "opendtu",
+          mqtt_username: "preset-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # First leave the default 1D view, then send the legacy payload
+      # directly. The back-compat clause must map it to the 1D branch.
+      view |> element("#btn-range-7d") |> render_click()
+
+      html =
+        render_click(view, "select_quick_range", %{"range" => "today"})
+
+      assert html =~ ~s(id="btn-range-1d")
+      assert html =~ "Today&#39;s Production Curve"
+    end
+  end
 end

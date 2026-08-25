@@ -1885,8 +1885,76 @@ defmodule DtuApp.Devices do
             period_peak_consumption: peak_val,
             peak_date: peak_date
           }
+
+        "7d" ->
+          # Last 7 days ending today — same window as the production
+          # side. Computed against the user's tz-offset local midnight
+          # boundaries so a CET user at 23:30 local on a Sunday still
+          # gets a 7-day window ending on local Sunday (not UTC
+          # Monday). The dashboard passes `tz_offset_seconds = 0` here
+          # because `get_consumption_period_stats/5` doesn't take it;
+          # for the dashboard's default UTC offset the boundary is
+          # identical to the `local_day_utc_range(today, 0)` one.
+          {today_local, start_local} = last_n_days_window(7, today_start)
+          {_, utc_end} = local_day_utc_range(today_local, 0)
+          {start_utc, _} = local_day_utc_range(start_local, 0)
+          period_total = compute_consumption_total_kwh(user, dtu_ids, start_utc, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, start_utc, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
+
+        "30d" ->
+          # Same as `7d` but a 30-day window.
+          {today_local, start_local} = last_n_days_window(30, today_start)
+          {_, utc_end} = local_day_utc_range(today_local, 0)
+          {start_utc, _} = local_day_utc_range(start_local, 0)
+          period_total = compute_consumption_total_kwh(user, dtu_ids, start_utc, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, start_utc, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
+
+        "ytd" ->
+          # Year-to-date (Jan 1 of the current year → today).
+          today_local = today_start |> DateTime.to_date()
+          start_date = Date.new!(today_local.year, 1, 1)
+          {start_utc, _} = local_day_utc_range(start_date, 0)
+          {_, utc_end} = local_day_utc_range(today_local, 0)
+          period_total = compute_consumption_total_kwh(user, dtu_ids, start_utc, utc_end)
+          {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, start_utc, utc_end)
+
+          %{
+            current_consumption: 0.0,
+            today_consumption: 0.0,
+            peak_consumption: 0.0,
+            period_total_consumption: period_total,
+            period_peak_consumption: peak_val,
+            peak_date: peak_date
+          }
       end
     end
+  end
+
+  # Build the (today, start) date pair for the trailing-N-days presets.
+  # `today_start` is `DateTime.new!(Date.utc_today(), ~T[00:00:00],
+  # "Etc/UTC")` — the helper the rest of the function passes around;
+  # we only need its date component.
+  defp last_n_days_window(n, today_start) do
+    today_local = DateTime.to_date(today_start)
+    {today_local, Date.add(today_local, -(n - 1))}
   end
 
   defp zero_period_stats do
@@ -2128,6 +2196,73 @@ defmodule DtuApp.Devices do
         {date, (daily_yields[date] || 0.0) / 1000}
       end)
     end
+  end
+
+  @doc """
+  Fetch the daily yield totals for the trailing `n` days (inclusive of
+  today). Backed by `list_range_yield_data/4` over the `[start_of_window,
+  end_of_today]` UTC range — pure call-site convenience for the dashboard's
+  `7D` and `30D` presets, which would otherwise have to compute the window
+  themselves.
+
+  The window is anchored at **local midnight** `n - 1` days ago (so a `7D`
+  request always returns up to 7 daily buckets, today included) and ends
+  at the same local midnight + 24 h. The `tz_offset_seconds` argument is
+  the user's offset (set by `DashboardLive`'s `SetTimezone` hook) so a
+  user in CET calling `7D` at 01:00 local gets a window starting at the
+  previous Monday 00:00 CET, not Sunday 23:00 UTC.
+
+  Returns `[]` for users with no DTUs (matches `list_range_yield_data/4`).
+  """
+  @spec list_last_n_days_yield_data(User.t(), pos_integer(), integer(), integer() | nil) ::
+          [{Date.t(), float()}]
+  def list_last_n_days_yield_data(%User{} = user, n, tz_offset_seconds, dtu_id \\ nil)
+      when is_integer(n) and n > 0 and is_integer(tz_offset_seconds) do
+    today_local = devices_local_today(tz_offset_seconds)
+    start_local = Date.add(today_local, -(n - 1))
+    {start_utc, _} = local_day_utc_range(start_local, tz_offset_seconds)
+    {_, end_utc} = local_day_utc_range(today_local, tz_offset_seconds)
+    list_range_yield_data(user, start_utc, end_utc, dtu_id)
+  end
+
+  @doc """
+  Fetch monthly yield totals for the year-to-date (Jan 1 of the current
+  year through today), bucketed per month. Backed by
+  `list_range_yield_data/4` over the same UTC range and then rolled up
+  into `[{{year, month}, kWh}]` for the dashboard's `YTD` preset.
+
+  The current year is computed from `Date.utc_today/0` (no timezone
+  adjustment — the user's local year and the UTC year agree for every
+  real-world solar installer's workday; switching on the user's tz
+  here would cause a CET user's January 1 morning to land on the
+  previous year's December 31 bucket).
+
+  Returns `[]` for users with no DTUs.
+  """
+  @spec list_ytd_yield_data(User.t(), integer() | nil) :: [{{integer(), 1..12}, float()}]
+  def list_ytd_yield_data(%User{} = user, dtu_id \\ nil) do
+    today = Date.utc_today()
+    start_date = Date.new!(today.year, 1, 1)
+    {start_utc, _} = local_day_utc_range(start_date, 0)
+    {_, end_utc} = local_day_utc_range(today, 0)
+
+    list_range_yield_data(user, start_utc, end_utc, dtu_id)
+    |> Enum.group_by(fn {date, _} -> {date.year, date.month} end)
+    |> Enum.map(fn {{year, month}, yields} ->
+      {{year, month}, yields |> Enum.map(fn {_, kwh} -> kwh end) |> Enum.sum()}
+    end)
+    |> Enum.sort()
+  end
+
+  # Local "today" anchored on the user's tz offset. Mirrors
+  # `DtuAppWeb.DashboardLive.local_today/1` — the dashboard already
+  # passes the offset in, so we just need the helper here to keep
+  # `list_last_n_days_yield_data/3` self-contained (it doesn't reach
+  # into a LiveView).
+  defp devices_local_today(tz_offset_seconds) do
+    DtuApp.Time.utc_now()
+    |> DateTime.add(tz_offset_seconds, :second)
+    |> DateTime.to_date()
   end
 
   @doc """

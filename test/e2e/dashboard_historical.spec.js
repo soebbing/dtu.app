@@ -54,7 +54,7 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
   test('Today view renders the seeded production curve and live stat cards', async ({ page }) => {
     // Live (Today) view is the default landing state.
-    await expect(page.locator('#quick-range-switcher #btn-range-today')).toBeVisible();
+    await expect(page.locator('#quick-range-switcher #btn-range-1d')).toBeVisible();
 
     // First verify we're in live mode by checking the stat-current-power exists
     await expect(page.locator('#stat-current-power')).toBeVisible();
@@ -121,7 +121,7 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     await expect(page.locator('#chart-title')).toContainText('Production Curve for');
 
     // Return to the live Today view via the quick-range tab.
-    await page.locator('#btn-range-today').click();
+    await page.locator('#btn-range-1d').click();
 
     // Wait for the transition back to live view with same retry approach
     attempts = 0;

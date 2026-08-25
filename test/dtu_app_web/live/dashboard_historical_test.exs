@@ -22,7 +22,12 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # The dashboard boots in live mode; switch granularity to enter history.
+      # The dashboard boots in live (1D) mode. The historical stepper
+      # is hidden until the user picks the `Custom` preset, so we
+      # click that first to reveal it.
+      view |> element("#btn-range-custom") |> render_click()
+
+      # Switch granularity to enter history.
       view |> element("#form-granularity") |> render_change(%{granularity: "day"})
       assert render(view) =~ "No historical data for this period."
 
@@ -60,6 +65,9 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
         })
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Reveal the stepper (hidden until the Custom preset is active).
+      view |> element("#btn-range-custom") |> render_click()
 
       # Switch to Day granularity — the stepper should land on the seeded day.
       view |> element("#form-granularity") |> render_change(%{granularity: "day"})
@@ -118,6 +126,9 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
         })
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Reveal the stepper (hidden until the Custom preset is active).
+      view |> element("#btn-range-custom") |> render_click()
 
       # Enter Day granularity, then pick d1 via the calendar input.
       view |> element("#form-granularity") |> render_change(%{granularity: "day"})
