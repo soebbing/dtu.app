@@ -1143,6 +1143,136 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "list_yesterday_chart_data_for_dashboard/4 (yesterday ghost)" do
+    # Mirrors the today function but shifts the window back by one day
+    # so the dashboard can reuse the same today-window DateTimes
+    # passed to `list_day_chart_data_for_dashboard/4`. Same shape,
+    # same MPPT-AC filtering, same per-user DTU scope.
+
+    defp yesterday_at(hour, minute \\ 0) do
+      today_at(hour, minute) |> DateTime.add(-86_400, :second)
+    end
+
+    test "returns yesterday's chart points, never today's" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # AC row yesterday at noon.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          inverter_name: "INV-1",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: yesterday_at(12)
+        })
+
+      # AC row *today* at noon — must NOT appear in the yesterday result.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          inverter_name: "INV-1",
+          mppt_index: 0,
+          ac_power: 999.0,
+          inserted_at: today_at(12)
+        })
+
+      points =
+        Devices.list_yesterday_chart_data_for_dashboard(
+          user,
+          today_at(0),
+          today_end_of_day(),
+          device.id
+        )
+
+      # Only the yesterday row shows up — the today row is filtered out
+      # by the shifted window.
+      assert length(points) == 1
+      [pt] = points
+      assert pt.series == {device.id, "INV-1", 0, "INV-1"}
+      assert_in_delta pt.power, 250.0, 0.1
+      assert %DateTime{} = pt.time
+      assert pt.time.hour == 12
+      # The yesterday timestamp must be 24h before today_at(12).
+      assert DateTime.diff(pt.time, today_at(12), :second) == -86_400
+    end
+
+    test "returns [] when the user has no devices in scope" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      assert Devices.list_yesterday_chart_data_for_dashboard(
+               user,
+               today_at(0),
+               today_end_of_day(),
+               nil
+             ) == []
+    end
+
+    test "returns [] when yesterday has no readings" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Only a today reading exists — yesterday is empty.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: today_at(12)
+        })
+
+      assert Devices.list_yesterday_chart_data_for_dashboard(
+               user,
+               today_at(0),
+               today_end_of_day(),
+               device.id
+             ) == []
+    end
+
+    test "scopes to the requested DTU — other users' inverters don't leak in" do
+      alice = DtuApp.AccountsFixtures.user_fixture()
+      alice_dtu = DevicesFixtures.device_fixture(alice)
+
+      bob = DtuApp.AccountsFixtures.user_fixture()
+      bob_dtu = DevicesFixtures.device_fixture(bob)
+
+      # Bob's yesterday reading — must not appear in Alice's query.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: bob_dtu.id,
+          inverter_serial: "BOB-INV",
+          mppt_index: 0,
+          ac_power: 500.0,
+          inserted_at: yesterday_at(12)
+        })
+
+      # Alice's yesterday reading — the only one Alice should see.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: alice_dtu.id,
+          inverter_serial: "ALICE-INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: yesterday_at(12)
+        })
+
+      points =
+        Devices.list_yesterday_chart_data_for_dashboard(
+          alice,
+          today_at(0),
+          today_end_of_day(),
+          alice_dtu.id
+        )
+
+      assert length(points) == 1
+      [pt] = points
+      assert elem(pt.series, 1) == "ALICE-INV"
+    end
+  end
+
   describe "update_inverter_name/3" do
     test "backfills inverter_name on every row for the given (dtu_id, inverter_serial)" do
       user = DtuApp.AccountsFixtures.user_fixture()

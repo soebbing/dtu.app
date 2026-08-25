@@ -3358,4 +3358,148 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "Today&#39;s Production Curve"
     end
   end
+
+  describe "Yesterday ghost overlay (1D / live view)" do
+    # The 1D (today) preset renders a translucent, dashed ghost line
+    # for yesterday's production curve behind today's solid curves.
+    # This is the day-over-day at-a-glance comparison — historical
+    # day/week/month/year views deliberately skip it (they have
+    # their own period-relative curves, no ghost needed).
+    #
+    # We seed readings directly into `readings_5m` so both the today
+    # and yesterday branches see data through the aggregate path.
+
+    defp ghost_bucket_at(hour, day_offset) do
+      Date.utc_today()
+      |> DateTime.new!(Time.new!(hour, 0, 0))
+      |> Map.put(:microsecond, {0, 0})
+      |> DateTime.add(day_offset * 86_400, :second)
+    end
+
+    # The today-window query filters out buckets at or after
+    # `now - 5 min` (they belong to the live tail, not the
+    # aggregate). Since we insert directly into `readings_5m`,
+    # we need a bucket that is strictly in the past relative
+    # to the moment the test runs. Using the current UTC hour
+    # minus 2 always satisfies that constraint without
+    # coupling the test to wall-clock time.
+    defp today_past_hour do
+      now = DateTime.utc_now()
+      past_hour = now.hour - 2
+
+      if past_hour < 0 do
+        22
+      else
+        past_hour
+      end
+    end
+
+    defp insert_reading_5m(dtu_id, serial, power, day_offset, hour) do
+      # For day_offset = 0 (today), override the hour with a
+      # guaranteed-past value so the today-window filter does not
+      # drop our seed row.
+      effective_hour = if day_offset == 0, do: today_past_hour(), else: hour
+
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [
+          ghost_bucket_at(effective_hour, day_offset),
+          dtu_id,
+          power,
+          power,
+          power * 0.1,
+          1000.0,
+          serial,
+          0,
+          serial
+        ]
+      )
+    end
+
+    test "1D view renders a ghost path for yesterday's curve", %{
+      conn: conn,
+      user: user
+    } do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "ghost-inv"
+        })
+
+      # Today bucket (day_offset = 0) and a higher-magnitude yesterday
+      # bucket (day_offset = -1) so the ghost line is visibly distinct.
+      insert_reading_5m(dtu.id, "INV-1", 300.0, 0, 12)
+      insert_reading_5m(dtu.id, "INV-1", 500.0, -1, 12)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The ghost path is the day-comparison overlay — must render on
+      # the default 1D landing view.
+      assert html =~ ~s(data-ghost="true")
+
+      # The ghost has the dashed translucent styling that visually
+      # distinguishes it from today's solid lines.
+      assert html =~ "stroke-dasharray=\"4 3\""
+      assert html =~ "stroke-opacity=\"0.35\""
+
+      # The legend gains a "Yesterday" entry so the overlay reads.
+      # HEEx preserves the indentation around the gettext
+      # interpolation, so we match the label rather than the exact
+      # closing tag.
+      assert html =~ "Yesterday"
+      assert html =~ "Yesterday (day-over-day comparison)"
+    end
+
+    test "7D view does NOT render the ghost overlay", %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "ghost-inv-7d"
+        })
+
+      insert_reading_5m(dtu.id, "INV-1", 300.0, 0, 12)
+      insert_reading_5m(dtu.id, "INV-1", 500.0, -1, 12)
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # Ghost present on the default 1D view (sanity).
+      assert html =~ ~s(data-ghost="true")
+
+      # Switch to 7D — ghost must disappear because the day-comparison
+      # overlay is only meaningful on the today view.
+      html_7d = view |> element("#btn-range-7d") |> render_click()
+
+      refute html_7d =~ ~s(data-ghost="true"),
+             "ghost overlay must not render on the 7D preset"
+
+      refute html_7d =~ "Yesterday (day-over-day comparison)",
+             "ghost legend entry must not render on the 7D preset"
+    end
+
+    test "ghost paths are empty when yesterday has no data", %{conn: conn, user: user} do
+      # Brand-new install: only today's reading exists. Yesterday is
+      # empty — the ghost must render as nothing, not a misleading
+      # zero line.
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "ghost-inv-empty"
+        })
+
+      insert_reading_5m(dtu.id, "INV-1", 300.0, 0, 12)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      refute html =~ ~s(data-ghost="true"),
+             "ghost must not render when yesterday has no data"
+
+      refute html =~ "Yesterday (day-over-day comparison)",
+             "ghost legend entry must not appear when yesterday has no data"
+    end
+  end
 end

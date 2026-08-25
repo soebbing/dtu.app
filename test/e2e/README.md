@@ -19,6 +19,11 @@ and a seeded database.
   state lands on 1D with the historical stepper hidden, each preset
   click updates the chart title, the stepper only reveals itself on
   the Custom preset, and clicking back to 1D restores the live view.
+- `dashboard_yesterday_overlay.spec.js` — the day-comparison overlay
+  (dashed "yesterday" ghost behind today's solid curve). Confirmed
+  default 1D view, asserts 7D must not render the `data-ghost`
+  path or the legend entry, and a round-trip 1D → 7D → 1D
+  preserves the structure.
 - `dashboard_multi_device.spec.js` — multi-device behaviour: the DTU switcher
   lists every device plus the Total button, switching between devices narrows
   the chart to that device's inverters and updates the fleet-Total line, the
