@@ -237,4 +237,156 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       assert payload.body == "Body"
     end
   end
+
+  describe "Notification history section" do
+    # The /notifications page persists a row per broadcast via
+    # `DtuApp.Notifications.broadcast/2` and renders them in a
+    # paginated list at the bottom of the page. Tests below cover:
+    #   * Empty-state copy when the user has no history yet.
+    #   * Per-row rendering (title / body / event tag / relative time
+    #     / delete button).
+    #   * Pagination via `set_history_page` (>50 rows).
+    #   * Per-row delete handler (`delete_notification`).
+    #   * Clear-all handler (`clear_all_notifications`).
+    #   * Live-refresh: a `broadcast/2` that lands while the page is
+    #     open is picked up without a manual reload.
+    setup :register_and_log_in_user
+
+    test "renders the empty-state copy when no notifications exist", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      assert html =~ "Recent notifications"
+      assert html =~ "No notifications yet"
+    end
+
+    test "renders existing notifications with title, body and event tag", %{
+      user: user,
+      conn: conn
+    } do
+      {:ok, n} =
+        Notifications.record(user, %{
+          event: "sun_down",
+          title: "Sun's down",
+          body: "Today: 12.4 kWh",
+          tag: "sun_down",
+          payload: %{}
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      assert html =~ "Recent notifications"
+      assert html =~ "Sun&#39;s down"
+      assert html =~ "Today: 12.4 kWh"
+      assert html =~ "sun_down"
+      assert html =~ "notification-row-#{n.id}"
+    end
+
+    test "per-row delete button removes the notification", %{user: user, conn: conn} do
+      {:ok, n} =
+        Notifications.record(user, %{
+          event: "test",
+          title: "To delete",
+          body: "b",
+          tag: "test",
+          payload: %{}
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+      assert render(view) =~ "notification-row-#{n.id}"
+
+      view
+      |> element("#notification-row-#{n.id} button[phx-click=delete_notification]")
+      |> render_click()
+
+      refute render(view) =~ "notification-row-#{n.id}"
+      assert Notifications.list_user_notifications(user, 1, 10) == []
+    end
+
+    test "clear-all button wipes the user's history", %{user: user, conn: conn} do
+      for tag <- ["a", "b", "c"] do
+        Notifications.record(user, %{
+          event: "test",
+          title: "title-#{tag}",
+          body: "b",
+          tag: tag,
+          payload: %{}
+        })
+      end
+
+      {:ok, view, html} = live(conn, ~p"/notifications")
+      assert html =~ "title-a"
+      assert html =~ "title-b"
+      assert html =~ "title-c"
+
+      view
+      |> element("button[phx-click=clear_all_notifications]")
+      |> render_click()
+
+      assert Notifications.list_user_notifications(user, 1, 10) == []
+      assert render(view) =~ "No notifications yet"
+    end
+
+    test "another user's history is never visible", %{user: user, conn: conn} do
+      other = user_fixture()
+
+      Notifications.record(other, %{
+        event: "test",
+        title: "other user only",
+        body: "b",
+        tag: "test",
+        payload: %{}
+      })
+
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+      refute html =~ "other user only"
+      assert html =~ "No notifications yet"
+
+      _ = user
+    end
+
+    test "paginates with Previous / Next controls", %{user: user, conn: conn} do
+      # 75 records ⇒ 2 pages at 50/page.
+      for i <- 1..75 do
+        {:ok, n} =
+          Notifications.record(user, %{
+            event: "test",
+            title: "row #{i}",
+            body: "b",
+            tag: "n-#{i}",
+            payload: %{}
+          })
+
+        # Force distinct delivered_at so the page 1 / page 2 split is
+        # deterministic.
+        touch_notification(n, DateTime.add(DtuApp.Time.utc_now(), -i * 10, :second))
+      end
+
+      {:ok, view, html} = live(conn, ~p"/notifications")
+      assert html =~ "Page 1 of 2"
+      # Page 1 shows "row 1" (newest), page 2 would show "row 51+".
+      assert html =~ "row 1"
+      refute html =~ "row 51"
+
+      view
+      |> element("button[phx-click=set_history_page][phx-value-page='2']")
+      |> render_click()
+
+      assert render(view) =~ "Page 2 of 2"
+      assert render(view) =~ "row 51"
+      refute render(view) =~ "row 1"
+    end
+  end
+
+  defp touch_notification(n, dt) do
+    alias DtuApp.Notifications.Notification
+    import Ecto.Query
+
+    {1, _} =
+      DtuApp.Repo.update_all(
+        from(r in Notification, where: r.id == ^n.id),
+        set: [delivered_at: dt]
+      )
+
+    n
+  end
 end

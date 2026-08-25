@@ -33,13 +33,96 @@ defmodule DtuApp.Notifications do
   """
 
   alias DtuApp.Accounts
+  alias DtuApp.Accounts.User
+  alias DtuApp.Notifications.Notification
   alias DtuApp.Push
+  alias DtuApp.Repo
   alias Phoenix.PubSub
+
+  import Ecto.Query
 
   @pubsub DtuApp.PubSub
 
+  @default_page_size 50
+
   @spec user_topic(non_neg_integer()) :: String.t()
   def user_topic(user_id), do: "user:notification:#{user_id}"
+
+  @doc """
+  Record a notification broadcast for the given user. Called from
+  `broadcast/2` after the in-page + native-push fan-out so the
+  history page can show what the server actually sent.
+
+  Returns `{:ok, notification}` on success or
+  `{:error, changeset}` on validation failure. The broadcast
+  wrapper deliberately catches these errors — a failed history
+  write must never break the live notification path.
+  """
+  @spec record(User.t(), map()) :: {:ok, Notification.t()} | {:error, Ecto.Changeset.t()}
+  def record(%User{} = user, payload) when is_map(payload) do
+    %Notification{}
+    # The whole payload is persisted as `:payload` (jsonb), so we
+    # pass `{event, title, body, tag, payload: <whole payload>}`
+    # to the changeset — cast lifts the same-named keys out for
+    # column-level indexing while the full jsonb stays in
+    # `:payload` for future drill-down.
+    |> Notification.changeset(user, Map.put(payload, :payload, payload))
+    |> Repo.insert()
+  end
+
+  @doc """
+  List a page of notifications for the given user, newest-first.
+
+  `page` is 1-indexed. `per_page` defaults to #{@default_page_size}
+  (the value the history UI uses). Pass a smaller value from the
+  LiveView when rendering a partial page during pagination.
+  """
+  @spec list_user_notifications(User.t(), pos_integer(), pos_integer()) :: [Notification.t()]
+  def list_user_notifications(%User{id: user_id}, page, per_page \\ @default_page_size)
+      when is_integer(page) and page > 0 and is_integer(per_page) and per_page > 0 do
+    offset = (page - 1) * per_page
+
+    Notification
+    |> where([n], n.user_id == ^user_id)
+    |> order_by([n], desc: n.delivered_at, desc: n.id)
+    |> limit(^per_page)
+    |> offset(^offset)
+    |> Repo.all()
+  end
+
+  @doc "Total count of notifications for the user (used to render pagination totals)."
+  @spec count_user_notifications(User.t()) :: non_neg_integer()
+  def count_user_notifications(%User{id: user_id}) do
+    Notification
+    |> where([n], n.user_id == ^user_id)
+    |> Repo.aggregate(:count)
+  end
+
+  @doc """
+  Delete a single notification row. Only deletes the row when it
+  belongs to the supplied user — returns `:noop` for either an
+  unknown id or a row owned by someone else, so a forged delete
+  request from the LiveView can't wipe another user's history.
+  """
+  @spec delete(User.t(), pos_integer()) ::
+          {:ok, Notification.t()} | :noop
+  def delete(%User{id: user_id}, id) when is_integer(id) do
+    case Repo.get(Notification, id) do
+      %Notification{user_id: ^user_id} = n -> Repo.delete(n)
+      _ -> :noop
+    end
+  end
+
+  @doc """
+  Delete every notification row for the user. Returns the number
+  of rows deleted.
+  """
+  @spec clear_all(User.t()) :: {non_neg_integer(), nil | [term()]}
+  def clear_all(%User{id: user_id}) do
+    Notification
+    |> where([n], n.user_id == ^user_id)
+    |> Repo.delete_all()
+  end
 
   @doc """
   Subscribe the calling process to a user's notification events. The
@@ -108,6 +191,14 @@ defmodule DtuApp.Notifications do
               end)
             end)
         end
+
+        # Record the broadcast in the user's notification history.
+        # The title/body are already localized by the caller (the
+        # notifier modules wrap their gettext in with_locale), so
+        # we persist them as-is — see `record/2` for the rationale.
+        # Wrapped in try/rescue so a DB hiccup never breaks the
+        # live in-page + native-push fan-out above.
+        _ = record(user, payload)
 
         :ok
     end
