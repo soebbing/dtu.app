@@ -32,6 +32,15 @@ and a seeded database.
   date), and the Peak Power / Peak Time tiles surface their
   formatted figures (or the em-dash placeholder on an empty
   window).
+- `dashboard_navbar_presets.spec.js` — the navbar trim + the
+  1D-only Current Power tile + the preset-button affordances.
+  Asserts the top nav no longer renders the "Dashboard" or "DTUs"
+  links (Manage Devices is the new top-level entry for DTU
+  management), the `#stat-current-power` tile renders on 1D and
+  hides on 7D / 30D / YTD / Custom, the preset buttons report
+  `cursor: pointer` in computed style, and clicking a preset swaps
+  its label for an `animate-spin` SVG while the LiveView round-trip
+  is in flight.
 - `dashboard_multi_device.spec.js` — multi-device behaviour: the DTU switcher
   lists every device plus the Total button, switching between devices narrows
   the chart to that device's inverters and updates the fleet-Total line, the

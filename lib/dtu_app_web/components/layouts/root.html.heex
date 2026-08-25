@@ -85,18 +85,12 @@
               />
               <span class="font-bold text-base tracking-tight bg-gradient-to-r from-emerald-500 to-amber-500 bg-clip-text text-transparent">dtu.app</span>
             </a>
-            <nav class="hidden md:flex items-center gap-6">
-              <%= if @current_scope && @current_scope.user do %>
-                <.link
-                  navigate={~p"/dashboard"}
-                  class="text-sm font-medium text-zinc-655 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
-                >{gettext("Dashboard")}</.link>
-                <.link
-                  navigate={~p"/devices"}
-                  class="text-sm font-medium text-zinc-655 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 transition"
-                >{gettext("DTUs")}</.link>
-              <% end %>
-            </nav>
+            <%!-- The top-level nav no longer carries "Dashboard" or
+                 "DTUs" links: Dashboard is reachable via the logo (the
+                 root route redirects authenticated users to /dashboard)
+                 and DTU management lives under "Manage Devices" on the
+                 right-side cluster (and in the burger menu on mobile). --%>
+            <nav class="hidden md:flex items-center gap-6"></nav>
           </div>
           <div class="flex items-center gap-4">
             <!-- Network Status Indicator -->

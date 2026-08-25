@@ -1516,8 +1516,9 @@ defmodule DtuAppWeb.DashboardLive do
       phx-click="select_quick_range"
       phx-value-range={@range}
       id={@id}
+      phx-disable-with={quick_range_spinner()}
       class={[
-        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
+        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250 cursor-pointer disabled:cursor-wait disabled:opacity-80",
         @active &&
           "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
         !@active &&
@@ -1526,6 +1527,17 @@ defmodule DtuAppWeb.DashboardLive do
     >
       {render_slot(@inner_block)}
     </button>
+    """
+  end
+
+  # Inline SVG used as the `phx-disable-with` content while a preset
+  # click is in flight. The `animate-spin` Tailwind class rotates it
+  # so the user gets a visible "loading" signal without the button
+  # shape changing. `phx-disable-with` swaps the button's innerHTML
+  # for this string until the LiveView round-trip completes.
+  defp quick_range_spinner do
+    """
+    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" aria-hidden="true" class="h-4 w-4 animate-spin inline-block"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></svg>\
     """
   end
 
@@ -2410,7 +2422,45 @@ defmodule DtuAppWeb.DashboardLive do
             `lg:grid-cols-5`).
           --%>
           <%= if @has_inverter? do %>
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+            <div class={[
+              "grid grid-cols-1 gap-5 sm:grid-cols-2",
+              @range_preset == "1d" && "lg:grid-cols-6",
+              @range_preset != "1d" && "lg:grid-cols-5"
+            ]}>
+              <%!-- Card 0: Current Power (W). 1D-only — a live
+                 "what's the inverter producing right now" signal that
+                 doesn't make sense for historical periods (7D, 30D,
+                 YTD, Custom). Hidden when the seeded value is 0 so a
+                 quiet inverter doesn't pollute the row. Sits at the
+                 start of the grid so the live signal is the first
+                 thing the user reads on the today view. --%>
+              <%= if @range_preset == "1d" and @stats.current_power > 0 do %>
+                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+                  <div class="px-4 py-5 sm:p-6">
+                    <div class="flex items-center">
+                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
+                        <.icon name="hero-bolt" class="h-6 w-6" />
+                      </div>
+                      <div class="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                            {gettext("Current Power")}
+                          </dt>
+                          <dd class="flex items-baseline">
+                            <div
+                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                              id="stat-current-power"
+                            >
+                              {Devices.format_number(@stats.current_power, 0, @locale)} W
+                            </div>
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              <% end %>
+
               <%!-- Card 1: Yield (kWh). The headline number stays the
                  same shape — `total_yield` rounded to one decimal —
                  whether the period is today, a week, a month, or a
