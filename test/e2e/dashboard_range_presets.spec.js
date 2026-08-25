@@ -6,14 +6,20 @@ test.describe('Acceptance Tests: Dashboard range preset toolbar', () => {
   // wait for the socket to connect before clicking any preset tab —
   // otherwise the click could fire before `phx-click` is wired.
   test.beforeEach(async ({ page }) => {
+    // The home page renders a "Sign In" link for unauthenticated users;
+    // click it to land on /users/log-in where the password form lives.
+    // (Trying to fill `#login_form_password` on `/` directly times out
+    // — the form isn't there until you navigate to /users/log-in.)
     await page.goto('/');
-    await page.fill('#login_form_password input[type="email"]', 'test@example.com');
-    await page.fill('#login_form_password input[type="password"]', 'password123456');
-    await Promise.all([
-      page.waitForNavigation(),
-      page.click('#login_form_password button'),
-    ]);
-    await page.goto('/dashboard');
+    await page.getByRole('link', { name: 'Sign In' }).click();
+    await expect(page).toHaveURL(/\/users\/log-in/, { timeout: 10000 });
+
+    const form = page.locator('#login_form_password');
+    await form.locator('input[type="email"]').fill('test@example.com');
+    await form.locator('input[type="password"]').fill('password123456');
+    await form.getByRole('button', { name: /Log in/i }).click();
+
+    await page.waitForURL(/\/dashboard/, { timeout: 15000 });
     await waitForLiveSocketConnected(page);
   });
 
