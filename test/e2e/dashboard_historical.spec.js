@@ -107,23 +107,14 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     for (const gran of ['week', 'month', 'year']) {
       await page.locator('#select-granularity').selectOption(gran);
 
-      // Wait for the transition to historical mode with retry approach
-      let attempts = 0;
-      const maxAttempts = 10;
-      while (attempts < maxAttempts) {
-        const state = await page.evaluate(() => {
-          return document.querySelector('#stat-yield-kwh') === null;
-        });
-        if (state) break;
-        attempts++;
-        await page.waitForTimeout(1000);
-      }
-
       // Aggregate views: the period-stable Yield tile shows the period
-    // total in kWh (week total / month total / year total), and the
-    // Peak Power tile shows the period's peak wattage.
-    await expect(page.locator('#stat-yield-kwh')).toContainText(/kWh/);
-    await expect(page.locator('#stat-peak-watts')).toBeVisible();
+      // total in kWh (week total / month total / year total), and the
+      // Peak Power tile shows the period's peak wattage. The Yield
+      // card stays present across every preset — period-stable — so
+      // we just assert its kWh content and the Peak Power tile's
+      // visibility after the LiveView re-render settles.
+      await expect(page.locator('#stat-yield-kwh')).toContainText(/kWh/);
+      await expect(page.locator('#stat-peak-watts')).toBeVisible();
 
       // Chart switches to a bar chart for these granularities.
       await expect(page.locator('#solar-chart-svg')).toBeVisible();
@@ -140,17 +131,11 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
 
     await page.locator('#select-granularity').selectOption('day');
 
-    // Wait for LiveView to process the granularity change with retry approach
-    let attempts = 0;
-    const maxAttempts = 10;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        return document.querySelector('#stat-total-yield') !== null;
-      });
-      if (state) break;
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
+    // Wait for LiveView to re-render the Day-granular historical chart.
+    // The stat cards are period-stable, so we wait for the chart title to
+    // flip from the 1D "Today's Production Curve" wording to the historical
+    // "Production Curve for ..." wording instead.
+    await expect(page.locator('#chart-title')).toContainText('Production Curve for');
 
     await expect(page.locator('#solar-chart-svg')).toBeVisible();
 
@@ -175,17 +160,10 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     // Stepping back (prev) returns to a period with data.
     await page.locator('#btn-history-prev').click();
 
-    // Wait for the chart to reappear after stepping back with retry approach
-    attempts = 0;
-    while (attempts < maxAttempts) {
-      const state = await page.evaluate(() => {
-        return document.querySelector('#empty-chart') === null &&
-               document.querySelector('#solar-chart-svg') !== null;
-      });
-      if (state) break;
-      attempts++;
-      await page.waitForTimeout(1000);
-    }
+    // Wait for the line chart to reappear after stepping back. The empty
+    // placeholder should disappear once we land back on a seeded day.
+    await expect(page.locator('#solar-chart-svg')).toBeVisible();
+    await expect(page.locator('#empty-chart')).toHaveCount(0);
   });
 
   // NOTE: the Year granularity stepper is currently broken in the app —

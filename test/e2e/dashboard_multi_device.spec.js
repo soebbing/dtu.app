@@ -438,11 +438,18 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
 
     await page.locator('#select-granularity').selectOption('day');
 
-    // LiveView swaps from live stat cards (`#stat-yield-kwh`)
-    // to historical ones (`#stat-total-yield`). Poll for the swap
-    // rather than relying on a fixed sleep.
+    // LiveView swaps from the 1D (Today) chart to a Day-granular
+    // historical chart when granularity changes. The 5-up stats
+    // row is period-stable (its labels and IDs are the same across
+    // every preset), so we can't use a stat-card swap as the
+    // signal. Instead, poll for the chart title to update — the
+    // historical Day title says "Production Curve for …" while
+    // the 1D title says "Today's Production Curve".
     await page.waitForFunction(
-      () => document.querySelector('#stat-total-yield') !== null,
+      () => {
+        const title = document.querySelector('#chart-title');
+        return title && /Production Curve for/i.test(title.textContent || '');
+      },
       null,
       { timeout: 10000 }
     );
