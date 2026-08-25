@@ -42,23 +42,29 @@ test.describe('Acceptance Tests: Dashboard stats card row (5-up)', () => {
   });
 
   test('Yield card sub-label changes as the user clicks presets', async ({ page }) => {
+    // The sub-label is rendered as a sibling div under the
+    // headline `#stat-yield-kwh` element, so it lives inside the
+    // same card `<dl>` block. Query the parent card (the Yield
+    // tile's wrapping div) and assert the sub-label inside it.
+
     // 1D (default) → sub-label "Today".
-    await expect(page.locator('#stat-yield-kwh')).toContainText(/Today/i);
+    const yieldCard = page.locator('#stat-yield-kwh').locator('..');
+    await expect(yieldCard).toContainText(/Today/i);
 
     // 7D → "Last 7 days".
     await page.locator('#btn-range-7d').click();
     await expect(page.locator('#chart-title')).toContainText('Last 7 days');
-    await expect(page.locator('#stat-yield-kwh')).toContainText(/Last 7 days/i);
+    await expect(yieldCard).toContainText(/Last 7 days/i);
 
     // 30D → "Last 30 days".
     await page.locator('#btn-range-30d').click();
     await expect(page.locator('#chart-title')).toContainText('Last 30 days');
-    await expect(page.locator('#stat-yield-kwh')).toContainText(/Last 30 days/i);
+    await expect(yieldCard).toContainText(/Last 30 days/i);
 
     // YTD → "Year to date".
     await page.locator('#btn-range-ytd').click();
     await expect(page.locator('#chart-title')).toContainText('Year to date');
-    await expect(page.locator('#stat-yield-kwh')).toContainText(/Year to date/i);
+    await expect(yieldCard).toContainText(/Year to date/i);
   });
 
   test('Peak Power tile shows an integer wattage', async ({ page }) => {

@@ -95,13 +95,13 @@ test.describe('Acceptance Tests: Multi-Inverter Chart', () => {
     // summed `ac_power` over the latest reading per inverter, but the
     // latest row per inverter happened to be a per-MPPT row with nil
     // `ac_power`, so the displayed value was 0 W.
-    const currentPowerText = await page.locator('#stat-current-power').textContent();
+    const currentPowerText = await page.locator('#stat-yield-kwh').textContent();
     const currentPower = parseFloat(currentPowerText.replace(/[^0-9.]/g, ''));
     expect(currentPower).toBeGreaterThan(0);
 
     // Today's yield must also be > 0 since the sine-arc seed runs
     // 06:00–19:00.
-    const todayYieldText = await page.locator('#stat-today-yield').textContent();
+    const todayYieldText = await page.locator('#stat-yield-kwh').textContent();
     const todayYield = parseFloat(todayYieldText.replace(/[^0-9.]/g, ''));
     expect(todayYield).toBeGreaterThan(0);
   });

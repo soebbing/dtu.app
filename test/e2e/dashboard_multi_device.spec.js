@@ -287,7 +287,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // fast (~300 ms in CI), so we wait a fixed 1.5 s after each
     // click rather than polling for value-changed (which would
     // hang if the seed drift ever produced two identical values).
-    const totalYield = await readStatNumber(page, '#stat-today-yield');
+    const totalYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(totalYield).not.toBeNull();
     expect(totalYield).toBeGreaterThan(0);
 
@@ -296,7 +296,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // includes Garage Array on top).
     await page.locator('#dtu-switcher button', { hasText: 'Roof Inverter' }).click();
     await page.waitForTimeout(1500);
-    const roofYield = await readStatNumber(page, '#stat-today-yield');
+    const roofYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(roofYield).not.toBeNull();
     expect(roofYield).toBeGreaterThan(0);
     expect(roofYield).toBeLessThan(totalYield);
@@ -307,7 +307,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // switched fleet totals from sum to max-of-monotonic-counter).
     await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
     await page.waitForTimeout(1500);
-    const garageYield = await readStatNumber(page, '#stat-today-yield');
+    const garageYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(garageYield).not.toBeNull();
     expect(garageYield).toBeGreaterThan(0);
     expect(garageYield).toBeGreaterThan(roofYield);
@@ -317,7 +317,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // exactly 0 and the smallest of the three.
     await page.locator('#dtu-switcher button', { hasText: 'Balcony Inverter' }).click();
     await page.waitForTimeout(1500);
-    const balconyYield = await readStatNumber(page, '#stat-today-yield');
+    const balconyYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(balconyYield).not.toBeNull();
     expect(balconyYield).toBe(0);
   });
@@ -411,12 +411,12 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // readings for this device today). Note: the dashboard falls
     // back to 0 W via `Enum.filter` when no reading within the
     // 2-minute freshness window matches.
-    const currentPower = await readStatNumber(page, '#stat-current-power');
+    const currentPower = await readStatNumber(page, '#stat-yield-kwh');
     expect(currentPower).not.toBeNull();
     expect(currentPower).toBe(0);
 
     // Today's Total Yield should also be 0 kWh (no today rows).
-    const todayYield = await readStatNumber(page, '#stat-today-yield');
+    const todayYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(todayYield).not.toBeNull();
     expect(todayYield).toBe(0);
   });
@@ -438,7 +438,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
 
     await page.locator('#select-granularity').selectOption('day');
 
-    // LiveView swaps from live stat cards (`#stat-current-power`)
+    // LiveView swaps from live stat cards (`#stat-yield-kwh`)
     // to historical ones (`#stat-total-yield`). Poll for the swap
     // rather than relying on a fixed sleep.
     await page.waitForFunction(
