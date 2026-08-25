@@ -71,6 +71,12 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
   });
 
   test('granularity stepper switches Day view to bar stats and back to Today live view', async ({ page }) => {
+    // The new range-presets toolbar hides the historical stepper until
+    // the user picks Custom (see dashboard_range_presets.spec.js for
+    // the contract). Click Custom first so the stepper renders.
+    await page.locator('#btn-range-custom').click();
+    await expect(page.locator('#history-picker')).toBeVisible();
+
     // Switch to historical Day granularity by directly interacting with the select element
     const selectElement = page.locator('#select-granularity');
     await selectElement.selectOption('day');
@@ -148,6 +154,10 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
   });
 
   test('Week / Month / Year granularities show Daily/Monthly aggregate stats', async ({ page }) => {
+    // Range-presets toolbar hides the stepper by default; reveal it.
+    await page.locator('#btn-range-custom').click();
+    await expect(page.locator('#history-picker')).toBeVisible();
+
     for (const gran of ['week', 'month', 'year']) {
       await page.locator('#select-granularity').selectOption(gran);
 
@@ -177,6 +187,10 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
   test('prev/next stepper walks periods and hits the empty state past the data horizon', async ({ page }) => {
     // Day granularity. Today has seeded readings (06:00–19:00), so the chart
     // shows; stepping forward past the seeded days lands on a day with none.
+    // The range-presets toolbar hides the stepper by default; reveal it.
+    await page.locator('#btn-range-custom').click();
+    await expect(page.locator('#history-picker')).toBeVisible();
+
     await page.locator('#select-granularity').selectOption('day');
 
     // Wait for LiveView to process the granularity change with retry approach
