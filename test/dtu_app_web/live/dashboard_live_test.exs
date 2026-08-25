@@ -3916,10 +3916,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
     end
 
-    test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)", %{
-      conn: conn,
-      user: user
-    } do
+    test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)",
+         %{
+           conn: conn,
+           user: user
+         } do
       _dtu =
         device_fixture(user, %{
           name: "7D Baseline",
@@ -4000,12 +4001,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # via a tag-removal regex to recover its text content. The
       # literal `<svg` substring must never appear in that text.
       for {id, label} <- [
-          {"btn-range-1d", "1D"},
-          {"btn-range-7d", "7D"},
-          {"btn-range-30d", "30D"},
-          {"btn-range-ytd", "YTD"},
-          {"btn-range-custom", "Custom"}
-        ] do
+            {"btn-range-1d", "1D"},
+            {"btn-range-7d", "7D"},
+            {"btn-range-30d", "30D"},
+            {"btn-range-ytd", "YTD"},
+            {"btn-range-custom", "Custom"}
+          ] do
         # Find the start of the button via a regex match (the
         # `[^>]*` only matches characters that aren't `>`, so the
         # match stops at the end of the opening tag). The `[_, {start, len}]`
@@ -4075,14 +4076,19 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # The 1D button's body must still be parseable (it's a real
       # element, not raw `<svg>` text pasted into the DOM).
       assert is_list(before), "1D button must be a real <button> element before clicks"
-      assert is_list(after_html), "1D button must still be a real <button> element after rapid clicks"
+
+      assert is_list(after_html),
+             "1D button must still be a real <button> element after rapid clicks"
 
       [_, before_body] = before
       [_, after_body] = after_html
 
       # No literal `<svg>` text in either snapshot.
-      refute before_body =~ "<svg", "1D button body must not contain literal <svg> text before clicks"
-      refute after_body =~ "<svg", "1D button body must not contain literal <svg> text after rapid clicks"
+      refute before_body =~ "<svg",
+             "1D button body must not contain literal <svg> text before clicks"
+
+      refute after_body =~ "<svg",
+             "1D button body must not contain literal <svg> text after rapid clicks"
     end
   end
 end
