@@ -51,7 +51,7 @@ const { test, expect } = require('@playwright/test');
 //      count to that device's inverters only.
 //   3. Switching back to Total aggregates every device's inverters
 //      and re-adds the Total line.
-//   4. "Today's Total Yield" stat card updates with the selected
+//   4. "Yield" stat card updates with the selected
 //      device (and the ordering Garage Array > Roof Inverter > 0
 //      holds).
 //   5. Chart paths filter by the selected DTU; the legend strip
@@ -118,7 +118,7 @@ async function selectDtuAndWaitForPathCount(page, buttonSelector, expectedPaths)
 // parse the remaining digits. Returns `null` when the element
 // isn't present (some cards are hidden when their scenario doesn't
 // apply, e.g. live "Current Generation" is replaced by historical
-// "Total Yield").
+// "Total Yield" — now the period-stable "Yield" card).
 async function readStatNumber(page, selector) {
   const el = page.locator(selector);
   if ((await el.count()) === 0) return null;
@@ -273,7 +273,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     );
   });
 
-  test("Today's Total Yield stat card updates when switching devices", async ({ page }) => {
+  test("Yield stat card updates when switching devices", async ({ page }) => {
     // Pin the live stat card across DTU selections. The card's
     // value must change when the scope changes — if it stayed
     // constant, the dashboard would be ignoring the device filter
@@ -387,7 +387,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     //   * show the empty-chart placeholder (`#empty-chart`) instead
     //     of a rendered curve, since `path_data == ""`
     //   * zero the live "Current Generation" stat (no recent reading)
-    //   * zero the "Today's Total Yield" stat (no today readings)
+    //   * zero the Yield stat (no today readings)
     // The switcher must stay visible (we're still >1 device total).
     await page.locator('#dtu-switcher button', { hasText: 'Balcony Inverter' }).click();
 
@@ -415,7 +415,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(currentPower).not.toBeNull();
     expect(currentPower).toBe(0);
 
-    // Today's Total Yield should also be 0 kWh (no today rows).
+    // The Yield card should also be 0 kWh (no today rows).
     const todayYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(todayYield).not.toBeNull();
     expect(todayYield).toBe(0);
@@ -478,12 +478,12 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(roofBreakdown.total).toBe(0);
 
     // Wait a fixed 1.5 s for the LiveView round-trip to update
-    // the historical-day "Total Yield" stat card before sampling.
+    // the historical-day "Yield" stat card before sampling.
     await page.waitForTimeout(1500);
 
-    // Historical day view's "Total Yield" stat should be
+    // Historical day view's "Yield" stat should be
     // non-zero on a day with seeded data.
-    const roofDayYield = await readStatNumber(page, '#stat-total-yield');
+    const roofDayYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(roofDayYield).not.toBeNull();
     expect(roofDayYield).toBeGreaterThan(0);
 
@@ -507,7 +507,7 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // max-of-monotonic-counter), so it must be at least the Roof
     // Inverter-only yield — equal when the Roof contributes the max.
     await page.waitForTimeout(1500);
-    const totalDayYield = await readStatNumber(page, '#stat-total-yield');
+    const totalDayYield = await readStatNumber(page, '#stat-yield-kwh');
     expect(totalDayYield).not.toBeNull();
     expect(totalDayYield).toBeGreaterThanOrEqual(roofDayYield);
 
