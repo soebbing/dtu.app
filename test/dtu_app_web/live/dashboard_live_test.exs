@@ -1209,6 +1209,60 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute label_text(html, "00:00")
     end
 
+    test "full-day (00:00–24:00) range renders a tick every ≤ 2 hours", %{
+      conn: conn,
+      user: user
+    } do
+      # The previous x-axis ladder used step = 6 for `total_hours > 12`,
+      # so a 24-hour view rendered only 5 ticks (00, 06, 12, 18, 24).
+      # The user's explicit ask was a max 2-hour interval — step is now
+      # capped at 2 for any span > 2 hours, so a 24-hour view renders
+      # 13 ticks (00, 02, 04, …, 24).
+      dtu =
+        device_fixture(user, %{
+          name: "Full Day",
+          kind: "opendtu",
+          mqtt_username: "full-day",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Seed a reading every hour from 00:00 to 23:00 so the chart
+      # spans the full 00:00–24:00 range (24 buckets).
+      for hour <- 0..23 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "FULL",
+            mppt_index: 0,
+            ac_power: 100.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, 0, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Every even hour from 00 to 24 must appear as a label.
+      for hour <- Enum.filter(0..24, &(rem(&1, 2) == 0)) do
+        label = String.pad_leading(Integer.to_string(hour), 2, "0") <> ":00"
+
+        assert label_text(html, label),
+               "expected x-axis label #{label} for the full-day range (step = 2)"
+      end
+
+      # Odd hours must NOT appear — they're not on the even-hour grid
+      # and adding them would clutter the axis.
+      for hour <- [01, 03, 05, 07, 09, 11, 13, 15, 17, 19, 21, 23] do
+        label = String.pad_leading(Integer.to_string(hour), 2, "0") <> ":00"
+
+        refute label_text(html, label),
+               "x-axis should not show odd-hour label #{label} (step = 2)"
+      end
+    end
+
     test "chart point X coordinates scale to the dynamic range, not the fixed 00:00–24:00 range",
          %{conn: conn, user: user} do
       dtu =
@@ -2257,6 +2311,70 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       refute html =~ ~r/-500(\.0)? W/,
              "Y-axis should NOT extend below zero when there's no export peak"
+    end
+  end
+
+  describe "Chart Y-axis — DTU-only user (no Shelly)" do
+    # The chart's Y-axis must NEVER extend below zero when the user has
+    # no Shelly paired — there's nothing to net against, and a negative
+    # axis on a production-only curve is visually wrong (negative
+    # gridline labels on positive-only data). `list_net_chart_data/4`
+    # already returns [] for DTU-only users, but the chart layer
+    # explicitly clamps `y_min` to 0 when `@has_shelly? == false` as
+    # defense-in-depth against any future code path that might seed a
+    # net row without a paired Shelly.
+
+    test "y_min is 0 when only an inverter is paired (no Shelly)", %{
+      conn: conn,
+      user: user
+    } do
+      _inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-only-inv",
+          base_topic: "solar/dtu-only"
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The bottom Y-axis label is "0 W" (positive-only axis). The
+      # negative-Y branch template branch that renders "-100 W" /
+      # "-500 W" should not have fired.
+      assert html =~ "0 W"
+
+      refute html =~ ~r/-\d+(\.\d+)? W/,
+             "DTU-only user must see a positive-only Y-axis (no negative W label)"
+    end
+
+    test "y_min stays 0 even with a high production peak (no Shelly)", %{
+      conn: conn,
+      user: user
+    } do
+      inverter =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-only-peak",
+          base_topic: "solar/dtu-only-peak"
+        })
+
+      # Seed a high production reading — without the @has_shelly?
+      # guard, a future change that sizes y_min against any negative
+      # chart point would extend the axis. With the guard, y_min == 0
+      # regardless.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-PEAK",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 3500.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ "0 W"
+      refute html =~ ~r/-\d+(\.\d+)? W/
     end
   end
 
