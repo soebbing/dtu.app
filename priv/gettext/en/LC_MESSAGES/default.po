@@ -126,7 +126,7 @@ msgstr ""
 msgid "Add your first DTU"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:587
+#: lib/dtu_app_web/live/device_live/index.html.heex:608
 #, elixir-autogen, elixir-format
 msgid "After your DTU reboots, it will appear as online on your dashboard within about a minute, and live power data starts flowing within seconds."
 msgstr ""
@@ -146,7 +146,7 @@ msgstr ""
 msgid "Analyze generation patterns with a clean, dynamic SVG chart bucketed into 5-minute averages, displaying today's power curves, yield, and peaks."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:349
+#: lib/dtu_app_web/live/device_live/index.html.heex:370
 #, elixir-autogen, elixir-format
 msgid "Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed."
 msgstr ""
@@ -162,8 +162,8 @@ msgstr ""
 msgid "Backed by index-optimized database tables and schema validations, telemetry records are persisted reliably and query speeds are kept constant."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:313
-#: lib/dtu_app_web/live/device_live/index.html.heex:474
+#: lib/dtu_app_web/live/device_live/index.html.heex:334
+#: lib/dtu_app_web/live/device_live/index.html.heex:495
 #, elixir-autogen, elixir-format
 msgid "Base Topic:"
 msgstr ""
@@ -173,8 +173,8 @@ msgstr ""
 msgid "Browsers must be installed as a PWA to deliver notifications. Add this site to your home screen / applications folder and reopen it from there."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:328
-#: lib/dtu_app_web/live/device_live/index.html.heex:363
+#: lib/dtu_app_web/live/device_live/index.html.heex:349
+#: lib/dtu_app_web/live/device_live/index.html.heex:384
 #, elixir-autogen, elixir-format
 msgid "Cancel"
 msgstr ""
@@ -194,17 +194,17 @@ msgstr ""
 msgid "Click the button below; your browser will ask whether to allow notifications for this PWA."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:259
+#: lib/dtu_app_web/live/device_live/index.html.heex:280
 #, elixir-autogen, elixir-format
 msgid "Configure how this DTU connects over MQTT."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:295
+#: lib/dtu_app_web/live/device_live/index.html.heex:316
 #, elixir-autogen, elixir-format
 msgid "Configure your physical DTU hardware using these system-generated settings."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:371
+#: lib/dtu_app_web/live/device_live/index.html.heex:392
 #, elixir-autogen, elixir-format
 msgid "Confirm Delete"
 msgstr ""
@@ -219,16 +219,16 @@ msgstr ""
 msgid "Contact via the project repository's issue tracker"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:419
-#: lib/dtu_app_web/live/device_live/index.html.heex:420
-#: lib/dtu_app_web/live/device_live/index.html.heex:435
-#: lib/dtu_app_web/live/device_live/index.html.heex:436
-#: lib/dtu_app_web/live/device_live/index.html.heex:451
-#: lib/dtu_app_web/live/device_live/index.html.heex:452
-#: lib/dtu_app_web/live/device_live/index.html.heex:467
-#: lib/dtu_app_web/live/device_live/index.html.heex:468
-#: lib/dtu_app_web/live/device_live/index.html.heex:483
-#: lib/dtu_app_web/live/device_live/index.html.heex:484
+#: lib/dtu_app_web/live/device_live/index.html.heex:440
+#: lib/dtu_app_web/live/device_live/index.html.heex:441
+#: lib/dtu_app_web/live/device_live/index.html.heex:456
+#: lib/dtu_app_web/live/device_live/index.html.heex:457
+#: lib/dtu_app_web/live/device_live/index.html.heex:472
+#: lib/dtu_app_web/live/device_live/index.html.heex:473
+#: lib/dtu_app_web/live/device_live/index.html.heex:488
+#: lib/dtu_app_web/live/device_live/index.html.heex:489
+#: lib/dtu_app_web/live/device_live/index.html.heex:504
+#: lib/dtu_app_web/live/device_live/index.html.heex:505
 #, elixir-autogen, elixir-format
 msgid "Copy to clipboard"
 msgstr ""
@@ -253,7 +253,7 @@ msgstr ""
 msgid "Currently-running release"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:393
+#: lib/dtu_app_web/live/device_live/index.html.heex:414
 #, elixir-autogen, elixir-format
 msgid "DTU Configured Successfully!"
 msgstr ""
@@ -293,7 +293,7 @@ msgstr ""
 msgid "Day"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:346
+#: lib/dtu_app_web/live/device_live/index.html.heex:367
 #, elixir-autogen, elixir-format
 msgid "Delete DTU"
 msgstr ""
@@ -303,7 +303,7 @@ msgstr ""
 msgid "Device Connection Status"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:604
+#: lib/dtu_app_web/live/device_live/index.html.heex:625
 #, elixir-autogen, elixir-format
 msgid "Dismiss"
 msgstr ""
@@ -313,7 +313,7 @@ msgstr ""
 msgid "Dynamic Power Curve"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:120
+#: lib/dtu_app_web/live/device_live/index.html.heex:141
 #, elixir-autogen, elixir-format
 msgid "Edit"
 msgstr ""
@@ -333,7 +333,7 @@ msgstr ""
 msgid "End-of-day summary"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:550
+#: lib/dtu_app_web/live/device_live/index.html.heex:571
 #, elixir-autogen, elixir-format
 msgid "Ensure MQTT is enabled, save and reboot the DTU."
 msgstr ""
@@ -343,12 +343,12 @@ msgstr ""
 msgid "Everything you need to capture, secure, and monitor your PV system telemetry."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:545
+#: lib/dtu_app_web/live/device_live/index.html.heex:566
 #, elixir-autogen, elixir-format
 msgid "Fill in the server details, username, password, and base topic as shown above."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:280
+#: lib/dtu_app_web/live/device_live/index.html.heex:301
 #, elixir-autogen, elixir-format
 msgid "Firmware"
 msgstr ""
@@ -368,12 +368,12 @@ msgstr ""
 msgid "Go to Dashboard"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:535
+#: lib/dtu_app_web/live/device_live/index.html.heex:556
 #, elixir-autogen, elixir-format
 msgid "Hardware setup instructions:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:592
+#: lib/dtu_app_web/live/device_live/index.html.heex:613
 #, elixir-autogen, elixir-format
 msgid "If it stays offline, double-check the username, password, and broker address above match exactly what's in your DTU's MQTT settings."
 msgstr ""
@@ -399,7 +399,7 @@ msgstr ""
 msgid "Isolated Multi-Tenancy"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4077
+#: lib/dtu_app_web/live/dashboard_live.ex:4101
 #, elixir-autogen, elixir-format
 msgid "Last seen:"
 msgstr ""
@@ -439,29 +439,29 @@ msgstr ""
 msgid "Log out"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:410
+#: lib/dtu_app_web/live/device_live/index.html.heex:431
 #, elixir-autogen, elixir-format
 msgid "MQTT Broker / Server:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:292
+#: lib/dtu_app_web/live/device_live/index.html.heex:313
 #, elixir-autogen, elixir-format
 msgid "MQTT Connection Details"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:307
-#: lib/dtu_app_web/live/device_live/index.html.heex:458
+#: lib/dtu_app_web/live/device_live/index.html.heex:328
+#: lib/dtu_app_web/live/device_live/index.html.heex:479
 #, elixir-autogen, elixir-format
 msgid "MQTT Password:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:426
+#: lib/dtu_app_web/live/device_live/index.html.heex:447
 #, elixir-autogen, elixir-format
 msgid "MQTT Port:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:301
-#: lib/dtu_app_web/live/device_live/index.html.heex:442
+#: lib/dtu_app_web/live/device_live/index.html.heex:322
+#: lib/dtu_app_web/live/device_live/index.html.heex:463
 #, elixir-autogen, elixir-format
 msgid "MQTT Username:"
 msgstr ""
@@ -488,12 +488,12 @@ msgstr ""
 msgid "Monthly Yields for %{year} (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:273
+#: lib/dtu_app_web/live/device_live/index.html.heex:294
 #, elixir-autogen, elixir-format
 msgid "Name"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:542
+#: lib/dtu_app_web/live/device_live/index.html.heex:563
 #, elixir-autogen, elixir-format
 msgid "Navigate to Settings -> MQTT."
 msgstr ""
@@ -556,7 +556,7 @@ msgstr ""
 msgid "Open menu"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:539
+#: lib/dtu_app_web/live/device_live/index.html.heex:560
 #, elixir-autogen, elixir-format
 msgid "Open your DTU's web interface in a browser."
 msgstr ""
@@ -642,7 +642,7 @@ msgstr ""
 msgid "Register"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:128
+#: lib/dtu_app_web/live/device_live/index.html.heex:149
 #, elixir-autogen, elixir-format
 msgid "Remove"
 msgstr ""
@@ -657,7 +657,7 @@ msgstr ""
 msgid "Responsible for content"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:323
+#: lib/dtu_app_web/live/device_live/index.html.heex:344
 #, elixir-autogen, elixir-format
 msgid "Save"
 msgstr ""
@@ -667,13 +667,13 @@ msgstr ""
 msgid "Save preferences"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:323
+#: lib/dtu_app_web/live/device_live/index.html.heex:344
 #: lib/dtu_app_web/live/notifications_live.ex:424
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Saving…"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:281
+#: lib/dtu_app_web/live/device_live/index.html.heex:302
 #, elixir-autogen, elixir-format
 msgid "Select firmware"
 msgstr ""
@@ -759,7 +759,7 @@ msgstr ""
 msgid "To send transactional emails you have triggered (magic-link login, email-change confirmation)."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:396
+#: lib/dtu_app_web/live/device_live/index.html.heex:417
 #, elixir-autogen, elixir-format
 msgid "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:"
 msgstr ""
@@ -825,7 +825,7 @@ msgstr ""
 msgid "Welcome! Let's connect your first DTU"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:584
+#: lib/dtu_app_web/live/device_live/index.html.heex:605
 #, elixir-autogen, elixir-format
 msgid "What happens next"
 msgstr ""
@@ -893,15 +893,13 @@ msgstr ""
 msgid "just now"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4086
+#: lib/dtu_app_web/live/dashboard_live.ex:4110
 #, elixir-autogen, elixir-format
 msgid "never"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4072
-#: lib/dtu_app_web/live/device_live/details.html.heex:24
-#: lib/dtu_app_web/live/device_live/details.html.heex:26
-#: lib/dtu_app_web/live/device_live/index.html.heex:78
+#: lib/dtu_app_web/live/dashboard_live.ex:4096
+#: lib/dtu_app_web/live/device_live/details.html.heex:38
 #, elixir-autogen, elixir-format
 msgid "offline"
 msgstr ""
@@ -911,10 +909,8 @@ msgstr ""
 msgid "on %{date}"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4072
-#: lib/dtu_app_web/live/device_live/details.html.heex:24
-#: lib/dtu_app_web/live/device_live/details.html.heex:26
-#: lib/dtu_app_web/live/device_live/index.html.heex:78
+#: lib/dtu_app_web/live/dashboard_live.ex:4096
+#: lib/dtu_app_web/live/device_live/details.html.heex:38
 #, elixir-autogen, elixir-format
 msgid "online"
 msgstr ""
@@ -1135,17 +1131,17 @@ msgstr ""
 msgid "Today's Consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:576
+#: lib/dtu_app_web/live/device_live/index.html.heex:597
 #, elixir-autogen, elixir-format
 msgid "Once connected, the dashboard's consumption cards (\"Current Consumption\", \"Today's Consumption\") appear within a few seconds."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:566
+#: lib/dtu_app_web/live/device_live/index.html.heex:587
 #, elixir-autogen, elixir-format
 msgid "Shelly-specific notes:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:569
+#: lib/dtu_app_web/live/device_live/index.html.heex:590
 #, elixir-autogen, elixir-format
 msgid "Telemetry is published as a single JSON object on the topic %{topic}. Shelly's default MQTT prefix is the device ID (e.g. shellyplus3em-XXXXXXXXXXXX), so set the device's prefix to %{custom_topic} to match the Base Topic shown above."
 msgstr ""
@@ -1249,33 +1245,33 @@ msgstr ""
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4109
+#: lib/dtu_app_web/live/dashboard_live.ex:4133
 #, elixir-autogen, elixir-format
 msgid "%{count} distinct error message — click to view"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4107
+#: lib/dtu_app_web/live/dashboard_live.ex:4131
 #, elixir-autogen, elixir-format
 msgid "%{count} distinct errors"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4019
+#: lib/dtu_app_web/live/dashboard_live.ex:4029
 #, elixir-autogen, elixir-format
 msgid "%{count} errors, view details"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:112
-#: lib/dtu_app_web/live/device_live/index.html.heex:238
+#: lib/dtu_app_web/live/device_live/details.html.heex:124
+#: lib/dtu_app_web/live/device_live/index.html.heex:259
 #, elixir-autogen, elixir-format
 msgid "%{count} occurrences · last seen %{when}"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:172
+#: lib/dtu_app_web/live/device_live/index.html.heex:193
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Close"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:170
+#: lib/dtu_app_web/live/device_live/index.html.heex:191
 #, elixir-autogen, elixir-format
 msgid "Close error panel"
 msgstr ""
@@ -1285,12 +1281,12 @@ msgstr ""
 msgid "Consumption Curve for %{period} (Watts)"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:155
+#: lib/dtu_app_web/live/device_live/index.html.heex:176
 #, elixir-autogen, elixir-format
 msgid "Errors (%{distinct} distinct, %{occurrences} total occurrences)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4022
+#: lib/dtu_app_web/live/dashboard_live.ex:4032
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Manage device"
 msgstr ""
@@ -1300,8 +1296,8 @@ msgstr ""
 msgid "Native push is on for this device — you'll get a system notification even when this site isn't open."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:73
-#: lib/dtu_app_web/live/device_live/index.html.heex:153
+#: lib/dtu_app_web/live/device_live/details.html.heex:85
+#: lib/dtu_app_web/live/device_live/index.html.heex:174
 #, elixir-autogen, elixir-format
 msgid "No errors recorded for this DTU yet."
 msgstr ""
@@ -1311,22 +1307,22 @@ msgstr ""
 msgid "Today's Consumption Curve (Watts)"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:64
+#: lib/dtu_app_web/live/device_live/index.html.heex:74
 #, elixir-autogen, elixir-format
 msgid "Hide error history for %{name}"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:65
+#: lib/dtu_app_web/live/device_live/index.html.heex:75
 #, elixir-autogen, elixir-format
 msgid "Show error history for %{name}"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:63
+#: lib/dtu_app_web/live/device_live/details.html.heex:75
 #, elixir-autogen, elixir-format
 msgid "%{distinct} distinct, %{occurrences} total"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:174
+#: lib/dtu_app_web/live/device_live/details.html.heex:186
 #, elixir-autogen, elixir-format
 msgid "%{n} topic(s)"
 msgstr ""
@@ -1341,70 +1337,70 @@ msgstr ""
 msgid "DTU details — %{name}"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/index.html.heex:114
+#: lib/dtu_app_web/live/device_live/index.html.heex:135
 #, elixir-autogen, elixir-format
 msgid "Details"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:57
+#: lib/dtu_app_web/live/device_live/details.html.heex:69
 #, elixir-autogen, elixir-format
 msgid "Errors"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:137
+#: lib/dtu_app_web/live/device_live/details.html.heex:149
 #, elixir-autogen, elixir-format
 msgid "Live MQTT topics"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:183
+#: lib/dtu_app_web/live/device_live/details.html.heex:195
 #, elixir-autogen, elixir-format
 msgid "Topics appear here as soon as the device publishes."
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:181
+#: lib/dtu_app_web/live/device_live/details.html.heex:193
 #, elixir-autogen, elixir-format
 msgid "Waiting for live data…"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:61
+#: lib/dtu_app_web/live/device_live/details.html.heex:73
 #, elixir-autogen, elixir-format
 msgid "none in the last 48 hours"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.ex:478
+#: lib/dtu_app_web/live/device_live/details.ex:485
 #, elixir-autogen, elixir-format
 msgid "payload"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:106
-#: lib/dtu_app_web/live/device_live/index.html.heex:228
+#: lib/dtu_app_web/live/device_live/details.html.heex:118
+#: lib/dtu_app_web/live/device_live/index.html.heex:249
 #, elixir-autogen, elixir-format
 msgid "payload (%{n} chars)"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:96
-#: lib/dtu_app_web/live/device_live/index.html.heex:204
+#: lib/dtu_app_web/live/device_live/details.html.heex:108
+#: lib/dtu_app_web/live/device_live/index.html.heex:225
 #, elixir-autogen, elixir-format
 msgid "topic:"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:158
+#: lib/dtu_app_web/live/device_live/details.html.heex:170
 #, elixir-autogen, elixir-format
 msgid "Copied!"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:167
+#: lib/dtu_app_web/live/device_live/details.html.heex:179
 #, elixir-autogen, elixir-format
 msgid "Copy as JSON"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:159
+#: lib/dtu_app_web/live/device_live/details.html.heex:171
 #, elixir-autogen, elixir-format
 msgid "Copy failed"
 msgstr ""
 
-#: lib/dtu_app_web/live/device_live/details.html.heex:161
-#: lib/dtu_app_web/live/device_live/details.html.heex:162
+#: lib/dtu_app_web/live/device_live/details.html.heex:173
+#: lib/dtu_app_web/live/device_live/details.html.heex:174
 #, elixir-autogen, elixir-format
 msgid "Copy the live topic tree as JSON"
 msgstr ""
@@ -1528,7 +1524,7 @@ msgstr ""
 msgid "Morning sun-up ping"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4054
+#: lib/dtu_app_web/live/dashboard_live.ex:4064
 #, elixir-autogen, elixir-format
 msgid "Read-only MQTT sink — receives a real-time feed of this account's other devices"
 msgstr ""
@@ -1573,7 +1569,7 @@ msgstr ""
 msgid "Your panels are sipping sunshine — first power of the day. Here's to a sunny one!"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4060
+#: lib/dtu_app_web/live/dashboard_live.ex:4070
 #, elixir-autogen, elixir-format
 msgid "sink"
 msgstr ""
@@ -1742,4 +1738,18 @@ msgstr ""
 #: lib/dtu_app_web/live/notifications_live.ex:325
 #, elixir-autogen, elixir-format
 msgid "You're viewing this in a regular mobile browser tab, not the installed PWA. iOS only fires OS notifications from the home-screen app — open dtu.app from your home screen to receive banners here."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:4090
+#: lib/dtu_app_web/live/device_live/details.html.heex:23
+#: lib/dtu_app_web/live/device_live/index.html.heex:95
+#, elixir-autogen, elixir-format
+msgid "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
+msgstr ""
+
+#: lib/dtu_app_web/live/dashboard_live.ex:4086
+#: lib/dtu_app_web/live/device_live/details.html.heex:19
+#: lib/dtu_app_web/live/device_live/index.html.heex:91
+#, elixir-autogen, elixir-format
+msgid "Online — this DTU has reported AC power within the last 2 minutes"
 msgstr ""

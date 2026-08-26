@@ -4071,14 +4071,28 @@ defmodule DtuAppWeb.DashboardLive do
                             </span>
                           <% end %>
                         </div>
-                        <span class={[
-                          "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
-                          if(online?,
-                            do:
-                              "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
-                            else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
-                          )
-                        ]}>
+                        <span
+                          class={[
+                            "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
+                            if(online?,
+                              do:
+                                "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
+                              else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
+                            )
+                          ]}
+                          title={
+                            if(online?,
+                              do:
+                                gettext(
+                                  "Online — this DTU has reported AC power within the last 2 minutes"
+                                ),
+                              else:
+                                gettext(
+                                  "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
+                                )
+                            )
+                          }
+                        >
                           {if online?, do: gettext("online"), else: gettext("offline")}
                         </span>
                       </div>
