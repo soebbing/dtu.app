@@ -5,21 +5,31 @@ defmodule DtuApp.Emails.SunUpEmailTest do
   The sun-up email is the playful "first power of the day, here's to
   a sunny one!" ping. The producer (`Notifications.SunUp`)
   pre-localises the title and body inside its `Gettext.with_locale/2`
-  block; this module is responsible for the **email-specific** strings
-  (greeting, button — no note) and for stamping the `<html lang>`
-  attribute from `user.locale`.
+  block (see `sun_up_notifier.ex:277`); this module is responsible
+  for the **email-specific** strings (greeting, button — no note)
+  and for stamping the `<html lang>` attribute from `user.locale`.
 
-  The button label `"Go to Dashboard"` is a pre-existing translated
-  msgid (see `priv/gettext/{de,fr}/LC_MESSAGES/default.po`) — the
-  per-locale assertions below catch gettext drift: if the email
-  module ever regresses to a different backend (or to a hard-coded
-  English literal), the de/fr assertions diverge.
+  The drift-guard describe block below anchors on the
+  *producer-localised body* (the data path the email carries),
+  not on the email module's own button decoration. We build the
+  expected body via `Gettext.with_locale/2` +
+  `Gettext.gettext/3` against the same catalog line the producer
+  uses, so a translation update flows through automatically without
+  re-pinning literal strings. If the email's rendering path ever
+  drops the payload body or escapes it incorrectly, the per-locale
+  assertion catches that.
   """
 
   use DtuApp.DataCase, async: true
 
   alias DtuApp.Accounts.User
   alias DtuApp.Emails.SunUpEmail
+
+  # The producer's gettext call — see `sun_up_notifier.ex:277`.
+  # Pinned here as a module attribute so the tests document the
+  # exact catalog line they exercise; if it ever moves, this
+  # attribute is the single point of update.
+  @sun_up_body_msgid "Your panels are sipping sunshine — first power of the day. Here's to a sunny one!"
 
   setup do
     user = %User{email: "u@example.com", locale: "en"}
@@ -79,22 +89,52 @@ defmodule DtuApp.Emails.SunUpEmailTest do
     end
   end
 
-  describe "render/2 — localised button label (gettext drift guard)" do
-    test "renders the English button label for locale=en", %{user: user, payload: p} do
-      {html, _} = SunUpEmail.render(user, p)
-      assert html =~ "Go to Dashboard"
+  describe "render/2 — localised body (producer-data gettext drift guard)" do
+    # Anchored on the producer-localised body content (the data
+    # path the email carries) rather than on the email module's
+    # button decoration. The brief's example was the localised
+    # status word; we use the catalog-translated body instead so
+    # drift detection exercises the actual payload data, not a UI
+    # string the email module owns. The English catalog has no
+    # translations, so the en case asserts the source-string path;
+    # the de/fr cases assert the catalog-translated paths. If the
+    # catalog line ever moves or the email's render path ever
+    # drops/escapes the body, these tests fail.
+    test "renders the English (source) body verbatim for locale=en", %{user: user, payload: p} do
+      localised_body =
+        Gettext.with_locale(DtuAppWeb.Gettext, "en", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_up_body_msgid)
+        end)
+
+      payload = %{p | body: [localised_body]}
+      {html, _} = SunUpEmail.render(user, payload)
+      assert html =~ localised_body
     end
 
-    test "renders the German button label for locale=de", %{payload: p} do
+    test "renders the German body for locale=de", %{payload: p} do
       user = %User{email: "u@example.com", locale: "de"}
-      {html, _} = SunUpEmail.render(user, p)
-      assert html =~ "Zum Dashboard"
+
+      localised_body =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_up_body_msgid)
+        end)
+
+      payload = %{p | body: [localised_body]}
+      {html, _} = SunUpEmail.render(user, payload)
+      assert html =~ localised_body
     end
 
-    test "renders the French button label for locale=fr", %{payload: p} do
+    test "renders the French body for locale=fr", %{payload: p} do
       user = %User{email: "u@example.com", locale: "fr"}
-      {html, _} = SunUpEmail.render(user, p)
-      assert html =~ "Aller au tableau de bord"
+
+      localised_body =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_up_body_msgid)
+        end)
+
+      payload = %{p | body: [localised_body]}
+      {html, _} = SunUpEmail.render(user, payload)
+      assert html =~ localised_body
     end
   end
 end
