@@ -20,6 +20,19 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
        no in-page PubSub event, no native push, no `notifications`
        history row. Same UX contract as `notify_sun_up` — see the
        moduledoc on `Notifications.SunUp`.
+    5. **`suppress duplicate disconnects`** — a burst of
+       `:dtu_disconnected` events arriving without an intervening
+       `:dtu_connected` produces exactly one `:went_offline`. The
+       first event transitions online → offline and fires; the rest
+       stay offline → offline and are silent. Mirrors the connect-
+       side `disconnected?: true` gate; the DB-backed
+       `dtu_connection_states.disconnected` row preserves the
+       suppression across producer restarts.
+    6. **`persistent dedup`** — a pre-existing `dtu_connection_states`
+       row with `disconnected: true` re-hydrates into the in-memory
+       cache on `init/1`; the first disconnect after restart stays
+       silent (no duplicate notification for a device the user
+       already knew was offline).
   """
   use DtuApp.DataCase, async: false
 
@@ -91,13 +104,26 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   # less than the recency threshold (the existing recency guard
   # looks at `last_seen_at`; the new gate also looks at
   # `connected_at` to ensure prior uptime).
+  #
+  # `last_seen_at` is stamped at the current time so the
+  # post-disconnect reconnect path's recency guard sees a fresh
+  # reading — the connect handler reads `last_seen_at` from state
+  # (the cache the disconnect path populated), not the DB row.
+  # `disconnected?: false` here is intentional: the test models
+  # "the device was online for >5 min, then just disconnected" —
+  # the producer hasn't observed an offline yet, so the new
+  # `not was_disconnected?` gate on the disconnect handler lets
+  # the fire through. (Setting `disconnected?: true` would model
+  # "the producer already fired for an earlier offline period"
+  # — that scenario is covered by the duplicate-suppression tests
+  # below.)
   defp seed_connected_at!(device_id, %DateTime{} = at) do
     :sys.replace_state(DtuConnection, fn state ->
       Map.put(state, device_id, %{
         user_id: nil,
         name: nil,
-        last_seen_at: nil,
-        disconnected?: true,
+        last_seen_at: Time.utc_now_usec(),
+        disconnected?: false,
         connected_at: at
       })
     end)
@@ -380,6 +406,161 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       assert %DtuApp.Notifications.DtuConnectionState{disconnected: false} =
                DtuApp.Repo.get(DtuApp.Notifications.DtuConnectionState, dtu.id)
+    end
+  end
+
+  describe "duplicate disconnect suppression" do
+    # The user-facing bug this gates: a burst of broker
+    # `:dtu_disconnected` events for the same device, arriving within
+    # seconds with no intervening `:dtu_connected`, used to fire
+    # `:went_offline` on every single one ("dozens of dtu-is-offline
+    # pushes in a row"). The fix is the `not was_disconnected?` gate
+    # added to the disconnect handler — fires once per offline period,
+    # silent on duplicates within the same period. Mirrors the
+    # connect-side `disconnected?: true` gate added in PR #167.
+
+    test "a burst of duplicate :dtu_disconnected events fires :went_offline exactly once" do
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Bursty DTU"})
+
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Five broker disconnect events within ~50 ms — the real-world
+      # "broker disconnect storm" pattern reported by users.
+      for i <- 1..5 do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          @presence_topic,
+          {:dtu_disconnected, "client_#{i}", dtu.id}
+        )
+      end
+
+      # The first event transitions online → offline and fires. The
+      # remaining four are silent (was_disconnected? was already true
+      # when their handlers ran). Drain the mailbox before asserting —
+      # `refute_receive` would deadlock waiting for a second message
+      # that never comes.
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "dtu_connection"
+      assert payload.title =~ "offline"
+
+      refute_receive {:notification, _}, 200
+    end
+
+    test ":dtu_disconnected → :dtu_connected → :dtu_disconnected fires twice (one per offline period)" do
+      # The duplicate-suppression gate must NOT prevent the SECOND
+      # offline notification after a real reconnect cycle. The
+      # `:dtu_connected` handler clears the marker, so the next
+      # `:dtu_disconnected` observes `was_disconnected? == false` again
+      # and fires normally. Pin this so a future fix doesn't
+      # over-correct and silence legitimate transitions.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Reconnect DTU"})
+
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
+
+      :ok = Notifications.subscribe(user.id)
+
+      # First offline period — should fire.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_offline_1", dtu.id}
+      )
+
+      assert_receive {:notification, payload1}, 1_000
+      assert payload1.title =~ "offline"
+
+      # Reconnect — clears the marker. The producer stamps
+      # `connected_at` at the current time on connect; bump it
+      # back to >5 min ago so the second disconnect's C1
+      # (`prior_uptime?`) gate still passes. Models "the device
+      # was online long enough to be worth a second offline
+      # notification."
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_reconnect", dtu.id}
+      )
+
+      :sys.replace_state(DtuConnection, fn state ->
+        Map.update!(
+          state,
+          dtu.id,
+          &Map.put(&1, :connected_at, DateTime.add(Time.utc_now_usec(), -600, :second))
+        )
+      end)
+
+      # Back-online fires because we observed a disconnect previously.
+      assert_receive {:notification, payload2}, 1_000
+      assert payload2.title =~ "back online"
+
+      # Second offline period — should fire again, since the marker
+      # was cleared by the reconnect above.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_offline_2", dtu.id}
+      )
+
+      assert_receive {:notification, payload3}, 1_000
+      assert payload3.title =~ "offline"
+    end
+
+    test "a persisted disconnected: true row suppresses the first :dtu_disconnected after restart" do
+      # Mirrors the connect-side restart-recovery test in
+      # `persistent disconnect marker (DB-backed)`. After a restart,
+      # `init/1` re-hydrates the in-memory cache with
+      # `disconnected?: true` from the DB row. The first
+      # `:dtu_disconnected` event after the restart then sees
+      # `was_disconnected? == true` and stays silent — the user
+      # doesn't get a duplicate "your inverter has gone offline"
+      # notification for a device they already knew was offline.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Persisted Offline DTU"})
+
+      # Simulate "the producer crashed while knowing this device was
+      # offline" — write the row directly.
+      connected_at = DateTime.add(Time.utc_now_usec(), -600, :second)
+
+      {:ok, _} =
+        %DtuApp.Notifications.DtuConnectionState{}
+        |> DtuApp.Notifications.DtuConnectionState.changeset(%{
+          device_id: dtu.id,
+          disconnected: true,
+          connected_at: connected_at
+        })
+        |> DtuApp.Repo.insert(on_conflict: :raise)
+
+      touch_last_seen!(dtu, -60)
+
+      # Restart the producer — `init/1` re-hydrates the marker.
+      :ok = stop_supervised(DtuApp.Notifications.DtuConnection)
+      :ok = wait_for_unregister(DtuApp.Notifications.DtuConnection, 100)
+      pid = start_supervised!({DtuApp.Notifications.DtuConnection, []})
+      Ecto.Adapters.SQL.Sandbox.allow(DtuApp.Repo, self(), pid)
+
+      # Sanity-check the hydration picked up the marker.
+      state = :sys.get_state(DtuApp.Notifications.DtuConnection)
+      assert state[dtu.id].disconnected? == true
+
+      :ok = Notifications.subscribe(user.id)
+
+      # First disconnect after restart — silent. The prior marker says
+      # "we already knew this device was offline", so the duplicate
+      # gate fires the suppression. (Without the new gate, this would
+      # fire — the user's original "dozens of notifications" report.)
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_post_restart", dtu.id}
+      )
+
+      refute_receive {:notification, _}, 300
     end
   end
 
