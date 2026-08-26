@@ -37,6 +37,14 @@ defmodule DtuApp.Notifications.Notification do
     field :payload, :map
     field :delivered_at, :utc_datetime
 
+    # Which channel the user had selected at fire time
+    # (`"push"`, `"email"`, or `"both"`). One history row per fire,
+    # not one row per channel — the column records the user's
+    # chosen channel, not which paths actually fired (a user on
+    # `"both"` whose `notify_sun_down` was false still records
+    # `"both"`).
+    field :channel, :string, default: "push"
+
     timestamps(type: :utc_datetime)
   end
 
@@ -53,7 +61,7 @@ defmodule DtuApp.Notifications.Notification do
   @spec changeset(%__MODULE__{}, User.t(), map()) :: Ecto.Changeset.t()
   def changeset(%__MODULE__{} = n, %User{} = user, payload) when is_map(payload) do
     n
-    |> cast(payload, [:event, :title, :body, :tag, :payload])
+    |> cast(payload, [:event, :title, :body, :tag, :payload, :channel])
     |> put_change(:user_id, user.id)
     # `delivered_at` is server-stamped at record time, not at
     # changeset-construction time, so two inserts in the same
