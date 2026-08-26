@@ -26,6 +26,23 @@ defmodule DtuApp.Devices.Dtu do
     # in real time.
     field :last_seen_at, :utc_datetime_usec
 
+    # Most recent time the DTU delivered an AC-aggregate reading
+    # (`mppt_index = 0`, carrying `ac_power`). Touched on every such
+    # reading — including `ac_power = 0` rows at night — by
+    # `DtuApp.MqttBroker.Telemetry.insert_reading_and_touch_power_at/1`
+    # (called from the per-firmware parse handlers' success path).
+    #
+    # Distinct from `last_seen_at` because the two can diverge: a DTU
+    # whose MQTT session lives on but whose inverter has stopped
+    # publishing telemetry will keep `last_seen_at` fresh (status
+    # frames and KEEPALIVE count) while `last_power_at` goes stale.
+    # `producing_power?/2` below gates the dashboard's "online"
+    # indicators on `last_power_at` so the green dot, the "online/offline"
+    # pill, and the current-power card all agree: when one is hidden
+    # because there are no fresh power readings, the others flip to
+    # "offline" too.
+    field :last_power_at, :utc_datetime_usec
+
     # Most recent error surfaced by the MQTT telemetry pipeline. Written
     # by `DtuApp.MqttBroker.Telemetry.record_dtu_error/2` whenever the
     # parser rejects an uplink or a `readings` insert fails. Read by the
@@ -158,6 +175,17 @@ defmodule DtuApp.Devices.Dtu do
   # DISCONNECT, etc. See `online?/2` for the comparison.
   @online_threshold_seconds 300
 
+  # Threshold (in seconds) below which a DTU is considered to be
+  # *producing power*. Two minutes matches the window
+  # `DtuApp.Devices.dashboard_data/4` uses for `current_power` (see
+  # `two_minutes_ago` in `dashboard_data/4`), so the "online" indicators
+  # and the current-power card agree: when the card hides because no
+  # ac_power reading has landed in the last two minutes, the badges
+  # flip to offline too. At night the inverter publishes
+  # `ac_power = 0` every few seconds, so the timestamp stays fresh and
+  # the device stays online.
+  @power_threshold_seconds 120
+
   @doc """
   Is this DTU currently online?
 
@@ -192,4 +220,55 @@ defmodule DtuApp.Devices.Dtu do
   end
 
   def online?(%__MODULE__{}, _now), do: false
+
+  @doc """
+  Is this DTU producing power right now?
+
+  Distinct from `online?/2` in that the source of truth is
+  `last_power_at` — the timestamp of the most recent AC-aggregate
+  reading (`mppt_index = 0`), regardless of the reading's `ac_power`
+  value. A device is *producing power* (this helper returns `true`)
+  iff `now - last_power_at < #{@power_threshold_seconds} s`.
+
+  A `nil` `last_power_at` (the device has never published an
+  AC-aggregate reading) returns `false`.
+
+  Why a separate predicate from `online?/2`? The two columns can
+  diverge:
+
+    * **MQTT alive, telemetry silent.** `last_seen_at` is touched on
+      every uplink — including status frames and DISCONNECT. A DTU
+      whose MQTT session lives on but whose inverter has stopped
+      producing telemetry will keep `last_seen_at` fresh for minutes
+      while `last_power_at` goes stale. `online?/2` says yes,
+      `producing_power?/2` says no. The dashboard's "online" badge
+      and the current-power card now both call `producing_power?/2`
+      so they agree.
+
+    * **Night.** The inverter publishes `ac_power = 0` every few
+      seconds. `last_power_at` stays fresh and `producing_power?/2`
+      keeps returning `true`. The user still sees "online" everywhere
+      and the current-power card shows "0 W" — they're not seeing a
+      contradiction because nothing is being hidden.
+
+  Pass `now` explicitly in tests; defaults to `DtuApp.Time.utc_now/0`
+  for the same reason `online?/2` does (the stored timestamp and the
+  comparison time come from the same DB clock).
+  """
+  @spec producing_power?(%__MODULE__{}, DateTime.t()) :: boolean()
+  def producing_power?(dtu, now \\ nil)
+
+  def producing_power?(%__MODULE__{last_power_at: nil}, _now), do: false
+
+  def producing_power?(%__MODULE__{last_power_at: last_power_at}, nil)
+      when is_struct(last_power_at, DateTime) do
+    producing_power?(%__MODULE__{last_power_at: last_power_at}, DtuApp.Time.utc_now())
+  end
+
+  def producing_power?(%__MODULE__{last_power_at: last_power_at}, now)
+      when is_struct(last_power_at, DateTime) and is_struct(now, DateTime) do
+    DateTime.diff(now, last_power_at, :second) < @power_threshold_seconds
+  end
+
+  def producing_power?(%__MODULE__{}, _now), do: false
 end

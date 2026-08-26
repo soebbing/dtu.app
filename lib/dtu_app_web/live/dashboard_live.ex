@@ -4008,7 +4008,17 @@ defmodule DtuAppWeb.DashboardLive do
 
             <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
               <%= for device <- @devices do %>
-                <% online? = DtuApp.Devices.Dtu.online?(device) %>
+                <%!-- `producing_power?/2` (rather than `online?/2`) so
+                     the "online/offline" pill here agrees with the
+                     current-power card above. A device that has a
+                     fresh MQTT session but no AC-aggregate readings in
+                     the last two minutes (the same window
+                     `current_power` uses) shows "offline" here so the
+                     user never sees "online" + hidden current-power
+                     card at the same time.
+                     `Dtu.online?/2` is still useful for the device-list
+                     LiveView's last-seen label. --%>
+                <% online? = DtuApp.Devices.Dtu.producing_power?(device) %>
                 <% error_count = Map.get(@error_counts, device.id, 0) %>
                 <div class="relative">
                   <.link
