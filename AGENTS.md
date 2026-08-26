@@ -695,6 +695,69 @@ VAPID keypair is generated idempotently by `bin/gen-vapid` (writes to
 **invalidates every browser subscription** for the origin and silently
 breaks notifications).
 
+**Producer requirements** (every `DtuApp.Notifications.*` GenServer
+that emits a `Notifications.broadcast/2` call MUST satisfy all three):
+
+1. **Producer-level preference gate.** Before any
+   `Notifications.broadcast/2`, the producer MUST check
+   `User.notify_<event> == true` against the resolved `%User{}`
+   struct (not just `user_id`). A `false` toggle suppresses the
+   entire flow: no in-page PubSub event, no native push, no
+   `notifications` history row, no dedup-table insert. The
+   receiver-side `Notifications.broadcast/2` already gates
+   *native push* via `native_push_enabled?/2`, but always
+   publishes the in-page event and records the history row —
+   that's the wrong contract for these notifications, which
+   the user explicitly wants "off = silent everywhere".
+
+   The preference flag is on `User` (`accounts/user.ex` lines
+   13-19); all default to `false` so existing users don't
+   silently start receiving notifications on deploy.
+
+2. **Persistent, DB-backed dedup.** "Once per local day"
+   producers MUST persist the per-user fired-on-date marker
+   in a dedicated table keyed by `(user_id, fired_on)` (e.g.
+   `sun_up_fires`, `sun_down_fires`). Insert *before*
+   broadcasting; a second insert on the same day raises
+   `Ecto.ConstraintError`, which the producer MUST swallow
+   to mean "already fired today — no-op." Use
+   `on_conflict: :raise` + `catch :error,
+   %Ecto.ConstraintError{}`, NOT `on_conflict: :nothing`,
+   because the schemas use `@primary_key false` (no serial
+   id), so Ecto omits `RETURNING` and `:nothing` returns
+   `{:ok, %Schema{}}` for both success and conflict — it
+   can't distinguish the two.
+
+   This replaces the previous in-memory `state.users[…]`
+   dedup cache, which was wiped on every GenServer restart
+   (deploy, crash, application restart) and produced
+   duplicate banners the next time the producer ran.
+
+   For "once per session" producers (e.g. `DtuConnection`,
+   which fires on each CONNECT↔DISCONNECT transition), the
+   analogous persistence surface is a per-device marker
+   table (e.g. `dtu_connection_states` keyed on `device_id`).
+   Same motivation: without persistence, a restart wipes the
+   in-memory marker and lets the very next `:dtu_connected`
+   for a device that was already on the broker at boot fire
+   `:back_online` — a duplicate "your inverter is
+   publishing telemetry again" push.
+
+3. **Structured `[push]` log lines.** `DtuApp.Push.send_to/2`
+   MUST emit a `[push] gone event=… user_id=… endpoint_host=…`
+   or `[push] failed …` line on every per-subscription error,
+   so the operator has a signal in `journalctl` / `grep`-able
+   logs when a push delivery silently drops. The log lines
+   are the operator's only signal — per-subscription errors
+   don't bubble up to the caller of `deliver/2`. VAPID
+   short-circuit and user-preference no-ops MUST NOT emit
+   these lines (covered by `PushTest`).
+
+Producers in scope today: `Notifications.SunUp`,
+`Notifications.SunDown`, `Notifications.DtuConnection`. Any
+new producer (e.g. a future "PV voltage warning") MUST satisfy
+the same three requirements before merging.
+
 ### 2.9 Service worker / PWA
 
 `priv/static/service-worker.js` is fingerprinted by `mix phx.digest` and
