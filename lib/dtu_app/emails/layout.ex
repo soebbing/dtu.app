@@ -78,7 +78,18 @@ defmodule DtuApp.Emails.Layout do
 
     * `:title`       — bold header line above the greeting (required)
     * `:greeting`    — e.g. "Hi user@example.com," (required)
-    * `:body`        — list of `<p>` paragraphs (strings). Required.
+    * `:body`        — list of `<p>` paragraphs (strings). Required UNLESS
+                       `:body_html` is supplied.
+    * `:body_html`   — pre-rendered HTML fragment(s) embedded verbatim —
+                       no `<p>` wrap, no `escape/1`. Accepts a single binary
+                       or a list of binaries. Used by callers that need
+                       richer structure than plain paragraphs (e.g. tables
+                       for stat panels, inline `<svg>`). When supplied,
+                       takes precedence over `:body` for the HTML render
+                       path; the plain-text body still uses `:body`. When
+                       omitted, the existing plain-`:body`-with-p-wrap
+                       behaviour is preserved (so ConnectionEmail /
+                       SunUpEmail keep working unchanged).
     * `:button`      — `%{label: String.t(), url: String.t()}` CTA, or `nil`
     * `:note`        — small muted footer paragraph (e.g. security note), or `nil`
     * `:lang`        — BCP-47 short code (`"en"`, `"de"`, `"fr"`) used for the
@@ -93,7 +104,8 @@ defmodule DtuApp.Emails.Layout do
   def render(opts) do
     title = Keyword.fetch!(opts, :title)
     greeting = Keyword.fetch!(opts, :greeting)
-    body = Keyword.fetch!(opts, :body)
+    body = Keyword.get(opts, :body)
+    body_html = Keyword.get(opts, :body_html)
     button = Keyword.get(opts, :button)
     note = Keyword.get(opts, :note)
     # Default to "en" so a caller that forgets the option (or pre-dates
@@ -103,13 +115,13 @@ defmodule DtuApp.Emails.Layout do
     # verbatim — gettext / screen readers fall back gracefully.
     lang = Keyword.get(opts, :lang, "en")
 
-    html = html(title, greeting, body, button, note, lang)
-    text = text_body(title, greeting, body, button, note)
+    html = html(title, greeting, body, body_html, button, note, lang)
+    text = text_body(title, greeting, body, body_html, button, note)
 
     {html, text}
   end
 
-  defp html(title, greeting, body, button, note, lang) do
+  defp html(title, greeting, body, body_html, button, note, lang) do
     # Inline styles set the LIGHT theme defaults so clients that strip <style>
     # (Gmail web, Outlook desktop) at least render something sensible. The
     # <style> block at the top of <body> overrides these with dark colors
@@ -172,7 +184,7 @@ defmodule DtuApp.Emails.Layout do
                 <tr>
                   <td style="padding:12px 40px 0 40px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;line-height:1.6;color:#{@muted_light};" class="email-muted">
                     <p style="margin:0 0 12px 0;">#{escape(greeting)}</p>
-                    #{paragraphs(body)}
+                    #{render_body(body, body_html)}
                   </td>
                 </tr>
                 #{button_row(button)}
@@ -205,6 +217,22 @@ defmodule DtuApp.Emails.Layout do
     end)
     |> Enum.join("\n")
   end
+
+  # Pick the HTML body path: `body_html` (raw markup, no wrap) when
+  # supplied, otherwise the plain-paragraph `:body` path. Additive —
+  # callers that only pass `:body` keep the historical behaviour.
+  defp render_body(_body, body_html) when body_html not in [nil, []],
+    do: raw(body_html)
+
+  defp render_body(body, _body_html), do: paragraphs(body)
+
+  # `body_html` may be a single binary or a list of binaries — join
+  # with newlines so consecutive fragments read naturally when
+  # dropped into the email. We don't escape here: the caller owns
+  # the markup (e.g. SunDownEmail builds `<table>` / `<svg>` blocks)
+  # and has already done whatever escaping it wants.
+  defp raw(html) when is_binary(html), do: html
+  defp raw(fragments) when is_list(fragments), do: Enum.join(fragments, "\n")
 
   defp button_row(nil), do: ""
 
@@ -246,10 +274,21 @@ defmodule DtuApp.Emails.Layout do
     """
   end
 
-  defp text_body(title, greeting, body, button, note) do
+  defp text_body(title, greeting, body, body_html, button, note) do
+    # When the caller supplied pre-rendered HTML fragments, the
+    # plain-text body also uses them (joined with blank lines) so
+    # the two views stay aligned. Otherwise fall back to the
+    # plain-paragraph `:body` list.
+    body_parts =
+      cond do
+        body_html in [nil, []] -> List.wrap(body || [])
+        is_binary(body_html) -> [body_html]
+        true -> List.wrap(body_html)
+      end
+
     parts =
       [title, "", greeting, ""] ++
-        List.wrap(body) ++
+        body_parts ++
         text_button(button) ++
         text_note(note)
 
