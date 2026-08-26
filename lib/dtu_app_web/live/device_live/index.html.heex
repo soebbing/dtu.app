@@ -39,7 +39,17 @@
         ]
       }
     >
-      <% online? = DtuApp.Devices.Dtu.online?(device) %>
+      <%!-- `producing_power?/2` (not `online?/2`) so the green dot
+           here agrees with the dashboard's device-card pill and the
+           current-power card. The dot flips to grey whenever the
+           inverter hasn't published an AC-aggregate reading in the
+           last two minutes — even if the MQTT session is alive. The
+           `Dtu.online?/2`-derived "last seen" label below the name
+           still uses `last_seen_at` directly (see the
+           `device.last_seen_at` render below) so the user can see
+           *when* the broker last heard from the device; the dot just
+           says whether the device is currently reporting power. --%>
+      <% online? = DtuApp.Devices.Dtu.producing_power?(device) %>
       <%!-- Clickable content area: clicking anywhere here toggles
            the error expansion panel for this device (open if
            closed, close if open). Edit and Remove are nested

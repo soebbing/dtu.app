@@ -120,6 +120,69 @@ defmodule DtuApp.Devices do
   end
 
   @doc """
+  Insert a reading and, when it carries an AC-aggregate measurement
+  (`mppt_index = 0`), touch the owning DTU's `last_power_at` column so
+  the dashboard's online indicators (`Dtu.producing_power?/2`) flip in
+  sync with the live power data.
+
+  `last_power_at` is touched *unconditionally on the AC-aggregate
+  row*, including when `ac_power = 0` (night, mid-day clouds). That
+  keeps the indicator honest: a DTU that's still publishing telemetry
+  — even if it's reporting zero watts — stays "online" on the
+  dashboard, matching the current-power card's behaviour.
+
+  Failure modes:
+
+    * Reading insert fails → returns the `{:error, changeset}`
+      unchanged. The DTU's `last_power_at` is not touched, which is
+      consistent: if we couldn't persist the reading, the timestamp
+      shouldn't claim the data was fresh.
+    * Reading insert succeeds but the DTU row has vanished (race with
+      device deletion) → `safe_touch_last_power_at/1` swallows the
+      lookup error and returns `:ok`. The reading row is still
+      returned to the caller; downstream subscribers don't see the
+      outage.
+
+  Returns the same `{:ok, %Reading{}} | {:error, changeset}` shape as
+  `create_reading/1` so existing call sites need no pattern-match
+  changes.
+  """
+  @spec create_reading_and_touch_power_at(map()) ::
+          {:ok, Reading.t()} | {:error, Ecto.Changeset.t()}
+  def create_reading_and_touch_power_at(attrs) do
+    case create_reading(attrs) do
+      {:ok, %Reading{mppt_index: 0, dtu_id: dtu_id} = reading}
+      when is_integer(dtu_id) ->
+        # Best-effort. The DTU row lookup + column write are wrapped in
+        # `safe_db_call`-style rescue so a deleted-DTU race can't
+        # surface as a failed telemetry insert to the caller.
+        _ = safe_touch_last_power_at(dtu_id)
+        {:ok, reading}
+
+      other ->
+        other
+    end
+  end
+
+  defp safe_touch_last_power_at(dtu_id) when is_integer(dtu_id) do
+    Repo.transaction(fn ->
+      case Repo.get(Dtu, dtu_id) do
+        nil ->
+          Repo.rollback(:not_found)
+
+        %Dtu{} = dtu ->
+          dtu
+          |> Ecto.Changeset.change(%{last_power_at: DtuApp.Time.utc_now_usec()})
+          |> Repo.update!()
+      end
+    end)
+    |> case do
+      {:ok, _dtu} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
+
+  @doc """
   Backfill `inverter_name` for every existing reading of `(dtu_id, inverter_serial)`.
 
   Called when OpenDTU publishes `{serial}/name` — the inverter's friendly

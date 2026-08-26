@@ -486,7 +486,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   defp flush_opendtu_reading(client_id, device_info, attrs, payload, state) do
-    case safe_db_call(fn -> DtuApp.Devices.create_reading(attrs) end) do
+    # `create_reading_and_touch_power_at/1` inserts the reading and, for
+    # the AC-aggregate row (`mppt_index = 0`), also touches the owning
+    # DTU's `last_power_at` column. That timestamp is what the
+    # dashboard's "online" indicators (green dot, online/offline pill)
+    # gate on, so the badges flip in sync with the live power data
+    # rather than with arbitrary MQTT activity. See
+    # `Dtu.producing_power?/2` for the rule.
+    case safe_db_call(fn -> DtuApp.Devices.create_reading_and_touch_power_at(attrs) end) do
       {:ok, db_reading} ->
         Logger.debug(
           "[Telemetry] Saved OpenDTU reading for DTU #{device_info.id} " <>
@@ -697,7 +704,9 @@ defmodule DtuApp.MqttBroker.Telemetry do
         if flush? do
           reading_attrs = Map.put(updated_buffer, :dtu_id, device_info.id)
 
-          case safe_db_call(fn -> DtuApp.Devices.create_reading(reading_attrs) end) do
+          case safe_db_call(fn ->
+                 DtuApp.Devices.create_reading_and_touch_power_at(reading_attrs)
+               end) do
             {:ok, db_reading} ->
               Logger.debug(
                 "[Telemetry] Saved AhoyDTU reading for DTU #{device_info.id} " <>
@@ -878,7 +887,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
           |> Map.merge(Map.new(pairs))
           |> Map.put(:dtu_id, device_info.id)
 
-        case safe_db_call(fn -> DtuApp.Devices.create_reading(attrs) end) do
+        case safe_db_call(fn -> DtuApp.Devices.create_reading_and_touch_power_at(attrs) end) do
           {:ok, db_reading} ->
             Logger.debug(
               "[Telemetry] Saved Shelly reading for DTU #{device_info.id} " <>

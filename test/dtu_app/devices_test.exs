@@ -2044,6 +2044,276 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "Dtu.producing_power?/2 — online indicators sync with current-power card" do
+    # `producing_power?/2` gates the dashboard's "online" badge and the
+    # device-list's green dot on `last_power_at`, the timestamp of the
+    # most recent AC-aggregate reading (`mppt_index = 0`). The
+    # current-power card already hides when no such reading has
+    # landed in the last two minutes; this helper exists so the green
+    # dot and the "online/offline" pill agree with that.
+    #
+    # The key scenarios this describe covers:
+    #
+    #   1. nil `last_power_at` (newly created DTU, never reported power)
+    #      → offline. Matches the pre-migration behaviour for the
+    #      first night after device creation.
+    #   2. `last_power_at` within 120 s → online (the green dot +
+    #      pill both show "online").
+    #   3. `last_power_at` at exactly 120 s → offline (strict `<`).
+    #   4. `last_power_at` older than 120 s → offline. This is the
+    #      silent-inverter-while-MQTT-alive case: a DTU that keeps
+    #      publishing status frames but stops reporting `ac_power`
+    #      shows offline on every indicator — the user's original
+    #      complaint.
+    #   5. `ac_power = 0` with a fresh `last_power_at` (night) →
+    #      online. A device at night that publishes `ac_power = 0`
+    #      every few seconds stays online everywhere, including the
+    #      current-power card. The "online" badge says online because
+    #      the inverter is reachable; the current-power card simply
+    #      has nothing meaningful to display.
+
+    alias DtuApp.Devices.Dtu
+
+    test "DTU with last_power_at = nil is offline (never reported power)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert Dtu.producing_power?(device) == false
+      # Even when `now` is far in the past, a DTU that's never
+      # produced power is offline — the helper short-circuits on nil.
+      assert Dtu.producing_power?(device, DateTime.utc_now()) == false
+    end
+
+    test "DTU with last_power_at within the 120 s threshold is producing power" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # last_power_at = now - 60 s → producing power (mid-day clouds,
+      # sunrise, etc.).
+      one_min_ago = DateTime.utc_now() |> DateTime.add(-60, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_power_at: one_min_ago}))
+
+      now = DateTime.utc_now()
+      assert Dtu.producing_power?(device, now) == true
+    end
+
+    test "DTU with last_power_at at exactly 120 s is offline (<, not <=)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      # 120 s exactly → NOT producing power (the comparison is strict
+      # `<`, same convention as `online?/2` to make the boundary
+      # deterministic for tests).
+      two_min_ago = DateTime.add(now, -120, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_power_at: two_min_ago}))
+
+      assert Dtu.producing_power?(device, now) == false
+    end
+
+    test "DTU with last_power_at older than 120 s is offline" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      five_min_ago = DateTime.utc_now() |> DateTime.add(-300, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_power_at: five_min_ago}))
+
+      # The user's reported bug: the DTU's MQTT session is alive
+      # (which is why `online?/2` would still return true via
+      # `last_seen_at`), but the inverter stopped publishing telemetry
+      # over two minutes ago. With this helper, the green dot and the
+      # "online/offline" pill both show "offline" so the user isn't
+      # left wondering why the current-power card is hidden while the
+      # badges say online.
+      assert Dtu.producing_power?(device) == false
+    end
+
+    test "producing_power? accepts an explicit `now` argument for deterministic tests" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      fixed_last_power = ~U[2026-08-01 22:00:00.000000Z]
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_power_at: fixed_last_power}))
+
+      # Night scenario: 30 s after the last ac_power = 0 reading,
+      # the device is still producing power — the inverter is
+      # reachable, the inverter is just reporting zero watts because
+      # it's dark.
+      thirty_sec_after = ~U[2026-08-01 22:00:30.000000Z]
+      assert Dtu.producing_power?(device, thirty_sec_after) == true
+
+      # Five minutes later (long after the inverter should have
+      # woken up): offline. This is the silent-inverter-while-MQTT-
+      # alive case.
+      five_min_after = ~U[2026-08-01 22:05:00.000000Z]
+      assert Dtu.producing_power?(device, five_min_after) == false
+    end
+
+    test "producing_power? and online?/2 can disagree when telemetry goes silent" do
+      # Regression for the user's reported bug: a DTU with a
+      # fresh `last_seen_at` (MQTT alive) but a stale `last_power_at`
+      # (inverter stopped publishing telemetry) must show offline on
+      # the green dot + pill (which use `producing_power?/2`) even
+      # though `online?/2` says online.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+
+      last_seen = DateTime.add(now, -30, :second)
+      last_power = DateTime.add(now, -300, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(device, %{last_seen_at: last_seen, last_power_at: last_power})
+        )
+
+      assert Dtu.online?(device, now) == true
+      assert Dtu.producing_power?(device, now) == false
+    end
+  end
+
+  describe "create_reading_and_touch_power_at/1 — keeps dtus.last_power_at fresh" do
+    # The telemetry pipeline routes every parsed reading through this
+    # helper instead of `create_reading/1` directly, so the dashboard's
+    # "online" indicators (which gate on `Dtu.producing_power?/2`) flip
+    # in sync with the live power data. Without this test a future
+    # refactor that accidentally bypasses the helper would silently
+    # re-introduce the user's reported bug — green dot says online but
+    # current-power card hidden because no `last_power_at` is being
+    # touched.
+
+    alias DtuApp.Devices.Dtu
+    alias DtuApp.Devices.Reading
+
+    test "touch last_power_at when the reading is mppt_index = 0 (AC aggregate)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      assert device.last_power_at == nil
+
+      # Capture *both* clocks: `last_power_at` is written from the
+      # database clock (see `DtuApp.Time.utc_now_usec/0`), so
+      # snapshotting the wall clock would race a drifted app clock.
+      before = DtuApp.Time.utc_now_usec()
+
+      {:ok, %Reading{}} =
+        Devices.create_reading_and_touch_power_at(%{
+          dtu_id: device.id,
+          inverter_serial: "ABCD",
+          mppt_index: 0,
+          ac_power: 245.0,
+          inserted_at: DtuApp.Time.utc_now_usec()
+        })
+
+      after_ = DtuApp.Time.utc_now_usec()
+      device = DtuApp.Repo.reload!(device)
+      refute device.last_power_at == nil
+      assert DateTime.compare(device.last_power_at, before) in [:gt, :eq]
+      assert DateTime.compare(device.last_power_at, after_) in [:lt, :eq]
+    end
+
+    test "touch last_power_at even when ac_power = 0 (night scenario)" do
+      # The inverter publishes `ac_power = 0` every few seconds at
+      # night. The user expects the dashboard to keep showing the
+      # device as "online" — the current-power card just has nothing
+      # meaningful to display. `last_power_at` must be touched on
+      # every AC-aggregate row regardless of value.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      {:ok, %Reading{}} =
+        Devices.create_reading_and_touch_power_at(%{
+          dtu_id: device.id,
+          inverter_serial: "ABCD",
+          mppt_index: 0,
+          ac_power: 0.0,
+          inserted_at: DtuApp.Time.utc_now_usec()
+        })
+
+      device = DtuApp.Repo.reload!(device)
+      refute device.last_power_at == nil
+      assert Dtu.producing_power?(device) == true
+    end
+
+    test "do not touch last_power_at for per-MPPT rows (mppt_index >= 1)" do
+      # Per-MPPT rows (mppt_index >= 1) carry `dc_power`, not `ac_power`,
+      # and are NOT what the dashboard's `current_power` query reads.
+      # Touching `last_power_at` from a per-MPPT row would keep a
+      # device "online" forever — even when the inverter stopped
+      # reporting the AC-aggregate row.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      {:ok, %Reading{}} =
+        Devices.create_reading_and_touch_power_at(%{
+          dtu_id: device.id,
+          inverter_serial: "ABCD",
+          mppt_index: 1,
+          dc_power: 100.0,
+          inserted_at: DtuApp.Time.utc_now_usec()
+        })
+
+      device = DtuApp.Repo.reload!(device)
+      assert device.last_power_at == nil
+    end
+
+    test "insert failure leaves last_power_at untouched" do
+      # A bad payload that fails Ecto validation must not partially
+      # succeed — `last_power_at` should stay nil so the dashboard
+      # doesn't claim there's a fresh reading when none was persisted.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Missing both `:inverter_serial` and `:dtu_id` → changeset rejects
+      # on `validate_required([:inverter_serial, :dtu_id])`.
+      {:error, _changeset} =
+        Devices.create_reading_and_touch_power_at(%{
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: DtuApp.Time.utc_now_usec()
+        })
+
+      device = DtuApp.Repo.reload!(device)
+      assert device.last_power_at == nil
+    end
+
+    test "deleting the DTU mid-flight raises an FK constraint error" do
+      # Race: telemetry inserts a reading just after the user deleted
+      # the DTU. Ecto's `Repo.insert/1` raises `Ecto.ConstraintError`
+      # on FK violations (rather than returning `{:error, changeset}`
+      # because the changeset hasn't declared the constraint). The
+      # telemetry pipeline's `safe_db_call/1` wrapper catches this
+      # and logs it — the helper must not transform it into a silent
+      # success, because a stream of FK violations is a sign that
+      # something is broken upstream (perhaps a deleted device whose
+      # MQTT session is still alive).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+      device_id = device.id
+
+      DtuApp.Repo.delete!(device)
+
+      assert_raise Ecto.ConstraintError, fn ->
+        Devices.create_reading_and_touch_power_at(%{
+          dtu_id: device_id,
+          inverter_serial: "ABCD",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: DtuApp.Time.utc_now_usec()
+        })
+      end
+    end
+  end
+
   describe "compute_day_period_stats/2" do
     # Pure data shaping: takes the yields + chart points the LiveView already
     # fetched (both user-scoped upstream) and rolls them into the day-view
