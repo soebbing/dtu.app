@@ -947,26 +947,43 @@ This is the CI's local-equivalent sanity check.
 
 ### 6.1 CI (`.github/workflows/ci.yml`)
 
-Triggers on push and PR to `main`. Two jobs: `test` and
-`build-docker`.
+Triggers on **push and PR to `main`** — both run the same workflow.
+Two jobs: `test` (a.k.a. `Build & Test`) and `build-docker`.
 
-`test` spins up `timescale/timescaledb:latest-pg16` on `:5432` and
-`axllent/mailpit:latest` on `:1025`+`:8025`. Steps:
+The merge gate for a PR is **the `Build & Test` job** on the PR's own
+run, **not** the run on `main` after merge and **not** the CodeQL
+check runs that show up alongside it. CodeQL is informational — it
+runs in parallel and will pass independently of `Build & Test`. A PR
+that breaks `Build & Test` will not merge; a PR that breaks CodeQL
+alone is at the maintainer's discretion.
+
+If you find yourself looking at a CI summary that shows
+`Analyze (actions)` / `Analyze (javascript-typescript)` / `CodeQL` all
+green but the PR still says "waiting for checks", `Build & Test` is
+the one to look at.
+
+`Build & Test` spins up `timescale/timescaledb:latest-pg16` on `:5432`
+and `axllent/mailpit:latest` on `:1025`+`:8025`. Steps:
 
 1. Checkout + `erlef/setup-beam@v1`.
 2. Cache `deps`/`_build` keyed on `mix.lock`.
 3. `mix deps.get`, `mix format --check-formatted`,
    `mix compile --warnings-as-errors` (`MIX_ENV=test`).
-4. `mix test`.
+4. `mix test` — ExUnit, with the sandbox pool, dropped Argon2 cost,
+   broker disabled.
 5. Node 20 setup + cache `~/.cache/ms-playwright`.
 6. `npm ci`, `npx playwright install --with-deps chromium`.
 7. `mix assets.deploy`.
-8. Boot the prod-mode Phoenix server (`PORT=4000 mix phx.server`)
-   into `phx.log`, wait up to 60 s.
-9. `npm run test:e2e`. On failure: dump `phx.log`, upload
-   `playwright-report/` (30-day retention).
+8. `mix ecto.create` + `mix ecto.migrate` + `mix run priv/repo/seeds.exs`
+   (production DB schema/seed for the E2E run).
+9. Boot the prod-mode Phoenix server (`PORT=4000 mix phx.server`)
+   into `phx.log`, wait up to 60 s for `http://localhost:4000`.
+10. **`npm run test:e2e` — Playwright Chromium against the prod-mode
+    server. This is the merge gate; it does not run on a separate
+    workflow.** On failure: dump `phx.log` and upload
+    `playwright-report/` (30-day retention).
 
-`build-docker` runs only when `test` succeeded; builds the
+`build-docker` runs only when `Build & Test` succeeded; builds the
 multi-stage Dockerfile and uploads a `.tar` for 7 days.
 
 ### 6.2 Release pipeline
