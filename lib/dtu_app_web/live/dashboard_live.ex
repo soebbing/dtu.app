@@ -4023,17 +4023,23 @@ defmodule DtuAppWeb.DashboardLive do
 
             <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
               <%= for device <- @devices do %>
-                <%!-- `producing_power?/2` (rather than `online?/2`) so
-                     the "online/offline" pill here agrees with the
-                     current-power card above. A device that has a
-                     fresh MQTT session but no AC-aggregate readings in
-                     the last two minutes (the same window
-                     `current_power` uses) shows "offline" here so the
-                     user never sees "online" + hidden current-power
-                     card at the same time.
-                     `Dtu.online?/2` is still useful for the device-list
-                     LiveView's last-seen label. --%>
-                <% online? = DtuApp.Devices.Dtu.producing_power?(device) %>
+                <%!-- Three-state pill: `online + producing` (green dot,
+                     AC readings with ac_power > 0 in the last 2 min),
+                     `online + nighttime` (amber moon, MQTT alive but
+                     no AC readings in the 5-min online window — the
+                     inverter has stopped emitting power data, e.g.
+                     after sunset for firmware that suppresses
+                     telemetry at night), or `offline` (zinc, no MQTT
+                     activity in 5 min). The MQTT-liveness signal
+                     (`last_seen_at`) drives online/offline so a DTU
+                     whose inverter goes quiet at night no longer
+                     flips to "offline" while the broker is still
+                     forwarding status frames.
+                     `producing_power?/2` is still the source for the
+                     current-power card's hide/show logic
+                     (dashboard_data/4). --%>
+                <% online? = DtuApp.Devices.Dtu.online?(device) %>
+                <% nighttime? = DtuApp.Devices.Dtu.nighttime?(device) %>
                 <% error_count = Map.get(@error_counts, device.id, 0) %>
                 <div class="relative">
                   <.link
@@ -4089,26 +4095,39 @@ defmodule DtuAppWeb.DashboardLive do
                         <span
                           class={[
                             "inline-flex shrink-0 items-center px-2 py-0.5 rounded text-xs font-medium",
-                            if(online?,
-                              do:
-                                "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400",
-                              else: "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
-                            )
+                            cond do
+                              online? and not nighttime? ->
+                                "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
+
+                              online? ->
+                                "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300"
+
+                              true ->
+                                "bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-400"
+                            end
                           ]}
                           title={
-                            if(online?,
-                              do:
+                            cond do
+                              online? and not nighttime? ->
                                 gettext(
                                   "Online — this DTU has reported AC power within the last 2 minutes"
-                                ),
-                              else:
-                                gettext(
-                                  "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
                                 )
-                            )
+
+                              online? ->
+                                gettext(
+                                  "Nighttime — MQTT is alive but no AC power reading has arrived. The inverter has stopped emitting telemetry, e.g. after sunset."
+                                )
+
+                              true ->
+                                gettext("Offline — no MQTT activity in the last 5 minutes")
+                            end
                           }
                         >
-                          {if online?, do: gettext("online"), else: gettext("offline")}
+                          {cond do
+                            online? and not nighttime? -> gettext("online")
+                            online? -> gettext("nighttime")
+                            true -> gettext("offline")
+                          end}
                         </span>
                       </div>
                       <div class="mt-2 space-y-1 text-sm text-zinc-550 dark:text-zinc-400">

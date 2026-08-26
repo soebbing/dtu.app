@@ -539,7 +539,7 @@ msgstr "Benachrichtigungen sind in Ihren Browser-Einstellungen blockiert. Öffne
 #: lib/dtu_app_web/live/notifications_live.ex:306
 #, elixir-autogen, elixir-format
 msgid "Notifications are enabled. Pick what you'd like to be notified about below."
-msgstr "Benachrichtigungen sind aktiviert. Wählen Sie unten aus, worüber Siebenachrichtigt werden möchten."
+msgstr "Benachrichtigungen sind aktiviert. Wählen Sie unten aus, worüber Sie benachrichtigt werden möchten."
 
 #: lib/dtu_app_web/components/layouts/root.html.heex:170
 #, elixir-autogen, elixir-format

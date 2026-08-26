@@ -3,19 +3,32 @@ defmodule DtuApp.Notifications.SunDown do
   Server-side producer for `event: "sun_down"` notifications.
 
   Watches every parsed reading on `dtu:reading`, maintains a per-user
-  fleet-power state (`%{user_id => %{devices: %{device_id => latest_w},
+  fleet-power state (`%{user_id => %{devices: %{device_id =>
+  %{power_w: float, last_reading_at: DateTime.t()}},
   zero_since: ts | nil, fire_timer: ref | nil}}`), and — once the
-  fleet has been at 0 W for `:sun_down_idle_seconds` (default 15 min)
-  — fires `DtuApp.Notifications.broadcast/2` with the day's totals
-  (today + yesterday, both as kWh and peak W). The receiver side
-  (in-page JS hook + native Web Push) does the user-visible work;
-  this module is the producer that lives **outside** the LiveView so
-  the summary also fires when the user has no tab open.
+  *active* fleet sum (devices whose last AC reading is fresher than
+  `@fleet_reading_stale_seconds`, default 5 min) has been at 0 W for
+  `:sun_down_idle_seconds` (default 15 min) — fires
+  `DtuApp.Notifications.broadcast/2` with the day's totals (today +
+  yesterday, both as kWh and peak W). The receiver side (in-page JS
+  hook + native Web Push) does the user-visible work; this module is
+  the producer that lives **outside** the LiveView so the summary
+  also fires when the user has no tab open.
 
   Why a timer instead of "fire on every reading at 0 W"? When the sun
   is fully down, no more readings arrive. The only reliable trigger
-  is a timer set the moment the fleet first hits 0 W and not reset
-  until either the fleet wakes up again or the timer fires.
+  is a timer set the moment the fleet first hits 0 W (active fleet
+  sum) and not reset until either the fleet wakes up again or the
+  timer fires.
+
+  Why "active" fleet sum? Some inverter firmwares stop emitting AC
+  readings at night but keep their MQTT session alive with status
+  frames and keepalives. Without the staleness filter, the cached
+  `power_w` would hold the day's last value forever and `fleet_w ==
+  0.0` would never trip — the user would never see a daily summary.
+  Filtering out devices whose last reading is older than
+  `@fleet_reading_stale_seconds` makes "silent" equivalent to
+  "producing 0 W" for the purposes of the idle-window check.
 
   Why an idle threshold? A cloud passing over the array can drop
   fleet power to 0 W for a few minutes mid-day; without a threshold,
@@ -79,6 +92,18 @@ defmodule DtuApp.Notifications.SunDown do
   # Lazy-resolved on every timer arm so tests can swap the value at
   # runtime via `Application.put_env` without recompiling.
   @default_idle_seconds 15 * 60
+
+  # A device's `power_w` is considered stale — and therefore excluded
+  # from the active fleet sum — when no AC-aggregate reading has
+  # arrived in the last `@fleet_reading_stale_seconds`. Matches the
+  # `@online_threshold_seconds` on `Dtu.online?/2`: if the broker
+  # hasn't seen the device for 5 min, the device is MQTT-silent and
+  # its cached power is treated as "not contributing". This is the
+  # missing piece for users whose inverters stop emitting AC readings
+  # at night but keep their MQTT session alive with status frames —
+  # the cached `power_w` would otherwise hold yesterday's last value
+  # forever and `fleet_w == 0.0` would never trip.
+  @fleet_reading_stale_seconds 300
 
   @doc "The PubSub topic this producer subscribes to. Exposed for tests."
   def reading_topic, do: @reading_topic
@@ -182,22 +207,61 @@ defmodule DtuApp.Notifications.SunDown do
   defp reading_ac_power(_), do: :ignore
 
   # Update the per-user fleet-power state with this device's latest
-  # reading. Cache miss on the device → user mapping is resolved via
-  # the DB (the `Device.user_id` FK lookup); cache hits are O(1).
+  # AC-aggregate reading. Per-device state is
+  # `%{power_w: float, last_reading_at: DateTime.t()}` — the timestamp
+  # is what lets `active_fleet_w/2` exclude stale entries, so a DTU
+  # whose inverter stops emitting AC readings at night is treated as
+  # "not generating" rather than as "still generating the last value
+  # it ever published". Cache miss on the device → user mapping is
+  # resolved via the DB (the `Device.user_id` FK lookup); cache hits
+  # are O(1).
   defp update_user_power(state, device_id, power_w) do
     user_id = resolve_user_id(state, device_id)
 
     if is_nil(user_id) do
       state
     else
+      now = Time.utc_now()
+
       users =
         Map.update(state.users, user_id, %{devices: %{}, zero_since: nil, timer: nil}, fn u ->
-          devices = Map.put(u.devices, device_id, power_w)
+          devices = Map.put(u.devices, device_id, %{power_w: power_w, last_reading_at: now})
           %{u | devices: devices}
         end)
 
       %{state | users: users, device_to_user: Map.put(state.device_to_user, device_id, user_id)}
     end
+  end
+
+  # Active fleet power: sum of `power_w` for devices whose last AC
+  # reading landed within `@fleet_reading_stale_seconds`. A device
+  # that has gone silent (its inverter stopped emitting AC readings)
+  # contributes 0 — which is what we want for "is the fleet currently
+  # generating?". Without this filter, the cached `power_w` from a
+  # daytime reading would keep the fleet sum > 0 forever, and the
+  # idle-window timer would never arm.
+  defp active_fleet_w(devices, now) do
+    devices
+    |> Map.values()
+    |> Enum.filter(fn %{last_reading_at: last} ->
+      DateTime.diff(now, last, :second) < @fleet_reading_stale_seconds
+    end)
+    |> Enum.map(& &1.power_w)
+    |> Enum.sum()
+  end
+
+  # True iff `now - last_reading_at < @fleet_reading_stale_seconds`
+  # for every device the user owns. A user with no devices at all
+  # returns `true` (vacuous truth — they have no fleet to be down).
+  # Used by `maybe_arm_timer/2` to handle the "all devices went silent
+  # at the same time" case: even if the cached `power_w` for a silent
+  # device is non-zero (because it published once at startup and never
+  # again), the timer still arms because every entry is stale.
+  defp all_devices_silent?(%{devices: devices}, now) do
+    devices == [] or
+      Enum.all?(devices, fn {_id, %{last_reading_at: last}} ->
+        DateTime.diff(now, last, :second) >= @fleet_reading_stale_seconds
+      end)
   end
 
   defp resolve_user_id(state, device_id) do
@@ -229,17 +293,26 @@ defmodule DtuApp.Notifications.SunDown do
           state
 
         %{devices: devices, zero_since: zero_since, timer: timer} = user_state ->
-          fleet_w = devices |> Map.values() |> Enum.sum()
+          now = Time.utc_now()
+          fleet_w = active_fleet_w(devices, now)
+          silent? = all_devices_silent?(user_state, now)
 
           cond do
+            # Fleet is producing power and a timer is running — cancel it.
             fleet_w > 0.0 and timer != nil ->
               Process.cancel_timer(timer)
               put_in(state.users[user_id], %{user_state | zero_since: nil, timer: nil})
 
+            # Fleet is producing power, no timer running — reset `zero_since`.
             fleet_w > 0.0 ->
               put_in(state.users[user_id], %{user_state | zero_since: nil})
 
-            fleet_w == 0.0 and zero_since == nil ->
+            # Fleet is at 0 W (active fleet sum) and we haven't started the
+            # countdown yet — arm the idle timer. Also covers the case
+            # where the entire fleet has gone silent (no fresh AC readings
+            # in the last @fleet_reading_stale_seconds); we still want a
+            # summary at the end of a silent day.
+            (fleet_w == 0.0 or silent?) and zero_since == nil ->
               zero_since = Time.utc_now()
 
               idle_seconds = idle_seconds()
@@ -260,12 +333,17 @@ defmodule DtuApp.Notifications.SunDown do
       nil ->
         state
 
-      %{devices: devices, zero_since: ts} ->
-        fleet_w = devices |> Map.values() |> Enum.sum()
+      %{devices: devices, zero_since: ts} = user_state ->
+        now = Time.utc_now()
+        fleet_w = active_fleet_w(devices, now)
+        silent? = all_devices_silent?(user_state, now)
 
         # Race window: a non-zero reading may have arrived between the
         # timer being armed and it firing. Re-check before broadcasting.
-        if fleet_w == 0.0 and not is_nil(ts) do
+        # Same active-fleet semantics as `maybe_arm_timer/2`: the timer
+        # also fires when every device has gone silent (cached power is
+        # ignored, fleet sum is 0 by construction).
+        if (fleet_w == 0.0 or silent?) and not is_nil(ts) do
           case safe_get_user(user_id) do
             nil ->
               clear_user_state(state, user_id)
