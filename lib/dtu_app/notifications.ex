@@ -214,8 +214,10 @@ defmodule DtuApp.Notifications do
     Ecto.NoResultsError -> nil
   end
 
-  # Per-event preference gate. See the `@doc` above for the
-  # rationale.
+  # TODO (Task 3): per-event preference gating moves to
+  # `Push.native_enabled?/2`, which the new `Notifications.Dispatcher`
+  # invokes before pushing. Delete these clauses once the dispatcher
+  # is wired in and `broadcast/2` no longer references them.
   defp native_push_enabled?(%DtuApp.Accounts.User{} = user, %{"event" => event}) do
     cond do
       event == "dtu_connection" -> user.notify_dtu_connection == true

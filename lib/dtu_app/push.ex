@@ -95,6 +95,38 @@ defmodule DtuApp.Push do
     end
   end
 
+  @doc """
+  Per-event preference gate. Returns `true` if the user has opted
+  into native Web Push delivery for the given event. Mirrors the
+  in-page broadcast path (which is gated at the producer level for
+  `dtu_connection` and `sun_up`, and at the dispatcher level for
+  `sun_down`). Unknown events default to `true` so future event types
+  the user explicitly opted into still deliver.
+
+  Accepts both string-keyed (`%{"event" => ...}`) and atom-keyed
+  (`%{event: ...}`) payloads.
+  """
+  @spec native_enabled?(DtuApp.Accounts.User.t(), map()) :: boolean
+  def native_enabled?(%DtuApp.Accounts.User{} = user, %{"event" => event}) do
+    cond do
+      event == "dtu_connection" -> user.notify_dtu_connection == true
+      event == "sun_down" -> user.notify_sun_down == true
+      event == "sun_up" -> user.notify_sun_up == true
+      true -> true
+    end
+  end
+
+  def native_enabled?(%DtuApp.Accounts.User{} = user, %{event: event}) do
+    cond do
+      event == :dtu_connection -> user.notify_dtu_connection == true
+      event == :sun_down -> user.notify_sun_down == true
+      event == :sun_up -> user.notify_sun_up == true
+      true -> true
+    end
+  end
+
+  def native_enabled?(_user, _payload), do: true
+
   # Send one payload to one subscription; delete the row on :gone,
   # log + move on for any other error.
   defp send_to(%PushSubscription{} = sub, payload) do
