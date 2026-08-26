@@ -49,10 +49,19 @@ defmodule DtuApp.Accounts.User do
     # a sudden locale change on deploy.
     field :locale, :string, default: "en"
 
+    # User's chosen notification channel. One of:
+    #   "push"  — only native Web Push (existing behaviour)
+    #   "email" — only transactional email (new fallback)
+    #   "both"  — fan out to both
+    # Defaults to "push" for new and existing users so this migration
+    # doesn't change anyone's behaviour silently.
+    field :notification_channel, :string, default: "push"
+
     timestamps(type: :utc_datetime)
   end
 
   @supported_locales ~w(en de fr)
+  @valid_channels ~w(push email both)
 
   @doc """
   A user changeset for registering or changing the email.
@@ -164,7 +173,15 @@ defmodule DtuApp.Accounts.User do
   """
   def notification_settings_changeset(user, attrs) do
     user
-    |> cast(attrs, [:notify_dtu_connection, :notify_sun_down, :notify_sun_up])
+    |> cast(attrs, [
+      :notify_dtu_connection,
+      :notify_sun_down,
+      :notify_sun_up,
+      :notification_channel
+    ])
+    |> validate_inclusion(:notification_channel, @valid_channels,
+      message: "must be one of: push, email, both"
+    )
   end
 
   @doc """
