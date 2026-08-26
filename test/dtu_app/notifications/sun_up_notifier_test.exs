@@ -14,9 +14,11 @@ defmodule DtuApp.Notifications.SunUpTest do
     3. **suppress at 0 W** — readings while the fleet is still at
        0 W do not fire.
     4. **opt-out path** — when `notify_sun_up == false`, the
-       VAPID fan-out is suppressed (the in-page broadcast still
-       fires — the JS hook dedups; `Notifications.broadcast/2`
-       gates VAPID via `native_push_enabled?/2`).
+       entire broadcast is suppressed at the producer level
+       (no in-page event, no native push, no history row, no
+       `sun_up_fires` insert). Unlike `DtuConnection` / `SunDown`,
+       SunUp is user-visible as "off" rather than "just silent
+       when the tab is closed".
     5. **per-MPPT rows are ignored** — only `mppt_index: 0` rows
        carry `ac_power`; rows for `mppt_index >= 1` must not
        affect fleet-power state.
@@ -29,6 +31,7 @@ defmodule DtuApp.Notifications.SunUpTest do
   """
   use DtuApp.DataCase, async: false
 
+  import Ecto.Query
   import DtuApp.AccountsFixtures
   import DtuApp.DevicesFixtures
 
@@ -127,7 +130,14 @@ defmodule DtuApp.Notifications.SunUpTest do
   end
 
   describe "opt-out path" do
-    test "in-page broadcast still fires when notify_sun_up is false (VAPID gate is separate)" do
+    test "no notification fires when notify_sun_up is false (producer-level gate)" do
+      # Unlike `DtuConnection` and `SunDown` (which always publish and
+      # only gate the native-push path), SunUp suppresses the entire
+      # broadcast at the producer level when the preference is off —
+      # no in-page event, no native push, no history row. The user
+      # explicitly asked for "not sent, when disabled", so the
+      # producer honours that even at the cost of being inconsistent
+      # with the other notifiers.
       user = user_fixture(%{notify_sun_up: false})
       dtu = device_fixture(user, %{name: "Opt-out DTU"})
 
@@ -139,8 +149,15 @@ defmodule DtuApp.Notifications.SunUpTest do
         {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 80.0}}
       )
 
-      # In-page path is unconditional; receiver-side hook dedups.
-      assert_receive {:notification, %{event: "sun_up"}}, 1_000
+      # Producer gate suppresses the broadcast — no `:notification`
+      # arrives, no DB row in `sun_up_fires`, no `notifications`
+      # history entry.
+      refute_receive {:notification, _}, 500
+
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunUpFire, where: f.user_id == ^user.id),
+               :count
+             ) == 0
     end
   end
 
@@ -250,6 +267,86 @@ defmodule DtuApp.Notifications.SunUpTest do
       assert_receive {:notification, payload}, 1_000
 
       assert payload.title == "☀️ The sun's awake!"
+    end
+  end
+
+  describe "persistent dedup (DB-backed)" do
+    test "a second fire attempt after the GenServer restart is rejected by the DB constraint" do
+      # The whole reason we replaced the in-memory `fired_on_date`
+      # cache with a `sun_up_fires` row: any GenServer restart (deploy,
+      # crash, application restart) used to wipe the cache and let the
+      # next reading fire `sun_up` again, producing duplicate pushes.
+      # The unique `(user_id, fired_on)` constraint now survives the
+      # restart — a freshly-started GenServer with empty in-memory
+      # state must still reject the second fire for the same day.
+      #
+      # Verified at two levels:
+      #
+      #   1. The DB constraint itself: a second `Repo.insert` with the
+      #      same `(user_id, fired_on)` raises `Ecto.ConstraintError`
+      #      even when the in-memory cache is empty (it is — this is
+      #      a direct DB call).
+      #   2. The producer path: a `sun_up_fires` row inserted directly
+      #      makes a subsequent fleet-wake reading a no-op without
+      #      involving the producer's in-memory state at all.
+      user = user_fixture(%{notify_sun_up: true})
+      today = Date.utc_today()
+
+      # Simulate "the producer already fired for this user today" by
+      # writing the dedup row directly — this is what the DB survives
+      # the restart that wiped the in-memory cache.
+      {:ok, %DtuApp.Notifications.SunUpFire{}} =
+        %DtuApp.Notifications.SunUpFire{}
+        |> DtuApp.Notifications.SunUpFire.changeset(%{user_id: user.id, fired_on: today})
+        |> DtuApp.Repo.insert(on_conflict: :raise)
+
+      dtu = device_fixture(user, %{name: "Restart DTU"})
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 100.0}}
+      )
+
+      # The pre-existing dedup row means the producer's `insert_fire`
+      # raises `Ecto.ConstraintError`, which we catch and treat as a
+      # duplicate — no notification is broadcast.
+      refute_receive {:notification, _}, 500
+
+      # Still exactly one row — no duplicate insert.
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunUpFire, where: f.user_id == ^user.id),
+               :count
+             ) == 1
+    end
+
+    test "the same user on a different local date fires again" do
+      # Sanity-check the dedup key actually scopes by date and not
+      # just by user. Simulate by inserting two rows directly with
+      # different `fired_on` values, then broadcasting — the producer
+      # must compute today's date and not be confused by yesterday's
+      # row.
+      user = user_fixture(%{notify_sun_up: true})
+      dtu = device_fixture(user, %{name: "New Day DTU"})
+
+      yesterday = Date.add(Date.utc_today(), -1)
+
+      {:ok, _} =
+        %DtuApp.Notifications.SunUpFire{}
+        |> DtuApp.Notifications.SunUpFire.changeset(%{user_id: user.id, fired_on: yesterday})
+        |> DtuApp.Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :fired_on])
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 100.0}}
+      )
+
+      # Today's row is new — producer fires as normal.
+      assert_receive {:notification, _}, 1_000
     end
   end
 

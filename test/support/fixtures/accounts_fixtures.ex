@@ -38,7 +38,22 @@ defmodule DtuApp.AccountsFixtures do
     {:ok, {user, _expired_tokens}} =
       Accounts.login_user_by_magic_link(token)
 
-    user
+    # `register_user/1` only persists `:email` (see
+    # `User.email_changeset/2`), so notification flags handed in via
+    # `attrs` are silently dropped. Apply them through
+    # `update_notification_settings/2` so tests that want a user
+    # with `notify_sun_up: true` actually get one.
+    notification_attrs =
+      Map.take(attrs, [:notify_dtu_connection, :notify_sun_down, :notify_sun_up])
+
+    case notification_attrs do
+      %{} = n when map_size(n) == 0 ->
+        user
+
+      _ ->
+        {:ok, user} = Accounts.update_notification_settings(user, notification_attrs)
+        user
+    end
   end
 
   def user_scope_fixture do

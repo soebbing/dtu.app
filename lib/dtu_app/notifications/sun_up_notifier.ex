@@ -33,7 +33,30 @@ defmodule DtuApp.Notifications.SunUp do
   sun-up event — the trigger is a *fleet-wide* 0 W → > 0 W
   transition, which naturally only happens at sunrise (or after a
   full outage clears). Per-inverter wake-ups within a day are
-  deduped by the per-user `fired_on_date` cache.
+  deduped by the per-user `sun_up_fires` row.
+
+  ## Preference gate (producer-level)
+
+  The producer itself checks `User.notify_sun_up` before doing
+  anything visible — unlike `DtuConnection` and `SunDown` (which
+  always publish and rely on `Notifications.broadcast/2` to gate
+  the *native push* path while still recording history and
+  publishing in-page). Sun-up is different: the user explicitly
+  asked for "not sent, when disabled", so when the toggle is off
+  we suppress the whole flow — no in-page broadcast, no native
+  push, no history entry.
+
+  ## Dedup persistence
+
+  Dedup state lives in the `sun_up_fires` table (one row per
+  user per local date). On every 0 W → > 0 W transition the
+  producer computes the user's local date and attempts an insert;
+  the unique `(user_id, fired_on)` constraint makes the insert
+  idempotent — a second fire for the same user on the same date
+  fails with `Ecto.ConstraintError`, which we swallow. The same
+  supplier-level check protects against a duplicate fire racing
+  through the producer after a GenServer restart (the previous
+  in-memory `fired_on_date` cache was lost on every restart).
 
   Test override: `Application.put_env(:dtu_app, :sun_up_offset_seconds,
   N)` overrides the per-user TZ lookup with a fixed offset
@@ -49,6 +72,7 @@ defmodule DtuApp.Notifications.SunUp do
 
   alias DtuApp.Accounts.User
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.SunUpFire
   alias DtuApp.Repo
 
   @reading_topic "dtu:reading"
@@ -76,6 +100,10 @@ defmodule DtuApp.Notifications.SunUp do
   def init(_arg) do
     Phoenix.PubSub.subscribe(DtuApp.PubSub, @reading_topic)
     Logger.info("[Notifications.SunUp] subscribed to #{@reading_topic}")
+    # In-memory state only carries the per-user latest fleet reading
+    # plus a device→user cache (resolved via a single DB lookup per
+    # device, then memoised). Per-user dedup state lives in the
+    # `sun_up_fires` table — see moduledoc.
     {:ok, %{users: %{}, device_to_user: %{}}}
   end
 
@@ -115,30 +143,34 @@ defmodule DtuApp.Notifications.SunUp do
   defp reading_ac_power(%{ac_power: _}), do: :ignore
   defp reading_ac_power(_), do: :ignore
 
-  # Update the per-user fleet-power state with this device's latest
-  # reading. Cache miss on the device → user mapping is resolved via
-  # the DB (the `Device.user_id` FK lookup); cache hits are O(1).
+  # Record this device's latest reading in the per-user fleet-power
+  # state. The fleet-power bookkeeping is still in-memory (it has to
+  # be — it's the threshold that *triggers* the fire). The per-user
+  # dedup record, by contrast, is in DB (see moduledoc).
   #
-  # `Map.update/4`'s default is inserted verbatim when the user key
-  # is missing — the update fn isn't called. We work around that by
-  # reading with `Map.get/3`, applying the device write in both
-  # branches, and writing the result back via `Map.put/4`. Without
-  # this, the first reading for a fleet leaves `devices: %{}` and
-  # `maybe_fire/2` never crosses the 0 W threshold.
+  # Two-step write (seed-if-missing, then update) because Elixir's
+  # `Map.update/4` returns the default verbatim on a missing key —
+  # the lambda is *not* called — which would silently drop the
+  # first reading for any user the process has never seen before
+  # (fleet power stays at 0 W and `sun_up` would never fire).
   defp update_user_power(state, device_id, power_w) do
     user_id = resolve_user_id(state, device_id)
 
     if is_nil(user_id) do
       state
     else
-      existing = Map.get(state.users, user_id, %{devices: %{}, fired_on_date: nil})
-      new_devices = Map.put(existing.devices, device_id, power_w)
-      new_user_state = %{existing | devices: new_devices}
+      users =
+        state.users
+        |> Map.put_new(user_id, %{devices: %{}})
+        |> Map.update!(user_id, fn u ->
+          %{u | devices: Map.put(u.devices, device_id, power_w)}
+        end)
 
-      users = Map.put(state.users, user_id, new_user_state)
-      device_to_user = Map.put(state.device_to_user, device_id, user_id)
-
-      %{state | users: users, device_to_user: device_to_user}
+      %{
+        state
+        | users: users,
+          device_to_user: Map.put(state.device_to_user, device_id, user_id)
+      }
     end
   end
 
@@ -160,9 +192,9 @@ defmodule DtuApp.Notifications.SunUp do
     end
   end
 
-  # Check whether this reading flipped the user's fleet from 0 W to
-  # > 0 W and we haven't fired yet today (in the user's local TZ).
-  # If so, build the payload and fire via Notifications.broadcast/2.
+  # Check whether the user's fleet just crossed 0 W → > 0 W and fire
+  # if so. Dedup is at the DB layer (insert into `sun_up_fires`); the
+  # in-memory state is purely the threshold check.
   defp maybe_fire(state, device_id) do
     user_id = Map.get(state.device_to_user, device_id)
 
@@ -173,62 +205,87 @@ defmodule DtuApp.Notifications.SunUp do
         nil ->
           state
 
-        %{devices: devices, fired_on_date: fired_on_date} = _user_state ->
+        %{devices: devices} ->
           fleet_w = devices |> Map.values() |> Enum.sum()
 
-          cond do
-            # Fleet still asleep — nothing to do.
-            fleet_w <= 0.0 ->
-              state
+          if fleet_w > 0.0 do
+            case safe_get_user(user_id) do
+              nil ->
+                state
 
-            # Fleet woke up but we already fired for this user's
-            # local day — record the date so the next roll-over
-            # knows when the "not yet fired" window opens up.
-            not is_nil(fired_on_date) ->
-              state
+              user ->
+                # Producer-level preference gate: respect
+                # `User.notify_sun_up` before doing anything visible.
+                # The user explicitly asked for "not sent, when
+                # disabled", so we suppress the whole flow (in-page
+                # broadcast, native push, history) — at the cost of
+                # being inconsistent with `DtuConnection` / `SunDown`,
+                # which always publish + record history and only gate
+                # the native-push path. Sun-up is a single low-value
+                # greeting and skipping it cleanly is the better UX.
+                if user.notify_sun_up == true do
+                  try_fire(user)
+                end
 
-            true ->
-              case safe_get_user(user_id) do
-                nil ->
-                  state
-
-                user ->
-                  today = user_today(user)
-
-                  # Re-check inside the GenServer process: another
-                  # reading racing through the pipeline could have
-                  # fired first. The fired_on_date write is the
-                  # single source of truth.
-                  state =
-                    Map.update!(state, :users, fn users ->
-                      Map.update!(users, user_id, fn u ->
-                        %{u | fired_on_date: today}
-                      end)
-                    end)
-
-                  if fired_on_date != today do
-                    # The SunUp producer runs as a long-lived GenServer
-                    # without a request context. Wrap `fire/1` (which
-                    # builds the gettext payload and calls
-                    # `Notifications.broadcast/2`) in the user's locale
-                    # so the title/body strings are generated in the
-                    # right language — both the in-page PubSub
-                    # broadcast and the service-worker push fan-out
-                    # (handled inside `Notifications.broadcast/2` via
-                    # its own `Gettext.with_locale/2` wrapper) carry
-                    # that locale.
-                    Gettext.with_locale(
-                      DtuAppWeb.Gettext,
-                      user.locale || "en",
-                      fn -> fire(user) end
-                    )
-                  end
-
-                  state
-              end
+                state
+            end
+          else
+            state
           end
       end
     end
+  end
+
+  # Insert into `sun_up_fires`. The unique `(user_id, fired_on)`
+  # constraint makes a duplicate insert a no-op for our purposes
+  # (any second fire on the same day raises `Ecto.ConstraintError`,
+  # which we swallow). The actual `fire/1` call happens *only* when
+  # the insert succeeded — that prevents a race where two readings
+  # arrive in close succession and both compute `today` before
+  # either insert has been committed.
+  defp try_fire(%User{} = user) do
+    today = user_today(user)
+
+    case insert_fire(user.id, today) do
+      :ok ->
+        # The SunUp producer runs as a long-lived GenServer without a
+        # request context. Wrap `fire/2` (which builds the gettext
+        # payload and calls `Notifications.broadcast/2`) in the user's
+        # locale so the title/body strings are generated in the right
+        # language — both the in-page PubSub broadcast and the
+        # service-worker push fan-out (handled inside
+        # `Notifications.broadcast/2` via its own `Gettext.with_locale/2`
+        # wrapper) carry that locale.
+        Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+          fire(user, today)
+        end)
+
+      {:error, :duplicate} ->
+        :ok
+    end
+  end
+
+  defp insert_fire(user_id, %Date{} = fired_on) do
+    %SunUpFire{}
+    |> SunUpFire.changeset(%{user_id: user_id, fired_on: fired_on})
+    # Source-of-truth constraint is the composite PK on
+    # `(user_id, fired_on)` — set up in the migration.
+    #
+    # Why `on_conflict: :raise` instead of `on_conflict: :nothing`?
+    # Because the schema declares `primary_key: false`, Ecto omits
+    # `RETURNING` from the INSERT — and with no `RETURNING`, there's
+    # no row for Ecto to return. The `:nothing` path silently returns
+    # `{:ok, %SunUpFire{}}` for both an actual insert AND a swallowed
+    # conflict (the struct is built from the changeset, not the DB),
+    # which would let every reading fire. Raising and catching the
+    # `Ecto.ConstraintError` gives a clean duplicate signal.
+    |> Repo.insert(on_conflict: :raise)
+    |> case do
+      {:ok, %SunUpFire{}} -> :ok
+      {:error, _changeset} -> {:error, :duplicate}
+    end
+  catch
+    :error, %Ecto.ConstraintError{} -> {:error, :duplicate}
   end
 
   # Resolve the user's "today" with the test override applied.
@@ -256,18 +313,20 @@ defmodule DtuApp.Notifications.SunUp do
 
   # The user-visible payload. Title + body are gettext strings, but
   # they're wrapped in `Gettext.with_locale/2` at the call site (see
-  # `maybe_fire/2`) so they pick up the user's locale — the
-  # SunUp GenServer has no request context, so a bare `gettext/1`
-  # would default to whatever Gettext was initialized with (≈ "en")
-  # regardless of preference. The opt-in gate for native push lives
-  # in `DtuApp.Notifications.native_push_enabled?/2` — the in-page
-  # broadcast is unconditional, matching the SunDown pattern.
-  defp fire(%User{} = user) do
+  # `try_fire/1`) so they pick up the user's locale — the SunUp
+  # GenServer has no request context, so a bare `gettext/1` would
+  # default to whatever Gettext was initialized with (≈ "en")
+  # regardless of preference.
+  defp fire(%User{} = user, %Date{} = today) do
     Notifications.broadcast(user.id, %{
       event: "sun_up",
       title: gettext("☀️ The sun's awake!"),
       body: sun_up_body(),
-      tag: "sun_up:#{Date.to_iso8601(Date.utc_today())}"
+      # Tag carries the producer's view of "today" — the date the
+      # producer actually fired on, not the wall-clock UTC date.
+      # Two producers in different timezones would otherwise share
+      # a single tag and cause the in-page dedup to miss.
+      tag: "sun_up:#{Date.to_iso8601(today)}"
     })
   end
 
