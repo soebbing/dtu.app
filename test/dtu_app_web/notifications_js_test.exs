@@ -211,6 +211,19 @@ defmodule DtuAppWeb.NotificationsJsTest do
                "by date so the same day's summary fires once."
     end
 
+    test "matches `sun_up` events with the server-provided tag", %{source: source} do
+      # Sun-up also fires once per local day (the server tags it
+      # `sun_up:<iso-date>` in the user's local TZ). Falling
+      # through to the JSON-stringify fallback would hash the
+      # identical body string and accidentally dedup the next
+      # morning's sun-up — pinning an explicit branch here so
+      # the producer's per-day tag is honoured.
+      assert source =~
+               ~r/sun_up[\s\S]*?sun_up:\$\{payload\.tag\s*\|\|\s*`sun_up:\$\{todayIso\(\)\}`\}/,
+             "expected `computeDedupKey` to dedup `sun_up` events " <>
+               "by the server-provided `tag` (per-user local day)."
+    end
+
     test "matches `dtu_offline` / `dtu_online` events by dtu_id+inverter_serial", %{
       source: source
     } do
@@ -236,6 +249,32 @@ defmodule DtuAppWeb.NotificationsJsTest do
                ~r/dtu_connection[\s\S]*?notified:v1:user:\$\{userId\}:\$\{payload\.tag\s*\|\|/,
              "expected `computeDedupKey` to use the server's tag " <>
                "for dtu_connection events"
+    end
+  end
+
+  describe "dedup TTL — entries must expire so the next real event fires" do
+    test "storageHas reads the timestamp and compares against a TTL", %{source: source} do
+      # Pre-fix `storageHas` returned `localStorage.getItem(key) !== null`,
+      # which meant once any (tag, status) pair fired, the slot was
+      # burned for the lifetime of the browser's storage. The user's
+      # history table filled up while banners stopped landing. Pin that
+      # the function now parses the timestamp and expires entries.
+      assert source =~ ~r/function\s+storageHas[\s\S]*?Date\.parse/s,
+             "expected `storageHas` to parse the stored timestamp"
+
+      assert source =~ ~r/storageHas\([^)]*ttlMs[\s\S]*?Date\.now\(\)\s*-\s*stamped\s*<\s*ttlMs/s,
+             "expected `storageHas` to compare Date.now() against the TTL"
+    end
+
+    test "the dedup call site passes a TTL (5 minutes) to storageHas", %{source: source} do
+      # The 5-minute window covers reconnect storms and LiveView
+      # re-mounts on `nav` without masking the next genuine event
+      # # (which would only fire minutes/hours later for sun-up and
+      # # sun-down, and minutes later for dtu_connection at the
+      # # earliest). Pin the TTL value so it can't drift to "0" (=
+      # # permanently off) or to "infinity" (= no dedup at all).
+      assert source =~ ~r/storageHas\(\s*dedupKey\s*,\s*5\s*\*\s*60\s*\*\s*1000\s*\)/,
+             "expected `handleNotify` to pass a 5-minute TTL to `storageHas`"
     end
   end
 
