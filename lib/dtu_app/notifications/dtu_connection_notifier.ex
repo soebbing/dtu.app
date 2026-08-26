@@ -45,13 +45,28 @@ defmodule DtuApp.Notifications.DtuConnection do
   that should be silent when off) and the same rationale that drove
   SunDown to a producer-level gate in the same revision.
 
-  Disconnect gating mirrors the prior in-LiveView check: only fire
-  `:went_offline` when the device's `last_seen_at` is recent
-  (`@recency_seconds`, default 5 min). Without this guard, the very
-  first MQTT disconnect after a server restart would fire on a DTU
-  that was already offline before the server restarted, spamming the
-  user. Recent-active = "this is a real offline event"; stale =
-  "the broker just reconnected to a DTU that was already dead."
+  Disconnect gating is layered (all conditions must hold):
+    * `recently_active?(last_seen_at)` — `last_seen_at` must be
+      within `@recency_seconds` (5 min). Without this guard, the very
+      first MQTT disconnect after a server restart would fire on a DTU
+      that was already offline before the server restarted, spamming
+      the user. Recent-active = "this is a real offline event"; stale =
+      "the broker just reconnected to a DTU that was already dead."
+    * `prior_uptime?(connected_at)` — the device must have been online
+      for at least `@recency_seconds` before the disconnect. Without
+      this guard, a brief WiFi reconnect storm (connect → 30s later
+      disconnect) would fire "Your inverter has gone offline" on a
+      device that was never actually online long enough to merit one.
+    * `not was_disconnected?` — the prior `disconnected?` flag (read
+      BEFORE `remember_disconnect/2` mutates it) must be false. This
+      is the duplicate-fire gate: a burst of `:dtu_disconnected`
+      events arriving without an intervening `:dtu_connected`
+      produces exactly one `:went_offline`, not dozens. The first
+      event transitions online → offline (fires); the rest stay
+      offline → offline (silent). Symmetric with the connect-side
+      `disconnected?: true` gate. The DB-backed
+      `dtu_connection_states.disconnected` row carries the suppression
+      across producer restarts.
   """
 
   use GenServer
@@ -171,6 +186,24 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   def handle_info({:dtu_disconnected, _client_id, device_id}, state)
       when is_integer(device_id) do
+    # Read the prior `disconnected?` flag BEFORE
+    # `remember_disconnect/2` mutates it. The fire is gated on
+    # `was_disconnected? == false` (i.e. we observed the offline
+    # *transition* this time, not a duplicate event for an
+    # already-noted offline period). Without this gate the very
+    # common "broker disconnect storm" pattern (multiple
+    # `:dtu_disconnected` events arriving within seconds, no
+    # `:dtu_connected` in between) fires `:went_offline` on each
+    # one — the user reports "dozens of dtus-offline pushes in a
+    # row". The first event transitions online → offline (fires);
+    # the rest stay offline → offline (silent). Symmetric with the
+    # connect-side `disconnected?: true` gate added in PR #167.
+    was_disconnected? =
+      case Map.get(state, device_id) do
+        %{disconnected?: true} -> true
+        _ -> false
+      end
+
     state = remember_disconnect(state, device_id)
 
     case safe_lookup(device_id) do
@@ -188,7 +221,8 @@ defmodule DtuApp.Notifications.DtuConnection do
         # `connected_at` is recorded in state at connect-time below.
         connected_at = get_connected_at(state, device_id)
 
-        if recently_active?(last_seen_at) and prior_uptime?(connected_at) do
+        if recently_active?(last_seen_at) and prior_uptime?(connected_at) and
+             not was_disconnected? do
           # Route through `fire_for_status/2` so we share the
           # User-struct lookup with the connect path — `fire/3`
           # takes a `%User{}` (we need the user's locale to scope
