@@ -432,28 +432,28 @@ defmodule DtuAppWeb.DashboardLiveTest do
                "got duplicates: #{inspect(stroke_colors)}"
     end
 
-    test "midpoint Y-axis label sits at the y_max/2 gridline, not at the zero line", %{
+    test "DTU-only user renders the 0 W label on the chart's bottom edge", %{
       conn: conn,
       user: user
     } do
-      # Regression: the line chart's "y_max/2 W" label used to render
-      # at y=147 — right next to the zero line at y=135 — instead of
-      # at the y_max/2 gridline (y=77.5). A flat-at-zero line then
-      # visually overlapped with the midpoint tick label, making a
-      # 0 W reading read as `y_max/2` (because the label sat right
-      # next to the line instead of at the value it actually named).
-      # The label now sits at y=89.5, just below the y_max/2 gridline.
+      # Regression for "the production curve wastes the lower half of the
+      # chart when no Shelly is paired". Previously the chart used a
+      # fixed `zero_y_default = 135` regardless of device mix, leaving
+      # the lower 110 px of the chart empty for DTU-only users (no curve
+      # ever plots below the zero line because there's no export peak).
+      # The chart now pins `zero_y` to the chart bottom (y=250) for
+      # DTU-only users so the production curve fills the full chart
+      # height — the 0 W gridline + label sit at y=250 / y=262.
       dtu =
         device_fixture(user, %{
-          name: "Mid Label DTU",
+          name: "Bottom Edge DTU",
           kind: "opendtu",
-          mqtt_username: "mid-label"
+          mqtt_username: "bottom-edge"
         })
 
-      # 350 W peak → `max_power` ceils up to 350, `y_max` rounds up
-      # to the next multiple of 100 = 400. The midpoint label is
-      # `div(round(400), 2) = 200`, so we can also pin the literal
-      # "200.0 W" string the chart renders.
+      # 350 W peak → y_max rounds up to 400, but with no Shelly paired
+      # the only ticks are the edges (0 and 400) — 400 < 500 so the
+      # next interior 500 W tick is dropped.
       {:ok, _} =
         Devices.create_reading(%{
           dtu_id: dtu.id,
@@ -467,85 +467,120 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # The y_max/2 label is the only `<text>` whose `y` attribute
-      # equals `89.5`. The HEEx template puts the label body on its
-      # own line, so we slurp it via a multiline regex and strip the
-      # whitespace before asserting.
-      [mid_label_tag] =
-        Regex.run(
-          ~r{<text[^>]*y="89\.5"[^>]*>\s*([^<]+?)\s*</text>}s,
-          html,
-          capture: :all_but_first
-        )
-
-      assert String.contains?(mid_label_tag, "200") and
-               String.contains?(mid_label_tag, "W"),
-             "expected y_max/2 label to render at y=89.5 with '200' content, got: '#{mid_label_tag}'"
-
-      # And confirm the y_max/2 label isn't at the buggy position. The
-      # regex requires a `200.0`-style value (digits + decimal + digits)
-      # because the new "0 W" label legitimately sits at y=147 (just
-      # below the dashed zero gridline) — without the decimal guard,
-      # `0 W` would match `\d+ W` and the assertion would refuted the
-      # correct placement of the `0 W` label.
-      refute html =~
-               ~r{<text[^>]*y="147"[^>]*>\s*\d+\.\d+\s*W\s*</text>}s,
-             "y_max/2 label must not be positioned at y=147 (just below the zero line)"
-    end
-
-    test "0 W Y-axis label sits at the dashed zero gridline, not at the chart bottom",
-         %{conn: conn, user: user} do
-      # Regression for the "inverter shows 0 W but the chart reads ~66 W"
-      # report: PR #125 fixed the midpoint-label misplacement but left
-      # the positive-only branch's "0 W" label at y=245 (chart bottom)
-      # while the actual data-zero gridline sits at y=135. The 110-px
-      # gap meant a flat-at-zero line had no adjacent label, so readers
-      # interpolated between the y_max/2 label (above) and the
-      # far-away 0 W label and read the value as somewhere in between.
-      # Move the "0 W" label to y=147 (just below the dashed zero
-      # gridline) so it sits where the value it names actually plots.
-      #
-      # Same as the midpoint test: 350 W peak → `y_max` rounds up to
-      # the next 100 = 400, so the label content is literally "0 W".
-      dtu =
-        device_fixture(user, %{
-          name: "Zero Label DTU",
-          kind: "opendtu",
-          mqtt_username: "zero-label"
-        })
-
-      {:ok, _} =
-        Devices.create_reading(%{
-          dtu_id: dtu.id,
-          inverter_serial: "INV",
-          mppt_index: 0,
-          inverter_name: "Solo",
-          ac_power: 350.0,
-          yield_day: 1_000.0,
-          inserted_at: DateTime.utc_now()
-        })
-
-      {:ok, _view, html} = live(conn, ~p"/dashboard")
-
-      # The "0 W" label sits at y=147 (just below the dashed zero
-      # gridline at y=135). Pull the matching <text> tag, strip
-      # whitespace, and pin the exact label content.
+      # The 0 W label sits at y_pixel + 12. With zero_y = 250 the gridline
+      # is at y=250 and the label is at y=262. Pull the matching <text>
+      # tag, strip whitespace, and pin the exact label content.
       [zero_label_tag] =
         Regex.run(
-          ~r{<text[^>]*y="147"[^>]*>\s*([^<]+?)\s*</text>}s,
+          ~r{<text[^>]*y="262(?:\.0)?"[^>]*>\s*([^<]+?)\s*</text>}s,
           html,
           capture: :all_but_first
         )
 
       assert zero_label_tag == "0 W",
-             "expected y=147 label to read '0 W', got: '#{zero_label_tag}'"
+             "expected y=262 label to read '0 W', got: '#{zero_label_tag}'"
 
-      # And confirm the buggy position (chart bottom y=245) no longer
-      # carries the "0 W" label — the surrounding chart space below
-      # the zero gridline is pure visual padding with no data meaning,
-      # so leaving it unlabeled is correct.
-      refute html =~ ~r{<text[^>]*y="245"[^>]*>\s*0\s*W\s*</text>}s,
-             "0 W label must not sit at y=245 (chart bottom) any more"
+      # Confirm the 0 W dashed gridline sits at y=250 (the chart
+      # bottom) — the line carries `stroke-dasharray="4"` to mark it
+      # as the reference.
+      assert html =~
+               ~r/<line[^>]*y1="250(?:\.0)?"[^>]*y2="250(?:\.0)?"[^>]*stroke-dasharray="4"/,
+             "DTU-only chart should have a dashed zero gridline at y=250 (chart bottom)"
+    end
+
+    test "DTU-only user renders a 500 W gridline step on larger scales", %{
+      conn: conn,
+      user: user
+    } do
+      # With y_max ≥ 500 the chart renders gridlines at every 500 W
+      # above the zero line: 0, 500, 1000, …, y_max. Each gets a <line>
+      # + a <text> label. This pins the user's "at least every 500 W"
+      # rule — a future change that drops to a coarser step (e.g.
+      # 1000 W) would fail to render the in-between ticks.
+      dtu =
+        device_fixture(user, %{
+          name: "Big Scale DTU",
+          kind: "opendtu",
+          mqtt_username: "big-scale"
+        })
+
+      # 2_350 W peak → y_max rounds up to next 100 = 2_400. Gridlines
+      # are bounded by y_max, so the top tick is 2_400 (not 2_500).
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "BIG",
+          mppt_index: 0,
+          inverter_name: "Big",
+          ac_power: 2_350.0,
+          yield_day: 10_000.0,
+          inserted_at: DateTime.utc_now()
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Pinned ticks at every 500 W from 0 up to y_max. `format_number/3`
+      # uses `decimals: 0` and inserts thousands separators per locale,
+      # so 1_000 W renders as "1,000 W" in the en-locale test.
+      for label <- ["0 W", "500 W", "1,000 W", "1,500 W", "2,000 W"] do
+        assert html =~ label, "expected gridline label '#{label}' to render"
+      end
+
+      # The top edge tick (y_max = 2_400) — pinned by literal string
+      # match since 2,400 W is unique.
+      assert html =~ "2,400 W",
+             "expected top-edge label '2,400 W' to render for y_max = 2400"
+
+      # Confirm no spurious 500 W tick above y_max — 2,500 must NOT
+      # appear because 2,500 > y_max = 2,400.
+      refute html =~ "2,500 W", "no 2500 W gridline should render when y_max = 2400"
+    end
+
+    test "Shelly-only / paired user keeps zero_y at y=135 (no behaviour change)", %{
+      conn: conn,
+      user: user
+    } do
+      # The bottom-edge behaviour is DTU-only. A paired user (inverter
+      # + Shelly) with no export peak keeps the historical layout: zero
+      # line at y=135, 0 W label at y=147. Pin it so the DTU-only
+      # change doesn't accidentally bleed into the paired-user branch.
+      inverter =
+        device_fixture(user, %{
+          name: "Paired Inverter",
+          kind: "opendtu",
+          mqtt_username: "paired-inv"
+        })
+
+      _shelly =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "paired-shelly",
+          base_topic: "shellies/paired"
+        })
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-PAIRED",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 350.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Paired user keeps zero_y = 135 (default). The 0 W label sits
+      # at y=147 (just below the dashed gridline).
+      [zero_label_tag] =
+        Regex.run(
+          ~r{<text[^>]*y="147(?:\.0)?"[^>]*>\s*([^<]+?)\s*</text>}s,
+          html,
+          capture: :all_but_first
+        )
+
+      assert zero_label_tag == "0 W",
+             "paired user should still see '0 W' label at y=147, got: '#{zero_label_tag}'"
     end
 
     test "fleet Total line sums every series at each bucket", %{
@@ -2539,12 +2574,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # The Y-axis top label is the max rounded UP to the next 100.
       # 250 W → 300 W. The Y-axis label uses `format_number/3` with
-      # `decimals: 1`, so it renders as "300.0 W" (the en-locale
-      # number format). Pre-fix this would have been a 500; post-fix
-      # the chart renders with 250 W as the peak — pinning that the
-      # numeric (not nil) 250 made it through the coalesce.
-      assert html =~ "300.0 W",
-             "expected Y-axis top label to surface the 250 W peak (rounded up to 300 W displayed as 300.0 W), " <>
+      # `decimals: 0`, so it renders as "300 W". Pre-fix this would
+      # have been a 500; post-fix the chart renders with 250 W as the
+      # peak — pinning that the numeric (not nil) 250 made it through
+      # the coalesce.
+      assert html =~ "300 W",
+             "expected Y-axis top label to surface the 250 W peak (rounded up to 300 W), " <>
                "got: #{html}"
 
       refute html =~ "NaN"

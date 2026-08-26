@@ -660,14 +660,20 @@ defmodule DtuAppWeb.DashboardLive do
       end
 
     # Net path's Y mapping depends on the unified [y_min, y_max] range.
-    # When y_min == 0 (no net data / no export), the zero line sits
-    # halfway down the chart at the original `zero_y_default` — this
-    # preserves the pre-fix layout for inverter-only / Shelly-only
-    # users where the net path doesn't render anyway.
-    # When y_min < 0, the zero line shifts UP proportionally to
-    # `y_max / (y_max + |y_min|)` of the chart area, leaving room for
-    # the export peak in the lower half. The net path is then plotted
-    # against this asymmetric two-sided scale.
+    # When y_min < 0 (paired user with export peak), the zero line
+    # shifts UP proportionally to `y_max / (y_max + |y_min|)` of the
+    # chart area, leaving room for the export peak in the lower half.
+    # The net path is then plotted against this asymmetric two-sided
+    # scale.
+    #
+    # When y_min == 0 (no export data), there is no positive-only
+    # constraint on the lower half. DTU-only users (no Shelly paired)
+    # have nothing to net against — the chart never extends below
+    # zero, and pushing the zero line to the chart bottom (`zero_y =
+    # chart_bottom_y`) gives the production curve the full chart
+    # height. The previous mid-chart zero line (`zero_y_default =
+    # 135`) wasted the lower half of the canvas for DTU-only users,
+    # since no curve ever plots there.
     chart_top_y = 20.0
     chart_bottom_y = 250.0
     zero_y_default = 135.0
@@ -679,8 +685,17 @@ defmodule DtuAppWeb.DashboardLive do
 
           {chart_top_y + y_max / total_range * (chart_bottom_y - chart_top_y), abs(y_min)}
 
-        true ->
+        socket.assigns[:has_shelly?] ->
+          # Shelly-only / no-net-data case: the previous behaviour
+          # (zero line at y=135) is preserved. Only paired inverters
+          # + Shelly users flip the asymmetric layout on, so a Shelly-
+          # only user keeps the historical layout for now.
           {zero_y_default, 0.0}
+
+        true ->
+          # DTU-only user: pin zero to the chart bottom so the
+          # production curve fills the full chart height.
+          {chart_bottom_y, 0.0}
       end
 
     # Pixel-per-watt scale factors for the unified Y-axis. Positive
@@ -1054,6 +1069,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:y_max, y_max)
     |> assign(:y_min, y_min)
     |> assign(:zero_y, zero_y)
+    |> assign(:y_gridlines, chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height))
     |> assign(:series_paths, series_paths)
     |> assign(:yesterday_paths, yesterday_paths)
     |> assign(:series_palette, series_palette)
@@ -1172,6 +1188,79 @@ defmodule DtuAppWeb.DashboardLive do
   defp format_hour_label(24), do: "24:00"
   defp format_hour_label(hour) when hour < 10, do: "0#{hour}:00"
   defp format_hour_label(hour), do: "#{hour}:00"
+
+  # Generate the Y-axis gridline + label positions for the chart.
+  # Returns a list of `{watts, y_pixel}` tuples, ascending. The
+  # gridline step is 500 W (the user's explicit ask: "at least every
+  # 500 W"). The set always includes the chart's edge ticks (`y_min`
+  # and `y_max`) plus every 500 W step in between, regardless of
+  # whether `y_min` is zero or below.
+  #
+  # Examples:
+  #   * y_min = 0,   y_max = 400 → [0, 400]  (400 isn't a 500 step;
+  #     the next aligned tick above 0 is 500, but that's above y_max,
+  #     so it's dropped — only the edges remain). In practice y_max
+  #     is rounded up to a multiple of 100, so this is the common
+  #     "small peak" case.
+  #   * y_min = 0,   y_max = 500 → [0, 500]
+  #   * y_min = 0,   y_max = 2500 → [0, 500, 1000, 1500, 2000, 2500]
+  #   * y_min = -500, y_max = 2500 → [-500, 0, 500, 1000, …, 2500]
+  #   * y_min = -100, y_max = 2500 → [-100, 0, 500, …, 2500] — the
+  #     -100 edge tick is preserved even though it's not on the 500 W
+  #     grid (the bottom edge of the chart must always be labelled).
+  #
+  # The function returns raw watts + pixel positions; the SVG template
+  # iterates the list and renders each tick with a dashed stroke for
+  # the `watts == 0` case.
+  @spec chart_y_gridlines(float(), float(), float(), float(), float()) :: [{float(), float()}]
+  defp chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height) do
+    step = 500.0
+
+    # First interior tick above y_min aligned to the 500 W grid, then
+    # the edge ticks (y_min and y_max) added back in. We add the
+    # edges separately so a non-500-multiple edge (y_min = -100, say)
+    # still gets a label even though it's off the grid.
+    interior_first = Float.ceil(y_min / step) * step
+
+    interior_last = Float.floor(y_max / step) * step
+
+    interior = tick_range(interior_first, interior_last, step)
+
+    # Dedupe edges if they happen to coincide with an interior tick
+    # (e.g. y_min = 0, y_max = 500 → interior = [0, 500], edges are
+    # the same set — no dups needed).
+    edges = Enum.uniq([y_min, y_max, 0.0])
+
+    ticks =
+      (interior ++ edges)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    pixels_per_watt_positive = (zero_y - 20.0) / y_max
+    pixels_per_watt_negative = (chart_bottom_y - zero_y) / max(lower_height, 1.0)
+
+    for tick <- ticks do
+      y_pixel =
+        if tick >= 0.0 do
+          zero_y - tick * pixels_per_watt_positive
+        else
+          chart_bottom_y - abs(tick) * pixels_per_watt_negative
+        end
+
+      {tick, Float.round(y_pixel, 1)}
+    end
+  end
+
+  # Inclusive ascending range from `first` to `last` in `step`
+  # increments. Uses arithmetic to avoid Float drift on long runs.
+  defp tick_range(first, last, step) do
+    if first > last do
+      []
+    else
+      count = trunc((last - first) / step) + 1
+      Enum.map(0..(count - 1), &(first + &1 * step))
+    end
+  end
 
   # Today's date in the user's local timezone. `Date.utc_today()`
   # would give us "today in London"; for a Berlin user looking at the
@@ -3139,84 +3228,41 @@ defmodule DtuAppWeb.DashboardLive do
                     data-x-min-seconds={@x_min_seconds}
                     data-x-max-seconds={@x_max_seconds}
                   >
-                    <!-- Grid Lines. The chart's Y-axis spans [y_min, y_max]
-                         when net flow extends below zero; otherwise it
-                         stays positive-only with the zero line at
-                         y=135. We render 5 evenly-spaced horizontal
-                         grid lines (top, 3/4, zero, 1/4, bottom) plus
-                         a heavier baseline at y=250. The zero line is
-                         dashed so it reads as the reference. -->
-                    {chart_grid_top = 20.0}
+                    <!-- Grid Lines + Y-Axis Labels. The chart renders one
+                         horizontal gridline + tick label per 500 W step
+                         (`@y_gridlines`, computed by `chart_y_gridlines/5`).
+                         The list covers `[y_min, y_max]` aligned to the 500 W
+                         grid — DTU-only users (y_min = 0) get ticks at 0,
+                         500, 1000, …, y_max; paired users (y_min < 0) get
+                         a symmetric ladder through zero. The 0 W tick is
+                         rendered with a dashed stroke as the reference
+                         line, and its label sits just below the gridline
+                         (matching the previous label-tick alignment).
+
+                         The chart's bottom edge (y = 250) is rendered as a
+                         heavier baseline. For DTU-only users the 0 W tick
+                         coincides with this baseline (since zero_y = 250),
+                         and the 0 W label sits just below the chart. -->
                     {chart_grid_bottom = 250.0}
-                    <% chart_mid_pos = (chart_grid_top + @zero_y) / 2 %>
-                    <% chart_mid_neg = (@zero_y + chart_grid_bottom) / 2 %>
-                    <line
-                      x1="0"
-                      y1={chart_grid_top}
-                      x2="800"
-                      y2={chart_grid_top}
-                      stroke="#f4f4f5"
-                      class="dark:stroke-zinc-700"
-                      stroke-width="1"
-                    />
-                    <%= if @y_min < 0.0 do %>
+                    <%= for {watts, y_pixel} <- @y_gridlines do %>
+                      <% is_zero = watts == 0.0 %>
                       <line
                         x1="0"
-                        y1={chart_mid_pos}
+                        y1={y_pixel}
                         x2="800"
-                        y2={chart_mid_pos}
+                        y2={y_pixel}
                         stroke="#f4f4f5"
                         class="dark:stroke-zinc-700"
                         stroke-width="1"
+                        stroke-dasharray={if is_zero, do: "4", else: nil}
                       />
-                      <line
-                        x1="0"
-                        y1={@zero_y}
-                        x2="800"
-                        y2={@zero_y}
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                        stroke-dasharray="4"
-                      />
-                      <line
-                        x1="0"
-                        y1={chart_mid_neg}
-                        x2="800"
-                        y2={chart_mid_neg}
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                      />
-                    <% else %>
-                      <line
-                        x1="0"
-                        y1="77.5"
-                        x2="800"
-                        y2="77.5"
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                      />
-                      <line
-                        x1="0"
-                        y1="135"
-                        x2="800"
-                        y2="135"
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                        stroke-dasharray="4"
-                      />
-                      <line
-                        x1="0"
-                        y1="192.5"
-                        x2="800"
-                        y2="192.5"
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                      />
+                      <text
+                        x="5"
+                        y={y_pixel + 12}
+                        class="text-[10px] font-medium fill-zinc-400"
+                      >
+                        {Devices.format_number(watts, 0, @locale)} W
+                      </text>
                     <% end %>
                     <line
                       x1="0"
@@ -3227,54 +3273,6 @@ defmodule DtuAppWeb.DashboardLive do
                       class="dark:stroke-zinc-600"
                       stroke-width="1.5"
                     />
-
-                    <!-- Y-Axis Labels. When the chart extends below zero
-                         (`y_min < 0`), the bottom label shows the negative
-                         bound and the middle label sits at the zero line
-                         (`@zero_y`). The top label is unchanged.
-
-                         When the chart stays positive-only (`y_min == 0`),
-                         the data zero line is rendered as a dashed gridline
-                         at `y=135` and the three labels are pinned to the
-                         gridlines they name: `y_max` at the top gridline
-                         (`y=20`), `y_max/2` at the midpoint gridline
-                         (`y=77.5`), and `0 W` at the zero gridline (just
-                         below, `y=147`). Putting the `0 W` label at the
-                         chart bottom (`y=245`) instead left a 110-px gap
-                         between the label and the dashed zero line — a
-                         flat-at-zero line sitting at `y=135` had no
-                         adjacent label, so readers interpolated between
-                         the nearby `y_max/2 W` label (above) and the
-                         stranded `0 W` label (far below) and read the
-                         value as somewhere in between (~66 W on a
-                         400 W scale). The label now sits where the value
-                         it names actually plots — same three-tick
-                         convention the `y_min < 0` branch already
-                         uses (`@zero_y + 12`). -->
-                    <text x="5" y="32" class="text-[10px] font-medium fill-zinc-400">
-                      {Devices.format_number(@y_max, 1, @locale)} W
-                    </text>
-                    <%= if @y_min < 0.0 do %>
-                      <text
-                        x="5"
-                        y={@zero_y + 12}
-                        class="text-[10px] font-medium fill-zinc-400"
-                      >
-                        0 W
-                      </text>
-                      <text
-                        x="5"
-                        y="245"
-                        class="text-[10px] font-medium fill-zinc-400"
-                      >
-                        {Devices.format_number(@y_min, 0, @locale)} W
-                      </text>
-                    <% else %>
-                      <text x="5" y="89.5" class="text-[10px] font-medium fill-zinc-400">
-                        {Devices.format_number(div(round(@y_max), 2), 1, @locale)} W
-                      </text>
-                      <text x="5" y="147" class="text-[10px] font-medium fill-zinc-400">0 W</text>
-                    <% end %>
 
                     <!-- X-Axis Labels (Time slots). Dynamically positioned to
                          fit the chart's X-axis range — full day (00:00–
