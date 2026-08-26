@@ -167,6 +167,42 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       refute render(view) =~ "Send test notification"
     end
 
+    test "notification_state granted on non-installed mobile shows the iOS-tab hint, not the misleading 'native push is on' badge",
+         %{
+           conn: conn,
+           scope: scope
+         } do
+      # Pre-fix the granted branch unconditionally rendered "Native
+      # push is on for this device" whenever `has_push_subscriptions`
+      # was true. On iOS the push subscription lives on the server
+      # (granted from the home-screen PWA), so the badge is
+      # technically correct *and* misleading: open the same site in
+      # a regular Safari tab and `new Notification(...)` silently
+      # no-ops — only the home-screen app fires OS notifications.
+      # The hook now also pushes `installed` so the template can
+      # surface this edge case.
+      DtuApp.PushSubscriptions.upsert(scope.user, %{
+        "endpoint" => "https://fcm.googleapis.com/fcm/send/abc",
+        "p256dh" => "BNcRdreALRFXTkOOUHK1",
+        "auth" => "tBHItJI5svbpez7KI4CCXg"
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(
+        view,
+        "notification_state",
+        %{state: "granted", installed: false, device: "mobile"}
+      )
+
+      assert render(view) =~ "Notifications are enabled"
+      # The misleading "Native push is on" line is replaced with
+      # the iOS-tab hint that explains where notifications actually
+      # fire from.
+      assert render(view) =~ "home-screen app"
+      refute render(view) =~ "Native push is on for this device"
+    end
+
     test "push_subscribed flips has_push_subscriptions so the native-push badge renders", %{
       conn: conn
     } do

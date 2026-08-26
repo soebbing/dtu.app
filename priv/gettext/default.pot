@@ -14,7 +14,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1491
 #: lib/dtu_app_web/live/device_live/details.ex:407
 #: lib/dtu_app_web/live/device_live/index.ex:325
-#: lib/dtu_app_web/live/notifications_live.ex:557
+#: lib/dtu_app_web/live/notifications_live.ex:578
 #, elixir-autogen, elixir-format
 msgid "%{n} days ago"
 msgstr ""
@@ -22,7 +22,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1488
 #: lib/dtu_app_web/live/device_live/details.ex:406
 #: lib/dtu_app_web/live/device_live/index.ex:324
-#: lib/dtu_app_web/live/notifications_live.ex:556
+#: lib/dtu_app_web/live/notifications_live.ex:577
 #, elixir-autogen, elixir-format
 msgid "%{n} hours ago"
 msgstr ""
@@ -30,7 +30,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1485
 #: lib/dtu_app_web/live/device_live/details.ex:405
 #: lib/dtu_app_web/live/device_live/index.ex:323
-#: lib/dtu_app_web/live/notifications_live.ex:555
+#: lib/dtu_app_web/live/notifications_live.ex:576
 #, elixir-autogen, elixir-format
 msgid "%{n} minutes ago"
 msgstr ""
@@ -100,7 +100,7 @@ msgstr ""
 msgid "A DTU (Data Transfer Unit) reads your solar inverter and publishes live telemetry here over MQTT. Add yours to start seeing real-time generation — works with OpenDTU and AhoyDTU firmware."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:357
+#: lib/dtu_app_web/live/notifications_live.ex:378
 #, elixir-autogen, elixir-format
 msgid "A notification whenever an inverter goes offline or comes back online. The notification names the inverter."
 msgstr ""
@@ -179,7 +179,7 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:327
+#: lib/dtu_app_web/live/notifications_live.ex:348
 #, elixir-autogen, elixir-format
 msgid "Checking browser capabilities…"
 msgstr ""
@@ -328,7 +328,7 @@ msgstr ""
 msgid "Enable notifications"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:372
+#: lib/dtu_app_web/live/notifications_live.ex:393
 #, elixir-autogen, elixir-format
 msgid "End-of-day summary"
 msgstr ""
@@ -389,7 +389,7 @@ msgstr ""
 msgid "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:354
+#: lib/dtu_app_web/live/notifications_live.ex:375
 #, elixir-autogen, elixir-format
 msgid "Inverter connection state"
 msgstr ""
@@ -662,13 +662,13 @@ msgstr ""
 msgid "Save"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:405
+#: lib/dtu_app_web/live/notifications_live.ex:426
 #, elixir-autogen, elixir-format
 msgid "Save preferences"
 msgstr ""
 
 #: lib/dtu_app_web/live/device_live/index.html.heex:323
-#: lib/dtu_app_web/live/notifications_live.ex:403
+#: lib/dtu_app_web/live/notifications_live.ex:424
 #, elixir-autogen, elixir-format
 msgid "Saving…"
 msgstr ""
@@ -830,7 +830,7 @@ msgstr ""
 msgid "What happens next"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:343
+#: lib/dtu_app_web/live/notifications_live.ex:364
 #, elixir-autogen, elixir-format
 msgid "What to notify about"
 msgstr ""
@@ -840,7 +840,7 @@ msgstr ""
 msgid "When email delivery is enabled, the app calls a third-party transactional email provider to send magic-link emails. That provider sees your email address, the email subject, and the message body — typically only the magic-link URL. The current default in this open-source project is Resend; you may self-host with a different provider or disable email delivery entirely."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:375
+#: lib/dtu_app_web/live/notifications_live.ex:396
 #, elixir-autogen, elixir-format
 msgid "When the sun goes down, get today's total yield compared to yesterday and the peak power from today compared to yesterday, if yesterday's data is available."
 msgstr ""
@@ -888,7 +888,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1482
 #: lib/dtu_app_web/live/device_live/details.ex:404
 #: lib/dtu_app_web/live/device_live/index.ex:322
-#: lib/dtu_app_web/live/notifications_live.ex:554
+#: lib/dtu_app_web/live/notifications_live.ex:575
 #, elixir-autogen, elixir-format
 msgid "just now"
 msgstr ""
@@ -1208,12 +1208,12 @@ msgstr ""
 msgid "Peak power"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:264
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:269
 #, elixir-autogen, elixir-format
 msgid "DTU back online"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:263
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:268
 #, elixir-autogen, elixir-format
 msgid "DTU went offline"
 msgstr ""
@@ -1223,18 +1223,18 @@ msgstr ""
 msgid "If you can read this, browser notifications are working."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:419
+#: lib/dtu_app_web/live/notifications_live.ex:440
 #, elixir-autogen, elixir-format
 msgid "Send a one-off test notification to verify the browser is set up correctly. It should appear within a second or two."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:430
+#: lib/dtu_app_web/live/notifications_live.ex:451
 #, elixir-autogen, elixir-format
 msgid "Send test notification"
 msgstr ""
 
 #: lib/dtu_app_web/live/notifications_live.ex:181
-#: lib/dtu_app_web/live/notifications_live.ex:416
+#: lib/dtu_app_web/live/notifications_live.ex:437
 #, elixir-autogen, elixir-format
 msgid "Test notification"
 msgstr ""
@@ -1244,7 +1244,7 @@ msgstr ""
 msgid "Test notification sent."
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:271
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:276
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr ""
@@ -1295,7 +1295,7 @@ msgstr ""
 msgid "Manage device"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:311
+#: lib/dtu_app_web/live/notifications_live.ex:331
 #, elixir-autogen, elixir-format
 msgid "Native push is on for this device — you'll get a system notification even when this site isn't open."
 msgstr ""
@@ -1424,7 +1424,7 @@ msgstr ""
 msgid " (same as yesterday)"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:393
+#: lib/dtu_app_web/live/notifications_live.ex:414
 #, elixir-autogen, elixir-format
 msgid "A cheerful one-off when your panels start producing for the day. Fires once per day, in your local timezone, the moment your fleet wakes up."
 msgstr ""
@@ -1454,7 +1454,7 @@ msgstr ""
 msgid "Confirm your dtu.app account"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:265
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:270
 #, elixir-autogen, elixir-format
 msgid "DTU status changed for %{name}"
 msgstr ""
@@ -1508,7 +1508,7 @@ msgstr ""
 msgid "Install this site as a PWA first (browser menu → Add to Home Screen / Install App). Once installed, the Enable button below will request notification permission. PWA install is required on mobile devices; desktop browsers can enable notifications below without installing."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:318
+#: lib/dtu_app_web/live/notifications_live.ex:339
 #, elixir-autogen, elixir-format
 msgid "Keep this tab open to receive notifications. For background delivery when the tab is closed, install this site as a PWA."
 msgstr ""
@@ -1523,7 +1523,7 @@ msgstr ""
 msgid "Log in to dtu.app"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:390
+#: lib/dtu_app_web/live/notifications_live.ex:411
 #, elixir-autogen, elixir-format
 msgid "Morning sun-up ping"
 msgstr ""
@@ -1688,28 +1688,28 @@ msgstr ""
 msgid "Current Power"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:458
+#: lib/dtu_app_web/live/notifications_live.ex:479
 #, elixir-autogen, elixir-format
 msgid "Clear all"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:455
+#: lib/dtu_app_web/live/notifications_live.ex:476
 #, elixir-autogen, elixir-format
 msgid "Clear all notifications? This cannot be undone."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:496
-#: lib/dtu_app_web/live/notifications_live.ex:497
+#: lib/dtu_app_web/live/notifications_live.ex:517
+#: lib/dtu_app_web/live/notifications_live.ex:518
 #, elixir-autogen, elixir-format
 msgid "Delete notification"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:531
+#: lib/dtu_app_web/live/notifications_live.ex:552
 #, elixir-autogen, elixir-format
 msgid "Next"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:465
+#: lib/dtu_app_web/live/notifications_live.ex:486
 #, elixir-autogen, elixir-format
 msgid "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
 msgstr ""
@@ -1719,22 +1719,27 @@ msgstr ""
 msgid "Notification history cleared."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:519
+#: lib/dtu_app_web/live/notifications_live.ex:540
 #, elixir-autogen, elixir-format
 msgid "Page %{page} of %{total}"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:516
+#: lib/dtu_app_web/live/notifications_live.ex:537
 #, elixir-autogen, elixir-format
 msgid "Previous"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:449
+#: lib/dtu_app_web/live/notifications_live.ex:470
 #, elixir-autogen, elixir-format
 msgid "Recent notifications"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:268
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:273
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} has gone offline."
+msgstr ""
+
+#: lib/dtu_app_web/live/notifications_live.ex:325
+#, elixir-autogen, elixir-format
+msgid "You're viewing this in a regular mobile browser tab, not the installed PWA. iOS only fires OS notifications from the home-screen app — open dtu.app from your home screen to receive banners here."
 msgstr ""

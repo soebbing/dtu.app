@@ -307,11 +307,32 @@ defmodule DtuAppWeb.NotificationsLive do
                   "Notifications are enabled. Pick what you'd like to be notified about below."
                 )}
                 <%= if @has_push_subscriptions do %>
-                  <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
-                    {gettext(
-                      "Native push is on for this device — you'll get a system notification even when this site isn't open."
-                    )}
-                  </p>
+                  <%!--
+                    iOS edge case: when the user grants permission from the
+                    home-screen PWA (which works), then opens the same site
+                    in a regular Safari tab, the permission state is still
+                    `granted` AND `has_push_subscriptions` is still true
+                    (the subscription row lives on the server, not the
+                    browser). But `new Notification(...)` silently no-ops
+                    in a non-installed tab — only the home-screen app fires
+                    OS notifications. Detect this combination and surface
+                    it so the user understands why banners arrive on their
+                    home-screen icon but not in Safari.
+                  --%>
+                  <%= if Map.get(@notification_state, "device") == "mobile" and
+                          Map.get(@notification_state, "installed") == false do %>
+                    <p class="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-2 text-xs text-amber-800 dark:text-amber-200">
+                      {gettext(
+                        "You're viewing this in a regular mobile browser tab, not the installed PWA. iOS only fires OS notifications from the home-screen app — open dtu.app from your home screen to receive banners here."
+                      )}
+                    </p>
+                  <% else %>
+                    <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                      {gettext(
+                        "Native push is on for this device — you'll get a system notification even when this site isn't open."
+                      )}
+                    </p>
+                  <% end %>
                 <% else %>
                   <%= if Map.get(@notification_state, "device") == "desktop" do %>
                     <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">

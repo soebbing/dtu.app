@@ -117,7 +117,14 @@ const Notifications = {
     // clicks, silently swallowing every click after the first.
     if (payload.event !== "test") {
       const dedupKey = computeDedupKey(userId, payload)
-      if (storageHas(dedupKey)) {
+      // 5-minute TTL: covers reconnect storms, LiveView re-mounts
+      // on `nav, and server-side PubSub redeliveries without
+      // masking the next genuine event. The producer's per-day
+      // `tag` (`sun_up:<date>`, `sun_down:<date>`, `dtu:<name>`)
+      // already gives the OS-level coalescing the long-tail
+      // dedup. Anything older than 5 min is a real, new event —
+      // fire it.
+      if (storageHas(dedupKey, 5 * 60 * 1000)) {
         if (typeof window !== "undefined" && window.console) {
           console.log("[Notifications] aborting: dedup hit for key", dedupKey)
         }
@@ -167,6 +174,14 @@ function computeDedupKey(userId, payload) {
     const raw = `sun_down:${payload.date || todayIso()}`
     return `notified:v1:user:${userId}:${raw}`
   }
+  if (payload.event === "sun_up") {
+    // The server tags sun-up with `sun_up:<iso-date>` in the
+    // user's local day (per `tz_offset_seconds`). Including the
+    // tag in the key lets the producer fire on day rollover without
+    // colliding with the previous day's entry.
+    const raw = `sun_up:${payload.tag || `sun_up:${todayIso()}`}`
+    return `notified:v1:user:${userId}:${raw}`
+  }
   if (payload.event === "dtu_offline") {
     const raw = `dtu_offline:${payload.dtu_id}:${payload.inverter_serial}`
     return `notified:v1:user:${userId}:${raw}`
@@ -188,9 +203,27 @@ function computeDedupKey(userId, payload) {
   return `notified:v1:user:${userId}:${payload.tag || "misc"}:${JSON.stringify(payload)}`
 }
 
-function storageHas(key) {
+// Read the dedup entry for `key` and return whether it was
+// fired *within* the last `ttlMs` milliseconds. An expired
+// entry (older than the TTL) is treated as fresh — the producer's
+// "once per local day" tags already pin distinct events across
+// days, so the only reason a stale entry would still be in
+// storage is that the same logical event re-fired (re-mount,
+// reconnect, server resend) — and the OS notification center
+// already coalesces those via the `tag` field. Pre-fix this
+// was `localStorage.getItem(key) !== null`, which meant once
+// any tag/status triple fired, the slot was burned for the
+// lifetime of the browser's storage — every subsequent
+// dtu_connection / sun-up event for the same device was
+// silently swallowed. The user's history table filled up but
+// no banner ever showed.
+function storageHas(key, ttlMs) {
   try {
-    return window.localStorage.getItem(key) !== null
+    const raw = window.localStorage.getItem(key)
+    if (raw === null) return false
+    const stamped = Date.parse(raw)
+    if (Number.isNaN(stamped)) return false
+    return Date.now() - stamped < ttlMs
   } catch (_err) {
     return false
   }
