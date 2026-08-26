@@ -120,6 +120,54 @@ defmodule DtuApp.PushTest do
       after
         if original do
           Application.put_env(:web_push, :vapid, original)
+        else
+          Application.delete_env(:web_push, :vapid)
+        end
+      end
+    end
+  end
+
+  describe "send_to/2 log lines (silent-drop investigation)" do
+    # The structured `[push] gone …` / `[push] failed …` log lines
+    # are the operator's only signal that a push delivery failed
+    # (per-subscription errors don't bubble up to the caller of
+    # `deliver/2`). Verify they're not emitted when the fan-out is
+    # already short-circuited (VAPID unset) — they belong to the
+    # actual delivery path, not the no-op path.
+
+    test "no [push] gone / [push] failed log lines when VAPID isn't configured" do
+      original = Application.get_env(:web_push, :vapid)
+      Application.delete_env(:web_push, :vapid)
+
+      try do
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            Push.deliver_many(
+              [
+                %DtuApp.PushSubscriptions.PushSubscription{
+                  id: 1,
+                  user_id: 7,
+                  endpoint: "https://fcm.googleapis.com/fcm/send/secret-token?gcm=true",
+                  p256dh: "x",
+                  auth: "y"
+                }
+              ],
+              %{event: "sun_up"}
+            )
+          end)
+
+        # `deliver_many/2` short-circuits before `send_to/2`, so the
+        # structured `[push] gone` / `[push] failed` lines never
+        # appear. This guards against accidentally emitting log
+        # noise even when push delivery is disabled.
+        refute log =~ "[push] gone"
+        refute log =~ "[push] failed"
+        refute log =~ "secret-token"
+      after
+        if original do
+          Application.put_env(:web_push, :vapid, original)
+        else
+          Application.delete_env(:web_push, :vapid)
         end
       end
     end

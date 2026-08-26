@@ -106,13 +106,43 @@ defmodule DtuApp.Push do
         # 404/410 — the push service has revoked this handle.
         # Garbage-collect the row so subsequent deliveries don't
         # waste a roundtrip.
+        #
+        # Logged at `:info` so a "why didn't the user get the
+        # notification?" investigation can grep `[push] gone` and
+        # find every dropped subscription, with the originating
+        # event name and the push-service host for cross-
+        # referencing against browser logs.
+        Logger.info(
+          "[push] gone event=#{payload[:event] || payload["event"]} user_id=#{sub.user_id} endpoint_host=#{endpoint_host(sub.endpoint)}"
+        )
+
         PushSubscriptions.delete_by_endpoint(sub.endpoint)
 
       {:error, reason} ->
-        # Transport or unexpected status — log and move on. We
+        # Transport or unexpected status — log + move on. We
         # *don't* delete the row because it may succeed on a
         # retry; only a :gone is terminal.
-        Logger.warning("[push] delivery failed for user_id=#{sub.user_id}: #{inspect(reason)}")
+        #
+        # Same structured fields as the `:gone` branch so a
+        # `level=warning [push]` log query answers "did the
+        # notification actually leave the server?" in one
+        # sweep.
+        Logger.warning(
+          "[push] failed event=#{payload[:event] || payload["event"]} user_id=#{sub.user_id} endpoint_host=#{endpoint_host(sub.endpoint)} reason=#{inspect(reason)}"
+        )
     end
   end
+
+  # Pull the host out of the subscription endpoint for structured
+  # logging. Stripping query string / path keeps the log line
+  # readable and avoids leaking the per-subscription token
+  # (FCM/APNS endpoints carry their handle in the URL path).
+  defp endpoint_host(endpoint) when is_binary(endpoint) do
+    case URI.parse(endpoint) do
+      %URI{host: host} when is_binary(host) -> host
+      _ -> "unknown"
+    end
+  end
+
+  defp endpoint_host(_), do: "unknown"
 end
