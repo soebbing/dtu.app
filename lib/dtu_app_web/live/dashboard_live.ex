@@ -619,28 +619,43 @@ defmodule DtuAppWeb.DashboardLive do
     # -max_export. We only extend the axis when the user actually has
     # net data and a non-zero export peak; without that, the chart
     # stays positive-only (the previous behaviour).
+    #
+    # DTU-only users (no Shelly paired) have nothing to net against, so
+    # the chart must NEVER extend below zero — there's no export peak to
+    # show in the lower half and a negative axis would be visually
+    # wrong (negative gridline labels on a production-only curve).
+    # `list_net_chart_data/4` already returns [] for DTU-only users
+    # (the bucket-drop guard requires a consumption row), but we clamp
+    # at the chart layer too as defense-in-depth against any future
+    # code path that might seed a net row without a paired Shelly.
     y_min =
-      case net_chart_points do
-        [] ->
+      cond do
+        not socket.assigns[:has_shelly?] ->
           0.0
 
-        pts ->
-          most_negative_display =
-            pts
-            |> Enum.map(fn p -> -p.power end)
-            |> Enum.min(fn -> 0.0 end)
+        true ->
+          case net_chart_points do
+            [] ->
+              0.0
 
-          # Round DOWN to the next lower 100. A -432 W peak → -500 W
-          # (next lower multiple of 100). A -50 W peak → -100 W so
-          # even small export dips stay inside the chart area.
-          if most_negative_display < 0.0 do
-            most_negative_display
-            |> Float.floor()
-            |> Kernel./(100)
-            |> Float.floor()
-            |> Kernel.*(100)
-          else
-            0.0
+            pts ->
+              most_negative_display =
+                pts
+                |> Enum.map(fn p -> -p.power end)
+                |> Enum.min(fn -> 0.0 end)
+
+              # Round DOWN to the next lower 100. A -432 W peak → -500 W
+              # (next lower multiple of 100). A -50 W peak → -100 W so
+              # even small export dips stay inside the chart area.
+              if most_negative_display < 0.0 do
+                most_negative_display
+                |> Float.floor()
+                |> Kernel./(100)
+                |> Float.floor()
+                |> Kernel.*(100)
+              else
+                0.0
+              end
           end
       end
 
@@ -1123,8 +1138,12 @@ defmodule DtuAppWeb.DashboardLive do
   # `{x, label}` tuples where `x` is the SVG x-coordinate (0–800) and
   # `label` is the LOCAL time-of-day string (e.g. "07:00"). Labels
   # always include the chart's start and end hours; intermediate hours
-  # are spaced at 1, 2, 3, or 6 hours depending on the total span so
-  # the label density stays roughly constant regardless of zoom.
+  # are spaced at 1 or 2 hours depending on the total span. The step
+  # is capped at 2 hours regardless of zoom — a 24-hour view shows a
+  # tick every 2 hours (00:00, 02:00, …, 24:00), a ≤2h zoom shows
+  # every hour. The previous ladder (1/2/3/6) traded tick density for
+  # label clutter at long spans; the user's explicit ask was a max
+  # 2-hour interval.
   @spec chart_x_labels(non_neg_integer(), pos_integer()) :: [{float(), String.t()}]
   defp chart_x_labels(x_min_seconds, x_max_seconds) do
     start_hour = div(x_min_seconds, 3600)
@@ -1134,9 +1153,7 @@ defmodule DtuAppWeb.DashboardLive do
     step =
       cond do
         total_hours <= 2 -> 1
-        total_hours <= 6 -> 2
-        total_hours <= 12 -> 3
-        true -> 6
+        true -> 2
       end
 
     span = x_max_seconds - x_min_seconds
