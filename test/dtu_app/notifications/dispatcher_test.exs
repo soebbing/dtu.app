@@ -250,4 +250,133 @@ defmodule DtuApp.Notifications.DispatcherTest do
       end
     end
   end
+
+  describe "push_payload/2 service-worker contract" do
+    # Regression suite for the Task 7 / Task 7-fix bug: producers
+    # emit `body` as a list of paragraphs, but the service worker's
+    # whitelist merge (`priv/static/service-worker.js:309`) gates on
+    # `typeof incoming.body === "string"`. If the dispatcher forwards
+    # the payload unchanged, every native push banner falls back to
+    # the SW's default `"New event from dtu.app"`. `push_payload/2`
+    # normalises body to a string and trims to the SW keys.
+
+    test "collapses list body into a single newline-joined string" do
+      result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "End-of-day summary",
+          body: ["paragraph one", "paragraph two", "paragraph three"],
+          tag: "sun_down_1"
+        })
+
+      assert result.body == "paragraph one\nparagraph two\nparagraph three"
+    end
+
+    test "emits only the service-worker contract keys" do
+      # Producer-side payload carries per-event keys (chart_svg,
+      # dashboard_path, today_yield_kwh, etc.) that the SW
+      # whitelist ignores. The dispatcher trims eagerly so they
+      # don't cost bytes on the wire.
+      result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "T",
+          body: ["b"],
+          tag: "t",
+          today_yield_kwh: 1.0,
+          yesterday_yield_kwh: 5.0,
+          peak_power_w: 100.0,
+          peak_yesterday_w: 50.0,
+          chart_svg: "<svg/>",
+          dashboard_path: "/dashboard",
+          extra_junk: "leak"
+        })
+
+      assert Map.keys(result) |> Enum.sort() ==
+               [:body, :date, :event, :tag, :title]
+    end
+
+    test "sets event to the dispatcher-supplied event name" do
+      # Event comes from `Dispatcher.fire/3`'s second arg — NOT from
+      # `payload.event`. This guards against the producer accidentally
+      # smuggling a different event through a payload mutator.
+      result =
+        Dispatcher.push_payload("dtu_connection", %{
+          event: "WRONG",
+          title: "T",
+          body: ["b"],
+          tag: "t"
+        })
+
+      assert result.event == "dtu_connection"
+    end
+
+    test "defensively collapses nil and non-list bodies to empty string" do
+      nil_result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "T",
+          body: nil,
+          tag: "t"
+        })
+
+      assert nil_result.body == ""
+
+      # Integer body — a misbehaving producer's `body: 0` (catch-all
+      # for "no body") must not crash and must not be passed through.
+      int_result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "T",
+          body: 0,
+          tag: "t"
+        })
+
+      assert int_result.body == ""
+    end
+
+    test "passes binary body through unchanged" do
+      # Pre-Task-7 producers (and the `stringify_body/1` history path
+      # for backwards compat) emit a single string. `push_payload/2`
+      # must tolerate this so a half-migrated producer doesn't trip
+      # the dispatcher's contract.
+      result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "T",
+          body: "single string",
+          tag: "t"
+        })
+
+      assert result.body == "single string"
+    end
+
+    test "accepts string-keyed payloads (spec §5 used string keys)" do
+      result =
+        Dispatcher.push_payload("sun_down", %{
+          "event" => "sun_down",
+          "title" => "T",
+          "body" => ["b"],
+          "tag" => "t"
+        })
+
+      assert result.title == "T"
+      assert result.body == "b"
+      assert result.tag == "t"
+    end
+
+    test "date is the dispatch fire time (ISO 8601 UTC)" do
+      result =
+        Dispatcher.push_payload("sun_down", %{
+          event: "sun_down",
+          title: "T",
+          body: ["b"],
+          tag: "t"
+        })
+
+      # ISO 8601 with milliseconds + Z suffix (DateTime.to_iso8601/1).
+      assert is_binary(result.date)
+      assert result.date =~ ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*Z$/
+    end
+  end
 end

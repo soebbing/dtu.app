@@ -143,15 +143,24 @@ defmodule DtuApp.Notifications.Dispatcher do
   # branch but is silently skipped — exactly mirroring the
   # pre-dispatcher `native_push_enabled?/2` semantics.
   #
-  # The push payload shape stays byte-identical to what producers
-  # already pass to `Notifications.broadcast/2`; we re-key the event
-  # through `Push.native_enabled?/2`'s string-keyed clause (which
-  # atom and string payloads both resolve through, because the
-  # public predicate has explicit clauses for both).
+  # We DO NOT forward the producer's full payload to `Push.deliver`.
+  # The service worker (`priv/static/service-worker.js`) whitelist-
+  # merges the inbound JSON keys (`title`, `body`, `tag`, `url`,
+  # `icon`) and the `body` check is `typeof incoming.body === "string"`.
+  # Producers (Task 7) emit `body` as a list of paragraphs — passing
+  # the list unchanged would silently fall back to the SW's
+  # `"New event from dtu.app"` default. We collapse the list to a
+  # newline-joined string here, AND trim to exactly the SW contract
+  # (5 keys: event, title, body, tag, date). Extra producer keys
+  # (today_yield_kwh, chart_svg, dashboard_path, …) would be
+  # silently dropped by the SW but cost wire bytes and are a tiny
+  # info-leak vector, so we trim eagerly. Date is the push fire time.
   defp try_push(%User{} = user, event, payload) do
+    wire = push_payload(event, payload)
+
     try do
       Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-        Push.deliver(user, payload)
+        Push.deliver(user, wire)
       end)
     rescue
       e ->
@@ -162,6 +171,44 @@ defmodule DtuApp.Notifications.Dispatcher do
         :ok
     end
   end
+
+  @doc """
+  Build the push payload the service worker consumes.
+
+  Two normalisations from the producer-side shape:
+
+    1. `body` is collapsed from a list of paragraphs to a single
+       newline-joined string. The SW's whitelist merge gates on
+       `typeof incoming.body === "string"` and falls back to its
+       default `"New event from dtu.app"` otherwise — passing the
+       raw list silently ships the wrong body to every banner.
+
+    2. Only the SW contract keys are emitted
+       (`event`, `title`, `body`, `tag`, `date`). Producer keys like
+       `today_yield_kwh`, `chart_svg`, `dashboard_path` are dropped
+       eagerly — the SW ignores them, but they cost bytes and are
+       a small info-leak vector. `date` is the dispatch fire time.
+
+  Pure function (no side effects) so tests can assert on the
+  input→output contract directly. `nil` / non-list bodies
+  defensively collapse to `""`; binary bodies pass through.
+  Accepts both atom-keyed and string-keyed payloads (producers use
+  atom keys; spec §5 used string keys).
+  """
+  @spec push_payload(String.t(), map()) :: map()
+  def push_payload(event, payload) when is_map(payload) do
+    %{
+      event: event,
+      title: payload[:title] || payload["title"],
+      body: normalise_push_body(payload[:body] || payload["body"]),
+      tag: payload[:tag] || payload["tag"],
+      date: DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+  end
+
+  defp normalise_push_body(b) when is_binary(b), do: b
+  defp normalise_push_body(b) when is_list(b), do: Enum.join(b, "\n")
+  defp normalise_push_body(_), do: ""
 
   # Email path. Two guards gate this branch:
   #
