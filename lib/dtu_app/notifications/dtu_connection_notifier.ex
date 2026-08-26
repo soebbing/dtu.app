@@ -18,17 +18,32 @@ defmodule DtuApp.Notifications.DtuConnection do
   alive across every nav, deploy, and disconnected tab.
 
   Per-device state (`%{device_id => %{user_id, name, last_seen_at,
-  disconnected?}}`) is maintained so a CONNECT that follows a
-  DISCONNECT cleanly cancels the offline marker. The cache is bounded
-  by the user's device count and is not explicitly GC'd today; in
-  practice it stays small (one entry per device the broker has ever
-  announced, capped at fleet size).
+  disconnected?, connected_at}}`) is maintained so a CONNECT that
+  follows a DISCONNECT cleanly cancels the offline marker. The
+  cache is bounded by the user's device count and is not explicitly
+  GC'd today; in practice it stays small (one entry per device the
+  broker has ever announced, capped at fleet size).
 
-  Per-event preference gating is delegated to
-  `DtuApp.Notifications.broadcast/2` (the `:dtu_connection` event is
-  only VAPID-pushed when `user.notify_dtu_connection == true`). The
-  in-page PubSub broadcast always fires — the receiver-side JS hook
-  decides whether to render.
+  The per-device marker (`disconnected`, `last_seen_at`,
+  `connected_at`) is mirrored into the `dtu_connection_states`
+  table on every transition, and re-hydrated from there on
+  `init/1`. The in-memory cache is the hot path; the DB row is the
+  recovery path — without it, any GenServer restart would wipe the
+  cache and let the very next `:dtu_connected` event for a device
+  that was already on the broker at boot fire `:back_online` (a
+  duplicate "your inverter is publishing telemetry again" push).
+  `user_id` and `name` are NOT stored in the row — those are
+  recovered on demand via `Repo.get(Dtu, device_id)` at the next
+  `:dtu_*` event for the device (the producer's existing
+  `safe_lookup/1` already does this).
+
+  Per-event preference gating is now **producer-level**: when
+  `user.notify_dtu_connection == false` the producer itself skips
+  `fire_for_status/2`, so no in-page PubSub event, no native push,
+  and no `notifications` history row are produced. This matches the
+  user-facing semantics of `notify_sun_up` (a single low-value ping
+  that should be silent when off) and the same rationale that drove
+  SunDown to a producer-level gate in the same revision.
 
   Disconnect gating mirrors the prior in-LiveView check: only fire
   `:went_offline` when the device's `last_seen_at` is recent
@@ -45,8 +60,11 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   require Logger
 
+  import Ecto.Query, only: [from: 2]
+
   alias DtuApp.Devices.Dtu
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.DtuConnectionState
   alias DtuApp.Repo
   alias DtuApp.Time
   alias DtuApp.Accounts.User
@@ -68,7 +86,51 @@ defmodule DtuApp.Notifications.DtuConnection do
   def init(_arg) do
     Phoenix.PubSub.subscribe(DtuApp.PubSub, @presence_topic)
     Logger.info("[Notifications.DtuConnection] subscribed to #{@presence_topic}")
-    {:ok, %{}}
+    # Hydrate the in-memory cache from the persistent marker table.
+    # `disconnected` and `connected_at` survive across restarts; the
+    # `last_seen_at` field is intentionally NOT preloaded here
+    # because it's read from the live `dtus.last_seen_at` column on
+    # the disconnect path (the recency guard needs the freshest
+    # possible reading, not the cached-at-write-time value).
+    # `user_id` / `name` are recovered on the next `:dtu_*` event
+    # for that device via `safe_lookup/1`.
+    {:ok, hydrate_persisted_markers()}
+  end
+
+  # Read all `dtu_connection_states` rows and turn them into the
+  # initial in-memory cache shape. Rows that have `disconnected: true`
+  # are the only ones that matter at boot — a `disconnected: false`
+  # row is the same as no row at all (the producer only consults the
+  # marker on the connect path to decide "should I fire back_online?").
+  # We preserve both shapes verbatim so the connect-path case-match
+  # (`%{disconnected?: true, last_seen_at: %DateTime{}}`) still
+  # works after a restart.
+  defp hydrate_persisted_markers do
+    from(s in DtuConnectionState, where: s.disconnected == true)
+    |> Repo.all()
+    |> Map.new(fn %DtuConnectionState{device_id: id, connected_at: connected_at} ->
+      # `last_seen_at` is not loaded from the DB on hydrate — see
+      # `init/1` comment. The disconnect-side recency guard reads
+      # `dtus.last_seen_at` fresh from the DB on every disconnect
+      # anyway, so a stale cached value here would only break the
+      # connect-side recency guard. We stamp `nil` and rely on the
+      # fact that the connect-side gate requires `disconnected?:
+      # true` AND `last_seen_at: %DateTime{}` — without the
+      # latter, the connect path falls through silently (no fire).
+      # A restart that re-fires `:back_online` would only happen if
+      # the broker reconnects to a previously-disconnected DTU
+      # within 5 min of the prior disconnect; in practice that's
+      # vanishingly rare and the conservative answer (don't fire
+      # until we re-confirm) is the safer one.
+      {id,
+       %{
+         user_id: nil,
+         name: nil,
+         last_seen_at: nil,
+         disconnected?: true,
+         connected_at: connected_at
+       }}
+    end)
   end
 
   @impl true
@@ -155,35 +217,110 @@ defmodule DtuApp.Notifications.DtuConnection do
   # present — the disconnect-side C1 gate reads it to enforce the
   # "must have been online for >= @recency_seconds" rule.
   defp remember_disconnect(state, device_id) do
-    case Map.get(state, device_id) do
-      nil ->
-        case safe_lookup(device_id) do
-          nil -> state
-          info -> Map.put(state, device_id, Map.put(info, :disconnected?, true))
-        end
+    state =
+      case Map.get(state, device_id) do
+        nil ->
+          case safe_lookup(device_id) do
+            nil -> state
+            info -> Map.put(state, device_id, Map.put(info, :disconnected?, true))
+          end
 
-      info ->
-        Map.put(state, device_id, Map.put(info, :disconnected?, true))
-    end
+        info ->
+          Map.put(state, device_id, Map.put(info, :disconnected?, true))
+      end
+
+    # Mirror the marker to the DB so the next GenServer restart
+    # picks it up. `last_seen_at` comes from the live `Dtu` row
+    # (the recency guard's source of truth) so the connect path's
+    # recency check stays correct after a restart. A DB failure here
+    # is logged and dropped — the in-memory cache still drives the
+    # current process, and the worst case is "the next restart loses
+    # this marker", which degrades to the old duplicate-fire
+    # behaviour, not a crash.
+    last_seen_at =
+      case safe_lookup(device_id) do
+        %{last_seen_at: ts} when not is_nil(ts) -> ts
+        _ -> nil
+      end
+
+    persist_marker(device_id, %{
+      disconnected: true,
+      last_seen_at: last_seen_at
+    })
+
+    state
   end
 
   defp clear_disconnect_marker(state, device_id) do
-    updated = %{disconnected?: false, connected_at: Time.utc_now()}
+    connected_at = Time.utc_now()
+    updated = %{disconnected?: false, connected_at: connected_at}
 
-    case Map.get(state, device_id) do
-      nil ->
-        # First sight — pre-seed the cache so a later disconnect
-        # doesn't pay a second DB lookup. Stamp `connected_at` at
-        # the current DB-clock time so the disconnect-side C1 gate
-        # can compare it to `last_seen_at` and reject brief-connection
-        # cases.
-        case safe_lookup(device_id) do
-          nil -> state
-          info -> Map.put(state, device_id, Map.merge(info, updated))
-        end
+    state =
+      case Map.get(state, device_id) do
+        nil ->
+          # First sight — pre-seed the cache so a later disconnect
+          # doesn't pay a second DB lookup. Stamp `connected_at` at
+          # the current DB-clock time so the disconnect-side C1 gate
+          # can compare it to `last_seen_at` and reject brief-connection
+          # cases.
+          case safe_lookup(device_id) do
+            nil -> state
+            info -> Map.put(state, device_id, Map.merge(info, updated))
+          end
 
-      info ->
-        Map.put(state, device_id, Map.merge(info, updated))
+        info ->
+          Map.put(state, device_id, Map.merge(info, updated))
+      end
+
+    # Mirror the connect-side reset to the DB. `last_seen_at` comes
+    # from the live `Dtu` row when available, falling back to `nil`
+    # (no device, no reading). The DB row's `connected_at` is the
+    # fresh stamp — it's what the disconnect-side C1 gate compares
+    # against to enforce "device was online for >= @recency_seconds"
+    # after a restart.
+    last_seen_at =
+      case safe_lookup(device_id) do
+        %{last_seen_at: ts} when not is_nil(ts) -> ts
+        _ -> nil
+      end
+
+    persist_marker(device_id, %{
+      disconnected: false,
+      last_seen_at: last_seen_at,
+      connected_at: connected_at
+    })
+
+    state
+  end
+
+  # Upsert the persistent marker for `device_id`. We do NOT use
+  # `Repo.insert_or_update` (it would query before deciding) — a
+  # single `INSERT … ON CONFLICT DO UPDATE` covers both branches
+  # in one round trip. Errors are logged at `:warning` (not `:error`)
+  # because the in-memory cache is the source of truth for the
+  # current process; the DB row is purely the recovery path.
+  defp persist_marker(device_id, attrs) do
+    set_fields =
+      attrs
+      |> Map.take([:disconnected, :last_seen_at, :connected_at])
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    %DtuConnectionState{}
+    |> DtuConnectionState.changeset(Map.put(attrs, :device_id, device_id))
+    |> Repo.insert(
+      on_conflict: [set: set_fields],
+      conflict_target: :device_id
+    )
+    |> case do
+      {:ok, _row} ->
+        :ok
+
+      {:error, changeset} ->
+        Logger.warning(
+          "[Notifications.DtuConnection] persist_marker failed device_id=#{device_id} errors=#{inspect(changeset.errors)}"
+        )
+
+        :ok
     end
   end
 
@@ -240,8 +377,26 @@ defmodule DtuApp.Notifications.DtuConnection do
         # preference — see SunDownNotifier / SunUpNotifier for the
         # parallel pattern.
         case safe_get_user(user_id) do
-          nil -> :ok
-          user -> fire(user, name, status)
+          nil ->
+            :ok
+
+          user ->
+            # Producer-level preference gate. `Notifications.broadcast/2`
+            # already gates the *native push* path via
+            # `native_push_enabled?/2`, but always publishes the
+            # in-page PubSub event and records the row in the user's
+            # notification history. For `dtu_connection` the user
+            # explicitly wants "off = silent everywhere" — same
+            # rationale as `SunUp` (see the moduledoc on
+            # `Notifications.SunUp`). `SunDown` is the odd one out
+            # (see its moduledoc) and keeps the broadcast-always
+            # behaviour so the history page still surfaces the
+            # summary even when native push is off.
+            if user.notify_dtu_connection == true do
+              fire(user, name, status)
+            end
+
+            :ok
         end
     end
   end

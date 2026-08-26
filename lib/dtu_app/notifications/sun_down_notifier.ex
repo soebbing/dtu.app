@@ -31,6 +31,30 @@ defmodule DtuApp.Notifications.SunDown do
   — we treat the absent `:ac_power` as a 0-W reading, which is the
   correct semantics for a synthetic disconnect test.
 
+  ## Preference gate (producer-level)
+
+  The producer itself checks `User.notify_sun_down` before doing
+  anything visible — same UX contract as `SunUp` and `DtuConnection`.
+  When the toggle is off, the producer skips the entire broadcast
+  (no in-page event, no native push, no history row, no
+  `sun_down_fires` insert). The previous behaviour kept the in-page
+  broadcast unconditional and only gated the VAPID fan-out; the
+  history page therefore received a row even when the user had
+  disabled the notification, which was inconsistent with the
+  user-facing "off = silent" semantics the user explicitly asked
+  for.
+
+  ## Dedup persistence
+
+  Once-per-day dedup state lives in the `sun_down_fires` table
+  (one row per user per local date). On every fire the producer
+  attempts to insert today's `(user_id, fired_on)`; the unique
+  constraint makes the insert idempotent — a second fire on the
+  same day raises `Ecto.ConstraintError`, which we swallow. This
+  protects against duplicate fires racing through the producer
+  after a GenServer restart (the previous in-memory `state.users`
+  cache was wiped on every restart).
+
   Test override: `Application.put_env(:dtu_app, :sun_down_idle_seconds,
   N)` makes the GenServer arm a N-second timer instead of the 15-min
   default. The notification_test.exs suite uses this to drive an
@@ -46,6 +70,7 @@ defmodule DtuApp.Notifications.SunDown do
   alias DtuApp.Accounts.User
   alias DtuApp.Devices
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.SunDownFire
   alias DtuApp.Repo
   alias DtuApp.Time
 
@@ -246,23 +271,19 @@ defmodule DtuApp.Notifications.SunDown do
               clear_user_state(state, user_id)
 
             user ->
-              # The SunDown producer runs as a long-lived GenServer
-              # without a request context, so `gettext/1` would default
-              # to whatever Gettext was initialized with (≈ "en")
-              # regardless of the user's preference. Wrap the
-              # build_payload + broadcast pair in the user's locale so
-              # the title/body strings are generated in the right
-              # language — both the in-page PubSub broadcast and the
-              # service-worker push fan-out (handled inside
-              # `Notifications.broadcast/2` via its own
-              # `Gettext.with_locale/2` wrapper) carry that locale.
-              Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-                payload = build_payload(user, Date.utc_today())
-
-                if payload do
-                  Notifications.broadcast(user_id, payload)
-                end
-              end)
+              # Producer-level preference gate. SunDown used to
+              # always publish + record history (only the native-push
+              # path was gated inside `Notifications.broadcast/2`),
+              # which meant a user who'd turned the toggle off still
+              # received an in-page banner and a history row. Same
+              # rationale as `SunUp` — the user explicitly asked for
+              # "off = silent everywhere" — so the producer now
+              # honours the toggle at the source. `try_fire/2` also
+              # writes the `sun_down_fires` dedup row, so an opt-out
+              # user is never charged an insert at all.
+              if user.notify_sun_down == true do
+                try_fire(user)
+              end
 
               clear_user_state(state, user_id)
           end
@@ -270,6 +291,65 @@ defmodule DtuApp.Notifications.SunDown do
           clear_user_state(state, user_id)
         end
     end
+  end
+
+  # Insert into `sun_down_fires`. The unique `(user_id, fired_on)`
+  # constraint makes a duplicate insert a no-op for our purposes
+  # (any second fire on the same day raises `Ecto.ConstraintError`,
+  # which we swallow). The actual `fire/1` call happens *only* when
+  # the insert succeeded — that prevents a race where two idle
+  # windows fire in close succession and both compute `today` before
+  # either insert has been committed.
+  defp try_fire(%User{} = user) do
+    today = Date.utc_today()
+
+    case insert_fire(user.id, today) do
+      :ok ->
+        # The SunDown producer runs as a long-lived GenServer
+        # without a request context, so `gettext/1` would default to
+        # whatever Gettext was initialized with (≈ "en") regardless
+        # of the user's preference. Wrap the build_payload +
+        # broadcast pair in the user's locale so the title/body
+        # strings are generated in the right language — both the
+        # in-page PubSub broadcast and the service-worker push
+        # fan-out (handled inside `Notifications.broadcast/2` via
+        # its own `Gettext.with_locale/2` wrapper) carry that
+        # locale.
+        Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+          payload = build_payload(user, today)
+
+          if payload do
+            Notifications.broadcast(user.id, payload)
+          end
+        end)
+
+      {:error, :duplicate} ->
+        :ok
+    end
+  end
+
+  defp insert_fire(user_id, %Date{} = fired_on) do
+    %SunDownFire{}
+    |> SunDownFire.changeset(%{user_id: user_id, fired_on: fired_on})
+    # Source-of-truth constraint is the composite PK on
+    # `(user_id, fired_on)` — set up in the migration.
+    #
+    # Why `on_conflict: :raise` instead of `on_conflict: :nothing`?
+    # Because the schema declares `primary_key: false`, Ecto omits
+    # `RETURNING` from the INSERT — and with no `RETURNING`, there's
+    # no row for Ecto to return. The `:nothing` path silently returns
+    # `{:ok, %SunDownFire{}}` for both an actual insert AND a
+    # swallowed conflict (the struct is built from the changeset,
+    # not the DB), which would let every timer expiry fire. Raising
+    # and catching the `Ecto.ConstraintError` gives a clean duplicate
+    # signal. Same rationale as `SunUp.insert_fire/2`.
+    |> Repo.insert(on_conflict: :raise)
+    |> case do
+      {:ok, %SunDownFire{}} -> :ok
+      {:error, _changeset} -> {:error, :duplicate}
+    end
+  catch
+    :error, %Ecto.ConstraintError{} -> {:error, :duplicate}
   end
 
   defp clear_user_state(state, user_id) do

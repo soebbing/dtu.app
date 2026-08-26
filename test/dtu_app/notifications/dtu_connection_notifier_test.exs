@@ -16,10 +16,10 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     3. **`fire on reconnect`** — a broker `:dtu_connected` event
        fires the `:back_online` half of the state change.
     4. **preference gate** — when the user has `notify_dtu_connection
-       == false`, the in-page PubSub broadcast still fires (the
-       receiver-side JS hook decides whether to render) but the
-       VAPID push is suppressed. We assert the in-page path
-       separately so a regression in either direction surfaces.
+       == false`, the producer itself skips `fire_for_status/2`:
+       no in-page PubSub event, no native push, no `notifications`
+       history row. Same UX contract as `notify_sun_up` — see the
+       moduledoc on `Notifications.SunUp`.
   """
   use DtuApp.DataCase, async: false
 
@@ -105,7 +105,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
   describe "fire on disconnect" do
     test "a recently-active device's disconnect produces a dtu_connection notification" do
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Test DTU"})
       # Seed the producer's connected-at to >5 min ago so the C1
       # gate (require prior uptime) passes — only the existing
@@ -132,7 +132,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     end
 
     test "a stale disconnect (last_seen_at older than 5 min) does not fire" do
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Stale DTU"})
 
       touch_last_seen!(dtu, -3600)
@@ -156,7 +156,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # the inverter has "gone offline" when it was actually
       # online for a few seconds — a real-world failure mode
       # during a power-cycle + reconnect storm.
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Brief DTU"})
 
       touch_last_seen!(dtu, -30)
@@ -175,7 +175,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
   describe "fire on reconnect" do
     test "a :dtu_connected broadcast produces the :back_online notification" do
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Back Online DTU"})
 
       # Seed the producer's local cache with a prior `:disconnected?`
@@ -211,7 +211,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # wants to be notified about. The producer's state cache
       # starts empty, so the very first :dtu_connected for any
       # device_id is silent.
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Quiet Reconnect DTU"})
 
       :ok = Notifications.subscribe(user.id)
@@ -230,7 +230,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # (fix B). If the device's last_seen_at is older than
       # @recency_seconds, the reconnect is a post-deploy
       # re-attachment from a DTU that was already dead — not news.
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Stale Reconnect DTU"})
 
       # Seed the prior-disconnect marker so fix A's gate passes;
@@ -252,14 +252,12 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   end
 
   describe "preference gating" do
-    test "VAPID path is suppressed when notify_dtu_connection is false" do
-      # The producer's own fan-out is unconditional (the receiver-side
-      # JS hook decides whether to render). The VAPID-suppression is
-      # owned by `Notifications.broadcast/2`'s `native_push_enabled?/2`
-      # gate, which is exercised end-to-end in
-      # `test/dtu_app/notifications_test.exs`. The producer must
-      # *still* emit the PubSub broadcast so the in-page hook can
-      # decide for itself — verify that's what happens.
+    test "no notification fires when notify_dtu_connection is false (producer-level gate)" do
+      # Producer-level preference gate: when the toggle is off, the
+      # producer itself skips `fire_for_status/2`, so no in-page
+      # PubSub event, no native push, and no `notifications` history
+      # row are produced. Same UX contract as `notify_sun_up` — see
+      # the moduledoc on `Notifications.SunUp`.
       user = user_fixture(%{notify_dtu_connection: false})
       dtu = device_fixture(user, %{name: "Opt-out DTU"})
       seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
@@ -273,9 +271,115 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
         {:dtu_disconnected, "client_3", dtu.id}
       )
 
-      # In-page broadcast still fires — receiver decides.
-      assert_receive {:notification, payload}, 1_000
-      assert payload.tag == "dtu:Opt-out DTU"
+      refute_receive {:notification, _}, 500
+    end
+  end
+
+  describe "persistent disconnect marker (DB-backed)" do
+    test "a pre-existing DB marker is re-hydrated into the in-memory cache after restart" do
+      # The whole reason we replaced the in-memory `state` cache with
+      # the `dtu_connection_states` row: any GenServer restart (deploy,
+      # crash, application restart) used to wipe the
+      # `disconnected?: true` marker and let the very next
+      # `:dtu_connected` for a device that was already on the broker
+      # at boot fire `:back_online` — a duplicate "your inverter is
+      # publishing telemetry again" push. The DB row now survives the
+      # restart; `init/1` re-hydrates it.
+      #
+      # We verify the contract by writing the row directly (simulating
+      # "the previous process wrote it before crashing") and then
+      # restarting the producer — the in-memory cache should pick up
+      # the `disconnected?: true` marker.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Hydrate DTU"})
+
+      connected_at = DateTime.add(Time.utc_now(), -600, :second)
+
+      {:ok, _} =
+        %DtuApp.Notifications.DtuConnectionState{}
+        |> DtuApp.Notifications.DtuConnectionState.changeset(%{
+          device_id: dtu.id,
+          disconnected: true,
+          connected_at: connected_at
+        })
+        |> DtuApp.Repo.insert(on_conflict: :raise)
+
+      # Restart the producer. `init/1` should re-hydrate the row.
+      :ok = stop_supervised(DtuApp.Notifications.DtuConnection)
+      :ok = wait_for_unregister(DtuApp.Notifications.DtuConnection, 100)
+      pid = start_supervised!({DtuApp.Notifications.DtuConnection, []})
+      Ecto.Adapters.SQL.Sandbox.allow(DtuApp.Repo, self(), pid)
+
+      # The cache now carries a `disconnected?: true` entry for this
+      # device — verified by `:sys.replace_state` (the existing test
+      # pattern). `last_seen_at` is intentionally NOT preloaded on
+      # hydrate (see `init/1` comment in `dtu_connection_notifier.ex`),
+      # so the connect-side recency guard still falls through to the
+      # silent branch — a deliberate trade-off. What we verify here
+      # is the `disconnected?: true` and `connected_at` fields are
+      # restored.
+      state =
+        :sys.get_state(DtuApp.Notifications.DtuConnection)
+
+      assert state[dtu.id].disconnected? == true
+      assert state[dtu.id].connected_at == connected_at
+    end
+
+    test "a disconnect event writes a row to dtu_connection_states" do
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Persist DTU"})
+      touch_last_seen!(dtu, -60)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_persist", dtu.id}
+      )
+
+      # Wait for the async `persist_marker/2` write to land. The
+      # DB upsert happens on the producer's GenServer process.
+      Process.sleep(100)
+
+      assert %DtuApp.Notifications.DtuConnectionState{disconnected: true} =
+               DtuApp.Repo.get(DtuApp.Notifications.DtuConnectionState, dtu.id)
+    end
+
+    test "a connect event clears the row's disconnected flag" do
+      # Mirror of the persist-on-disconnect test. After a
+      # `:dtu_connected` event clears the in-memory marker, the DB
+      # row should also flip `disconnected` back to `false` so a
+      # subsequent restart doesn't fire `:back_online` for a
+      # device that was already on the broker.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Reset DTU"})
+
+      touch_last_seen!(dtu, -60)
+
+      # Disconnect (sets marker).
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_reset", dtu.id}
+      )
+
+      Process.sleep(50)
+
+      assert %DtuApp.Notifications.DtuConnectionState{disconnected: true} =
+               DtuApp.Repo.get(DtuApp.Notifications.DtuConnectionState, dtu.id)
+
+      # Reconnect (clears marker).
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_reset", dtu.id}
+      )
+
+      # Wait for the async `persist_marker/2` write to land. Same
+      # rationale as the disconnect half above.
+      Process.sleep(100)
+
+      assert %DtuApp.Notifications.DtuConnectionState{disconnected: false} =
+               DtuApp.Repo.get(DtuApp.Notifications.DtuConnectionState, dtu.id)
     end
   end
 
@@ -303,7 +407,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     # returns a User with the requested locale.
 
     test "a German user's disconnect title matches the German catalog" do
-      user = with_locale_user(user_fixture(), "de")
+      user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "de")
       dtu = device_fixture(user, %{name: "Mein Dach"})
       seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
       touch_last_seen!(dtu, -60)
@@ -328,7 +432,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     end
 
     test "a French user's disconnect title matches the French catalog" do
-      user = with_locale_user(user_fixture(), "fr")
+      user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
       seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
       touch_last_seen!(dtu, -60)
@@ -352,7 +456,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     end
 
     test "a French user's body uses the French translation for %{name} interpolation" do
-      user = with_locale_user(user_fixture(), "fr")
+      user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
       seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
       touch_last_seen!(dtu, -60)
@@ -384,7 +488,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # empty), so gettext returns the msgid verbatim. The default
       # user already has locale: "en", so this asserts the no-op
       # path stays intact.
-      user = user_fixture()
+      user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Roof inverter"})
       seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
       touch_last_seen!(dtu, -60)
@@ -413,5 +517,31 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       DtuApp.Accounts.update_user_settings(user, %{"locale" => locale})
 
     updated
+  end
+
+  # Poll the process registry for `name` to be unregistered. Returns
+  # `:ok` as soon as `Process.whereis/1` returns `nil`, or `:timeout`
+  # after `max_ms`. The named-registry unregister is asynchronous
+  # with respect to `GenServer.stop/1`'s return, so a fixed sleep
+  # races the supervisor's `start_child` and produces a flaky
+  # `{:already_started, …}` failure.
+  defp wait_for_unregister(name, max_ms) do
+    deadline = System.monotonic_time(:millisecond) + max_ms
+    poll_unregister(name, deadline)
+  end
+
+  defp poll_unregister(name, deadline) do
+    case Process.whereis(name) do
+      nil ->
+        :ok
+
+      _pid ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          :timeout
+        else
+          Process.sleep(5)
+          poll_unregister(name, deadline)
+        end
+    end
   end
 end
