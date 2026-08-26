@@ -61,11 +61,59 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     |> Repo.update!()
   end
 
+  # Seed the producer's local cache so it believes the given device
+  # is currently disconnected, AND was recently active. Required by
+  # fix A's gate on the :back_online path: without a prior
+  # :dtu_disconnected observed, the producer stays silent on connect.
+  # `last_seen_at` defaults to 60s ago so fix B's recency guard
+  # passes — without it, the connect-side gate pattern-matches on
+  # `last_seen_at: %DateTime{}` and falls through to the silent `_`.
+  # Tests that want to verify fix B's stale-reconnect suppression
+  # pass `last_seen_offset_seconds` (e.g. -3600 for 1 h old). We
+  # talk to the GenServer directly so the test doesn't depend on
+  # PubSub round-trip timing.
+  defp seed_disconnect!(device_id, last_seen_offset_seconds \\ -60) do
+    last_seen_at = DateTime.add(Time.utc_now_usec(), last_seen_offset_seconds, :second)
+
+    :sys.replace_state(DtuConnection, fn state ->
+      Map.put(state, device_id, %{
+        user_id: nil,
+        name: nil,
+        last_seen_at: last_seen_at,
+        disconnected?: true
+      })
+    end)
+  end
+
+  # Seed the producer's local cache with a `connected_at` timestamp
+  # older than @recency_seconds. Required by fix C1's gate: the
+  # disconnect side must not fire when the device was online for
+  # less than the recency threshold (the existing recency guard
+  # looks at `last_seen_at`; the new gate also looks at
+  # `connected_at` to ensure prior uptime).
+  defp seed_connected_at!(device_id, %DateTime{} = at) do
+    :sys.replace_state(DtuConnection, fn state ->
+      Map.put(state, device_id, %{
+        user_id: nil,
+        name: nil,
+        last_seen_at: nil,
+        disconnected?: true,
+        connected_at: at
+      })
+    end)
+  end
+
   describe "fire on disconnect" do
     test "a recently-active device's disconnect produces a dtu_connection notification" do
       user = user_fixture()
       dtu = device_fixture(user, %{name: "Test DTU"})
-      touch_last_seen!(dtu, 0)
+      # Seed the producer's connected-at to >5 min ago so the C1
+      # gate (require prior uptime) passes — only the existing
+      # recency guard should allow the fire. `last_seen_at` must
+      # remain within the 5-min recency window (the existing
+      # recently_active?/1 guard), so we set it to 1 min ago.
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 
@@ -99,6 +147,30 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       refute_receive {:notification, _payload}, 500
     end
+
+    test "a disconnect after brief uptime (last_seen_at < 5 min old) does not fire (fix C1)" do
+      # Inversion of the existing recency guard. The DTU briefly
+      # connected (last_seen_at is fresh) and disconnected without
+      # ever having been online long enough to call "offline".
+      # Without this gate the producer would notify the user that
+      # the inverter has "gone offline" when it was actually
+      # online for a few seconds — a real-world failure mode
+      # during a power-cycle + reconnect storm.
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Brief DTU"})
+
+      touch_last_seen!(dtu, -30)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_brief", dtu.id}
+      )
+
+      refute_receive {:notification, _payload}, 300
+    end
   end
 
   describe "fire on reconnect" do
@@ -106,6 +178,15 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       user = user_fixture()
       dtu = device_fixture(user, %{name: "Back Online DTU"})
 
+      # Seed the producer's local cache with a prior `:disconnected?`
+      # marker so the back-online gate has something to see — without
+      # it, the producer can't tell this reconnect from the first
+      # sight and stays silent (the gate was added to stop the
+      # server-restart N-notification storm). `last_seen_at` is set
+      # to 60s ago so fix B's recency guard passes (the connect
+      # handler reads `last_seen_at` from the producer's state, not
+      # the DB row, before clearing the disconnect marker).
+      seed_disconnect!(dtu.id)
       :ok = Notifications.subscribe(user.id)
 
       Phoenix.PubSub.broadcast(
@@ -121,6 +202,53 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       assert payload.body =~ "Back Online DTU"
       assert payload.tag == "dtu:Back Online DTU"
     end
+
+    test "a :dtu_connected broadcast WITHOUT a prior disconnect is silent (no false :back_online)" do
+      # This is the core spam-suppression gate (fix A). Without a
+      # prior `:dtu_disconnected` observed by the producer, a
+      # reconnect is just a reconnect — typically a WiFi blip or
+      # a server-restart re-connect, neither of which the user
+      # wants to be notified about. The producer's state cache
+      # starts empty, so the very first :dtu_connected for any
+      # device_id is silent.
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Quiet Reconnect DTU"})
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_first", dtu.id}
+      )
+
+      refute_receive {:notification, _payload}, 300
+    end
+
+    test "a stale reconnect (last_seen_at > 5 min old) is silent (fix B)" do
+      # Mirror of the existing recency guard on the disconnect side
+      # (fix B). If the device's last_seen_at is older than
+      # @recency_seconds, the reconnect is a post-deploy
+      # re-attachment from a DTU that was already dead — not news.
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Stale Reconnect DTU"})
+
+      # Seed the prior-disconnect marker so fix A's gate passes;
+      # only fix B's recency check should suppress the fire. The
+      # last_seen_at offset is passed directly into the state
+      # because the connect handler reads `last_seen_at` from state
+      # (before clearing the marker) — not from the DB row.
+      seed_disconnect!(dtu.id, -3600)
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_stale", dtu.id}
+      )
+
+      refute_receive {:notification, _payload}, 300
+    end
   end
 
   describe "preference gating" do
@@ -134,7 +262,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # decide for itself — verify that's what happens.
       user = user_fixture(%{notify_dtu_connection: false})
       dtu = device_fixture(user, %{name: "Opt-out DTU"})
-      touch_last_seen!(dtu, 0)
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 
@@ -176,7 +305,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a German user's disconnect title matches the German catalog" do
       user = with_locale_user(user_fixture(), "de")
       dtu = device_fixture(user, %{name: "Mein Dach"})
-      touch_last_seen!(dtu, 0)
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 
@@ -200,7 +330,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a French user's disconnect title matches the French catalog" do
       user = with_locale_user(user_fixture(), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
-      touch_last_seen!(dtu, 0)
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 
@@ -223,7 +354,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a French user's body uses the French translation for %{name} interpolation" do
       user = with_locale_user(user_fixture(), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
-      touch_last_seen!(dtu, 0)
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 
@@ -239,7 +371,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
         Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
           Gettext.gettext(
             DtuAppWeb.Gettext,
-            "Your inverter %{name} has been offline for at least 5 minutes.",
+            "Your inverter %{name} has gone offline.",
             name: "Mon toit"
           )
         end)
@@ -254,7 +386,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # path stays intact.
       user = user_fixture()
       dtu = device_fixture(user, %{name: "Roof inverter"})
-      touch_last_seen!(dtu, 0)
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
 

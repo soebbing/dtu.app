@@ -14,7 +14,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1491
 #: lib/dtu_app_web/live/device_live/details.ex:407
 #: lib/dtu_app_web/live/device_live/index.ex:325
-#: lib/dtu_app_web/live/notifications_live.ex:554
+#: lib/dtu_app_web/live/notifications_live.ex:557
 #, elixir-autogen, elixir-format
 msgid "%{n} days ago"
 msgstr ""
@@ -22,7 +22,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1488
 #: lib/dtu_app_web/live/device_live/details.ex:406
 #: lib/dtu_app_web/live/device_live/index.ex:324
-#: lib/dtu_app_web/live/notifications_live.ex:553
+#: lib/dtu_app_web/live/notifications_live.ex:556
 #, elixir-autogen, elixir-format
 msgid "%{n} hours ago"
 msgstr ""
@@ -30,7 +30,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1485
 #: lib/dtu_app_web/live/device_live/details.ex:405
 #: lib/dtu_app_web/live/device_live/index.ex:323
-#: lib/dtu_app_web/live/notifications_live.ex:552
+#: lib/dtu_app_web/live/notifications_live.ex:555
 #, elixir-autogen, elixir-format
 msgid "%{n} minutes ago"
 msgstr ""
@@ -888,7 +888,7 @@ msgstr ""
 #: lib/dtu_app_web/live/dashboard_live.ex:1482
 #: lib/dtu_app_web/live/device_live/details.ex:404
 #: lib/dtu_app_web/live/device_live/index.ex:322
-#: lib/dtu_app_web/live/notifications_live.ex:551
+#: lib/dtu_app_web/live/notifications_live.ex:554
 #, elixir-autogen, elixir-format
 msgid "just now"
 msgstr ""
@@ -1208,12 +1208,12 @@ msgstr ""
 msgid "Peak power"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:205
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:264
 #, elixir-autogen, elixir-format
 msgid "DTU back online"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:204
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:263
 #, elixir-autogen, elixir-format
 msgid "DTU went offline"
 msgstr ""
@@ -1244,12 +1244,7 @@ msgstr ""
 msgid "Test notification sent."
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:209
-#, elixir-autogen, elixir-format
-msgid "Your inverter %{name} has been offline for at least 5 minutes."
-msgstr ""
-
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:212
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:271
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr ""
@@ -1459,7 +1454,7 @@ msgstr ""
 msgid "Confirm your dtu.app account"
 msgstr ""
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:206
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:265
 #, elixir-autogen, elixir-format
 msgid "DTU status changed for %{name}"
 msgstr ""
@@ -1709,7 +1704,7 @@ msgstr ""
 msgid "Delete notification"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:528
+#: lib/dtu_app_web/live/notifications_live.ex:531
 #, elixir-autogen, elixir-format
 msgid "Next"
 msgstr ""
@@ -1737,4 +1732,9 @@ msgstr ""
 #: lib/dtu_app_web/live/notifications_live.ex:449
 #, elixir-autogen, elixir-format
 msgid "Recent notifications"
+msgstr ""
+
+#: lib/dtu_app/notifications/dtu_connection_notifier.ex:268
+#, elixir-autogen, elixir-format
+msgid "Your inverter %{name} has gone offline."
 msgstr ""

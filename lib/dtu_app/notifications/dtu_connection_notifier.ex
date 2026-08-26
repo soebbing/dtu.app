@@ -73,8 +73,35 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   @impl true
   def handle_info({:dtu_connected, _client_id, device_id}, state) when is_integer(device_id) do
+    # Fix A: only fire `:back_online` if the producer has previously
+    # seen a disconnect for this device. Without this gate, every
+    # MQTT re-connect (WiFi blip, broker restart, deploy) fires a
+    # notification even though the device was never offline from
+    # the user's perspective. The `disconnected?` marker was
+    # already being tracked in state — this is the first time it's
+    # actually consulted on the connect path.
+    #
+    # Fix B: mirror the existing recency guard on the connect side.
+    # If `last_seen_at` is older than @recency_seconds, the reconnect
+    # is a stale post-deploy re-attachment, not a recovery from a
+    # real outage.
+    #
+    # IMPORTANT: read the prior `disconnected?` flag BEFORE
+    # `clear_disconnect_marker/2` resets it. The two operations
+    # must happen in this order — calling clear first would mean
+    # the case-match on `disconnected?: true` can never succeed
+    # and the back-online path becomes a dead branch.
+    case Map.get(state, device_id) do
+      %{disconnected?: true, last_seen_at: %DateTime{} = last_seen_at} ->
+        if recently_active?(last_seen_at) do
+          fire_for_status(device_id, :back_online)
+        end
+
+      _ ->
+        :ok
+    end
+
     state = clear_disconnect_marker(state, device_id)
-    fire_for_status(device_id, :back_online)
     {:noreply, state}
   end
 
@@ -89,7 +116,17 @@ defmodule DtuApp.Notifications.DtuConnection do
         {:noreply, state}
 
       %{user_id: _user_id, name: _name, last_seen_at: last_seen_at} ->
-        if recently_active?(last_seen_at) do
+        # Fix C1: in addition to the existing recency guard on
+        # `last_seen_at`, require the device to have been online
+        # for at least @recency_seconds before we call it "offline".
+        # Without this gate, a brief WiFi reconnect (connect → 30s
+        # later disconnect) would fire "Your inverter has gone
+        # offline" — a misleading notification on a device that was
+        # never actually online long enough to merit one.
+        # `connected_at` is recorded in state at connect-time below.
+        connected_at = get_connected_at(state, device_id)
+
+        if recently_active?(last_seen_at) and prior_uptime?(connected_at) do
           # Route through `fire_for_status/2` so we share the
           # User-struct lookup with the connect path — `fire/3`
           # takes a `%User{}` (we need the user's locale to scope
@@ -113,7 +150,10 @@ defmodule DtuApp.Notifications.DtuConnection do
   def handle_info(_msg, state), do: {:noreply, state}
 
   # Devices we haven't seen yet: store user_id + name on first sight
-  # so the disconnect path doesn't repeat the DB lookup.
+  # so the disconnect path doesn't repeat the DB lookup. The
+  # `connected_at` from the prior connect path is preserved if
+  # present — the disconnect-side C1 gate reads it to enforce the
+  # "must have been online for >= @recency_seconds" rule.
   defp remember_disconnect(state, device_id) do
     case Map.get(state, device_id) do
       nil ->
@@ -128,19 +168,43 @@ defmodule DtuApp.Notifications.DtuConnection do
   end
 
   defp clear_disconnect_marker(state, device_id) do
+    updated = %{disconnected?: false, connected_at: Time.utc_now()}
+
     case Map.get(state, device_id) do
       nil ->
         # First sight — pre-seed the cache so a later disconnect
-        # doesn't pay a second DB lookup.
+        # doesn't pay a second DB lookup. Stamp `connected_at` at
+        # the current DB-clock time so the disconnect-side C1 gate
+        # can compare it to `last_seen_at` and reject brief-connection
+        # cases.
         case safe_lookup(device_id) do
           nil -> state
-          info -> Map.put(state, device_id, Map.put(info, :disconnected?, false))
+          info -> Map.put(state, device_id, Map.merge(info, updated))
         end
 
       info ->
-        Map.put(state, device_id, Map.put(info, :disconnected?, false))
+        Map.put(state, device_id, Map.merge(info, updated))
     end
   end
+
+  defp get_connected_at(state, device_id) do
+    case Map.get(state, device_id) do
+      %{connected_at: %DateTime{} = at} -> at
+      _ -> nil
+    end
+  end
+
+  # C1 gate: the device must have been online for at least
+  # @recency_seconds before a disconnect can be called "offline".
+  # `connected_at` is stamped at every connect (above); a `nil`
+  # value means we've never seen a connect for this device — the
+  # conservative answer is to suppress the fire (we have no way
+  # to confirm prior uptime).
+  defp prior_uptime?(%DateTime{} = connected_at) do
+    DateTime.before?(connected_at, DateTime.add(Time.utc_now(), -@recency_seconds, :second))
+  end
+
+  defp prior_uptime?(_), do: false
 
   defp safe_lookup(device_id) do
     try do
@@ -206,7 +270,7 @@ defmodule DtuApp.Notifications.DtuConnection do
   defp dtu_title(_status, name), do: gettext("DTU status changed for %{name}", name: name)
 
   defp dtu_body(:went_offline, name),
-    do: gettext("Your inverter %{name} has been offline for at least 5 minutes.", name: name)
+    do: gettext("Your inverter %{name} has gone offline.", name: name)
 
   defp dtu_body(:back_online, name),
     do: gettext("Your inverter %{name} is publishing telemetry again.", name: name)
