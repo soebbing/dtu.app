@@ -32,15 +32,15 @@ defmodule DtuApp.Devices.Dtu do
     # `DtuApp.MqttBroker.Telemetry.insert_reading_and_touch_power_at/1`
     # (called from the per-firmware parse handlers' success path).
     #
-    # Distinct from `last_seen_at` because the two can diverge: a DTU
-    # whose MQTT session lives on but whose inverter has stopped
-    # publishing telemetry will keep `last_seen_at` fresh (status
-    # frames and KEEPALIVE count) while `last_power_at` goes stale.
-    # `producing_power?/2` below gates the dashboard's "online"
-    # indicators on `last_power_at` so the green dot, the "online/offline"
-    # pill, and the current-power card all agree: when one is hidden
-    # because there are no fresh power readings, the others flip to
-    # "offline" too.
+    # Distinct from `last_seen_at` because the two can diverge. Some
+    # inverter firmwares stop emitting AC readings when the sun goes
+    # down but keep their MQTT session alive with status frames and
+    # keepalives — so `last_seen_at` stays fresh while `last_power_at`
+    # goes stale. The dashboard's online/offline pill uses
+    # `online?/2` (MQTT liveness) as the source of truth, with a
+    # separate `nighttime?/2` indicator for the "alive but no power
+    # data" case. `producing_power?/2` is still useful for the
+    # current-power card's hide/show logic (see `dashboard_data/4`).
     field :last_power_at, :utc_datetime_usec
 
     # Most recent error surfaced by the MQTT telemetry pipeline. Written
@@ -271,4 +271,37 @@ defmodule DtuApp.Devices.Dtu do
   end
 
   def producing_power?(%__MODULE__{}, _now), do: false
+
+  @doc """
+  Is this DTU alive on MQTT but currently publishing no power data?
+
+  True iff the DTU is `online?/2` AND `last_power_at` is older than
+  `#{@online_threshold_seconds}` s (the same window the online check
+  uses). Distinct from `online?/2` (pure MQTT liveness) and
+  `producing_power?/2` (power reading within `#{@power_threshold_seconds}` s,
+  regardless of liveness).
+
+  Why this matters: some inverter firmwares stop emitting AC readings
+  when the sun goes down but keep their MQTT session alive with
+  status frames and keepalives. With the previous
+  `producing_power?/2`-based pill, those devices showed "offline"
+  throughout the night even though the broker was happily forwarding
+  telemetry. The user explicitly asked for "if there are no power
+  values in these messages, indicate nighttime" — this predicate
+  is the source of truth for that amber-moon state.
+
+  Pass `now` explicitly in tests; defaults to `DtuApp.Time.utc_now/0`
+  for the same reason `online?/2` does (the stored timestamp and the
+  comparison time come from the same DB clock).
+  """
+  @spec nighttime?(%__MODULE__{}, DateTime.t()) :: boolean()
+  def nighttime?(dtu, now \\ nil)
+
+  def nighttime?(%__MODULE__{} = dtu, nil), do: nighttime?(dtu, DtuApp.Time.utc_now())
+
+  def nighttime?(%__MODULE__{} = dtu, now) when is_struct(now, DateTime) do
+    online?(dtu, now) and
+      (is_nil(dtu.last_power_at) or
+         DateTime.diff(now, dtu.last_power_at, :second) >= @online_threshold_seconds)
+  end
 end

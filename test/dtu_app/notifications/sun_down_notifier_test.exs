@@ -45,6 +45,7 @@ defmodule DtuApp.Notifications.SunDownTest do
   alias DtuApp.Devices
   alias DtuApp.Notifications
   alias DtuApp.Notifications.SunDown
+  alias DtuApp.Time
 
   @reading_topic SunDown.reading_topic()
 
@@ -134,6 +135,128 @@ defmodule DtuApp.Notifications.SunDownTest do
       )
 
       refute_receive {:notification, %{event: "sun_down"}}, 500
+    end
+  end
+
+  describe "fleet goes silent (nighttime)" do
+    # The reported bug: pure-solar users with inverters that stop
+    # emitting AC readings at night (but keep the MQTT session alive
+    # with status frames) never see the daily summary. The producer's
+    # fleet sum is computed over a *freshness window*
+    # (`@fleet_reading_stale_seconds`, 5 min) — devices whose last
+    # AC reading is older than the window contribute 0 W. When the
+    # whole fleet has gone silent, `fleet_w == 0.0` (or every device
+    # is stale) and the idle timer arms.
+
+    test "a fleet that stops publishing AC readings still arms the idle timer" do
+      # Simulate the user's reported scenario: the inverter emitted
+      # power all day, then stopped emitting AC readings at nightfall
+      # but the MQTT session is still alive. The producer's fleet
+      # sum, after the freshness filter, drops to 0.0 once the last
+      # AC reading ages out — and the idle timer arms.
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Silent DTU"})
+
+      # Seed a daytime AC reading (well within the freshness window).
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Prime the producer's per-device cache with a daytime reading.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 250.0}}
+      )
+
+      # Manually age out the cached reading — same effect as 5+ min
+      # passing without a new AC reading. The freshness filter
+      # excludes the device from the active fleet sum.
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.update(state.users, user.id, %{}, fn u ->
+            %{
+              u
+              | devices:
+                  Map.put(u.devices, dtu.id, %{
+                    power_w: 250.0,
+                    last_reading_at: DateTime.add(Time.utc_now(), -360, :second)
+                  })
+            }
+          end)
+
+        %{state | users: users}
+      end)
+
+      # Re-arm by broadcasting another 0-W reading. `update_user_power/3`
+      # stamps a fresh `last_reading_at`, then `maybe_arm_timer/2`
+      # sees active fleet sum = 0.0 and arms the timer. The
+      # `idle_seconds: 0` config (set in the test setup) makes
+      # the timer fire immediately.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_2", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_down"
+      assert payload.title =~ "daily summary"
+    end
+
+    test "the freshness window is per-device (one stale, one fresh keeps the timer off)" do
+      # Mirrors the "fleet wakes up" test but with the freshness
+      # filter. A user with two inverters — one has stopped emitting
+      # AC, the other is still publishing — has a non-zero active
+      # fleet sum. The timer must NOT arm: a daily summary while
+      # one inverter is producing would be a false sunset.
+      user = user_fixture(%{notify_sun_down: true})
+      dtu_silent = device_fixture(user, %{name: "Silent Inverter"})
+      dtu_active = device_fixture(user, %{name: "Active Inverter"})
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Inverter 1: cached at 250 W, last reading 6 min ago → stale.
+      # Inverter 2: cached at 250 W, last reading 30 s ago → fresh.
+      :sys.replace_state(SunDown, fn state ->
+        now = Time.utc_now()
+        aged = DateTime.add(now, -360, :second)
+
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{
+              dtu_silent.id => %{power_w: 250.0, last_reading_at: aged},
+              dtu_active.id => %{power_w: 250.0, last_reading_at: now}
+            },
+            zero_since: nil,
+            timer: nil
+          })
+
+        device_to_user =
+          state.device_to_user
+          |> Map.put(dtu_silent.id, user.id)
+          |> Map.put(dtu_active.id, user.id)
+
+        %{state | users: users, device_to_user: device_to_user}
+      end)
+
+      # Broadcast any reading — `maybe_arm_timer/2` runs, sees
+      # active fleet sum = 250 W (only the active inverter counts),
+      # and does NOT arm.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu_active.id, mppt_index: 0, ac_power: 250.0}}
+      )
+
+      refute_receive {:notification, _}, 500
     end
   end
 

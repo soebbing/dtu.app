@@ -2044,6 +2044,110 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "Dtu.nighttime?/2 — MQTT alive but no fresh AC readings" do
+    # Three-state dashboard pill (online + producing / online +
+    # nighttime / offline) needs a separate predicate from
+    # `producing_power?/2`. The user's reported failure mode: the
+    # inverter stops emitting AC readings at night but the broker
+    # keeps forwarding status frames, so `last_seen_at` stays fresh
+    # while `last_power_at` goes stale. The dashboard pill previously
+    # showed "offline" throughout the night; it now shows
+    # "nighttime" (amber-moon state) — `nighttime?/2` is the source
+    # of truth for that state.
+
+    alias DtuApp.Devices.Dtu
+
+    test "MQTT-silent DTU is NOT nighttime (just offline)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Both last_seen_at and last_power_at are nil — the device has
+      # never reported anything.
+      now = DateTime.utc_now()
+      assert Dtu.nighttime?(device, now) == false
+    end
+
+    test "MQTT-alive DTU with a fresh last_power_at is NOT nighttime" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      one_min_ago = DateTime.add(now, -60, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(device, %{
+            last_seen_at: one_min_ago,
+            last_power_at: one_min_ago
+          })
+        )
+
+      # MQTT alive + fresh AC reading → producing, not nighttime.
+      assert Dtu.online?(device, now) == true
+      assert Dtu.nighttime?(device, now) == false
+    end
+
+    test "MQTT-alive DTU with stale last_power_at IS nighttime" do
+      # The reported bug scenario: MQTT is alive (status frames still
+      # flowing) but the inverter has stopped emitting AC readings
+      # (e.g. nightfall for firmware that suppresses telemetry). The
+      # pill should show "nighttime" — amber-moon state — not
+      # "offline".
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      one_min_ago = DateTime.add(now, -60, :second)
+      ten_min_ago = DateTime.add(now, -600, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(device, %{
+            last_seen_at: one_min_ago,
+            last_power_at: ten_min_ago
+          })
+        )
+
+      assert Dtu.online?(device, now) == true
+      assert Dtu.nighttime?(device, now) == true
+    end
+
+    test "MQTT-alive DTU with nil last_power_at IS nighttime" do
+      # Same scenario as above, but the DTU has never reported an AC
+      # reading at all (e.g. just installed, not yet generating).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      one_min_ago = DateTime.add(now, -60, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(Ecto.Changeset.change(device, %{last_seen_at: one_min_ago}))
+
+      assert Dtu.online?(device, now) == true
+      assert Dtu.nighttime?(device, now) == true
+    end
+
+    test "MQTT-dead DTU is NOT nighttime (offline, not nighttime)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      now = DateTime.utc_now()
+      ten_min_ago = DateTime.add(now, -600, :second)
+
+      {:ok, device} =
+        DtuApp.Repo.update(
+          Ecto.Changeset.change(device, %{
+            last_seen_at: ten_min_ago,
+            last_power_at: ten_min_ago
+          })
+        )
+
+      assert Dtu.online?(device, now) == false
+      assert Dtu.nighttime?(device, now) == false
+    end
+  end
+
   describe "Dtu.producing_power?/2 — online indicators sync with current-power card" do
     # `producing_power?/2` gates the dashboard's "online" badge and the
     # device-list's green dot on `last_power_at`, the timestamp of the
