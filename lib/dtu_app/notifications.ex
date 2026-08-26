@@ -13,11 +13,8 @@ defmodule DtuApp.Notifications do
        so users with the dashboard open get the OS notification via
        `new Notification(...)`.
     2. Look the user up and delegate the actual fan-out — push
-       (existing `DtuApp.Push.deliver/2`) and/or email — to
-       `DtuApp.Notifications.Dispatcher.fire/3`.
-    3. Record a single history row (with the user's chosen
-       `channel` column) so the `/notifications` page can show
-       what the server actually sent.
+       (existing `DtuApp.Push.deliver/2`), email, AND the history
+       row write — to `DtuApp.Notifications.Dispatcher.fire/3`.
 
   Gating rationale: the in-page hook already de-duplicates by tag
   in `localStorage`, so a user with the dashboard open doesn't see

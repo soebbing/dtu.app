@@ -149,19 +149,17 @@ defmodule DtuApp.Notifications.Dispatcher do
   # atom and string payloads both resolve through, because the
   # public predicate has explicit clauses for both).
   defp try_push(%User{} = user, event, payload) do
-    if Push.native_enabled?(user, %{"event" => event}) do
-      try do
-        Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          Push.deliver(user, payload)
-        end)
-      rescue
-        e ->
-          Logger.warning(
-            "[dispatcher] push failed event=#{event} user=#{user.id} reason=#{Exception.message(e)}"
-          )
+    try do
+      Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+        Push.deliver(user, payload)
+      end)
+    rescue
+      e ->
+        Logger.warning(
+          "[dispatcher] push failed event=#{event} user=#{user.id} reason=#{Exception.message(e)}"
+        )
 
-          :ok
-      end
+        :ok
     end
   end
 
