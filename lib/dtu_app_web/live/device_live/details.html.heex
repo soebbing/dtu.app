@@ -12,18 +12,30 @@
         <.icon name="hero-arrow-left" class="size-4" /> {gettext("Back to devices")}
       </.link>
     </div>
+    <% device_online? = online?(@device) %>
+    <% status_title =
+      if(device_online?,
+        do: gettext("Online — this DTU has reported AC power within the last 2 minutes"),
+        else:
+          gettext(
+            "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
+          )
+      ) %>
     <div class="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
       <span
         class={[
           "inline-block size-2 rounded-full",
-          if(online?(@device),
+          if(device_online?,
             do: "bg-emerald-500",
             else: "bg-zinc-300 dark:bg-zinc-600"
           )
         ]}
-        title={if(online?(@device), do: gettext("online"), else: gettext("offline"))}
+        title={status_title}
       />
-      <span>{if(online?(@device), do: gettext("online"), else: gettext("offline"))}</span>
+      <span title={status_title}>{if(device_online?,
+        do: gettext("online"),
+        else: gettext("offline")
+      )}</span>
     </div>
   </div>
 

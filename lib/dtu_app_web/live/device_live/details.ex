@@ -408,11 +408,18 @@ defmodule DtuAppWeb.DeviceLive.Details do
     end
   end
 
-  # Online indicator mirroring `Dtu.online?/2`. Reads from the
-  # last-seen-at column on the device row, refreshed by `:dtu_seen`
-  # broadcasts above.
+  # Online indicator mirroring `Dtu.producing_power?/2`. Reads from
+  # `last_power_at`, refreshed by every AC-aggregate reading persisted
+  # via `Devices.create_reading_and_touch_power_at/1` and re-loaded
+  # into `@device` on every `:dtu_seen` broadcast above. Using
+  # `producing_power?/2` here (instead of `Dtu.online?/2`'s
+  # `last_seen_at` check) is what keeps the header pill in sync with
+  # the dashboard's device-card pill and the device-list green dot —
+  # a DTU whose MQTT session stays connected but whose inverter has
+  # stopped reporting telemetry flips to "offline" on all three
+  # indicators together. See `Dtu.producing_power?/2` for the rule.
   @spec online?(%Dtu{}) :: boolean()
-  def online?(%Dtu{} = device), do: Dtu.online?(device)
+  def online?(%Dtu{} = device), do: Dtu.producing_power?(device)
 
   # Recompute the topic tree on every `mount/3` and `:topic_seen`
   # event so the template reads from a pre-computed `:tree` assign

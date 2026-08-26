@@ -85,7 +85,15 @@
                 else: "bg-zinc-300 dark:bg-zinc-600"
               )
             ]}
-            title={if(online?, do: gettext("online"), else: gettext("offline"))}
+            title={
+              if(online?,
+                do: gettext("Online — this DTU has reported AC power within the last 2 minutes"),
+                else:
+                  gettext(
+                    "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
+                  )
+              )
+            }
           />
           <p class="truncate font-medium text-zinc-900 dark:text-zinc-100">
             {device.name}
