@@ -72,6 +72,7 @@ defmodule DtuApp.Notifications.SunUp do
 
   alias DtuApp.Accounts.User
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunUpFire
   alias DtuApp.Repo
 
@@ -250,12 +251,12 @@ defmodule DtuApp.Notifications.SunUp do
       :ok ->
         # The SunUp producer runs as a long-lived GenServer without a
         # request context. Wrap `fire/2` (which builds the gettext
-        # payload and calls `Notifications.broadcast/2`) in the user's
-        # locale so the title/body strings are generated in the right
-        # language — both the in-page PubSub broadcast and the
-        # service-worker push fan-out (handled inside
-        # `Notifications.broadcast/2` via its own `Gettext.with_locale/2`
-        # wrapper) carry that locale.
+        # payload and dispatches via `Dispatcher.fire/3`) in the
+        # user's locale so the title/body strings are generated in
+        # the right language — both the in-page PubSub broadcast and
+        # the dispatcher's push + email + history fan-out (handled
+        # inside `Dispatcher.fire/3` via its own
+        # `Gettext.with_locale/2` wrapper) carry that locale.
         Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
           fire(user, today)
         end)
@@ -318,16 +319,39 @@ defmodule DtuApp.Notifications.SunUp do
   # default to whatever Gettext was initialized with (≈ "en")
   # regardless of preference.
   defp fire(%User{} = user, %Date{} = today) do
-    Notifications.broadcast(user.id, %{
+    payload = %{
       event: "sun_up",
       title: gettext("☀️ The sun's awake!"),
-      body: sun_up_body(),
+      # `body` is a list (the email/layout pipeline expects a list
+      # of paragraphs; the dispatcher's history-row insert coerces
+      # it back to a single string for the `:body` column). The
+      # in-page JS hook reads `payload.body` for the dtu_connection
+      # / sun_up branches (where it passes through verbatim) but
+      # rebuilds its own body for sun_down, so a list-wrapped body
+      # reaches the user as a `new Notification(body, ...)` — the
+      # Notification API accepts either string or array body.
+      body: [sun_up_body()],
       # Tag carries the producer's view of "today" — the date the
       # producer actually fired on, not the wall-clock UTC date.
       # Two producers in different timezones would otherwise share
       # a single tag and cause the in-page dedup to miss.
       tag: "sun_up:#{Date.to_iso8601(today)}"
-    })
+    }
+
+    # In-page PubSub broadcast for the dashboard LiveView hook
+    # (`Notifications.subscribe(user.id)` →
+    # `handle_info({:notification, payload}, ...)`). The
+    # dispatcher fan-out below handles push + email + history;
+    # both call sites are independent and safe (the in-page hook
+    # dedups against localStorage, the service worker dedups via
+    # the OS-level `tag`).
+    Phoenix.PubSub.broadcast(
+      DtuApp.PubSub,
+      Notifications.user_topic(user.id),
+      {:notification, payload}
+    )
+
+    Dispatcher.fire(user, "sun_up", payload)
   end
 
   # Playful tone — lean into the morning energy rather than the dry

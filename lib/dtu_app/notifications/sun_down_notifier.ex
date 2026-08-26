@@ -82,7 +82,9 @@ defmodule DtuApp.Notifications.SunDown do
 
   alias DtuApp.Accounts.User
   alias DtuApp.Devices
+  alias DtuApp.Emails.SunDownChart
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunDownFire
   alias DtuApp.Repo
   alias DtuApp.Time
@@ -387,17 +389,54 @@ defmodule DtuApp.Notifications.SunDown do
         # without a request context, so `gettext/1` would default to
         # whatever Gettext was initialized with (≈ "en") regardless
         # of the user's preference. Wrap the build_payload +
-        # broadcast pair in the user's locale so the title/body
+        # dispatch pair in the user's locale so the title/body
         # strings are generated in the right language — both the
-        # in-page PubSub broadcast and the service-worker push
-        # fan-out (handled inside `Notifications.broadcast/2` via
-        # its own `Gettext.with_locale/2` wrapper) carry that
-        # locale.
+        # in-page PubSub broadcast and the dispatcher's email
+        # rendering (handled inside `Dispatcher.fire/3` via its own
+        # `Gettext.with_locale/2` wrapper) carry that locale.
         Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          payload = build_payload(user, today)
+          case build_payload(user, today) do
+            nil ->
+              :ok
 
-          if payload do
-            Notifications.broadcast(user.id, payload)
+            payload ->
+              # Augment the payload with the email-specific keys.
+              # `build_payload/2` retains the in-page JS shape
+              # (`today_yield_yesterday_kwh` /
+              # `peak_power_yesterday_w`) for the JS hook's
+              # `formatPayload` consumer; the email renderer
+              # (`SunDownEmail`) reads the renamed keys
+              # (`yesterday_yield_kwh` / `peak_yesterday_w`) and
+              # the inline chart + dashboard CTA. Both shapes ride
+              # along in the dispatcher's payload. `body` is
+              # wrapped in a list to match the dispatcher's email
+              # / layout contract — SunDownEmail accepts either
+              # shape but the JS hook + history-row insert are
+              # consistent with the other producers' list shape.
+              full =
+                Map.merge(payload, %{
+                  body: [payload[:body]],
+                  yesterday_yield_kwh: payload[:today_yield_yesterday_kwh],
+                  peak_yesterday_w: payload[:peak_power_yesterday_w],
+                  chart_svg: SunDownChart.render(user, today),
+                  dashboard_path: "/dashboard"
+                })
+
+              # In-page PubSub broadcast for the dashboard LiveView
+              # hook (`Notifications.subscribe(user.id)` →
+              # `handle_info({:notification, payload}, ...)`). The
+              # dispatcher fan-out below handles push + email +
+              # history. Keeping both call sites preserves the
+              # existing in-page + native-push + email + history
+              # contract; the producer is the single fan-out
+              # decision point.
+              Phoenix.PubSub.broadcast(
+                DtuApp.PubSub,
+                Notifications.user_topic(user.id),
+                {:notification, full}
+              )
+
+              Dispatcher.fire(user, "sun_down", full)
           end
         end)
 

@@ -153,8 +153,15 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       assert payload.event == "dtu_connection"
       assert payload.title =~ "offline"
-      assert payload.body =~ "Test DTU"
+      # `body` is a list of paragraphs (dispatcher's email/layout
+      # contract); the inverter name sits in the first paragraph.
+      assert is_list(payload.body)
+      assert Enum.any?(payload.body, &(&1 =~ "Test DTU"))
       assert payload.tag == "dtu:Test DTU"
+      # Email/history extras from the dispatcher's structured payload.
+      assert payload.dtu_name == "Test DTU"
+      assert payload.status == :went_offline
+      assert %DateTime{} = payload.since
     end
 
     test "a stale disconnect (last_seen_at older than 5 min) does not fire" do
@@ -225,8 +232,11 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       assert payload.event == "dtu_connection"
       assert payload.title =~ "back online"
-      assert payload.body =~ "Back Online DTU"
+      assert is_list(payload.body)
+      assert Enum.any?(payload.body, &(&1 =~ "Back Online DTU"))
       assert payload.tag == "dtu:Back Online DTU"
+      assert payload.dtu_name == "Back Online DTU"
+      assert payload.status == :back_online
     end
 
     test "a :dtu_connected broadcast WITHOUT a prior disconnect is silent (no false :back_online)" do
@@ -609,7 +619,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
         end)
 
       assert payload.title == expected_title
-      assert payload.body =~ "Mein Dach"
+      assert is_list(payload.body)
+      assert Enum.any?(payload.body, &(&1 =~ "Mein Dach"))
     end
 
     test "a French user's disconnect title matches the French catalog" do
@@ -661,7 +672,10 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
           )
         end)
 
-      assert payload.body == expected_body
+      # Body is a list of paragraphs (dispatcher email/layout
+      # contract). The single producer-rendered paragraph should
+      # land in the first element.
+      assert payload.body == [expected_body]
     end
 
     test "an English user's notification uses the source (English) string" do
@@ -685,7 +699,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       assert_receive {:notification, payload}, 1_000
 
       assert payload.title == "DTU went offline"
-      assert payload.body =~ "Roof inverter"
+      assert is_list(payload.body)
+      assert Enum.any?(payload.body, &(&1 =~ "Roof inverter"))
     end
   end
 

@@ -278,10 +278,16 @@ function formatPayload(payload) {
   // grouping. Pre-fix this fell through to a hard-coded "dtu.app"
   // title and a JSON-stringified body, which is what users saw when
   // they enabled the test button.
+  //
+  // `body` from the producer side is a list of paragraphs (per the
+  // dispatcher's email/layout contract). The browser's
+  // `Notification` constructor expects a string, so we join the
+  // list with newlines for the OS-level banner — same visual as
+  // the email renderer.
   if (payload.title || payload.body) {
     return {
       title: payload.title || "dtu.app",
-      body: payload.body || "",
+      body: bodyToString(payload.body),
       tag: payload.tag || `misc:${todayIso()}`
     }
   }
@@ -291,6 +297,18 @@ function formatPayload(payload) {
     body: JSON.stringify(payload),
     tag: `misc:${todayIso()}`
   }
+}
+
+// Coerce the producer-supplied `body` into the string shape the
+// browser's `Notification` constructor expects. The producer sends
+// a list of paragraphs (matching the email/layout contract); we
+// join with newlines for the OS-level banner. Anything else
+// (string, null, undefined) falls back to "" so the field is
+// always a string when handed to the Notification constructor.
+function bodyToString(body) {
+  if (Array.isArray(body)) return body.filter((s) => typeof s === "string").join("\n")
+  if (typeof body === "string") return body
+  return ""
 }
 
 function compare(today, yesterday, unit) {
