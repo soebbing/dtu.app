@@ -327,4 +327,40 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
       assert redirected_to(conn) == ~p"/users/log-in"
     end
   end
+
+  describe "POST /users/settings/passkeys/:id/delete" do
+    test "deletes the passkey and redirects with a flash", %{conn: conn, user: user} do
+      pk = passkey_fixture(user, %{})
+
+      conn = post(conn, ~p"/users/settings/passkeys/#{pk.id}/delete")
+
+      assert redirected_to(conn) == ~p"/users/settings"
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~ "Passkey removed"
+      refute DtuApp.Repo.get(DtuApp.Accounts.Passkey, pk.id)
+    end
+
+    test "404s and keeps the row when the passkey belongs to another user", %{conn: conn} do
+      other_pk = passkey_fixture(user_fixture(), %{})
+
+      conn = post(conn, ~p"/users/settings/passkeys/#{other_pk.id}/delete")
+
+      assert conn.status == 404
+      assert DtuApp.Repo.get(DtuApp.Accounts.Passkey, other_pk.id)
+    end
+
+    test "404s when the passkey does not exist", %{conn: conn} do
+      conn = post(conn, ~p"/users/settings/passkeys/#{Ecto.UUID.generate()}/delete")
+      assert conn.status == 404
+    end
+
+    test "404s on a non-UUID id instead of raising", %{conn: conn} do
+      conn = post(conn, ~p"/users/settings/passkeys/not-a-uuid/delete")
+      assert conn.status == 404
+    end
+
+    test "redirects if the user is not logged in" do
+      conn = post(build_conn(), ~p"/users/settings/passkeys/#{Ecto.UUID.generate()}/delete")
+      assert redirected_to(conn) == ~p"/users/log-in"
+    end
+  end
 end

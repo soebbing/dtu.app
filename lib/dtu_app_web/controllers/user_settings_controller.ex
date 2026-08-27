@@ -9,6 +9,7 @@ defmodule DtuAppWeb.UserSettingsController do
   plug :require_sudo_mode
   plug :assign_email_and_password_changesets
   plug :assign_settings_changeset
+  plug :assign_passkeys
 
   def edit(conn, _params) do
     render(conn, :edit)
@@ -82,6 +83,38 @@ defmodule DtuAppWeb.UserSettingsController do
     end
   end
 
+  @doc """
+  Removes a passkey owned by the current user. A passkey belonging to
+  a different user (or one that no longer exists) is indistinguishable
+  from a missing one: both render 404.
+
+  POST `/users/settings/passkeys/:id/delete`
+  """
+  def delete_passkey(conn, %{"id" => id}) do
+    user = conn.assigns.current_scope.user
+
+    result =
+      case Accounts.get_user_passkey(user, id) do
+        nil -> {:error, :not_found}
+        passkey -> Accounts.delete_passkey(user, passkey)
+      end
+
+    case result do
+      :ok ->
+        conn
+        |> put_flash(:info, gettext("Passkey removed."))
+        |> redirect(to: ~p"/users/settings")
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> put_view(DtuAppWeb.ErrorHTML)
+        |> put_root_layout(html: false)
+        |> put_layout(html: false)
+        |> render(:"404")
+    end
+  end
+
   defp assign_email_and_password_changesets(conn, _opts) do
     user = conn.assigns.current_scope.user
 
@@ -100,5 +133,13 @@ defmodule DtuAppWeb.UserSettingsController do
 
     conn
     |> assign(:settings_changeset, Accounts.change_user_settings(user))
+  end
+
+  # The passkey card lives on the same page as the email/password/settings
+  # forms, and every `render(conn, :edit, ...)` path above (including the
+  # validation-failure re-renders) needs the list. A plug keeps the assign
+  # in one place instead of threading it through four call sites.
+  defp assign_passkeys(conn, _opts) do
+    assign(conn, :passkeys, Accounts.list_passkeys(conn.assigns.current_scope.user))
   end
 end

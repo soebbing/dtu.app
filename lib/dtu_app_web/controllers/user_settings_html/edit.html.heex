@@ -6,6 +6,74 @@
     </.header>
   </div>
 
+  <%!-- Passkey management. Hidden entirely when the kill switch is off so
+       the feature can be disabled at runtime without a deploy. The card is
+       the PasskeyFlow hook's root: the hook binds the "Add a passkey"
+       button, reads the friendly-name input, and writes failures into the
+       [data-passkey-error] node. The remove links POST (not DELETE) because
+       the route is a POST and Plug.MethodOverride would rewrite a
+       method="delete" link into a DELETE that matches nothing. --%>
+  <div
+    :if={Application.get_env(:dtu_app, :passkeys_enabled, true)}
+    id="passkeys-card"
+    phx-hook="PasskeyFlow"
+    data-kind="registration"
+  >
+    <.header>
+      {gettext("Passkeys")}
+      <:subtitle>{gettext("Sign in faster on this device and others.")}</:subtitle>
+    </.header>
+
+    <p :if={@passkeys == []} class="mt-4 text-sm text-zinc-500 dark:text-zinc-400">
+      {gettext("No passkeys yet — add one to skip the password next time.")}
+    </p>
+
+    <ul
+      :if={@passkeys != []}
+      class="mt-4 divide-y divide-zinc-200 dark:divide-zinc-800"
+    >
+      <li :for={pk <- @passkeys} class="flex items-center justify-between py-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-900 dark:text-white">
+            {pk.friendly_name}
+          </div>
+          <div class="text-xs text-zinc-500 dark:text-zinc-400">
+            {last_used_label(pk)}
+          </div>
+        </div>
+        <.link
+          href={~p"/users/settings/passkeys/#{pk.id}/delete"}
+          method="post"
+          data-confirm={gettext("Remove this passkey? You won't be able to sign in with it.")}
+          class="text-sm text-rose-600 hover:text-rose-700"
+        >
+          {gettext("Remove")}
+        </.link>
+      </li>
+    </ul>
+
+    <div class="mt-4 flex items-center gap-3">
+      <input
+        type="text"
+        name="friendly_name"
+        placeholder={gettext("Friendly name (e.g. MacBook Touch ID)")}
+        class="w-full rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-3 py-2 text-sm"
+      />
+      <button
+        type="button"
+        data-passkey-action="start"
+        data-loading-label={gettext("Waiting for authenticator…")}
+        class="shrink-0 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold px-4 py-2 rounded-lg transition"
+      >
+        {gettext("Add a passkey")}
+      </button>
+    </div>
+
+    <div data-passkey-error hidden role="alert" class="mt-3 text-sm text-rose-600"></div>
+  </div>
+
+  <div :if={Application.get_env(:dtu_app, :passkeys_enabled, true)} class="divider" />
+
   <.form :let={f} for={@email_changeset} action={~p"/users/settings"} id="update_email">
     <input type="hidden" name="action" value="update_email" />
 

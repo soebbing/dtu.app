@@ -439,9 +439,34 @@ defmodule DtuApp.Accounts do
       iex> list_passkeys(user)
       [%Passkey{}, ...]
   """
-  def list_passkeys(%DtuApp.Accounts.User{id: user_id}) do
+  def list_passkeys(%User{id: user_id}) do
     from(p in Passkey, where: p.user_id == ^user_id, order_by: [asc: p.inserted_at])
     |> Repo.all()
+  end
+
+  @doc """
+  Looks up a passkey by id, scoped to the given user.
+
+  Returns `nil` if the passkey doesn't exist OR is owned by a
+  different user. The user-scoping is intentional — callers must never
+  see another user's passkey row, even briefly.
+
+  A non-UUID `id` returns `nil` rather than raising, so a hand-crafted
+  URL can't 500 the settings page.
+
+  ## Examples
+
+      iex> get_user_passkey(user, "b3d1...")
+      %Passkey{}
+
+      iex> get_user_passkey(user, "missing")
+      nil
+  """
+  def get_user_passkey(%User{id: user_id}, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> Repo.one(from(p in Passkey, where: p.id == ^id and p.user_id == ^user_id))
+      :error -> nil
+    end
   end
 
   @doc """
@@ -476,9 +501,14 @@ defmodule DtuApp.Accounts do
       iex> delete_passkey(other_user, passkey)
       {:error, :not_found}
   """
-  def delete_passkey(%DtuApp.Accounts.User{id: user_id}, %Passkey{id: id, user_id: user_id}) do
-    {1, _} = Repo.delete_all(from(p in Passkey, where: p.id == ^id))
-    :ok
+  def delete_passkey(%User{id: user_id}, %Passkey{id: id, user_id: user_id}) do
+    # `delete_all` rather than `Repo.delete/1` so a stale struct (row
+    # already removed in another tab/request) reports `:not_found`
+    # instead of raising a MatchError or Ecto.StaleEntryError.
+    case Repo.delete_all(from(p in Passkey, where: p.id == ^id)) do
+      {1, _} -> :ok
+      {0, _} -> {:error, :not_found}
+    end
   end
 
   def delete_passkey(_user, _passkey), do: {:error, :not_found}

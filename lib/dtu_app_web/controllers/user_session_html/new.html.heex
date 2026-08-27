@@ -33,6 +33,32 @@
       </div>
     </div>
 
+    <%!-- Passkey sign-in, offered above the password form because it is the
+         fastest path for anyone already enrolled. The whole block (button +
+         divider) disappears when the kill switch is off. --%>
+    <div :if={Application.get_env(:dtu_app, :passkeys_enabled, true)}>
+      <div id="passkey-login-card" phx-hook="PasskeyFlow" data-kind="authentication">
+        <button
+          type="button"
+          data-passkey-action="start"
+          data-loading-label={gettext("Waiting for authenticator…")}
+          class="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2 rounded-lg transition"
+        >
+          <span aria-hidden="true">🔑</span> {gettext("Use a passkey")}
+        </button>
+
+        <div data-passkey-error hidden role="alert" class="mt-3 text-sm text-rose-600"></div>
+      </div>
+
+      <div class="relative flex py-2 items-center">
+        <div class="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
+        <span class="flex-shrink mx-4 text-zinc-400 text-xs">
+          {gettext("or use email + password")}
+        </span>
+        <div class="flex-grow border-t border-zinc-200 dark:border-zinc-800"></div>
+      </div>
+    </div>
+
     <!-- Password form is default -->
     <.form
       :let={f}
