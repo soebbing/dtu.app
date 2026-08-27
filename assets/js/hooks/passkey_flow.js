@@ -78,8 +78,19 @@ const PasskeyFlow = {
       return;
     }
 
-    const { request_id, publicKey } = await beginResp.json();
-    const pk = decodePublicKey(publicKey);
+    let request_id, publicKey, pk;
+    try {
+      ({ request_id, publicKey } = await beginResp.json());
+      pk = decodePublicKey(publicKey);
+    } catch (_) {
+      this.showError(beginResp);
+      return;
+    }
+
+    if (pk == null) {
+      this.showError(beginResp);
+      return;
+    }
 
     let credential;
     try {
@@ -138,16 +149,13 @@ const PasskeyFlow = {
       })
       .then((cred) => {
         if (!cred) return;
-        // Re-fetch the begin response to get the request_id we never
-        // stored, OR call completeConditional — see below.
-        // For simplicity in this design, we just call the finish
-        // endpoint with the original request_id we stashed.
-        this.completeConditional(cred, data.request_id, data.publicKey);
+        // Reuse the request_id we captured from the begin fetch above.
+        this.completeConditional(cred, data.request_id);
       })
       .catch(() => {/* user dismissed */});
   },
 
-  async completeConditional(credential, request_id, publicKey) {
+  async completeConditional(credential, request_id) {
     const finishResp = await fetch("/auth/passkey/authentication/finish", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": this.csrf },
