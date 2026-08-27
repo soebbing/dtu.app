@@ -86,3 +86,10 @@ config :web_push,
     private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
     subject: "mailto:test@localhost"
   }
+
+# Explicit test value for the WebAuthn relying-party ID. Mirrors the
+# dev/prod default ("localhost") and forces a known value regardless of
+# any WEBAUTHN_RP_ID env var that may be set on a developer's machine —
+# the ceremony's origin check is unforgiving about host mismatches.
+config :dtu_app, :webauthn_rp_id, "localhost"
+config :dtu_app, :webauthn_rp_name, "dtu.app"

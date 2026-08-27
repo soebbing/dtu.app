@@ -62,6 +62,19 @@ defmodule DtuAppWeb.Router do
     plug :fetch_current_scope_for_user
   end
 
+  # WebAuthn / passkey ceremony endpoints. Same shape as `:push_api`
+  # (JSON-accepting, CSRF-protected, session-fetching) but WITHOUT
+  # `fetch_current_scope_for_user`: registration requires auth,
+  # authentication requires anonymity, and reading the cookie ourselves
+  # per action is clearer than a one-size-fits-all assign.
+  pipeline :passkey_api do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
   scope "/", DtuAppWeb do
     pipe_through :browser
 
@@ -146,6 +159,27 @@ defmodule DtuAppWeb.Router do
     get "/push/vapid/public_key", PushController, :vapid_public_key
     post "/push/subscribe", PushController, :subscribe
     post "/push/unsubscribe", PushController, :unsubscribe
+  end
+
+  # Passkey ceremony endpoints. The kill switch (`PASSKEYS_ENABLED`)
+  # hides them; when disabled, every action returns 404 via the
+  # controller-level `guard/2`.
+  scope "/", DtuAppWeb do
+    pipe_through :passkey_api
+
+    post "/auth/passkey/registration/begin", PasskeyController, :registration_options
+    post "/auth/passkey/registration/finish", PasskeyController, :verify_registration
+    post "/auth/passkey/authentication/begin", PasskeyController, :authentication_options
+    post "/auth/passkey/authentication/finish", PasskeyController, :verify_authentication
+  end
+
+  # Passkey management endpoints (settings page). Standard browser
+  # pipeline: form posts get the CSRF token from the layout and the
+  # session cookie drives auth.
+  scope "/", DtuAppWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    post "/users/settings/passkeys/:id/delete", UserSettingsController, :delete_passkey
   end
 
   scope "/", DtuAppWeb do
