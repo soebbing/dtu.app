@@ -48,7 +48,7 @@ defmodule DtuAppWeb.PasskeyController do
     guard(conn, fn ->
       with_user(conn, fn user ->
         existing_ids =
-          user.id
+          user
           |> Accounts.list_passkeys()
           |> Enum.map(& &1.credential_id)
           |> Enum.map(&Base.url_encode64(&1, padding: false))
@@ -192,7 +192,14 @@ defmodule DtuAppWeb.PasskeyController do
             |> put_status(:conflict)
             |> json(%{
               error: "credential_already_enrolled",
-              details: Ecto.Changeset.traverse_errors(cs, & &1)
+              # `unique_constraint/2` populates each error as the tuple
+              # `{"has already been taken", [constraint: :unique, ...]}`
+              # — passing the raw `{msg, opts}` leaf to `traverse_errors/2`
+              # with the identity transformer produces JSON-encodable
+              # values, but leaves the inner opts keyword list alone. Pull
+              # just the message (elem/2) so Jason gets a plain string;
+              # the constraint metadata is noise for a client anyway.
+              details: Ecto.Changeset.traverse_errors(cs, &elem(&1, 0))
             })
 
           {:error, reason} ->
@@ -351,16 +358,26 @@ defmodule DtuAppWeb.PasskeyController do
   end
 
   defp with_user(conn, fun) do
-    case conn |> get_session() |> Map.get("user_token") |> Accounts.get_user_by_session_token() do
-      {user, _} ->
-        fun.(user)
+    case get_session(conn, "user_token") do
+      nil ->
+        unauthenticated(conn)
 
-      _ ->
-        conn
-        |> put_status(:unauthorized)
-        |> json(%{error: "unauthenticated"})
-        |> halt()
+      token ->
+        case Accounts.get_user_by_session_token(token) do
+          {user, _} ->
+            fun.(user)
+
+          _ ->
+            unauthenticated(conn)
+        end
     end
+  end
+
+  defp unauthenticated(conn) do
+    conn
+    |> put_status(:unauthorized)
+    |> json(%{error: "unauthenticated"})
+    |> halt()
   end
 
   # Symmetric to `with_user/2`. 409 (Conflict) — distinct from
