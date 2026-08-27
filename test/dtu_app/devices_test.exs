@@ -4639,10 +4639,12 @@ defmodule DtuApp.DevicesTest do
       # -300 W export. 40 × -300 W × (5/60) h = 1_000 Wh exported.
       # Production is 4_000 Wh, exported is 1_000 Wh → self-consumption
       # = 100 × (1 - 1_000/4_000) = 75 %.
-      anchor =
-        Date.utc_today()
-        |> DateTime.new!(~T[11:00:00])
-        |> Map.put(:microsecond, {0, 0})
+      #
+      # Anchor relative to `now` so every reading lands inside the
+      # [yesterday, now] window the helper queries — using a fixed
+      # wall-clock time (e.g. today 11:00 UTC) makes the assertion
+      # dependent on the time of day the CI happens to run.
+      anchor = DateTime.add(now, -40 * 300, :second)
 
       for idx <- 0..39 do
         {:ok, _} =
