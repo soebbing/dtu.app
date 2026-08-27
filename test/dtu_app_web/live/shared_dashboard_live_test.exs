@@ -235,4 +235,74 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       assert html =~ ~r/<polyline[^>]+points="[\d.]+,[\d.]+/
     end
   end
+
+  # Pin the data-driven y-axis behaviour introduced in task #221.
+  #
+  # The original `watts_to_y/1` was hard-coded to "200 W = top of
+  # chart", so any realistic solar day (>200 W peak) collapsed into
+  # the top 10 px band and the polyline looked like a thick line of
+  # "overlay numbers" at the top of the chart — which is what the
+  # user reported. The fix picks `y_max` from the day's peak so the
+  # polyline fills the full vertical range.
+  describe "polyline spans the full chart height for realistic watts" do
+    test "peak > 200 W does not collapse into the top sliver", %{conn: conn} do
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Ahoy", kind: "ahoydtu", mqtt_username: "inv-1"})
+
+      # Build a day with 500 W peak — well above the old hard-coded
+      # 200 W ceiling, so the regression would show immediately.
+      today = DateTime.utc_now() |> DateTime.to_date()
+
+      for h <- 6..17, m <- 0..55, rem(m, 5) == 0 do
+        {:ok, ts} = DateTime.new(today, Time.new!(h, m, 0, 0), "Etc/UTC")
+        ts = DateTime.truncate(ts, :microsecond)
+        # Bell-shaped peak around noon.
+        watts = 500.0 * :math.sin((h - 6) / 12.0 * :math.pi())
+
+        reading_fixture(dtu, %{
+          inserted_at: ts,
+          ac_power: watts,
+          yield_day: 0.1,
+          yield_total: 1.0
+        })
+      end
+
+      {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+      {:ok, _view, html} = live(conn, "/s/#{plaintext}")
+
+      # Extract every y-coordinate from the polyline's points string.
+      ys =
+        Regex.scan(~r/points="([^"]+)"/, html)
+        |> Enum.map(fn [_, pts] -> pts end)
+        |> List.first()
+        |> String.split(" ")
+        |> Enum.map(fn pair ->
+          [_x, y] = String.split(pair, ",")
+          Float.parse(y) |> elem(0)
+        end)
+
+      assert ys != [], "polyline must have at least one point"
+
+      y_min = Enum.min(ys)
+      y_max = Enum.max(ys)
+
+      # Spreads the polyline across the chart: the peak reading must
+      # land near the top (y close to 10), the early-morning / late-
+      # evening baseline must land near the bottom (y close to 190).
+      # Pre-fix, y_min and y_max were both in [6, 10] because the
+      # >200 W branch squished everything into the top sliver.
+      assert y_min < 50, "peak point should be near top of chart, got y_min=#{y_min}"
+      assert y_max > 100, "low-wattage point should be near bottom, got y_max=#{y_max}"
+      # Sanity: still inside the viewBox.
+      assert y_min >= 0 and y_max <= 190
+
+      # Exactly one polyline (combined view) — never two, never an
+      # overlay sneaking in.
+      assert html =~ ~r/<polyline[^>]+points="[\d., ]+"/,
+             "expected exactly one <polyline> with coordinate points"
+
+      refute html =~ ~r/<text[^>]*>\s*-?\d+\.?\d*\s*</,
+             "no <text> element should contain a bare numeric label (Y-axis numbers are bug #221)"
+    end
+  end
 end

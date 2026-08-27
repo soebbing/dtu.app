@@ -313,23 +313,34 @@ defmodule DtuAppWeb.SharedDashboardLive do
   # An earlier draft used `:utc_start` / `:power_w` and crashed with
   # KeyError on the first non-empty mount — see #175.
   defp build_polyline(points, tz_offset_seconds) do
-    points
-    |> Enum.group_by(& &1.time)
-    |> Enum.map(fn {time, pts} ->
-      watts =
-        pts
-        |> Enum.map(&(&1.power || 0.0))
-        |> Enum.sum()
-        |> clamp(0.0, 5000.0)
+    # Compute per-bucket watts once so we can derive both the Y-scale and
+    # the polyline points from the same numbers. Without this two-pass,
+    # `watts_to_y/2` had to pick a hard-coded 200 W ceiling, which clamped
+    # every realistic solar day (>200 W peak) into a 10 px band at the
+    # top of the chart (see task #221).
+    bucketed =
+      points
+      |> Enum.group_by(& &1.time)
+      |> Enum.map(fn {time, pts} ->
+        watts =
+          pts
+          |> Enum.map(&(&1.power || 0.0))
+          |> Enum.sum()
+          |> clamp(0.0, 5000.0)
 
+        {time, watts}
+      end)
+      |> Enum.sort()
+
+    y_max = y_axis_max(bucketed)
+
+    bucketed
+    |> Enum.map(fn {time, watts} ->
       seconds = local_seconds(time, tz_offset_seconds)
       x = seconds / 100
-      # 200W at y=10, 0W at y=190. Scale linearly above 200W —
-      # 200W → y=10, 5000W → y=0.
-      y = watts_to_y(watts)
+      y = watts_to_y(watts, y_max)
       "#{Float.round(x, 1)},#{y}"
     end)
-    |> Enum.sort()
     |> Enum.join(" ")
   end
 
@@ -341,8 +352,33 @@ defmodule DtuAppWeb.SharedDashboardLive do
 
   defp clamp(v, lo, hi), do: v |> max(lo) |> min(hi)
 
-  defp watts_to_y(w) when w <= 200.0, do: Float.round(190.0 - w / 200.0 * 180.0, 1)
-  defp watts_to_y(w), do: Float.round(10.0 - min((w - 200.0) / 4800.0, 1.0) * 10.0, 1)
+  # Pick the top of the Y-axis so a normal solar day actually fills the
+  # chart instead of being squished into the top sliver. We round up to
+  # the next 100 W step (50 W for small days) so the topmost data point
+  # never lands exactly on the chart edge. Floor of 100 W keeps the axis
+  # honest for tiny installations — a 30 W micro-inverter shouldn't claim
+  # the same visual range as a 5 kW system.
+  defp y_axis_max(bucketed) do
+    peak =
+      case bucketed do
+        [] -> 0.0
+        _ -> bucketed |> Enum.map(fn {_, w} -> w end) |> Enum.max()
+      end
+
+    cond do
+      peak <= 0.0 -> 100.0
+      peak <= 200.0 -> 200.0
+      true -> Float.ceil(peak / 100.0) * 100.0
+    end
+  end
+
+  # SVG y-coordinate for a given wattage, with `y_max` W mapping to y=10
+  # (just below the top edge) and 0 W mapping to y=190 (just above the
+  # bottom edge). The old hard-coded `y_max = 200` meant anything above
+  # 200 W piled into the top 10 px, which is the bug the user spotted.
+  defp watts_to_y(w, y_max) when y_max > 0.0 do
+    Float.round(190.0 - w / y_max * 180.0, 1)
+  end
 
   # Pretty-print a local date for the page header: "Wednesday,
   # 27 August 2026" style. We don't depend on `Gettext.dgettext/3`
