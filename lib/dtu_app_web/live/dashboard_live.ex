@@ -4,10 +4,13 @@ defmodule DtuAppWeb.DashboardLive do
   import Ecto.Query
 
   alias DtuApp.Devices
+  alias DtuApp.Accounts
   alias DtuApp.MqttBroker.Telemetry
   alias DtuApp.MqttBroker.Broker
   alias DtuApp.Notifications
   alias DtuApp.PushSubscriptions
+
+  require Logger
 
   @timezone_topic "dtu:timezone"
 
@@ -77,6 +80,13 @@ defmodule DtuAppWeb.DashboardLive do
       # from the user schema here so the LiveView re-render on every
       # reading picks up the same value without a re-read.
       |> assign(:cents_per_kwh, user.cents_per_kwh)
+      # Anonymous share toggle for the current-day dashboard. On mount we
+      # only know whether sharing is on (the row exists) — the plaintext
+      # URL token is never persisted, so a page reload leaves the toggle
+      # visibly on but the URL field blank. The user toggles off+on to
+      # mint a new URL (which invalidates the old share row). This keeps
+      # "show URL once, then it's gone if you didn't copy it" honest.
+      |> assign_share_state(user)
       |> assign(:consumption_stats, %{
         current_consumption: 0.0,
         today_consumption: 0.0,
@@ -288,6 +298,51 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  # Share toggle. The toolbar switch sends `"enabled" => "true"|"false"`
+  # (the JS hook serializes booleans that way). On enable: mint a fresh
+  # token, persist the SHA-256 hash, surface the plaintext URL once via
+  # `:share_url`. On disable: revoke the row and clear the URL. Both
+  # modes are best-effort — a DB failure logs at warning and leaves the
+  # UI in its prior state rather than crashing the dashboard.
+  @impl true
+  def handle_event("toggle_share", %{"enabled" => "true"}, socket) do
+    user = socket.assigns.current_scope.user
+
+    case Accounts.create_shared_link(user) do
+      {:ok, {plaintext, _link}} ->
+        {:noreply,
+         socket
+         |> assign(:share_active?, true)
+         |> assign(:share_url, url_for_token(plaintext))}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
+        )
+
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("toggle_share", %{"enabled" => "false"}, socket) do
+    user = socket.assigns.current_scope.user
+    :ok = Accounts.revoke_shared_link(user)
+
+    {:noreply,
+     socket
+     |> assign(:share_active?, false)
+     |> assign(:share_url, nil)}
+  end
+
+  def handle_event("toggle_share", _payload, socket), do: {:noreply, socket}
+
+  # Build the public share URL from a plaintext token. Uses the configured
+  # PHX_HOST so the link points at the right deployment (dev / staging /
+  # production) without a hard-coded hostname.
+  defp url_for_token(token) do
+    DtuAppWeb.Endpoint.url() <> "/s/" <> token
+  end
+
   @impl true
   def handle_info({:reading, _client_id, _reading}, socket) do
     user = socket.assigns.current_scope.user
@@ -476,6 +531,20 @@ defmodule DtuAppWeb.DashboardLive do
   # purely about the dashboard's presentation.
   defp ro_sink_kind?(%Devices.Dtu{kind: :mqtt_ro_sink}), do: true
   defp ro_sink_kind?(_), do: false
+
+  # Read the user's existing share row (if any) and surface two
+  # socket assigns: `:share_active?` for the toggle's on/off state
+  # and `:share_url` for the plaintext URL the UI displays. The
+  # plaintext is intentionally left nil on mount — only the hash
+  # is persisted, so a returning user can't recover the old URL
+  # without regenerating (which invalidates the old row anyway).
+  defp assign_share_state(socket, user) do
+    active? = Accounts.get_shared_link(user) != nil
+
+    socket
+    |> assign(:share_active?, active?)
+    |> assign(:share_url, nil)
+  end
 
   # Helper to construct SVG line chart coordinates and range.
   # `local_date` is the user-facing date in the browser's timezone
@@ -2429,6 +2498,75 @@ defmodule DtuAppWeb.DashboardLive do
                 >
                   {gettext("Custom")}
                 </.quick_range_btn>
+              </div>
+
+              <%!-- Share cluster: anonymous current-day dashboard share.
+                   Switch toggles a row in `shared_links`; when on, the
+                   plaintext URL appears next to it for one-shot copy.
+                   `ms-auto` pins the cluster to the right edge of the
+                   toolbar row so the quick-range buttons keep their
+                   left-aligned grouping. --%>
+              <div
+                class="flex flex-wrap items-center gap-2 ms-auto border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
+                id="share-cluster"
+              >
+                <label
+                  id="share-toggle-label"
+                  class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer select-none transition"
+                  title={gettext("Share today's dashboard read-only")}
+                >
+                  <.icon name="hero-share" class="size-4 text-zinc-500 dark:text-zinc-400" />
+                  <span class="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
+                    {gettext("Share")}
+                  </span>
+                  <%!-- The visible switch: a checkbox styled as a pill
+                       with a sliding dot. `peer-checked:` Tailwind
+                       variants flip the on-colors without a separate
+                       state class — same accessibility surface as a
+                       real checkbox, just skinned to match the rest
+                       of the toolbar. --%>
+                  <span class="relative inline-flex items-center">
+                    <input
+                      type="checkbox"
+                      id="share-toggle"
+                      phx-click="toggle_share"
+                      phx-value-enabled={to_string(!@share_active?)}
+                      checked={@share_active?}
+                      class="peer sr-only"
+                    />
+                    <span class="w-8 h-4 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
+                    <span class="absolute left-0.5 top-0.5 size-3 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
+                  </span>
+                </label>
+
+                <%= if @share_active? and @share_url do %>
+                  <div
+                    id="share-url-row"
+                    class="flex items-center gap-1.5"
+                  >
+                    <input
+                      type="text"
+                      id="share-url-input"
+                      readonly
+                      value={@share_url}
+                      class="w-72 max-w-[40vw] px-2.5 py-1.5 text-xs font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      data-value={@share_url}
+                      phx-hook="CopyToClipboard"
+                      aria-label={gettext("Shareable URL")}
+                    />
+                    <button
+                      type="button"
+                      id="btn-share-copy"
+                      title={gettext("Copy URL")}
+                      aria-label={gettext("Copy URL")}
+                      class="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
+                      data-value={@share_url}
+                      phx-hook="CopyToClipboard"
+                    >
+                      <.icon name="hero-clipboard-document" class="size-4" />
+                    </button>
+                  </div>
+                <% end %>
               </div>
 
               <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › — only rendered

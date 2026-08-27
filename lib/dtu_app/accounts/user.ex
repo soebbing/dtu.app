@@ -57,6 +57,8 @@ defmodule DtuApp.Accounts.User do
     # doesn't change anyone's behaviour silently.
     field :notification_channel, :string, default: "push"
 
+    has_one :shared_link, DtuApp.Accounts.SharedLink
+
     timestamps(type: :utc_datetime)
   end
 

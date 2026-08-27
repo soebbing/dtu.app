@@ -817,4 +817,115 @@ defmodule DtuApp.AccountsTest do
       assert updated.locale == "de"
     end
   end
+
+  describe "shared link token lifecycle (create/get/revoke)" do
+    # The anonymous `/s/:token` share route resolves a plaintext URL
+    # token to its owning user via SHA-256 hash. The tests below pin
+    # the lifecycle the share toggle depends on:
+    #
+    #   * `create_shared_link/1` returns `{plaintext, link}` where the
+    #     plaintext is the value the UI hands to the clipboard, and the
+    #     stored row only contains the SHA-256 hash.
+    #   * `get_user_by_share_token/1` round-trips that plaintext back to
+    #     the owning user.
+    #   * Creating a second share for the same user replaces the first
+    #     (no token collision on `unique_index(:shared_links,
+    #     [:token_hash])`).
+    #   * Revoking removes the row, so the next lookup returns nil.
+    #   * Token plaintext is never stored — a hash mismatch returns nil
+    #     rather than the wrong user.
+    alias DtuApp.Accounts.SharedLink
+
+    test "create returns a plaintext token that round-trips to the same user" do
+      %{id: user_id} = user_fixture()
+
+      assert {:ok, {plaintext, %SharedLink{user_id: ^user_id} = link}} =
+               Accounts.create_shared_link(Repo.get!(User, user_id))
+
+      # Plaintext is 32 random bytes base32-encoded without padding
+      # (256 bits → 52 base32 chars without padding).
+      assert byte_size(plaintext) == 52
+      assert plaintext =~ ~r/^[A-Z2-7]+$/
+
+      # Row stores the hash, not the plaintext — the row's `token_hash`
+      # is exactly 32 bytes (SHA-256) and is NOT the plaintext.
+      assert byte_size(link.token_hash) == 32
+      refute link.token_hash == plaintext
+
+      # The public route resolves the plaintext back to the same user.
+      assert %User{id: ^user_id} = Accounts.get_user_by_share_token(plaintext)
+    end
+
+    test "create stores the SHA-256 of the plaintext, never the plaintext itself" do
+      %{id: user_id} = user_fixture()
+      user = Repo.get!(User, user_id)
+
+      assert {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+
+      expected_hash = :crypto.hash(:sha256, plaintext)
+      row = Repo.one(from(s in SharedLink, where: s.user_id == ^user_id))
+
+      assert row.token_hash == expected_hash
+      refute row.token_hash == plaintext
+    end
+
+    test "creating a second share for the same user replaces the first" do
+      %{id: user_id} = user_fixture()
+      user = Repo.get!(User, user_id)
+
+      assert {:ok, {first_plaintext, _first_link}} = Accounts.create_shared_link(user)
+      assert {:ok, {second_plaintext, _second_link}} = Accounts.create_shared_link(user)
+
+      # One row per user — never two.
+      assert Repo.aggregate(from(s in SharedLink, where: s.user_id == ^user_id), :count) == 1
+
+      # Old plaintext no longer resolves; new one does.
+      refute Accounts.get_user_by_share_token(first_plaintext)
+      assert %User{id: ^user_id} = Accounts.get_user_by_share_token(second_plaintext)
+    end
+
+    test "revoke removes the row so the next lookup returns nil" do
+      user = user_fixture()
+      assert {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+
+      assert %User{} = Accounts.get_user_by_share_token(plaintext)
+      assert :ok = Accounts.revoke_shared_link(user)
+      refute Accounts.get_user_by_share_token(plaintext)
+      refute Accounts.get_shared_link(user)
+    end
+
+    test "revoke is a no-op when there is no share" do
+      user = user_fixture()
+      assert :ok = Accounts.revoke_shared_link(user)
+      refute Accounts.get_shared_link(user)
+    end
+
+    test "get_user_by_share_token returns nil for unknown plaintext" do
+      refute Accounts.get_user_by_share_token("not-a-real-token-AAAAAAAAAAAAAAAAAAAAAAAAA")
+    end
+
+    test "tokens are scoped per-user — user A's token never resolves to user B" do
+      user_a = user_fixture()
+      user_b = user_fixture()
+
+      assert {:ok, {plaintext_a, _link_a}} = Accounts.create_shared_link(user_a)
+      refute Accounts.get_user_by_share_token(plaintext_a) == user_b
+      assert %User{id: id_a} = Accounts.get_user_by_share_token(plaintext_a)
+      assert id_a == user_a.id
+    end
+
+    test "cascade delete from the user removes the share row" do
+      # `on_delete: :delete_all` from `users` means deleting the user
+      # takes the share row with it — there's no orphaned-link failure
+      # mode with a dangling user_id FK.
+      user = user_fixture()
+      assert {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+      assert Repo.get_by(SharedLink, user_id: user.id)
+
+      Repo.delete!(user)
+
+      refute Repo.get_by(SharedLink, user_id: user.id)
+      refute Accounts.get_user_by_share_token(plaintext)
+    end
+  end
 end

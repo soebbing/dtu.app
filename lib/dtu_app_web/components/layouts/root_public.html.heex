@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang={assigns[:locale] || "en"}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+
+    <%!-- PWA: same installable-app metadata as the authenticated
+         shell so a user with the shared URL open in a tab still
+         benefits from the theme-color hint and apple-mobile-web-app
+         flags if they happen to install. --%>
+    <link rel="manifest" href={~p"/manifest.webmanifest"} />
+    <meta name="theme-color" content="#10b981" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="dtu.app" />
+    <link rel="apple-touch-icon" href={~p"/images/icon-192.png"} />
+    <link rel="icon" type="image/svg+xml" href={~p"/images/logo.svg"} />
+
+    <.live_title default="dtu.app" suffix=" · solar telemetry" phx-no-format>{assigns[:page_title]}</.live_title>
+    <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
+    <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
+    </script>
+    <%!-- Theme bootstrap is duplicated here (rather than factored
+         into a partial) because root layouts in Phoenix are
+         single-file entry points — `root_public` is its own
+         layout, not a variant of `root`. Same effect: respect
+         the viewer's saved theme preference on first paint so the
+         page doesn't flash light→dark. --%>
+    <script>
+      (() => {
+        const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+        const setTheme = (theme) => {
+          if (theme === "system") {
+            localStorage.removeItem("phx:theme");
+            document.documentElement.setAttribute("data-theme", systemTheme());
+            document.documentElement.setAttribute("data-theme-source", "system");
+          } else {
+            localStorage.setItem("phx:theme", theme);
+            document.documentElement.setAttribute("data-theme", theme);
+            document.documentElement.setAttribute("data-theme-source", "user");
+          }
+        };
+        if (!document.documentElement.hasAttribute("data-theme")) {
+          setTheme(localStorage.getItem("phx:theme") || "system");
+        }
+        window.addEventListener("storage", (e) => e.key === "phx:theme" && setTheme(e.newValue || "system"));
+
+        window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
+
+        matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+          if (document.documentElement.getAttribute("data-theme-source") === "system") {
+            document.documentElement.setAttribute("data-theme", systemTheme());
+          }
+        });
+      })();
+    </script>
+  </head>
+  <body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50 min-h-screen transition-colors duration-250 flex flex-col antialiased">
+    <OfflineBanner.offline_banner />
+
+    <div class="flex-1 flex flex-col">
+      {@inner_content}
+    </div>
+
+    <%!--
+      The shared page's only persistent chrome is a tiny footer
+      with a "powered by dtu.app" link. Deliberately understated:
+      no nav links, no legalese, no login/register. The owner of
+      the share gets the visit, the visitor gets the attribution,
+      and nothing else competes for attention with the live data.
+    --%>
+    <footer class="border-t border-zinc-200 dark:border-zinc-800 bg-zinc-50/50 dark:bg-zinc-950/50 backdrop-blur-sm">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+        <span>{gettext("powered by")}</span>
+        <a
+          href="https://dtu.app"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="font-bold bg-gradient-to-r from-emerald-500 to-amber-500 bg-clip-text text-transparent hover:opacity-80 transition"
+        >
+          dtu.app
+        </a>
+      </div>
+    </footer>
+  </body>
+</html>

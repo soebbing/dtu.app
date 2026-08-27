@@ -1,6 +1,8 @@
 defmodule DtuAppWeb.DashboardLiveTest do
   use DtuAppWeb.ConnCase, async: false
 
+  use Gettext, backend: DtuAppWeb.Gettext
+
   import Phoenix.LiveViewTest
   import DtuApp.DevicesFixtures
 
@@ -4242,6 +4244,105 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       refute after_body =~ "<svg",
              "1D button body must not contain literal <svg> text after rapid clicks"
+    end
+  end
+
+  describe "Share toggle (anonymous current-day share link)" do
+    # The Share cluster lives in the dashboard toolbar. When the user
+    # flips the switch on, the LiveView mints a fresh 32-byte token,
+    # persists its SHA-256 hash, and surfaces the plaintext URL once
+    # so the user can copy it. Flipping it off revokes the row and
+    # clears the URL. We pin all three transitions (off→on, on→off,
+    # on→on→off) because the URL-only-once UX means a page reload is
+    # an off-with-empty-state: the toggle stays on (the row still
+    # exists) but the URL is gone until the user toggles off+on to
+    # regenerate.
+
+    alias DtuApp.Accounts
+    alias DtuApp.Accounts.SharedLink
+    alias DtuApp.Repo
+    import Ecto.Query
+
+    test "toggling on creates a share row and surfaces the URL", %{conn: conn, user: user} do
+      _dtu = device_fixture(user, %{name: "Share DTU", kind: "opendtu", mqtt_username: "share-1"})
+      user_id = user.id
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Sanity: no share row before the click.
+      refute Accounts.get_shared_link(user)
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      # A row exists now, with the user's id.
+      assert %SharedLink{user_id: ^user_id} = Accounts.get_shared_link(user)
+
+      html = render(view)
+      assert html =~ gettext("Shareable URL")
+      assert html =~ "/s/"
+      assert html =~ gettext("Copy URL")
+    end
+
+    test "toggling off removes the share row but does NOT crash", %{conn: conn, user: user} do
+      _dtu = device_fixture(user, %{name: "Off DTU", kind: "opendtu", mqtt_username: "off-1"})
+      {:ok, {_, _}} = Accounts.create_shared_link(user)
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+      assert Accounts.get_shared_link(user)
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "false"})
+
+      refute Accounts.get_shared_link(user)
+      html = render(view)
+      # The URL row only renders when share is active AND a plaintext
+      # is in flight — after revoke, it's hidden again.
+      refute html =~ gettext("Shareable URL")
+    end
+
+    test "a fresh mount with an existing share row shows the toggle on but no URL", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{name: "Reload DTU", kind: "opendtu", mqtt_username: "reload-1"})
+
+      # Simulate the user having toggled on in a previous session.
+      assert {:ok, {_, _}} = Accounts.create_shared_link(user)
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Toggle visually reflects the existing share row — `checked`
+      # is rendered on the underlying input when `share_active?` is true.
+      assert has_element?(view, "#share-toggle[checked]")
+      # But the plaintext URL is never re-derived on mount — it's
+      # only ever shown once (see comment in `assign_share_state/2`).
+      refute has_element?(view, "#share-url-row")
+    end
+
+    test "regenerating via off→on replaces the prior share row", %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{name: "Regen DTU", kind: "opendtu", mqtt_username: "regen-1"})
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      assert %{token_hash: first_hash} = Accounts.get_shared_link(user)
+
+      # Toggle off + on again. The transaction in `create_shared_link/1`
+      # deletes the old row before inserting the new one — so we
+      # never end up with two rows for the same user.
+      view |> element("#share-toggle") |> render_click(%{enabled: "false"})
+      refute Accounts.get_shared_link(user)
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      assert %{token_hash: second_hash} = Accounts.get_shared_link(user)
+      assert second_hash != first_hash
+
+      # And only one row exists.
+      user_id = user.id
+      assert Repo.aggregate(from(s in SharedLink, where: s.user_id == ^user_id), :count) == 1
     end
   end
 end

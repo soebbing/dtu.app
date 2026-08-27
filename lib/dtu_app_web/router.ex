@@ -18,6 +18,31 @@ defmodule DtuAppWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Public (anonymous) browser pipeline. Identical to `:browser`
+  # except:
+  #
+  #   * Uses the `root_public.html.heex` root layout — no navbar,
+  #     no burger menu, no user dropdown (none of which apply to a
+  #     share-link visitor anyway, and the `fetch_current_scope_for_user`
+  #     in the standard browser pipeline would still try to read
+  #     the session cookie even though the visit is anonymous).
+  #   * Omits `fetch_current_scope_for_user` — the visitor has no
+  #     account session, and `current_scope` is meaningless to the
+  #     public LiveView.
+  #
+  # CSRF (`protect_from_forgery`) is kept so the LiveView's WS
+  # upgrade still needs a valid token; Phoenix's standard
+  # `phx-click` events go through the same CSRF check.
+  pipeline :public_browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {DtuAppWeb.Layouts, :root_public}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug DtuAppWeb.Plugs.Locale
+  end
+
   # Web Push (VAPID) HTTP endpoints. The browser-side `PushSubscribe`
   # JS hook issues `fetch(/, /push/...)` calls that send `Accept:
   # application/json`. The default `:browser` pipeline has
@@ -130,5 +155,17 @@ defmodule DtuAppWeb.Router do
     get "/users/log-in/:token", UserSessionController, :confirm
     post "/users/log-in", UserSessionController, :create
     delete "/users/log-out", UserSessionController, :delete
+  end
+
+  # Public share link. Resolved by `SharedDashboardLive.mount/3`
+  # via `Accounts.get_user_by_share_token/1`, which hashes the URL
+  # token and looks it up in `shared_links.token_hash`. No
+  # `live_session` wraps this route on purpose — we don't want
+  # `mount_current_scope` to run (it'd assign a nil scope and
+  # render nothing); the public LiveView manages its own assigns.
+  scope "/", DtuAppWeb do
+    pipe_through :public_browser
+
+    live "/s/:token", SharedDashboardLive, :index
   end
 end

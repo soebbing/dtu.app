@@ -11,26 +11,26 @@ msgstr ""
 "Language: en\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1597
+#: lib/dtu_app_web/live/dashboard_live.ex:1663
 #: lib/dtu_app_web/live/device_live/details.ex:407
 #: lib/dtu_app_web/live/device_live/index.ex:325
-#: lib/dtu_app_web/live/notifications_live.ex:627
+#: lib/dtu_app_web/live/notifications_live.ex:625
 #, elixir-autogen, elixir-format
 msgid "%{n} days ago"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1594
+#: lib/dtu_app_web/live/dashboard_live.ex:1660
 #: lib/dtu_app_web/live/device_live/details.ex:406
 #: lib/dtu_app_web/live/device_live/index.ex:324
-#: lib/dtu_app_web/live/notifications_live.ex:626
+#: lib/dtu_app_web/live/notifications_live.ex:624
 #, elixir-autogen, elixir-format
 msgid "%{n} hours ago"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1591
+#: lib/dtu_app_web/live/dashboard_live.ex:1657
 #: lib/dtu_app_web/live/device_live/details.ex:405
 #: lib/dtu_app_web/live/device_live/index.ex:323
-#: lib/dtu_app_web/live/notifications_live.ex:625
+#: lib/dtu_app_web/live/notifications_live.ex:623
 #, elixir-autogen, elixir-format
 msgid "%{n} minutes ago"
 msgstr ""
@@ -95,7 +95,7 @@ msgstr ""
 msgid "9. Changes to this policy"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2323
+#: lib/dtu_app_web/live/dashboard_live.ex:2389
 #, elixir-autogen, elixir-format
 msgid "A DTU (Data Transfer Unit) reads your solar inverter and publishes live telemetry here over MQTT. Add yours to start seeing real-time generation — works with OpenDTU and AhoyDTU firmware."
 msgstr ""
@@ -121,7 +121,7 @@ msgstr ""
 msgid "Add DTU"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2334
+#: lib/dtu_app_web/live/dashboard_live.ex:2400
 #, elixir-autogen, elixir-format
 msgid "Add your first DTU"
 msgstr ""
@@ -151,8 +151,8 @@ msgstr ""
 msgid "Are you sure you want to delete %{name}? This action cannot be undone and all logged telemetry readings will be permanently removed."
 msgstr ""
 
-#: lib/dtu_app_web/components/layouts.ex:80
-#: lib/dtu_app_web/components/layouts.ex:95
+#: lib/dtu_app_web/components/layouts.ex:108
+#: lib/dtu_app_web/components/layouts.ex:123
 #, elixir-autogen, elixir-format
 msgid "Attempting to reconnect"
 msgstr ""
@@ -184,7 +184,7 @@ msgstr ""
 msgid "Checking browser capabilities…"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2475
+#: lib/dtu_app_web/live/dashboard_live.ex:2610
 #, elixir-autogen, elixir-format
 msgid "Choose date"
 msgstr ""
@@ -278,17 +278,17 @@ msgstr ""
 msgid "DTUs"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3189
+#: lib/dtu_app_web/live/dashboard_live.ex:3324
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for Week starting %{period} (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3191
+#: lib/dtu_app_web/live/dashboard_live.ex:3326
 #, elixir-autogen, elixir-format
 msgid "Daily Yields for month of %{month_year} (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2460
+#: lib/dtu_app_web/live/dashboard_live.ex:2595
 #, elixir-autogen, elixir-format
 msgid "Day"
 msgstr ""
@@ -298,7 +298,7 @@ msgstr ""
 msgid "Delete DTU"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4021
+#: lib/dtu_app_web/live/dashboard_live.ex:4156
 #, elixir-autogen, elixir-format
 msgid "Device Connection Status"
 msgstr ""
@@ -401,7 +401,7 @@ msgstr ""
 msgid "Isolated Multi-Tenancy"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4135
+#: lib/dtu_app_web/live/dashboard_live.ex:4270
 #, elixir-autogen, elixir-format
 msgid "Last seen:"
 msgstr ""
@@ -475,17 +475,17 @@ msgstr ""
 
 #: lib/dtu_app_web/components/layouts/root.html.heex:116
 #: lib/dtu_app_web/components/layouts/root.html.heex:191
-#: lib/dtu_app_web/live/dashboard_live.ex:2303
+#: lib/dtu_app_web/live/dashboard_live.ex:2369
 #, elixir-autogen, elixir-format
 msgid "Manage Devices"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2462
+#: lib/dtu_app_web/live/dashboard_live.ex:2597
 #, elixir-autogen, elixir-format
 msgid "Month"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3196
+#: lib/dtu_app_web/live/dashboard_live.ex:3331
 #, elixir-autogen, elixir-format
 msgid "Monthly Yields for %{year} (kWh)"
 msgstr ""
@@ -500,7 +500,7 @@ msgstr ""
 msgid "Navigate to Settings -> MQTT."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2494
+#: lib/dtu_app_web/live/dashboard_live.ex:2629
 #, elixir-autogen, elixir-format
 msgid "Next period"
 msgstr ""
@@ -510,17 +510,17 @@ msgstr ""
 msgid "No DTUs yet. Add one to start receiving telemetry."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2502
+#: lib/dtu_app_web/live/dashboard_live.ex:2637
 #, elixir-autogen, elixir-format
 msgid "No historical data for this period."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3214
+#: lib/dtu_app_web/live/dashboard_live.ex:3349
 #, elixir-autogen, elixir-format
 msgid "No power readings logged for this day."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3924
+#: lib/dtu_app_web/live/dashboard_live.ex:4059
 #, elixir-autogen, elixir-format
 msgid "No yield records logged for this period."
 msgstr ""
@@ -578,7 +578,7 @@ msgstr ""
 msgid "Our site contains links to external third-party websites whose contents we do not control. The respective providers are responsible for the content of linked pages. Linked pages were checked for legality at the time of linking; ongoing monitoring is performed where there is concrete evidence of rights infringements."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2281
+#: lib/dtu_app_web/live/dashboard_live.ex:2347
 #, elixir-autogen, elixir-format
 msgid "PV Power Dashboard"
 msgstr ""
@@ -588,7 +588,7 @@ msgstr ""
 msgid "Passwords are stored using Argon2id. Sessions are signed with a server-side secret and transmitted only over secure cookies. Telemetry connections use per-device usernames and passwords with the option to add TLS via a reverse proxy (e.g. Traefik) in front of the broker."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2671
+#: lib/dtu_app_web/live/dashboard_live.ex:2806
 #, elixir-autogen, elixir-format
 msgid "Peak Power"
 msgstr ""
@@ -598,7 +598,7 @@ msgstr ""
 msgid "Please reach out through the issue tracker of the public source-code repository. No postal address, phone line, or separate support inbox is operated."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2447
+#: lib/dtu_app_web/live/dashboard_live.ex:2582
 #, elixir-autogen, elixir-format
 msgid "Previous period"
 msgstr ""
@@ -613,7 +613,7 @@ msgstr ""
 msgid "Privacy Policy"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3187
+#: lib/dtu_app_web/live/dashboard_live.ex:3322
 #, elixir-autogen, elixir-format
 msgid "Production Curve for %{period} (Watts)"
 msgstr ""
@@ -628,7 +628,7 @@ msgstr ""
 msgid "Real-Time Solar Telemetry System"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2284
+#: lib/dtu_app_web/live/dashboard_live.ex:2350
 #, elixir-autogen, elixir-format
 msgid "Real-time and historic generation stats for your solar converter system."
 msgstr ""
@@ -706,7 +706,7 @@ msgstr ""
 msgid "Solar Generation"
 msgstr ""
 
-#: lib/dtu_app_web/components/layouts.ex:87
+#: lib/dtu_app_web/components/layouts.ex:115
 #, elixir-autogen, elixir-format
 msgid "Something went wrong!"
 msgstr ""
@@ -766,23 +766,23 @@ msgstr ""
 msgid "To start sending telemetry, configure your physical %{kind} hardware with the following MQTT settings:"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1321
+#: lib/dtu_app_web/live/dashboard_live.ex:1387
 #, elixir-autogen, elixir-format
 msgid "Today"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3185
+#: lib/dtu_app_web/live/dashboard_live.ex:3320
 #, elixir-autogen, elixir-format
 msgid "Today's Production Curve (Watts)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3360
-#: lib/dtu_app_web/live/dashboard_live.ex:3542
+#: lib/dtu_app_web/live/dashboard_live.ex:3495
+#: lib/dtu_app_web/live/dashboard_live.ex:3677
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Total"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2359
+#: lib/dtu_app_web/live/dashboard_live.ex:2425
 #, elixir-autogen, elixir-format
 msgid "Total (All DTUs)"
 msgstr ""
@@ -792,7 +792,7 @@ msgstr ""
 msgid "Visualize and Manage Your"
 msgstr ""
 
-#: lib/dtu_app_web/components/layouts.ex:72
+#: lib/dtu_app_web/components/layouts.ex:100
 #, elixir-autogen, elixir-format
 msgid "We can't find the internet"
 msgstr ""
@@ -812,17 +812,17 @@ msgstr ""
 msgid "We'll email you a secure link to sign in — no password needed."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2461
+#: lib/dtu_app_web/live/dashboard_live.ex:2596
 #, elixir-autogen, elixir-format
 msgid "Week"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1565
+#: lib/dtu_app_web/live/dashboard_live.ex:1631
 #, elixir-autogen, elixir-format
 msgid "Week of %{date}"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2320
+#: lib/dtu_app_web/live/dashboard_live.ex:2386
 #, elixir-autogen, elixir-format
 msgid "Welcome! Let's connect your first DTU"
 msgstr ""
@@ -857,12 +857,12 @@ msgstr ""
 msgid "When you register, we store your email address and a hashed version of your password. The email address is used to log you in and (if enabled) to send transactional emails such as magic-link sign-in or account-change confirmations."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2463
+#: lib/dtu_app_web/live/dashboard_live.ex:2598
 #, elixir-autogen, elixir-format
 msgid "Year"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1677
+#: lib/dtu_app_web/live/dashboard_live.ex:1743
 #, elixir-autogen, elixir-format
 msgid "Year %{year}, Week %{week} (starting %{monday})"
 msgstr ""
@@ -887,37 +887,37 @@ msgstr ""
 msgid "dtu.app is a self-hosted telemetry dashboard for solar inverters that publish over MQTT. This policy explains what data we collect, how we use it, and what rights you have. We process personal data in accordance with the EU General Data Protection Regulation (GDPR)."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1588
+#: lib/dtu_app_web/live/dashboard_live.ex:1654
 #: lib/dtu_app_web/live/device_live/details.ex:404
 #: lib/dtu_app_web/live/device_live/index.ex:322
-#: lib/dtu_app_web/live/notifications_live.ex:624
+#: lib/dtu_app_web/live/notifications_live.ex:622
 #, elixir-autogen, elixir-format
 msgid "just now"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4144
+#: lib/dtu_app_web/live/dashboard_live.ex:4279
 #, elixir-autogen, elixir-format
 msgid "never"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4129
+#: lib/dtu_app_web/live/dashboard_live.ex:4264
 #: lib/dtu_app_web/live/device_live/details.html.heex:37
 #, elixir-autogen, elixir-format
 msgid "offline"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3013
+#: lib/dtu_app_web/live/dashboard_live.ex:3148
 #, elixir-autogen, elixir-format
 msgid "on %{date}"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4127
+#: lib/dtu_app_web/live/dashboard_live.ex:4262
 #: lib/dtu_app_web/live/device_live/details.html.heex:36
 #, elixir-autogen, elixir-format
 msgid "online"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2767
+#: lib/dtu_app_web/live/dashboard_live.ex:2902
 #, elixir-autogen, elixir-format
 msgid "Saved this period"
 msgstr ""
@@ -1118,18 +1118,18 @@ msgstr ""
 msgid "the mailbox page"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2779
+#: lib/dtu_app_web/live/dashboard_live.ex:2914
 #, elixir-autogen, elixir-format, fuzzy
 msgid "at %{rate}"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2808
+#: lib/dtu_app_web/live/dashboard_live.ex:2943
 #, elixir-autogen, elixir-format
 msgid "Current Consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2899
-#: lib/dtu_app_web/live/dashboard_live.ex:2931
+#: lib/dtu_app_web/live/dashboard_live.ex:3034
+#: lib/dtu_app_web/live/dashboard_live.ex:3066
 #, elixir-autogen, elixir-format
 msgid "Today's Consumption"
 msgstr ""
@@ -1149,61 +1149,62 @@ msgstr ""
 msgid "Telemetry is published as a single JSON object on the topic %{topic}. Shelly's default MQTT prefix is the device ID (e.g. shellyplus3em-XXXXXXXXXXXX), so set the device's prefix to %{custom_topic} to match the Base Topic shown above."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3391
-#: lib/dtu_app_web/live/dashboard_live.ex:3559
+#: lib/dtu_app_web/live/dashboard_live.ex:3526
+#: lib/dtu_app_web/live/dashboard_live.ex:3694
 #, elixir-autogen, elixir-format
 msgid "Consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2964
+#: lib/dtu_app_web/live/dashboard_live.ex:3099
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak Power Consumed"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2995
+#: lib/dtu_app_web/live/dashboard_live.ex:3130
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak Power Day"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2844
+#: lib/dtu_app_web/live/dashboard_live.ex:2979
 #, elixir-autogen, elixir-format
 msgid "Power consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2865
+#: lib/dtu_app_web/live/dashboard_live.ex:3000
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Total Consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3092
+#: lib/dtu_app_web/live/dashboard_live.ex:3227
 #, elixir-autogen, elixir-format
 msgid "Exported today"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3121
+#: lib/dtu_app_web/live/dashboard_live.ex:3256
 #, elixir-autogen, elixir-format
 msgid "Imported today"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3062
+#: lib/dtu_app_web/live/dashboard_live.ex:3197
 #, elixir-autogen, elixir-format
 msgid "Net export"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3042
-#: lib/dtu_app_web/live/dashboard_live.ex:3423
-#: lib/dtu_app_web/live/dashboard_live.ex:3576
+#: lib/dtu_app_web/live/dashboard_live.ex:3177
+#: lib/dtu_app_web/live/dashboard_live.ex:3558
+#: lib/dtu_app_web/live/dashboard_live.ex:3711
 #, elixir-autogen, elixir-format
 msgid "Net flow"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3063
+#: lib/dtu_app_web/live/dashboard_live.ex:3198
 #, elixir-autogen, elixir-format
 msgid "Net import"
 msgstr ""
 
 #: lib/dtu_app/emails/sun_down_email.ex:68
-#: lib/dtu_app_web/live/dashboard_live.ex:3150
+#: lib/dtu_app_web/live/dashboard_live.ex:3285
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:181
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak power"
 msgstr ""
@@ -1223,13 +1224,13 @@ msgstr ""
 msgid "If you can read this, browser notifications are working."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:500
+#: lib/dtu_app_web/live/notifications_live.ex:498
 #, elixir-autogen, elixir-format
 msgid "Send test notification"
 msgstr ""
 
 #: lib/dtu_app_web/live/notifications_live.ex:181
-#: lib/dtu_app_web/live/notifications_live.ex:486
+#: lib/dtu_app_web/live/notifications_live.ex:484
 #, elixir-autogen, elixir-format
 msgid "Test notification"
 msgstr ""
@@ -1244,17 +1245,17 @@ msgstr ""
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4167
+#: lib/dtu_app_web/live/dashboard_live.ex:4302
 #, elixir-autogen, elixir-format
 msgid "%{count} distinct error message — click to view"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4165
+#: lib/dtu_app_web/live/dashboard_live.ex:4300
 #, elixir-autogen, elixir-format
 msgid "%{count} distinct errors"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4050
+#: lib/dtu_app_web/live/dashboard_live.ex:4185
 #, elixir-autogen, elixir-format
 msgid "%{count} errors, view details"
 msgstr ""
@@ -1275,7 +1276,7 @@ msgstr ""
 msgid "Close error panel"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3183
+#: lib/dtu_app_web/live/dashboard_live.ex:3318
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Consumption Curve for %{period} (Watts)"
 msgstr ""
@@ -1285,7 +1286,7 @@ msgstr ""
 msgid "Errors (%{distinct} distinct, %{occurrences} total occurrences)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4053
+#: lib/dtu_app_web/live/dashboard_live.ex:4188
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Manage device"
 msgstr ""
@@ -1301,7 +1302,7 @@ msgstr ""
 msgid "No errors recorded for this DTU yet."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3181
+#: lib/dtu_app_web/live/dashboard_live.ex:3316
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Today's Consumption Curve (Watts)"
 msgstr ""
@@ -1523,7 +1524,7 @@ msgstr ""
 msgid "Morning sun-up ping"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4085
+#: lib/dtu_app_web/live/dashboard_live.ex:4220
 #, elixir-autogen, elixir-format
 msgid "Read-only MQTT sink — receives a real-time feed of this account's other devices"
 msgstr ""
@@ -1568,7 +1569,7 @@ msgstr ""
 msgid "Your panels are sipping sunshine — first power of the day. Here's to a sunny one!"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4091
+#: lib/dtu_app_web/live/dashboard_live.ex:4226
 #, elixir-autogen, elixir-format
 msgid "sink"
 msgstr ""
@@ -1578,135 +1579,135 @@ msgstr ""
 msgid "☀️ The sun's awake!"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2402
+#: lib/dtu_app_web/live/dashboard_live.ex:2468
 #, elixir-autogen, elixir-format
 msgid "1D"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2416
+#: lib/dtu_app_web/live/dashboard_live.ex:2482
 #, elixir-autogen, elixir-format
 msgid "30D"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2409
+#: lib/dtu_app_web/live/dashboard_live.ex:2475
 #, elixir-autogen, elixir-format
 msgid "7D"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2430
+#: lib/dtu_app_web/live/dashboard_live.ex:2496
 #, elixir-autogen, elixir-format
 msgid "Custom"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3200
+#: lib/dtu_app_web/live/dashboard_live.ex:3335
 #, elixir-autogen, elixir-format
 msgid "Daily Yields — Last 30 days (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3198
+#: lib/dtu_app_web/live/dashboard_live.ex:3333
 #, elixir-autogen, elixir-format
 msgid "Daily Yields — Last 7 days (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1323
+#: lib/dtu_app_web/live/dashboard_live.ex:1389
 #, elixir-autogen, elixir-format
 msgid "Last 30 days"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1322
+#: lib/dtu_app_web/live/dashboard_live.ex:1388
 #, elixir-autogen, elixir-format
 msgid "Last 7 days"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3202
+#: lib/dtu_app_web/live/dashboard_live.ex:3337
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Monthly Yields — Year to date (kWh)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2701
+#: lib/dtu_app_web/live/dashboard_live.ex:2836
 #, elixir-autogen, elixir-format
 msgid "Peak Time"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1325
+#: lib/dtu_app_web/live/dashboard_live.ex:1391
 #, elixir-autogen, elixir-format
 msgid "Selected day"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1327
+#: lib/dtu_app_web/live/dashboard_live.ex:1393
 #, elixir-autogen, elixir-format
 msgid "Selected month"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1326
+#: lib/dtu_app_web/live/dashboard_live.ex:1392
 #, elixir-autogen, elixir-format
 msgid "Selected week"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1328
+#: lib/dtu_app_web/live/dashboard_live.ex:1394
 #, elixir-autogen, elixir-format
 msgid "Selected year"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2735
+#: lib/dtu_app_web/live/dashboard_live.ex:2870
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Self-consumption"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2423
+#: lib/dtu_app_web/live/dashboard_live.ex:2489
 #, elixir-autogen, elixir-format
 msgid "YTD"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:1324
+#: lib/dtu_app_web/live/dashboard_live.ex:1390
 #, elixir-autogen, elixir-format
 msgid "Year to date"
 msgstr ""
 
 #: lib/dtu_app/emails/sun_down_email.ex:65
 #: lib/dtu_app/emails/sun_down_email.ex:70
-#: lib/dtu_app_web/live/dashboard_live.ex:3590
+#: lib/dtu_app_web/live/dashboard_live.ex:3725
 #, elixir-autogen, elixir-format
 msgid "Yesterday"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:3583
+#: lib/dtu_app_web/live/dashboard_live.ex:3718
 #, elixir-autogen, elixir-format
 msgid "Yesterday (day-over-day comparison)"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2637
+#: lib/dtu_app_web/live/dashboard_live.ex:2772
 #, elixir-autogen, elixir-format
 msgid "Yield"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:2605
+#: lib/dtu_app_web/live/dashboard_live.ex:2740
 #, elixir-autogen, elixir-format
 msgid "Current Power"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:528
+#: lib/dtu_app_web/live/notifications_live.ex:526
 #, elixir-autogen, elixir-format
 msgid "Clear all"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:525
+#: lib/dtu_app_web/live/notifications_live.ex:523
 #, elixir-autogen, elixir-format
 msgid "Clear all notifications? This cannot be undone."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:566
-#: lib/dtu_app_web/live/notifications_live.ex:567
+#: lib/dtu_app_web/live/notifications_live.ex:564
+#: lib/dtu_app_web/live/notifications_live.ex:565
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Delete notification"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:601
+#: lib/dtu_app_web/live/notifications_live.ex:599
 #, elixir-autogen, elixir-format
 msgid "Next"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:535
+#: lib/dtu_app_web/live/notifications_live.ex:533
 #, elixir-autogen, elixir-format
 msgid "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
 msgstr ""
@@ -1716,17 +1717,17 @@ msgstr ""
 msgid "Notification history cleared."
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:589
+#: lib/dtu_app_web/live/notifications_live.ex:587
 #, elixir-autogen, elixir-format
 msgid "Page %{page} of %{total}"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:586
+#: lib/dtu_app_web/live/notifications_live.ex:584
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Previous"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:519
+#: lib/dtu_app_web/live/notifications_live.ex:517
 #, elixir-autogen, elixir-format
 msgid "Recent notifications"
 msgstr ""
@@ -1747,7 +1748,7 @@ msgstr ""
 msgid "Offline — no AC power reading has arrived in the last 2 minutes. The MQTT connection may still be alive."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4112
+#: lib/dtu_app_web/live/dashboard_live.ex:4247
 #: lib/dtu_app_web/live/device_live/details.html.heex:18
 #: lib/dtu_app_web/live/device_live/index.html.heex:90
 #, elixir-autogen, elixir-format
@@ -1773,7 +1774,7 @@ msgstr ""
 msgid "Hi,"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4117
+#: lib/dtu_app_web/live/dashboard_live.ex:4252
 #, elixir-autogen, elixir-format
 msgid "Nighttime — MQTT is alive but no AC power reading has arrived. The inverter has stopped emitting telemetry, e.g. after sunset."
 msgstr ""
@@ -1789,7 +1790,7 @@ msgstr ""
 msgid "Notification"
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4122
+#: lib/dtu_app_web/live/dashboard_live.ex:4257
 #, elixir-autogen, elixir-format
 msgid "Offline — no MQTT activity in the last 5 minutes"
 msgstr ""
@@ -1831,7 +1832,7 @@ msgstr ""
 msgid "You're getting this email because you enabled inverter connection alerts."
 msgstr ""
 
-#: lib/dtu_app_web/live/dashboard_live.ex:4128
+#: lib/dtu_app_web/live/dashboard_live.ex:4263
 #, elixir-autogen, elixir-format
 msgid "nighttime"
 msgstr ""
@@ -1846,7 +1847,88 @@ msgstr ""
 msgid "vs yesterday"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:489
+#: lib/dtu_app_web/live/notifications_live.ex:487
 #, elixir-autogen, elixir-format
 msgid "Send a one-off test notification to verify your setup. It will appear in your browser if push is enabled, otherwise it will be delivered to your email address."
 msgstr "Send a one-off test notification to verify your setup. It will appear in your browser if push is enabled, otherwise it will be delivered to your email address."
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:276
+#, elixir-autogen, elixir-format
+msgid "00:00"
+msgstr "00:00"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:279
+#, elixir-autogen, elixir-format
+msgid "12:00"
+msgstr "12:00"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:2557
+#: lib/dtu_app_web/live/dashboard_live.ex:2558
+#, elixir-autogen, elixir-format
+msgid "Copy URL"
+msgstr "Copy URL"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:175
+#, elixir-autogen, elixir-format
+msgid "Current power"
+msgstr "Current power"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:156
+#, elixir-autogen, elixir-format
+msgid "Live"
+msgstr "Live"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:248
+#, elixir-autogen, elixir-format
+msgid "No data yet — check back in a few minutes."
+msgstr "No data yet — check back in a few minutes."
+
+#: lib/dtu_app_web/live/dashboard_live.ex:2517
+#, elixir-autogen, elixir-format
+msgid "Share"
+msgstr "Share"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:137
+#, elixir-autogen, elixir-format
+msgid "Share link unavailable"
+msgstr "Share link unavailable"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:2513
+#, elixir-autogen, elixir-format
+msgid "Share today's dashboard read-only"
+msgstr "Share today's dashboard read-only"
+
+#: lib/dtu_app_web/live/dashboard_live.ex:2552
+#, elixir-autogen, elixir-format
+msgid "Shareable URL"
+msgstr "Shareable URL"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:140
+#, elixir-autogen, elixir-format
+msgid "This link has been revoked, expired, or never existed. Ask the owner to generate a new one."
+msgstr "This link has been revoked, expired, or never existed. Ask the owner to generate a new one."
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:63
+#, elixir-autogen, elixir-format
+msgid "This share link is invalid or has been revoked."
+msgstr "This share link is invalid or has been revoked."
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:244
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Today's power"
+msgstr "Today's power"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:168
+#, elixir-autogen, elixir-format, fuzzy
+msgid "Yield today"
+msgstr "Yield today"
+
+#: lib/dtu_app_web/components/layouts/root_public.html.heex:78
+#, elixir-autogen, elixir-format
+msgid "powered by"
+msgstr "powered by"
+
+#: lib/dtu_app_web/live/shared_dashboard_live.ex:170
+#, elixir-autogen, elixir-format
+msgid "since midnight local"
+msgstr "since midnight local"

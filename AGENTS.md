@@ -635,6 +635,46 @@ French user gets `1 234,5`.
 TZ-aware stat reads: every day-window query is built from the user's
 offset using `DtuApp.Devices.local_day_utc_range/2`.
 
+### 2.5.1 Anonymous share links (`/s/:token`)
+
+The dashboard toolbar exposes a "Share" toggle (pill switch styled
+with a checkbox + `peer-checked:` Tailwind variants — no JS state
+class). Toggling on mints a fresh 32-byte cryptographically random URL
+token and surfaces the plaintext URL once via the existing
+`CopyToClipboard` JS hook. The token's SHA-256 hash is what lands in
+the DB — `lib/dtu_app/accounts/shared_link.ex`. Toggling off deletes
+the row; toggling off-then-on replaces it (one row per user).
+
+**Auth model.** Possession of the URL is the credential. The public
+route `live "/s/:token", SharedDashboardLive, :index` lives outside
+the `live_session :current_scope`, with its own `:public_browser`
+pipeline that uses `root_public.html.heex` and omits
+`fetch_current_scope_for_user`. `SharedDashboardLive` resolves the
+plaintext via `Accounts.get_user_by_share_token/1` (hash lookup) and
+renders `Layouts.public` — no navbar, no user dropdown, only a
+"powered by dtu.app" footer link.
+
+**Privacy surface.** The view is the "Total — all DTUs" combined
+current-day snapshot. No device list, no historical ranges, no user
+email, no MQTT credentials, no notification settings. Live updates
+work via the existing `dtu:reading` PubSub topic; the data fetch
+itself filters by `user_id`, so a reading for someone else's DTU is
+harmless noise (it triggers a re-fetch, which returns the same rows).
+
+**Mount pattern.** The route is intentionally outside any
+`live_session` because the existing `mount_current_scope` hook
+assigns a nil scope and would render nothing useful. The public
+LiveView manages its own assigns — `:share_state` (`:ok` or
+`:invalid`, deliberately not `:layout` which is reserved by
+Phoenix's layout-resolution pipeline — see §11) plus the data
+fetch.
+
+**No expiry by design.** The link works until the owner toggles it
+off or deletes their account. The `on_delete: :delete_all` FK
+cascades so a removed user invalidates outstanding shares
+immediately. If a future design wants TTL, add an `expires_at`
+column with an index; the lookup query needs to filter on it then.
+
 ### 2.6 Devices management (`/devices`)
 
 `DtuAppWeb.DeviceLive.Index` — Live, in-browser CRUD over a stream.
@@ -1339,6 +1379,31 @@ These are the things the next maintainer should know before they
 - **The `date_time_parser` package is the standard dependency for
   date/time parsing.** Don't introduce `timex` / `calendar` /
   moment.js analogues.
+
+- **Don't assign `:layout` from a LiveView.** It's a reserved
+  Phoenix assign read by `Phoenix.Controller.prepare_assigns/4`
+  during the layout-resolution pipeline — anything other than
+  `{Module, "atom"}` (e.g. `{:ok, %User{}}`) blows up with a
+  `CaseClauseError`. Use a domain-named assign instead (the
+  public `/s/:token` LiveView uses `:share_state`).
+
+- **Public share routes live outside `live_session :current_scope`
+  on purpose.** The `mount_current_scope` hook assigns a nil
+  scope and renders nothing useful for an anonymous visitor.
+  The `/s/:token` LiveView manages its own assigns and uses
+  the `:public_browser` router pipeline (see §2.5.1). Don't
+  try to "reuse" the authenticated session — share links are
+  token-authenticated, not session-authenticated.
+
+- **`:binary_id` primary keys require explicit `primary_key: false`
+  on `create table`.** The `SharedLink` schema declares
+  `@primary_key {:id, :binary_id, autogenerate: true}`, so its
+  migration must declare `add :id, :binary_id, primary_key: true`
+  and disable the default bigint pk. Without that, Postgrex
+  sends UUIDs to a `bigint` `id` column and the insert errors
+  with `expected an integer... got <<uuid bytes>>` — the error
+  is on `id`, not on any other column, so it can look like a
+  type-inference bug elsewhere.
 
 ---
 

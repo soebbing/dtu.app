@@ -6,7 +6,7 @@ defmodule DtuApp.Accounts do
   import Ecto.Query, warn: false
   alias DtuApp.Repo
 
-  alias DtuApp.Accounts.{User, UserToken, UserNotifier}
+  alias DtuApp.Accounts.{SharedLink, User, UserToken, UserNotifier}
 
   ## Database getters
 
@@ -341,6 +341,73 @@ defmodule DtuApp.Accounts do
   """
   def delete_user_session_token(token) do
     Repo.delete_all(from(UserToken, where: [token: ^token, context: "session"]))
+    :ok
+  end
+
+  ## Shared links (anonymous current-day dashboard share)
+
+  @doc """
+  Returns the user's existing shared link, or `nil` if sharing is off.
+  """
+  @spec get_shared_link(User.t()) :: SharedLink.t() | nil
+  def get_shared_link(%User{id: user_id}) do
+    Repo.one(from(s in SharedLink, where: s.user_id == ^user_id))
+  end
+
+  @doc """
+  Resolves a plaintext URL token (as received by the public `/s/:token`
+  route) to its owning user, or `nil` if the token doesn't match any
+  row. Looks up by SHA-256 hash so the raw token is never stored.
+  """
+  @spec get_user_by_share_token(String.t()) :: User.t() | nil
+  def get_user_by_share_token(plaintext) when is_binary(plaintext) do
+    hashed = SharedLink.hash(plaintext)
+
+    query =
+      from(s in SharedLink,
+        where: s.token_hash == ^hashed,
+        join: u in User,
+        on: u.id == s.user_id,
+        select: u
+      )
+
+    Repo.one(query)
+  end
+
+  @doc """
+  Create (or replace) the user's active shared link. Returns
+  `{plaintext_token, shared_link}` — the plaintext is what the caller
+  puts into the UI for the user to copy. The plaintext is **not**
+  stored; only its SHA-256 hash lands in the DB.
+
+  If the user already has an active share, it is deleted first inside
+  a transaction so the new token's `unique_index(:shared_links,
+  [:token_hash])` won't collide on a re-toggled row.
+  """
+  @spec create_shared_link(User.t()) ::
+          {:ok, {String.t(), SharedLink.t()}} | {:error, Ecto.Changeset.t()}
+  def create_shared_link(%User{} = user) do
+    {plaintext, hashed} = SharedLink.generate()
+
+    Repo.transact(fn ->
+      Repo.delete_all(from(s in SharedLink, where: s.user_id == ^user.id))
+
+      %SharedLink{user_id: user.id, token_hash: hashed}
+      |> SharedLink.changeset(%{user_id: user.id, token_hash: hashed})
+      |> Repo.insert()
+      |> case do
+        {:ok, link} -> {:ok, {plaintext, link}}
+        other -> other
+      end
+    end)
+  end
+
+  @doc """
+  Revoke the user's shared link (toggle off). No-op if none exists.
+  """
+  @spec revoke_shared_link(User.t()) :: :ok
+  def revoke_shared_link(%User{id: user_id}) do
+    Repo.delete_all(from(s in SharedLink, where: s.user_id == ^user_id))
     :ok
   end
 
