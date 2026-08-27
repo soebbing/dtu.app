@@ -204,7 +204,9 @@ defmodule DtuApp.Repo.Migrations.CreatePasskeys do
   def change do
     create table(:passkeys, primary_key: false) do
       add :id, :binary_id, primary_key: true
-      add :user_id, references(:users, on_delete: :delete_all, type: :binary_id), null: false
+      # `users.id` is `bigserial` (default Ecto `:id` type), so the
+      # FK takes the default too. Do not add `type: :binary_id` here.
+      add :user_id, references(:users, on_delete: :delete_all), null: false
 
       # Opaque browser-chosen identifier; base64url-encoded at the wire
       # boundary so the browser can match it in `allowCredentials`.
@@ -220,8 +222,11 @@ defmodule DtuApp.Repo.Migrations.CreatePasskeys do
       # COSE algorithm identifier (-7 ES256, -257 RS256, …).
       add :alg, :integer, null: false
 
-      # JSON-encoded array of transport hints (e.g. ["usb", "internal"]).
-      add :transports, :text, default: "[]"
+      # Array of transport hints (e.g. ["usb", "internal"]). Stored
+      # as a Postgres text[] column (not a single text/JSON column)
+      # because the schema field is `{:array, :string}` and Ecto
+      # round-trips the array cleanly.
+      add :transports, {:array, :string}, null: false, default: []
 
       add :friendly_name, :string, null: false
       add :last_used_at, :utc_datetime
@@ -235,9 +240,14 @@ defmodule DtuApp.Repo.Migrations.CreatePasskeys do
 end
 ```
 
-`binary_id` matches the rest of the app (`users.id` is `:binary_id`).
-`transports` is text because it's small, read-only after enrolment, and never
-queried inside. No forensic columns (`last_used_ip`, etc.).
+`passkeys.id` is `binary_id` (UUID). `passkeys.user_id` is `bigint` to
+match the existing `users.id` type — the project has not migrated `users`
+to UUIDs yet, so the FK takes the default type for compatibility.
+`transports` is a PostgreSQL `text[]` (array of strings) — not a single
+text column — because the schema represents it as `{:array, :string}` for
+clean Ecto round-tripping of the WebAuthn spec's transport hints.
+Small, read-only after enrolment, never queried inside. No forensic columns
+(`last_used_ip`, etc.).
 
 ### Schema: `lib/dtu_app/accounts/passkey.ex`
 
@@ -250,7 +260,9 @@ defmodule DtuApp.Accounts.Passkey do
 
   @primary_key {:id, :binary_id, autogenerate: true}
   schema "passkeys" do
-    belongs_to :user, User, type: :binary_id
+    # `users.id` is `bigserial` (default Ecto `:id`), so the FK uses
+    # the default type. Do not add `type: :binary_id` here.
+    belongs_to :user, User
 
     field :credential_id, :binary
     field :public_key,    :binary
@@ -412,7 +424,7 @@ Server:
 
 ## 7. Challenge cache
 
-`DtuApp.Accounts.PasskeyChallengeCache` — GenServer with `:protected` ETS
+`DtuApp.Accounts.PasskeyChallengeCache` — GenServer with `:public, :named_table` ETS
 table, single app-wide instance, supervised under `DtuApp.Application`.
 
 | Failure mode | What happens | What we do |

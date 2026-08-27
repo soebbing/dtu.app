@@ -7,7 +7,7 @@ defmodule DtuApp.Accounts.PasskeyChallengeCache do
   one-shot (`fetch_and_delete/1` deletes on read) and TTL-pruned on
   every `put/2` (entries older than 5 minutes are dropped).
 
-  Backed by a `:protected` ETS table owned by this GenServer.
+  Backed by a `:public, :named_table` ETS table owned by this GenServer.
   """
 
   use GenServer
