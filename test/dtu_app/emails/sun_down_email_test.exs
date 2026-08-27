@@ -39,6 +39,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
 
   setup do
     user = %User{email: "u@example.com", locale: "en"}
+
     payload = %{
       title: "Sun down",
       body: ["Today: 12.4 kWh, peak 3,250 W."],
@@ -50,6 +51,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       chart_svg: "<svg viewBox=\"0 0 800 280\"></svg>",
       dashboard_path: "/dashboard"
     }
+
     {:ok, user: user, payload: payload}
   end
 
@@ -66,7 +68,10 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       assert html =~ "Sun down"
     end
 
-    test "html contains all four stat panels (today / yesterday yields + peaks)", %{user: user, payload: p} do
+    test "html contains all four stat panels (today / yesterday yields + peaks)", %{
+      user: user,
+      payload: p
+    } do
       {html, _} = SunDownEmail.render(user, p)
       assert html =~ "12.4"
       assert html =~ "10.1"

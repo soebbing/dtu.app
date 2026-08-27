@@ -36,10 +36,7 @@ defmodule DtuApp.Emails.SunDownEmail do
           label: gettext("View dashboard"),
           url: dashboard_url(payload)
         },
-        note:
-          gettext(
-            "You're getting this email because you enabled end-of-day summaries."
-          ),
+        note: gettext("You're getting this email because you enabled end-of-day summaries."),
         lang: locale || "en"
       )
     end)
@@ -108,7 +105,9 @@ defmodule DtuApp.Emails.SunDownEmail do
 
   defp delta(today, yesterday, unit) when is_number(today) and is_number(yesterday) do
     cond do
-      today == yesterday -> gettext("same as yesterday")
+      today == yesterday ->
+        gettext("same as yesterday")
+
       true ->
         diff = today - yesterday
         sign = if diff > 0, do: "+", else: ""
@@ -140,7 +139,9 @@ defmodule DtuApp.Emails.SunDownEmail do
     |> String.reverse()
   end
 
-  defp dashboard_url(%{dashboard_path: path}), do: DtuAppWeb.Endpoint.url() <> (path || "/dashboard")
+  defp dashboard_url(%{dashboard_path: path}),
+    do: DtuAppWeb.Endpoint.url() <> (path || "/dashboard")
+
   defp dashboard_url(_), do: DtuAppWeb.Endpoint.url() <> "/dashboard"
 
   # Small HTML escaper — gettext msgids ship as source strings but

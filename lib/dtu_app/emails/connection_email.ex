@@ -31,9 +31,7 @@ defmodule DtuApp.Emails.ConnectionEmail do
           url: dashboard_url()
         },
         note:
-          gettext(
-            "You're getting this email because you enabled inverter connection alerts."
-          ),
+          gettext("You're getting this email because you enabled inverter connection alerts."),
         lang: locale || "en"
       )
     end)

@@ -625,15 +625,16 @@ defmodule DtuApp.AccountsTest do
         |> AccountsUser.notification_settings_changeset(%{"notification_channel" => "sms"})
         |> Ecto.Changeset.apply_action(:insert)
 
-      assert "must be one of: push, email, both" in
-               errors_on(changeset).notification_channel
+      assert "must be one of: push, email, both" in errors_on(changeset).notification_channel
     end
 
     test "accepts each valid notification_channel" do
       user = user_fixture()
 
       for value <- ~w(push email both) do
-        cs = AccountsUser.notification_settings_changeset(user, %{"notification_channel" => value})
+        cs =
+          AccountsUser.notification_settings_changeset(user, %{"notification_channel" => value})
+
         assert cs.valid?, "#{value} should be valid: #{inspect(cs.errors)}"
         assert Ecto.Changeset.get_field(cs, :notification_channel) == value
       end

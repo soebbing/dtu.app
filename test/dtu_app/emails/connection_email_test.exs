@@ -35,6 +35,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
 
   setup do
     user = %User{email: "u@example.com", locale: "en"}
+
     payload = %{
       title: "Shed went offline",
       body: ["Inverter Shed stopped reporting at 14:23 UTC."],
@@ -43,6 +44,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
       status: "offline",
       since: ~U[2026-08-27 14:23:00Z]
     }
+
     {:ok, user: user, payload: payload}
   end
 

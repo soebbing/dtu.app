@@ -33,11 +33,13 @@ defmodule DtuApp.Emails.SunUpEmailTest do
 
   setup do
     user = %User{email: "u@example.com", locale: "en"}
+
     payload = %{
       title: "Sun is up — first power of the day",
       body: ["Your array just woke up at 06:14 local time. Here's to a sunny one."],
       event: "sun_up"
     }
+
     {:ok, user: user, payload: payload}
   end
 
