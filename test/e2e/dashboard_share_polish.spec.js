@@ -34,6 +34,29 @@ async function logIn(page) {
   await page.waitForURL(/\/dashboard/, { timeout: 15000 });
 }
 
+// Reset the share-link state to "off" before each test runs so the
+// "toggling on" assertions land on a known starting point. The toggle
+// is a sr-only checkbox; the visible click target is `#share-toggle-label`,
+// which (since the `<label for=…>` fix) toggles the checkbox AND fires
+// `phx-click="toggle_share"`. If the share is currently ON, one click
+// turns it off; if it's already OFF, we leave it alone.
+//
+// Without this, tests run in random order across the file and one test
+// can leave sharing enabled for the next — flipping the "toggling on"
+// click into a "toggling off" click instead, with no spinner visible.
+async function ensureShareOff(page) {
+  await waitForLiveSocketConnected(page);
+
+  const toggle = page.locator('#share-toggle');
+  const isChecked = await toggle.isChecked();
+  if (!isChecked) return;
+
+  await page.locator('#share-toggle-label').click();
+  // Wait for the URL row to vanish — that's the visible signal that
+  // the toggle took effect.
+  await expect(page.locator('#share-url-row')).toBeHidden({ timeout: 5000 });
+}
+
 test.describe('Acceptance: Share-link UX polish', () => {
   test.beforeEach(async ({ page, viewport }) => {
     // Tests in this file span two viewports (desktop click +
@@ -42,7 +65,7 @@ test.describe('Acceptance: Share-link UX polish', () => {
     // (1280×720) is fine for the desktop flow.
     await logIn(page);
     await expect(page.locator('h1')).toContainText('PV Power Dashboard', { timeout: 10000 });
-    await waitForLiveSocketConnected(page);
+    await ensureShareOff(page);
   });
 
   test('share panel sits below the chart, not in the toolbar', async ({ page }) => {
