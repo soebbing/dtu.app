@@ -6,7 +6,7 @@ defmodule DtuApp.Accounts do
   import Ecto.Query, warn: false
   alias DtuApp.Repo
 
-  alias DtuApp.Accounts.{SharedLink, User, UserToken, UserNotifier}
+  alias DtuApp.Accounts.{Passkey, SharedLink, User, UserToken, UserNotifier}
 
   ## Database getters
 
@@ -409,6 +409,97 @@ defmodule DtuApp.Accounts do
   def revoke_shared_link(%User{id: user_id}) do
     Repo.delete_all(from(s in SharedLink, where: s.user_id == ^user_id))
     :ok
+  end
+
+  ## Passkeys
+
+  @doc """
+  Creates a passkey for a user.
+
+  Wraps `Passkey.registration_changeset/2` and inserts the row.
+  Returns `{:ok, %Passkey{}}` on success, `{:error, %Ecto.Changeset{}}`
+  on validation failure.
+
+  ## Examples
+
+      iex> create_passkey(%{user_id: id, credential_id: bytes, public_key: bytes, alg: -7, friendly_name: "MacBook"})
+      {:ok, %Passkey{}}
+  """
+  def create_passkey(attrs) do
+    %Passkey{}
+    |> Passkey.registration_changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Lists every passkey enrolled for a user, oldest first.
+
+  ## Examples
+
+      iex> list_passkeys(user)
+      [%Passkey{}, ...]
+  """
+  def list_passkeys(%DtuApp.Accounts.User{id: user_id}) do
+    from(p in Passkey, where: p.user_id == ^user_id, order_by: [asc: p.inserted_at])
+    |> Repo.all()
+  end
+
+  @doc """
+  Looks up a passkey by its raw `credential_id` bytes (NOT base64url).
+
+  Returns `nil` when no row matches.
+
+  ## Examples
+
+      iex> find_passkey_by_credential_id(<<0x01, 0x02, ...>>)
+      %Passkey{}
+
+      iex> find_passkey_by_credential_id(<<0xff, 0xfe, ...>>)
+      nil
+  """
+  def find_passkey_by_credential_id(credential_id) when is_binary(credential_id) do
+    Repo.get_by(Passkey, credential_id: credential_id)
+  end
+
+  @doc """
+  Deletes a passkey owned by `user`. Refuses to delete a passkey that
+  belongs to someone else.
+
+  Returns `:ok` on successful delete, `{:error, :not_found}` if the
+  passkey doesn't exist or isn't owned by the user.
+
+  ## Examples
+
+      iex> delete_passkey(user, passkey)
+      :ok
+
+      iex> delete_passkey(other_user, passkey)
+      {:error, :not_found}
+  """
+  def delete_passkey(%DtuApp.Accounts.User{id: user_id}, %Passkey{id: id, user_id: user_id}) do
+    {1, _} = Repo.delete_all(from(p in Passkey, where: p.id == ^id))
+    :ok
+  end
+
+  def delete_passkey(_user, _passkey), do: {:error, :not_found}
+
+  @doc """
+  Updates the sign_count and last_used_at on a passkey after a
+  successful authentication. The strict-greater-than sign_count check
+  is enforced by `Passkey.usage_changeset/2`.
+
+  Returns `{:ok, %Passkey{}}` on success, `{:error, %Ecto.Changeset{}}`
+  when the new sign_count doesn't exceed the previous one (replay signal).
+
+  ## Examples
+
+      iex> touch_passkey(passkey, %{sign_count: 6, last_used_at: ~U[2026-08-27 12:00:00Z]})
+      {:ok, %Passkey{sign_count: 6}}
+  """
+  def touch_passkey(%Passkey{} = passkey, attrs) do
+    passkey
+    |> Passkey.usage_changeset(attrs)
+    |> Repo.update()
   end
 
   ## Token helper
