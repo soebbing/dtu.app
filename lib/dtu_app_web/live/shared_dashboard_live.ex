@@ -112,7 +112,11 @@ defmodule DtuAppWeb.SharedDashboardLive do
     |> assign(:stats, stats)
     |> assign(:chart_points, chart_points)
     |> assign(:chart_type, :line)
-    |> assign(:locale, user.locale || "en")
+    # Use the visitor's `Accept-Language` locale (set by `Plugs.Locale`
+    # earlier in the `:public_browser` pipeline), NOT the share owner's
+    # persisted `user.locale`. Visitors want the page in their own
+    # browser language regardless of where the link came from.
+    |> assign(:locale, Gettext.get_locale(DtuAppWeb.Gettext))
   end
 
   # Resolve "today" in the user's local timezone. Mirrors the
@@ -212,7 +216,13 @@ defmodule DtuAppWeb.SharedDashboardLive do
       class="rounded-2xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-5"
     >
       <div class="flex items-center gap-2 text-xs font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">
-        <.icon name={@icon} class="size-4" />
+        <%!-- Icon sits in a coloured square so it reads as an icon,
+           not as a glyph blended into the small-caps label. Matches
+           the auth dashboard's badge style but kept compact (size-9
+           box, size-5 glyph) because the shared view is denser. --%>
+        <span class="inline-flex items-center justify-center size-9 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400">
+          <.icon name={@icon} class="size-5" />
+        </span>
         {@label}
       </div>
       <div class="mt-2 text-3xl font-bold tracking-tight text-zinc-900 dark:text-white tabular-nums">

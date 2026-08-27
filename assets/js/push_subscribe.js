@@ -134,9 +134,33 @@ const PushSubscribe = {
           return
         }
 
+        // Validate the key shape BEFORE handing it to
+        // `urlBase64ToUint8Array` — `atob()` throws
+        // "String contains an invalid character" for any non-base64
+        // input, and the raw error reaches the console as an
+        // unhandled `DOMException`. The VAPID public key per RFC 8292
+        // is the 65-byte uncompressed P-256 point (0x04 + 32-byte X +
+        // 32-byte Y), which encodes to exactly 87 URL-safe-base64
+        // characters. Anything else is either a placeholder, a key
+        // that's been truncated by an env-var mishap, or a future
+        // point-compressed key — none of which we want to attempt to
+        // subscribe with.
+        const publicKey = body.public_key
+        if (!/^[A-Za-z0-9_-]+$/.test(publicKey) || publicKey.length !== 87) {
+          this.log(
+            "warn",
+            "/push/vapid/public_key returned a malformed public_key " +
+              "(len=" +
+              publicKey.length +
+              ", expected 87 URL-safe-base64 chars); skipping push subscribe. " +
+              "Check that the server's VAPID_PUBLIC_KEY env var is a complete keypair."
+          )
+          return
+        }
+
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(body.public_key)
+          applicationServerKey: urlBase64ToUint8Array(publicKey)
         })
         this.log("log", "PushManager.subscribe() resolved")
       } else {

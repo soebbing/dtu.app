@@ -42,6 +42,15 @@ config :dtu_app, DtuApp.Mailer, adapter: Swoosh.Adapters.Test
 # Disable swoosh api client as it is only required for production adapters
 config :swoosh, :api_client, false
 
+# Effectively disable the share-loading-spinner minimum-visible-time in
+# tests. The handler schedules a `Process.send_after/3` for the DB work;
+# setting this very high means the timer never fires during a test, and
+# the test must drive the second phase explicitly via
+# `send(view.pid, {:mint_shared_link | :revoke_shared_link, _})`. Without
+# this, even a 0-ms timer races with the click response and the
+# loading state is gone before the test can assert on it.
+config :dtu_app, :share_load_delay_ms, 60_000
+
 # Print only warnings and errors during test
 config :logger, level: :warning
 
@@ -64,11 +73,16 @@ config :phoenix,
 #
 # Both keys are valid URL-safe base64 P-256 points generated once with
 # `WebPush.Vapid.generate_keypair/0` and hard-coded here for stability.
+# The public key is exactly 87 base64url chars (= ceil(65 * 4 / 3)) —
+# the 0x04 uncompressed-point header plus 32 bytes of X and 32 bytes of
+# Y. Anything else will trip the `atob("String contains an invalid
+# character")` check in `assets/js/push_subscribe.js` when the browser
+# tries to subscribe.
 config :web_push,
   finch: DtuAppWeb.WebPushFinch,
   vapid: %{
     public_key:
-      "BPEkkVKqVKK7gR7g5dZQXz3Lp1zQ0nYfR2zL3lUjk1z7p5VnY2Q0wT8aM5cN9bO0sZc2vF3dXzQ0vW8aM5cN9bO0sZc2vF3dXw",
-    private_key: "DtKMYV5z0qL3lUjk1z7p5VnY2Q0wT8aM5cN9bO0sZc2vF3dXzQ0vW8aM5cN9bO0s",
+      "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0",
+    private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
     subject: "mailto:test@localhost"
   }
