@@ -520,6 +520,87 @@ defmodule DtuAppWeb.PasskeyControllerTest do
     end
   end
 
+  # ─────────────────────────── end-to-end ───────────────────────────
+
+  describe "end-to-end ceremony" do
+    test "enroll → log out → log back in", %{conn: conn} do
+      user = user_fixture() |> set_password()
+      conn = log_in_user(conn, user)
+
+      # The credential_id is generated up front so the assertion we build
+      # for the authentication leg carries the SAME id the registration
+      # leg enrolled — the auth controller looks the Passkey row up by
+      # credential_id, and `fake_attestation/3` no longer hands one back.
+      cred_id = :crypto.strong_rand_bytes(32)
+
+      # ---- Enroll ----
+      begin_resp =
+        post(conn, "/auth/passkey/registration/begin", %{"friendly_name" => "E2E Key"})
+
+      assert begin_resp.status == 200
+      %{"request_id" => reg_id} = json_response(begin_resp, 200)
+      challenge = fetch_challenge_from_cache(reg_id)
+
+      attestation = fake_attestation(@rp_id, challenge, cred_id)
+
+      # `Phoenix.ConnTest.dispatch/5` doesn't forward `resp_cookies` between
+      # requests, so the `passkey_request_id` cookie has to be replayed by
+      # hand (see the module doc).
+      conn = put_req_cookie(conn, "passkey_request_id", reg_id)
+
+      finish_resp =
+        post(conn, "/auth/passkey/registration/finish", %{
+          "request_id" => reg_id,
+          "attestation_response" => attestation
+        })
+
+      assert finish_resp.status == 201
+      assert is_binary(json_response(finish_resp, 201)["passkey_id"])
+
+      enrolled = Repo.one!(Passkey)
+      assert enrolled.credential_id == cred_id
+      assert enrolled.sign_count == 0
+      assert enrolled.last_used_at == nil
+
+      # ---- Log out ----
+      logout_resp = delete(conn, "/users/log-out")
+      assert logout_resp.status == 302
+
+      # ---- Authenticate ----
+      # A fresh conn carries no session cookie, so `require_anonymous/2`
+      # on the authentication endpoints passes.
+      fresh_conn = build_conn()
+
+      auth_begin = post(fresh_conn, "/auth/passkey/authentication/begin", %{})
+      assert auth_begin.status == 200
+      %{"request_id" => auth_id} = json_response(auth_begin, 200)
+      auth_challenge = fetch_challenge_from_cache(auth_id)
+
+      assertion = fake_assertion(@rp_id, auth_challenge, %{credential_id: cred_id})
+
+      fresh_conn = put_req_cookie(fresh_conn, "passkey_request_id", auth_id)
+
+      auth_finish =
+        post(fresh_conn, "/auth/passkey/authentication/finish", %{
+          "request_id" => auth_id,
+          "assertion_response" => assertion
+        })
+
+      assert auth_finish.status == 200
+      assert json_response(auth_finish, 200)["redirect"] == "/"
+
+      # Session cookie set — the user is logged back in purely via the
+      # passkey they just enrolled.
+      assert auth_finish.resp_cookies["_dtu_app_key"] != nil
+
+      # sign_count advanced (mock returns stored + 1) and the row was touched.
+      pk = Repo.one!(Passkey)
+      assert pk.id == enrolled.id
+      assert pk.sign_count > enrolled.sign_count
+      assert pk.last_used_at != nil
+    end
+  end
+
   # ─────────────────────────── helpers ───────────────────────────
 
   # Re-read the challenge without deleting it so we can still POST to
