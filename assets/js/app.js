@@ -36,6 +36,7 @@ import {NotificationPermission} from "./notification_permission.js"
 import {Notifications} from "./notifications.js"
 import {OfflineBanner} from "./offline_banner.js"
 import {PushSubscribe} from "./push_subscribe.js"
+import {PasskeyFlow} from "./hooks/passkey_flow.js"
 
 // Network Status Hook
 //
@@ -189,7 +190,8 @@ const liveSocket = new LiveSocket("/live", Socket, {
     NotificationPermission,
     Notifications,
     OfflineBanner,
-    PushSubscribe
+    PushSubscribe,
+    PasskeyFlow
   },
 })
 
