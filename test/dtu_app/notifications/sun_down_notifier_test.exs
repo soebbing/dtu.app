@@ -106,10 +106,17 @@ defmodule DtuApp.Notifications.SunDownTest do
 
       assert payload.event == "sun_down"
       assert payload.title =~ "daily summary"
-      assert payload.body =~ "Today:"
+      assert Enum.any?(payload.body, &(&1 =~ "Today:"))
       assert payload.tag =~ "sun_down:"
       assert payload.today_yield_kwh == 0.0
       assert payload.peak_power_w == 0.0
+      # Email-shape keys must be present so SunDownEmail.render/2
+      # doesn't fall back to "—" placeholders for yesterday's stats.
+      assert payload.yesterday_yield_kwh == 0.0
+      assert payload.peak_yesterday_w == 0.0
+      assert is_binary(payload.chart_svg)
+      assert payload.chart_svg =~ ~r/^<svg/
+      assert payload.dashboard_path == "/dashboard"
     end
   end
 
@@ -209,6 +216,11 @@ defmodule DtuApp.Notifications.SunDownTest do
       assert_receive {:notification, payload}, 1_000
       assert payload.event == "sun_down"
       assert payload.title =~ "daily summary"
+      # Email-shape extras are populated at fire time.
+      assert payload.yesterday_yield_kwh == 0.0
+      assert payload.peak_yesterday_w == 0.0
+      assert is_binary(payload.chart_svg)
+      assert payload.dashboard_path == "/dashboard"
     end
 
     test "the freshness window is per-device (one stale, one fresh keeps the timer off)" do

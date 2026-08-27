@@ -79,6 +79,7 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   alias DtuApp.Devices.Dtu
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.DtuConnectionState
   alias DtuApp.Repo
   alias DtuApp.Time
@@ -437,12 +438,46 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   defp fire(%User{} = user, name, status) do
     Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-      Notifications.broadcast(user.id, %{
+      # Status is the atom (`:went_offline` / `:back_online`) — the
+      # dispatcher reads `Push.native_enabled?/2` (which has explicit
+      # atom- and string-keyed clauses) so the atom flows through
+      # unchanged. The `:status` field on the payload mirrors it for
+      # the email / history path.
+      payload = %{
         event: "dtu_connection",
         title: dtu_title(status, name),
-        body: dtu_body(status, name),
-        tag: "dtu:#{name}"
-      })
+        # `body` is a list (the email/layout pipeline expects a list
+        # of paragraphs; the dispatcher's history-row insert coerces
+        # it back to a single string for the `:body` column).
+        body: [dtu_body(status, name)],
+        # Existing tag semantics kept (Ruling F: prefer existing tag
+        # unless the brief's version adds clear value). The brief's
+        # `dtu_connection:#{name}:#{status}` would dedup by status,
+        # which is redundant — the producer-side `not was_disconnected?`
+        # / `disconnected?: true` gates already suppress duplicate
+        # fires within a single offline period.
+        tag: "dtu:#{name}",
+        # Email + history extras. `:dtu_name` and `:status` are the
+        # data the email subject + body lines key off; `:since` is
+        # the moment the producer observed the state change (used by
+        # the email's "at HH:MM" line and by history drill-down UIs).
+        dtu_name: name,
+        status: status,
+        since: DateTime.utc_now()
+      }
+
+      # In-page PubSub broadcast for the dashboard LiveView hook
+      # (`Notifications.subscribe(user.id)` →
+      # `handle_info({:notification, payload}, ...)`). The
+      # dispatcher fan-out below handles push + email + history;
+      # both call sites are independent and safe.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        Notifications.user_topic(user.id),
+        {:notification, payload}
+      )
+
+      Dispatcher.fire(user, "dtu_connection", payload)
     end)
   end
 

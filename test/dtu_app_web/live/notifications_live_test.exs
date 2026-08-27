@@ -216,6 +216,66 @@ defmodule DtuAppWeb.NotificationsLiveTest do
     end
   end
 
+  describe "Channel-chip selector" do
+    # Renders the "Deliver via: Notification | Email | Both" segmented
+    # control beneath the three notification checkboxes. The form
+    # already accepts `notification_channel` via the extended
+    # `notification_settings_changeset/2` (Task 1); these tests pin
+    # the server-rendered contract so a future regression on the
+    # LiveView form doesn't silently drop the new field.
+
+    setup :register_and_log_in_user
+
+    test "renders three radio chips with the channel labels", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      assert html =~ "Deliver via"
+      assert html =~ "Pick how you want to receive the notifications above"
+      # Each chip's visible label is the radio's sibling `<span>`.
+      assert html =~ ~s(value="push")
+      assert html =~ ~s(value="email")
+      assert html =~ ~s(value="both")
+    end
+
+    test "default notification_channel is push (the schema default)", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      # The push chip is the schema default; the rendered `checked`
+      # attribute must reflect it so the form opens with the right
+      # selection on first visit.
+      assert html =~ ~s(name="user\[notification_channel\]")
+    end
+
+    test "email channel renders the amber warning when the user is not confirmed", %{
+      conn: conn,
+      user: user
+    } do
+      # `user_fixture/0` (used by `register_and_log_in_user`) confirms
+      # the user via the magic-link path, so we have to clear
+      # `confirmed_at` via the raw repo to reach the unconfirmed
+      # branch of the template. Same with `notification_channel`:
+      # the save handler rebuilds the form from the in-memory user
+      # struct (not the freshly-returned DB struct), so a
+      # `render_submit/1` round-trip would not change the form's
+      # `:notification_channel` value. Seed both fields directly.
+      import Ecto.Query
+
+      _ =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [confirmed_at: nil, notification_channel: "email"]
+        )
+
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      # `=~` does not decode HTML entities, so the apostrophe in
+      # "isn't" comes through as `&#39;`. Use a substring that
+      # doesn't cross the apostrophe.
+      assert html =~ "your email address isn"
+      assert html =~ "Visit account settings"
+    end
+  end
+
   describe "Test notification button" do
     # The /notifications page lets the user fire a synthetic notification
     # via the `test_notification` phx-click handler. The button is gated

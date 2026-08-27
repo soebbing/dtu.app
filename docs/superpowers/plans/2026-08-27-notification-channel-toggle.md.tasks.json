@@ -1,0 +1,80 @@
+{
+  "planPath": "docs/superpowers/plans/2026-08-27-notification-channel-toggle.md",
+  "tasks": [
+    {
+      "id": 0,
+      "subject": "Task 1: Add notification_channel to User schema + migration",
+      "status": "pending",
+      "description": "**Goal:** Persist the user's channel preference (`\"push\"`, `\"email\"`, or `\"both\"`) on `users`, defaulting existing rows to `\"push\"`.\n\n**Files:**\n- Create: `priv/repo/migrations/20260827100000_add_notification_channel_to_users.exs`\n- Modify: `lib/dtu_app/accounts/user.ex:55` (add `@valid_channels`) and `lib/dtu_app/accounts/user.ex:165-168` (extend changeset)\n\n**Acceptance Criteria:**\n- [ ] Migration runs forward and back; existing rows get `notification_channel = \"push\"`.\n- [ ] `User.notification_settings_changeset(%{}, %{\"notification_channel\" => \"email\"})` returns a valid changeset with `:notification_channel` set to `\"email\"`.\n- [ ] `User.notification_settings_changeset(%{}, %{\"notification_channel\" => \"sms\"})` returns a changeset with `:notification_channel` error \"must be one of: push, email, both\".\n- [ ] `User.notification_settings_changeset(%{}, %{})` keeps existing value (no overwrite on empty cast).\n\n**Verify:** `mix ecto.migrate && mix test test/dtu_app/accounts_test.exs:554`\n\n```json:metadata\n{\"files\": [\"priv/repo/migrations/20260827100000_add_notification_channel_to_users.exs\", \"lib/dtu_app/accounts/user.ex\", \"test/dtu_app/accounts_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/accounts_test.exs\", \"acceptanceCriteria\": [\"migration runs forward and back\", \"valid channels accepted\", \"invalid channels rejected with inclusion error\", \"empty cast preserves existing value\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 1,
+      "subject": "Task 2: Expose Push.native_enabled?/2",
+      "status": "pending",
+      "description": "**Goal:** Stop `Notifications.broadcast/2` from owning the push-fan-out decision. Lift `native_push_enabled?/2` to `DtuApp.Push` so both push and email code paths can ask the same question.\n\n**Files:**\n- Modify: `lib/dtu_app/push.ex:71-83`\n- Modify: `lib/dtu_app/notifications.ex:162-238`\n\n**Acceptance Criteria:**\n- [ ] `Push.native_enabled?(%User{}, %{\"event\" => \"sun_down\"})` returns `true` iff `user.notify_sun_down == true`.\n- [ ] `Push.native_enabled?/2` accepts both string- and atom-keyed maps.\n- [ ] `Push.native_enabled?/2` returns `true` for unknown events and malformed payloads.\n\n**Verify:** `mix test test/dtu_app/push_test.exs test/dtu_app/notifications_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/push.ex\", \"lib/dtu_app/notifications.ex\", \"test/dtu_app/push_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/push_test.exs\", \"acceptanceCriteria\": [\"predicate exposed and tested for all three events plus unknown events\", \"string- and atom-keyed payload shapes both handled\", \"existing notifications tests still compile\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 2,
+      "subject": "Task 3: Dispatcher + Notifications.broadcast shim",
+      "status": "pending",
+      "blockedBy": [1],
+      "description": "**Goal:** A new `DtuApp.Notifications.Dispatcher` is the single fan-out point for one notification fire. `Notifications.broadcast/2` becomes a shim that records the history row (with the new `:channel` column) and delegates to `Dispatcher.fire/3`.\n\n**Files:**\n- Create: `lib/dtu_app/notifications/dispatcher.ex`\n- Modify: `lib/dtu_app/notifications.ex:162-205`\n- Create: `lib/dtu_app/emails/connection_email.ex` (stub)\n- Create: `lib/dtu_app/emails/sun_up_email.ex` (stub)\n- Create: `lib/dtu_app/emails/sun_down_email.ex` (stub)\n- Create: `priv/repo/migrations/20260827100001_add_channel_to_notifications.exs`\n- Modify: `lib/dtu_app/notifications/notification.ex`\n- Create: `test/dtu_app/notifications/dispatcher_test.exs`\n\n**Acceptance Criteria:**\n- [ ] `Dispatcher.fire/3` calls `Push.deliver/2` only when channel is `push` or `both` AND `Push.native_enabled?/2` says yes.\n- [ ] `Dispatcher.fire/3` queues an email only when channel is `email` or `both` AND the user has a confirmed email.\n- [ ] History `notifications` row records `channel` matching the user's preference at fire time.\n- [ ] Push raising does not abort the email path; email failing does not abort anything else.\n\n**Verify:** `mix test test/dtu_app/notifications_test.exs test/dtu_app/notifications/dispatcher_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/notifications/dispatcher.ex\", \"lib/dtu_app/notifications.ex\", \"lib/dtu_app/notifications/notification.ex\", \"priv/repo/migrations/20260827100001_add_channel_to_notifications.exs\", \"lib/dtu_app/emails/connection_email.ex\", \"lib/dtu_app/emails/sun_up_email.ex\", \"lib/dtu_app/emails/sun_down_email.ex\", \"test/dtu_app/notifications/dispatcher_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/notifications/dispatcher_test.exs\", \"acceptanceCriteria\": [\"push path byte-identical via Dispatcher\", \"email path best-effort and locale-aware\", \"history row records channel correctly\", \"failure isolation: push raise does not abort email\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 3,
+      "subject": "Task 4: SunDownChart inline SVG renderer",
+      "status": "pending",
+      "description": "**Goal:** Render an inline SVG of today's power curve for the `sun_down` email. Light theme only, single emerald line, `viewBox 0 0 800 280`.\n\n**Files:**\n- Create: `lib/dtu_app/emails/sun_down_chart.ex`\n- Create: `test/dtu_app/emails/sun_down_chart_test.exs`\n\n**Acceptance Criteria:**\n- [ ] `SunDownChart.render(%User{}, %Date{})` returns a string starting with `<svg xmlns=\"...\" viewBox=\"0 0 800 280\"` and containing exactly one `<path>`.\n- [ ] The path's `stroke` is the brand emerald `#10b981`.\n- [ ] When the user has no devices, the returned SVG contains the localised \"no chart available\" text.\n\n**Verify:** `mix test test/dtu_app/emails/sun_down_chart_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/emails/sun_down_chart.ex\", \"test/dtu_app/emails/sun_down_chart_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/emails/sun_down_chart_test.exs\", \"acceptanceCriteria\": [\"SVG with brand viewBox returned\", \"single emerald path\", \"graceful degradation to no-chart message\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 4,
+      "subject": "Task 5: ConnectionEmail + SunUpEmail templates",
+      "status": "pending",
+      "blockedBy": [2],
+      "description": "**Goal:** Replace the stub `ConnectionEmail.render/2` and `SunUpEmail.render/2` with real email templates. Both are short — one paragraph of body — and share the existing `Layout.render/1` machinery.\n\n**Files:**\n- Modify: `lib/dtu_app/emails/connection_email.ex`\n- Modify: `lib/dtu_app/emails/sun_up_email.ex`\n- Create: `test/dtu_app/emails/connection_email_test.exs`\n- Create: `test/dtu_app/emails/sun_up_email_test.exs`\n\n**Acceptance Criteria:**\n- [ ] `ConnectionEmail.render/2` returns `{html, text}` where `html` contains the inverter name, status word, and timestamp.\n- [ ] `ConnectionEmail.render/2` renders `<html lang=\"...\">` matching `user.locale`.\n- [ ] `SunUpEmail.render/2` renders `payload.title` and `payload.body` verbatim.\n- [ ] For `en`, `de`, `fr` the rendered HTML contains a locale-distinct substring (e.g., German \"verbunden\" for online status).\n\n**Verify:** `mix test test/dtu_app/emails/connection_email_test.exs test/dtu_app/emails/sun_up_email_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/emails/connection_email.ex\", \"lib/dtu_app/emails/sun_up_email.ex\", \"test/dtu_app/emails/connection_email_test.exs\", \"test/dtu_app/emails/sun_up_email_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/emails/connection_email_test.exs test/dtu_app/emails/sun_up_email_test.exs\", \"acceptanceCriteria\": [\"html + text tuple returned\", \"locale respected\", \"status word localised\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 5,
+      "subject": "Task 6: SunDownEmail rich payload",
+      "status": "pending",
+      "blockedBy": [3],
+      "description": "**Goal:** Replace the `SunDownEmail.render/2` stub with the full email: 4 stat panels (today yield / yesterday yield / peak power / peak yesterday), inline chart SVG, dashboard CTA, all localised.\n\n**Files:**\n- Modify: `lib/dtu_app/emails/sun_down_email.ex`\n- Create: `test/dtu_app/emails/sun_down_email_test.exs`\n\n**Acceptance Criteria:**\n- [ ] HTML contains all four panels with formatted numbers.\n- [ ] HTML includes the chart SVG (when `chart_svg` is non-nil).\n- [ ] HTML includes the dashboard button with localised label.\n- [ ] For `en`/`de`/`fr`, a locale-distinct substring is present.\n- [ ] When `chart_svg` is nil, body degrades to \"No chart available\".\n- [ ] When yesterday values are nil, those fields show \"—\".\n\n**Verify:** `mix test test/dtu_app/emails/sun_down_email_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/emails/sun_down_email.ex\", \"test/dtu_app/emails/sun_down_email_test.exs\"], \"verifyCommand\": \"mix test test/dtu_app/emails/sun_down_email_test.exs\", \"acceptanceCriteria\": [\"all four panels rendered\", \"chart SVG included when present\", \"dashboard button present\", \"en/de/fr locale assertions pass\", \"graceful degradation when chart or yesterday missing\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 6,
+      "subject": "Task 7: Producers call Dispatcher.fire/3",
+      "status": "pending",
+      "blockedBy": [2, 3],
+      "description": "**Goal:** Each producer (`SunDown`, `SunUp`, `DtuConnection`) calls `Dispatcher.fire/3` with a structured payload containing all keys the email templates need.\n\n**Files:**\n- Modify: `lib/dtu_app/notifications/sun_down_notifier.ex:381-407`\n- Modify: `lib/dtu_app/notifications/sun_up_notifier.ex:320-331`\n- Modify: `lib/dtu_app/notifications/dtu_connection_notifier.ex`\n\n**Acceptance Criteria:**\n- [ ] `SunDown.try_fire/1` calls `Dispatcher.fire(user, \"sun_down\", payload)` with `chart_svg = SunDownChart.render(user, today)`.\n- [ ] `SunUp.fire/2` calls `Dispatcher.fire(user, \"sun_up\", payload)`.\n- [ ] `DtuConnectionNotifier.fire/3` calls `Dispatcher.fire(user, \"dtu_connection\", payload)` with `dtu_name`, `status`, `since`.\n- [ ] All calls happen inside the producer's existing `Gettext.with_locale/2` wrapper.\n\n**Verify:** `mix test test/dtu_app/notifications/`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app/notifications/sun_down_notifier.ex\", \"lib/dtu_app/notifications/sun_up_notifier.ex\", \"lib/dtu_app/notifications/dtu_connection_notifier.ex\"], \"verifyCommand\": \"mix test test/dtu_app/notifications/\", \"acceptanceCriteria\": [\"all three producers reach Dispatcher.fire/3\", \"chart_svg computed at sun_down fire time\", \"structured payloads carry event-specific keys\", \"existing preference gate behaviour preserved\"], \"modelTier\": \"standard\"}\n```"
+    },
+    {
+      "id": 7,
+      "subject": "Task 8: Channel-chip UI in NotificationsLive",
+      "status": "pending",
+      "blockedBy": [0],
+      "description": "**Goal:** Render the \"Deliver via: Notification | Email | Both\" segmented control beneath the three checkboxes. Save it through `notification_settings_changeset/2`.\n\n**Files:**\n- Modify: `lib/dtu_app_web/live/notifications_live.ex` (form template + handler)\n\n**Acceptance Criteria:**\n- [ ] Three radio chips render in the form (single select).\n- [ ] Submitting saves `notification_channel` via the existing `handle_event(\"save\", ...)`.\n- [ ] Reloading the page renders the previously saved selection.\n- [ ] If the user picks `Email`/`Both` and has no confirmed email, an inline amber notice appears.\n\n**Verify:** `mix test test/dtu_app_web/live/notifications_live_test.exs`\n\n```json:metadata\n{\"files\": [\"lib/dtu_app_web/live/notifications_live.ex\"], \"verifyCommand\": \"mix test test/dtu_app_web/live/notifications_live_test.exs\", \"acceptanceCriteria\": [\"three chips rendered\", \"form submits with selected channel\", \"selection persists across reload\", \"amber warning shown for unconfirmed email + email/both choice\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 8,
+      "subject": "Task 9: i18n strings (en/de/fr)",
+      "status": "pending",
+      "blockedBy": [4, 5, 7],
+      "description": "**Goal:** All new strings (UI chip labels, email subject prefixes, panel headings) are localised in `en`, `de`, `fr`.\n\n**Files:**\n- Modify: `priv/gettext/en/LC_MESSAGES/default.po`\n- Modify: `priv/gettext/de/LC_MESSAGES/default.po`\n- Modify: `priv/gettext/fr/LC_MESSAGES/default.po`\n\n**Acceptance Criteria:**\n- [ ] `mix gettext.extract --merge` extracts all new strings.\n- [ ] Each new msgid has a msgstr in all three `.po` files.\n- [ ] `mix gettext.check` exits 0.\n- [ ] `mix test test/dtu_app/emails/` still passes (locale assertions hold).\n\n**Verify:** `mix gettext.check && mix test test/dtu_app/emails/`\n\n```json:metadata\n{\"files\": [\"priv/gettext/en/LC_MESSAGES/default.po\", \"priv/gettext/de/LC_MESSAGES/default.po\", \"priv/gettext/fr/LC_MESSAGES/default.po\"], \"verifyCommand\": \"mix gettext.check\", \"acceptanceCriteria\": [\"all new strings translated in all three locales\", \"gettext.check passes\", \"email locale tests still pass\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 9,
+      "subject": "Task 10: E2E spec for channel toggle",
+      "status": "pending",
+      "blockedBy": [7],
+      "description": "**Goal:** A Playwright spec asserts the channel chip UI works end-to-end: select `Email`, save, reload, see `Email` chip selected.\n\n**Files:**\n- Create: `e2e/specs/notifications-channel-toggle.spec.js`\n\n**Acceptance Criteria:**\n- [ ] Spec selects `Email`, saves, reloads, asserts the chip is still selected.\n- [ ] Spec selects `Both`, saves, reloads, asserts the chip is still selected.\n- [ ] Spec is part of the existing Playwright suite.\n\n**Verify:** `npm run test:e2e -- notifications-channel-toggle`\n\n```json:metadata\n{\"files\": [\"e2e/specs/notifications-channel-toggle.spec.js\"], \"verifyCommand\": \"npm run test:e2e -- notifications-channel-toggle\", \"acceptanceCriteria\": [\"selection persists across reload for Email\", \"selection persists across reload for Both\", \"spec runs in existing Playwright suite\"], \"modelTier\": \"mechanical\"}\n```"
+    },
+    {
+      "id": 10,
+      "subject": "Task 11: End-to-end integration test + full suite",
+      "status": "pending",
+      "blockedBy": [6, 8],
+      "description": "**Goal:** One end-to-end test that drives the whole pipeline (user set to `:both`, fire a sun_down, assert email sent via Swoosh AND history row records `channel: \"both\"`). Run the full test suite and verify nothing regressed.\n\n**Files:**\n- Modify: `test/dtu_app/notifications_test.exs`\n\n**Acceptance Criteria:**\n- [ ] `mix test test/dtu_app/notifications_test.exs` passes with the new end-to-end assertion.\n- [ ] `mix test` full suite passes.\n- [ ] `mix gettext.check` passes.\n- [ ] `mix format && mix credo --strict || true` clean.\n\n**Verify:** `mix test && mix gettext.check && mix format --check-formatted`\n\n```json:metadata\n{\"files\": [\"test/dtu_app/notifications_test.exs\"], \"verifyCommand\": \"mix test\", \"acceptanceCriteria\": [\"channel='both' integration test passes\", \"full test suite green\", \"gettext.check passes\", \"format passes\"], \"modelTier\": \"standard\"}\n```"
+    }
+  ],
+  "lastUpdated": "2026-08-27T00:00:00Z"
+}

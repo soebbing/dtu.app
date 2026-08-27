@@ -2,7 +2,7 @@ defmodule DtuApp.PushTest do
   @moduledoc """
   Unit tests for `DtuApp.Push`.
 
-  Two surface paths exercised here:
+  Surface paths exercised here:
 
     1. **`public_key/0`** — the VAPID public key exposed by
        `DtuApp.Push` (which the `/push/vapid/public_key` controller
@@ -17,6 +17,11 @@ defmodule DtuApp.PushTest do
        covered by the dispatcher in conjunction with `web_push`,
        which has its own test suite in `deps/web_push/test/`.
 
+    3. **`native_enabled?/2`** — per-event preference gate lifted
+       out of `DtuApp.Notifications` so both push and email
+       dispatchers can ask the same question. Mirrors the old
+       `native_push_enabled?/2` clauses byte-for-byte.
+
   We don't mock `WebPush.send/3` here — the VAPID-config-aware
   branches are deterministic, and adding a mocking dependency just
   for this would be more friction than it's worth. The end-to-end
@@ -25,7 +30,16 @@ defmodule DtuApp.PushTest do
   """
   use ExUnit.Case, async: false
 
+  alias DtuApp.Accounts.User
   alias DtuApp.Push
+
+  defp user_with(opts \\ []) do
+    %User{
+      notify_dtu_connection: Keyword.get(opts, :dtu, false),
+      notify_sun_down: Keyword.get(opts, :down, false),
+      notify_sun_up: Keyword.get(opts, :up, false)
+    }
+  end
 
   describe "public_key/0" do
     test "returns nil when no VAPID config is set" do
@@ -170,6 +184,29 @@ defmodule DtuApp.PushTest do
           Application.delete_env(:web_push, :vapid)
         end
       end
+    end
+  end
+
+  describe "native_enabled?/2" do
+    test "string-keyed event matches notify_* fields" do
+      u = user_with(dtu: true, down: false, up: true)
+      assert Push.native_enabled?(u, %{"event" => "dtu_connection"})
+      refute Push.native_enabled?(u, %{"event" => "sun_down"})
+      assert Push.native_enabled?(u, %{"event" => "sun_up"})
+    end
+
+    test "atom-keyed event matches notify_* fields" do
+      u = user_with(dtu: false, down: true, up: false)
+      assert Push.native_enabled?(u, %{event: :sun_down})
+      refute Push.native_enabled?(u, %{event: :dtu_connection})
+    end
+
+    test "unknown event passes through" do
+      assert Push.native_enabled?(user_with(), %{"event" => "test"})
+    end
+
+    test "malformed payload passes through" do
+      assert Push.native_enabled?(user_with(), %{})
     end
   end
 end

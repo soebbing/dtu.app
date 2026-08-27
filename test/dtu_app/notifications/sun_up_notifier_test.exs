@@ -79,8 +79,11 @@ defmodule DtuApp.Notifications.SunUpTest do
       assert payload.event == "sun_up"
       # Title carries the playful tone the user asked for.
       assert payload.title =~ "sun"
-      # Body mentions first power / panels — the user-facing copy.
-      assert payload.body =~ "panels" or payload.body =~ "power"
+      # Body is a list of paragraphs (per dispatcher's email/layout
+      # contract). The body mentions first power / panels — the
+      # user-facing copy.
+      assert is_list(payload.body)
+      assert Enum.any?(payload.body, &(&1 =~ "panels" or &1 =~ "power"))
       assert payload.tag =~ "sun_up:"
     end
 
