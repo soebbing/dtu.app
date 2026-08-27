@@ -4370,17 +4370,33 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # The click handler synchronously sets `:share_loading?` true
-      # and spawns a `Task` to do the DB work. In the test runtime
-      # the Task can't borrow the LiveView's Ecto sandbox connection,
-      # so we don't advance it here — instead we assert on the
-      # mid-flight state right after the click.
-      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+      # The click handler synchronously flips `:share_loading?` true
+      # BEFORE spawning the Task that mints the token. The HTML that
+      # `render_click` returns is the render the LiveView produced
+      # during the click itself — the Task's `handle_info` message
+      # lands in the LiveView mailbox only after this render has
+      # been emitted, so the spinner branch is reliably visible.
+      #
+      # Reading `render(view)` a second time would race: by then the
+      # Task may have completed (or failed with a sandbox error) and
+      # the URL row / hint text would already be on screen. The
+      # spinner is what the FIRST render frame after a click shows
+      # — that's what users actually see, so that's what we assert
+      # against.
+      html =
+        view |> element("#share-toggle") |> render_click(%{enabled: "true"})
 
-      html = render(view)
       assert html =~ gettext("Generating link…")
-      assert has_element?(view, "#share-loading-row")
-      refute has_element?(view, "#share-url-row")
+      assert html =~ ~s(id="share-loading-row")
+
+      # Once the Task's result lands, the URL row replaces the
+      # spinner. `finish_share_toggle/2` is the test-runtime shim
+      # that does the DB work synchronously (the spawned Task can't
+      # borrow the LiveView's Ecto sandbox connection) and feeds the
+      # result into the LiveView mailbox.
+      view |> finish_share_toggle(user) |> render()
+
+      assert has_element?(view, "#share-url-row")
     end
 
     test "the URL input binds a SelectOnFocus hook (mobile tap selects all)",
