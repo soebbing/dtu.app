@@ -4145,7 +4145,7 @@ defmodule DtuAppWeb.DashboardLive do
               <% end %>
             <% end %>
 
-          <%!-- Share panel: anonymous current-day dashboard share.
+            <%!-- Share panel: anonymous current-day dashboard share.
                Lives below the chart rather than in the toolbar so
                the URL row never has to compete for horizontal
                space with the quick-range / period stepper. The
@@ -4155,109 +4155,109 @@ defmodule DtuAppWeb.DashboardLive do
                `aria-live="polite"` on the dynamic inner row
                announces state changes to screen readers without
                stealing focus. --%>
-          <div
-            id="share-panel"
-            class="mt-4 border-t border-zinc-200 dark:border-zinc-700 pt-4"
-          >
             <div
-              id="share-toggle-label"
-              class="flex items-center gap-3 cursor-pointer select-none"
-              title={gettext("Share today's dashboard read-only")}
+              id="share-panel"
+              class="mt-4 border-t border-zinc-200 dark:border-zinc-700 pt-4"
             >
-              <.icon name="hero-share" class="size-5 text-zinc-500 dark:text-zinc-400" />
-              <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
-                {gettext("Share today's dashboard read-only")}
-              </span>
-              <%!-- The visible switch: a checkbox styled as a pill
+              <div
+                id="share-toggle-label"
+                class="flex items-center gap-3 cursor-pointer select-none"
+                title={gettext("Share today's dashboard read-only")}
+              >
+                <.icon name="hero-share" class="size-5 text-zinc-500 dark:text-zinc-400" />
+                <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+                  {gettext("Share today's dashboard read-only")}
+                </span>
+                <%!-- The visible switch: a checkbox styled as a pill
                    with a sliding dot. `peer-checked:` Tailwind
                    variants flip the on-colors without a separate
                    state class. --%>
-              <span class="relative inline-flex items-center">
-                <input
-                  type="checkbox"
-                  id="share-toggle"
-                  phx-click="toggle_share"
-                  phx-value-enabled={to_string(!@share_active?)}
-                  checked={@share_active?}
-                  class="peer sr-only"
-                />
-                <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
-                <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
-              </span>
-            </div>
+                <span class="relative inline-flex items-center">
+                  <input
+                    type="checkbox"
+                    id="share-toggle"
+                    phx-click="toggle_share"
+                    phx-value-enabled={to_string(!@share_active?)}
+                    checked={@share_active?}
+                    class="peer sr-only"
+                  />
+                  <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
+                  <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
+                </span>
+              </div>
 
-            <div
-              id="share-row"
-              class="mt-3 min-h-[2.25rem] flex items-center"
-              aria-live="polite"
-            >
-              <%= cond do %>
-                <% @share_loading? -> %>
-                  <%!-- Inline spinner shown while the token is
+              <div
+                id="share-row"
+                class="mt-3 min-h-[2.25rem] flex items-center"
+                aria-live="polite"
+              >
+                <%= cond do %>
+                  <% @share_loading? -> %>
+                    <%!-- Inline spinner shown while the token is
                        being minted (see `toggle_share` +
                        `handle_info({:share_link_minted, _, _}, _)`).
                        A pure-CSS border-spinner so it doesn't
                        depend on any icon glyph being available. --%>
-                  <div
-                    id="share-loading-row"
-                    class="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400"
-                    data-testid="share-loading"
-                  >
-                    <span
-                      class="inline-block size-4 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin"
-                      aria-hidden="true"
-                    ></span>
-                    <span>{gettext("Generating link…")}</span>
-                  </div>
-                <% @share_active? and @share_url -> %>
-                  <div
-                    id="share-url-row"
-                    class="flex items-center gap-2 w-full"
-                  >
-                    <input
-                      type="text"
-                      id="share-url-input"
-                      readonly
-                      value={@share_url}
-                      class="flex-1 min-w-0 px-3 py-2 text-sm font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      data-value={@share_url}
-                      phx-hook="SelectOnFocus"
-                      aria-label={gettext("Shareable URL")}
-                      data-testid="share-url-input"
-                    />
-                    <button
-                      type="button"
-                      id="btn-share-copy"
-                      title={gettext("Copy URL")}
-                      aria-label={gettext("Copy URL")}
-                      class="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
-                      data-value={@share_url}
-                      phx-hook="CopyToClipboardWithHint"
-                      data-testid="btn-share-copy"
+                    <div
+                      id="share-loading-row"
+                      class="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400"
+                      data-testid="share-loading"
                     >
-                      <.icon name="hero-clipboard-document" class="size-5" />
-                    </button>
-                    <span
-                      id="share-copy-hint"
-                      class="text-sm font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 transition-opacity"
-                      aria-live="polite"
-                      data-testid="share-copy-hint"
+                      <span
+                        class="inline-block size-4 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin"
+                        aria-hidden="true"
+                      ></span>
+                      <span>{gettext("Generating link…")}</span>
+                    </div>
+                  <% @share_active? and @share_url -> %>
+                    <div
+                      id="share-url-row"
+                      class="flex items-center gap-2 w-full"
                     >
-                      {gettext("Copied!")}
-                    </span>
-                  </div>
-                <% true -> %>
-                  <p
-                    id="share-hint-text"
-                    class="text-xs text-zinc-500 dark:text-zinc-400"
-                  >
-                    {gettext(
-                      "Anyone with this link can view today's dashboard. The link stays valid until you turn sharing off."
-                    )}
-                  </p>
-              <% end %>
+                      <input
+                        type="text"
+                        id="share-url-input"
+                        readonly
+                        value={@share_url}
+                        class="flex-1 min-w-0 px-3 py-2 text-sm font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        data-value={@share_url}
+                        phx-hook="SelectOnFocus"
+                        aria-label={gettext("Shareable URL")}
+                        data-testid="share-url-input"
+                      />
+                      <button
+                        type="button"
+                        id="btn-share-copy"
+                        title={gettext("Copy URL")}
+                        aria-label={gettext("Copy URL")}
+                        class="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
+                        data-value={@share_url}
+                        phx-hook="CopyToClipboardWithHint"
+                        data-testid="btn-share-copy"
+                      >
+                        <.icon name="hero-clipboard-document" class="size-5" />
+                      </button>
+                      <span
+                        id="share-copy-hint"
+                        class="text-sm font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 transition-opacity"
+                        aria-live="polite"
+                        data-testid="share-copy-hint"
+                      >
+                        {gettext("Copied!")}
+                      </span>
+                    </div>
+                  <% true -> %>
+                    <p
+                      id="share-hint-text"
+                      class="text-xs text-zinc-500 dark:text-zinc-400"
+                    >
+                      {gettext(
+                        "Anyone with this link can view today's dashboard. The link stays valid until you turn sharing off."
+                      )}
+                    </p>
+                <% end %>
+              </div>
             </div>
-          </div>
           </div>
 
           <!-- Devices / Inverters status -->
