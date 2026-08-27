@@ -7,7 +7,9 @@ defmodule DtuApp.AccountsFixtures do
   import Ecto.Query
 
   alias DtuApp.Accounts
+  alias DtuApp.Accounts.Passkey
   alias DtuApp.Accounts.Scope
+  alias DtuApp.Repo
 
   def unique_user_email, do: "user#{System.unique_integer()}@example.com"
   def valid_user_password, do: "hello world!"
@@ -100,5 +102,35 @@ defmodule DtuApp.AccountsFixtures do
       from(ut in Accounts.UserToken, where: ut.token == ^token),
       set: [inserted_at: dt, authenticated_at: dt]
     )
+  end
+
+  def passkey_fixture(user_or_attrs, attrs \\ %{})
+
+  def passkey_fixture(%DtuApp.Accounts.User{} = user, attrs) do
+    passkey_fixture(%{user_id: user.id}, attrs)
+  end
+
+  def passkey_fixture(_attrs, attrs_override) do
+    {user_attrs, pk_attrs} = Map.split(attrs_override, [:user_id])
+
+    pk_attrs =
+      Enum.into(pk_attrs, %{
+        user_id:
+          Map.get(user_attrs, :user_id) ||
+            user_fixture().id,
+        credential_id: :crypto.strong_rand_bytes(32),
+        public_key: :crypto.strong_rand_bytes(65),
+        sign_count: 0,
+        alg: -7,
+        transports: [],
+        friendly_name: "Test Passkey"
+      })
+
+    {:ok, passkey} =
+      %Passkey{}
+      |> Passkey.registration_changeset(pk_attrs)
+      |> Repo.insert()
+
+    passkey
   end
 end
