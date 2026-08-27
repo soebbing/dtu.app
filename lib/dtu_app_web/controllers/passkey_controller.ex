@@ -19,7 +19,11 @@ defmodule DtuAppWeb.PasskeyController do
   use DtuAppWeb, :controller
 
   alias DtuApp.Accounts
+  alias DtuApp.Accounts.Passkey
   alias DtuApp.Accounts.PasskeyChallengeCache
+  alias DtuApp.Accounts.User
+  alias DtuApp.Repo
+  alias DtuAppWeb.UserAuth
 
   require Logger
 
@@ -207,17 +211,130 @@ defmodule DtuAppWeb.PasskeyController do
     end)
   end
 
-  # ---------- Authentication placeholders ----------
-  # Implemented in Task 6.
+  # ---------- Authentication ----------
+  # Spec §6: anonymous-only — replay an existing session by trying to
+  # log in with a passkey would let an attacker bypass a forced logout.
 
   def authentication_options(conn, _params) do
     conn = put_private(conn, :passkey_action, "authentication_options")
-    guard(conn, fn -> not_implemented(conn) end)
+
+    guard(conn, fn ->
+      require_anonymous(conn, fn ->
+        challenge = Webauthn.challenge()
+
+        public_key =
+          Webauthn.auth_challenge(challenge, %{
+            "rp" => %{"id" => rp_id(), "name" => rp_name()},
+            "timeout" => @timeout_ms,
+            # Empty list: this is a conditional-mediation probe.
+            # The browser picks which enrolled passkey to use; if the
+            # user has none, it returns NotAllowedError and the UI
+            # falls back to email + password (spec §3).
+            "allowCredentials" => []
+          })
+
+        request_id = generate_request_id()
+
+        PasskeyChallengeCache.put(request_id, %{
+          challenge: challenge,
+          user_id: nil,
+          kind: :authentication,
+          friendly_name: nil
+        })
+
+        conn = put_passkey_cookie(conn, request_id)
+
+        Logger.info("passkey authentication begin ip=#{inspect(conn.remote_ip)}")
+
+        json(conn, %{request_id: request_id, publicKey: public_key})
+      end)
+    end)
+  end
+
+  def verify_authentication(conn, %{"request_id" => request_id, "assertion_response" => response})
+      when is_map(response) do
+    conn = put_private(conn, :passkey_action, "verify_authentication")
+
+    guard(conn, fn ->
+      require_anonymous(conn, fn ->
+        with {:ok, cookie_rid} <- assert_cookie_matches(conn, request_id),
+             {:ok, %{challenge: challenge, kind: :authentication}} <-
+               PasskeyChallengeCache.fetch_and_delete(cookie_rid),
+             credential_id when is_binary(credential_id) <-
+               decode_credential_id(response["id"]),
+             %Passkey{} = passkey <- Accounts.find_passkey_by_credential_id(credential_id),
+             %User{} = user <- Repo.get(User, passkey.user_id),
+             {:ok, new_sign_count} <-
+               verify_auth_response(passkey, challenge, response, conn),
+             {:ok, _updated} <-
+               Accounts.touch_passkey(passkey, %{
+                 sign_count: new_sign_count,
+                 last_used_at: DateTime.utc_now()
+               }) do
+          Logger.info("passkey authentication ok passkey_id=#{passkey.id} user_id=#{user.id}")
+
+          UserAuth.log_in_user_from_passkey(conn, user, %{})
+        else
+          {:error, :request_id_mismatch} ->
+            json(conn |> put_status(:bad_request), %{error: "request_id_mismatch"})
+
+          {:error, :not_found} ->
+            json(conn |> put_status(:bad_request), %{error: "challenge_expired"})
+
+          # `Accounts.touch_passkey/2` rejected the new sign_count via
+          # `Passkey.usage_changeset/2`'s `validate_number(:sign_count,
+          # greater_than: passkey.sign_count)`. The authenticator
+          # returned a count <= the one we already stored — the
+          # WebAuthn "cloned authenticator" trap (spec §6 step 5).
+          # `Repo.update/1` returns `{:error, %Ecto.Changeset{}}`, so
+          # the bare-struct pattern must be wrapped in a tagged tuple.
+          {:error, %Ecto.Changeset{} = cs} ->
+            Logger.warning(
+              "passkey authentication replay passkey_id=#{inspect(cs.data && cs.data.id)}"
+            )
+
+            json(conn |> put_status(:unauthorized), %{error: "sign_count_not_increasing"})
+
+          # Both `decode_credential_id/1` returning nil (malformed id)
+          # and `Accounts.find_passkey_by_credential_id/1` returning nil
+          # (no row matches the id) collapse to the same public error —
+          # we don't leak which case fired.
+          nil ->
+            json(conn |> put_status(:unauthorized), %{error: "credential_not_found"})
+
+          # The `webauthn ~> 0.0.9` library returns verification
+          # failures as `{:error, "Origin mismatch"}` etc. (binary
+          # strings), not atoms. Map the strings the library actually
+          # emits onto the spec'd JSON error keys.
+          {:error, reason} when is_binary(reason) ->
+            cond do
+              String.contains?(reason, "Origin") ->
+                json(conn |> put_status(:bad_request), %{error: "origin_mismatch"})
+
+              String.contains?(reason, "Challenge") ->
+                json(conn |> put_status(:bad_request), %{error: "challenge_expired"})
+
+              true ->
+                Logger.warning("passkey authentication failed reason=#{inspect(reason)}")
+
+                json(conn |> put_status(:bad_request), %{error: "verification_failed"})
+            end
+
+          {:error, reason} ->
+            Logger.warning("passkey authentication failed reason=#{inspect(reason)}")
+
+            json(conn |> put_status(:bad_request), %{error: "verification_failed"})
+        end
+      end)
+    end)
   end
 
   def verify_authentication(conn, _params) do
     conn = put_private(conn, :passkey_action, "verify_authentication")
-    guard(conn, fn -> not_implemented(conn) end)
+
+    guard(conn, fn ->
+      json(conn |> put_status(:bad_request), %{error: "missing_request_id"})
+    end)
   end
 
   # ---------- Helpers ----------
@@ -244,6 +361,24 @@ defmodule DtuAppWeb.PasskeyController do
         |> json(%{error: "unauthenticated"})
         |> halt()
     end
+  end
+
+  # Symmetric to `with_user/2`. 409 (Conflict) — distinct from
+  # `with_user`'s 401 (Unauthorized) — because the request itself is
+  # well-formed but the server refuses to perform a second login on
+  # top of an active session (spec §3 "any 4xx shows inline error").
+  defp require_anonymous(conn, ok_action) do
+    case get_session(conn, "user_token") do
+      nil -> ok_action.()
+      _ -> already_authenticated(conn)
+    end
+  end
+
+  defp already_authenticated(conn) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{error: "already_authenticated"})
+    |> halt()
   end
 
   defp put_passkey_cookie(conn, request_id) do
@@ -299,9 +434,67 @@ defmodule DtuAppWeb.PasskeyController do
   defp rp_id, do: @rp_id
   defp rp_name, do: @rp_name
 
-  defp not_implemented(conn) do
-    conn
-    |> put_status(:not_implemented)
-    |> json(%{error: "not_implemented"})
+  # Browser-sent `credential_id` is base64url (no padding) — see
+  # `navigator.credentials.get()`'s `PublicKeyCredential.id` contract.
+  # Returns the raw bytes (what we store as `Passkey.credential_id`)
+  # or `nil` on any failure (missing field, non-binary, undecodable).
+  # The caller pattern-matches on `is_binary/1` so a `nil` here
+  # collapses into the public `credential_not_found` error.
+  defp decode_credential_id(base64url) when is_binary(base64url) do
+    case Base.url_decode64(base64url, padding: false) do
+      {:ok, bytes} -> bytes
+      :error -> nil
+    end
+  end
+
+  defp decode_credential_id(_), do: nil
+
+  # Verifies the browser's assertion against the stored passkey.
+  #
+  # `webauthn ~> 0.0.9` looks up the credential inside the
+  # `request["allowCredentials"]` list — by `credential_id` — and
+  # pulls `credential_public_key` + `sign_count` from the matching
+  # entry. The library expects `public_key` to be a CBOR-DECODED map,
+  # but `Passkey.public_key` is stored as a CBOR-ENCODED binary
+  # (Task 5 D6 re-encodes the parsed COSE map via `CBOR.encode/1`
+  # before insert). Round-tripping through `CBOR.decode/1` here
+  # matches what the library wants; skipping it yields "Bad
+  # signature" or "Invalid public key format" from
+  # `Webauthn.Cose.to_public_key/1`.
+  #
+  # The library returns `{:ok, _credential, new_sign_count}` on a
+  # happy signature, or `{:warn, _credential, new_sign_count, _msg}`
+  # when the authenticator's reported `sign_count` is <= the stored
+  # one. We forward both to the caller with the new sign_count; the
+  # subsequent `Accounts.touch_passkey/2` call rejects the non-
+  # increasing case via `Passkey.usage_changeset/2`, which the
+  # controller maps to 401 `sign_count_not_increasing` (spec §6
+  # step 5 — clone detection).
+  defp verify_auth_response(passkey, challenge, response, conn) do
+    {:ok, public_key, _rest} = CBOR.decode(passkey.public_key)
+
+    request = %{
+      "allowCredentials" => [
+        %{
+          credential_id: passkey.credential_id,
+          credential_public_key: public_key,
+          sign_count: passkey.sign_count
+        }
+      ],
+      "challenge" => challenge,
+      "origin" => request_origin(conn),
+      "rp" => %{"id" => rp_id()}
+    }
+
+    case Webauthn.auth_response(request, response) do
+      {:ok, _credential, new_sign_count} ->
+        {:ok, new_sign_count}
+
+      {:warn, _credential, new_sign_count, _msg} ->
+        {:ok, new_sign_count}
+
+      {:error, _reason} = err ->
+        err
+    end
   end
 end
