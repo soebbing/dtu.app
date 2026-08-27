@@ -268,7 +268,11 @@ test.describe('Acceptance: Share-link UX polish', () => {
     const clip = await page.evaluate(() => navigator.clipboard.readText());
     expect(clip).toBe(expectedUrl);
 
-    // The hint auto-dismisses after 1.5 s.
-    await expect(hint).toBeHidden({ timeout: 4000 });
+    // The hint auto-dismisses after 1.5 s. The hook flips
+    // `opacity-100 → opacity-0` for a fade-out — Playwright's
+    // `toBeHidden()` treats `opacity: 0` as still visible (the
+    // element retains its box), so we assert on the class change
+    // instead.
+    await expect(hint).toHaveClass(/opacity-0/, { timeout: 4000 });
   });
 });
