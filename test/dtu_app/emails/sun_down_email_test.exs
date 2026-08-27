@@ -10,21 +10,32 @@ defmodule DtuApp.Emails.SunDownEmailTest do
   module just embeds it verbatim when present and degrades to a
   "No chart available" paragraph when nil.
 
-  The producer-localised strings (`"Today's yield"`, `"Peak power"`,
-  `"Yesterday"`, `"vs yesterday"`, `"same as yesterday"`,
-  `"Today's power curve"`, `"No chart available"`, `"View dashboard"`,
-  `"You're getting this email because you enabled end-of-day summaries."`)
-  are added to the de/fr catalogs by Task 9 — not yet. Until then,
-  the locale-distinct signal we can reliably assert is the
-  `<html lang="...">` attribute; the de/fr catalog translations will
-  flow through automatically once Task 9 lands (mirroring the
-  drift-guard pattern from `SunUpEmailTest`).
+  The producer-localised body carries the catalog's
+  `"Today: %{today_kwh} kWh%{yield_diff}, peak %{peak_w} W%{peak_diff}."`
+  string — the same msgid the producer builds via
+  `body_for/2`. Task 9 adds de/fr translations for the email-specific
+  labels (`Today's yield`, `Peak power`, `Today's power curve`,
+  `No chart available`, `Today's yield`, `View dashboard`,
+  `You're getting this email because you enabled end-of-day summaries.`)
+  plus the producer's `vs yesterday` / `same as yesterday` fragments.
+  The drift-guard below anchors on the producer-localised body so
+  the data path's translation flows are exercised end-to-end
+  (mirroring `SunUpEmailTest`).
   """
 
   use DtuApp.DataCase, async: true
 
   alias DtuApp.Accounts.User
   alias DtuApp.Emails.SunDownEmail
+
+  # The SunDown email module owns its own stat-panel labels
+  # (`gettext("Today's yield")`, `gettext("Peak power")`, etc.) and
+  # builds `body_html` from the payload's numeric fields, NOT from
+  # `payload.body`. So the drift-guard anchors on a representative
+  # panel label rather than the producer's body string — same
+  # pattern as `SunUpEmailTest` but applied to the labels the email
+  # module actually renders.
+  @sun_down_yield_label_msgid "Today's yield"
 
   setup do
     user = %User{email: "u@example.com", locale: "en"}
@@ -135,6 +146,55 @@ defmodule DtuApp.Emails.SunDownEmailTest do
         })
 
       assert html =~ "same as yesterday"
+    end
+  end
+
+  describe "render/2 — localised body (producer-data gettext drift guard)" do
+    # Anchored on the email-module-localised panel label that the
+    # SunDown email actually renders (the email module builds its
+    # own `body_html` from the numeric payload fields, NOT from
+    # `payload.body`, so the producer's body string never reaches
+    # the rendered HTML — we exercise the same catalog path through
+    # a label the email owns).
+    #
+    # Same pattern as `SunUpEmailTest`: we build the expected label
+    # via `Gettext.with_locale/2` + `Gettext.gettext/3` against
+    # the same catalog line the email module uses, so a translation
+    # update flows through automatically without re-pinning literal
+    # strings. If the catalog line ever moves or the email's render
+    # path ever drops/escapes the panel label, these tests fail.
+    test "renders the English (source) yield label for locale=en", %{user: user, payload: p} do
+      localised_label =
+        Gettext.with_locale(DtuAppWeb.Gettext, "en", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
+        end)
+
+      {html, _} = SunDownEmail.render(user, p)
+      assert html =~ localised_label
+    end
+
+    test "renders the German yield label for locale=de", %{payload: p} do
+      user = %User{email: "u@example.com", locale: "de"}
+
+      localised_label =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
+        end)
+
+      {html, _} = SunDownEmail.render(user, p)
+      assert html =~ localised_label
+    end
+
+    test "renders the French yield label for locale=fr", %{payload: p} do
+      user = %User{email: "u@example.com", locale: "fr"}
+
+      localised_label =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
+        end)
+
+      {html, _} = SunDownEmail.render(user, p)
+      assert html =~ localised_label
     end
   end
 end
