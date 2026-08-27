@@ -51,6 +51,34 @@ defmodule DtuAppWeb.Layouts do
   end
 
   @doc """
+  Minimal layout for the public `/s/:token` share route.
+
+  Same chrome behaviour as `app/1` (single `<main>` wrapper with
+  configurable max-width), but rendered inside the
+  `root_public.html.heex` root layout so the navbar, burger menu,
+  user dropdown, and login/register buttons from the authenticated
+  shell are absent. The "powered by dtu.app" footer lives in the
+  root layout itself so it stays sticky even when this layout is
+  replaced with a future public page (e.g. a public device page).
+  """
+  attr :flash, :map, required: true, doc: "the map of flash messages"
+  attr :class, :string, default: "max-w-3xl"
+
+  slot :inner_block, required: true
+
+  def public(assigns) do
+    ~H"""
+    <main class="flex-1 px-4 py-8 sm:px-6 lg:px-8">
+      <div class={["mx-auto space-y-5", @class]}>
+        {render_slot(@inner_block)}
+      </div>
+    </main>
+
+    <.flash_group flash={@flash} />
+    """
+  end
+
+  @doc """
   Shows the flash group with standard titles and content.
 
   ## Examples
