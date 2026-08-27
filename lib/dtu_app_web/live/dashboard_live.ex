@@ -4445,6 +4445,15 @@ defmodule DtuAppWeb.DashboardLive do
               event.preventDefault()
               const text = this.el.dataset.value || ""
 
+              // Show "Copied!" feedback *immediately* on click — the
+              // user needs to know the click registered, even if the
+              // clipboard write below takes a beat (or hangs, in
+              // some headless / iframe / permission-denied setups).
+              // If the write later turns out to have failed, we
+              // downgrade the visual feedback to "Copy failed" so
+              // the optimistic state doesn't lie to the user.
+              this.showFeedback(true)
+
               // `navigator.clipboard.writeText` is only available in
               // secure contexts (HTTPS, or `localhost` on most
               // browsers). On plain-HTTP LAN IPs (e.g. staging on a
@@ -4488,62 +4497,75 @@ defmodule DtuAppWeb.DashboardLive do
                 }
               }
 
-              this.showFeedback = (success) => {
-                if (this.hint) {
-                  this.hint.textContent = success ? "Copied!" : "Copy failed"
-                  this.hint.classList.add("opacity-100")
-                  this.hint.classList.remove("opacity-0")
-                  if (!success) {
-                    this.hint.classList.add("text-amber-600", "dark:text-amber-400")
-                    this.hint.classList.remove("text-emerald-600", "dark:text-emerald-400")
-                  }
-                }
-
-                this.el.classList.add("copied")
-                const svg = this.el.querySelector("svg")
-
-                if (svg) {
-                  svg.dataset.originalClass = svg.getAttribute("class") || ""
-                  svg.setAttribute(
-                    "class",
-                    success
-                      ? "size-5 text-emerald-500"
-                      : "size-5 text-amber-500"
-                  )
-                }
-
-                clearTimeout(this._resetTimer)
-                this._resetTimer = setTimeout(() => {
-                  if (this.hint) {
-                    this.hint.classList.add("opacity-0")
-                    this.hint.classList.remove("opacity-100")
-                    this.hint.classList.remove(
-                      "text-amber-600",
-                      "dark:text-amber-400"
-                    )
-                    this.hint.classList.add(
-                      "text-emerald-600",
-                      "dark:text-emerald-400"
-                    )
-                    this.hint.textContent = "Copied!"
-                  }
-
-                  this.el.classList.remove("copied")
-
-                  if (svg) {
-                    svg.setAttribute("class", svg.dataset.originalClass || "")
-                  }
-                }, 1500)
-              }
-
               write().then((ok) => {
-                this.showFeedback(ok)
                 if (!ok) {
                   console.error(
                     "CopyToClipboardWithHint hook: copy failed (both clipboard API and execCommand fallback returned false)"
                   )
+                  // Downgrade the optimistic "Copied!" to "Copy
+                  // failed" — same timer, just an amber tint so the
+                  // user notices something went wrong.
+                  if (this.hint) {
+                    this.hint.textContent = "Copy failed"
+                    this.hint.classList.add(
+                      "text-amber-600",
+                      "dark:text-amber-400"
+                    )
+                    this.hint.classList.remove(
+                      "text-emerald-600",
+                      "dark:text-emerald-400"
+                    )
+                  }
                 }
               })
+            }
+
+            this.showFeedback = (success) => {
+              if (this.hint) {
+                this.hint.textContent = success ? "Copied!" : "Copy failed"
+                this.hint.classList.add("opacity-100")
+                this.hint.classList.remove("opacity-0")
+                if (!success) {
+                  this.hint.classList.add("text-amber-600", "dark:text-amber-400")
+                  this.hint.classList.remove("text-emerald-600", "dark:text-emerald-400")
+                }
+              }
+
+              this.el.classList.add("copied")
+              const svg = this.el.querySelector("svg")
+
+              if (svg) {
+                svg.dataset.originalClass = svg.getAttribute("class") || ""
+                svg.setAttribute(
+                  "class",
+                  success
+                    ? "size-5 text-emerald-500"
+                    : "size-5 text-amber-500"
+                )
+              }
+
+              clearTimeout(this._resetTimer)
+              this._resetTimer = setTimeout(() => {
+                if (this.hint) {
+                  this.hint.classList.add("opacity-0")
+                  this.hint.classList.remove("opacity-100")
+                  this.hint.classList.remove(
+                    "text-amber-600",
+                    "dark:text-amber-400"
+                  )
+                  this.hint.classList.add(
+                    "text-emerald-600",
+                    "dark:text-emerald-400"
+                  )
+                  this.hint.textContent = "Copied!"
+                }
+
+                this.el.classList.remove("copied")
+
+                if (svg) {
+                  svg.setAttribute("class", svg.dataset.originalClass || "")
+                }
+              }, 1500)
             }
 
             this.el.addEventListener("click", this.handler)
@@ -4577,22 +4599,23 @@ defmodule DtuAppWeb.DashboardLive do
            builds, so the URL stays unselected. The hook guarantees the
            selection on every gesture.
 
-           The select() call is wrapped in `queueMicrotask(...)` so
-           it runs AFTER the browser's synchronous default-action
-           cursor placement (click) but BEFORE the next macrotask
-           (e.g. Playwright's next protocol message). The microtask
-           drain lands our select() between the click event and
-           anything else the browser queues, so the cursor doesn't
-           get to keep its click position. --%>
+           The select() call is deferred via `setTimeout(..., 0)`
+           — a macrotask — so it runs AFTER both the click event
+           listeners AND the browser's default-action cursor
+           placement for the click. (Microtasks drain BEFORE the
+           click default action in some Chrome builds, which lets
+           the cursor land at the click position; a macrotask
+           always fires after both, so our selection wins.) --%>
       <script :type={Phoenix.LiveView.ColocatedHook} name=".SelectOnFocus">
         export default {
           mounted() {
             this.select = () => {
-              // Defer to a microtask so the browser's
-              // synchronous default-action cursor placement (click)
-              // settles first. Microtasks drain before the next
-              // macrotask, so the selection we set wins.
-              queueMicrotask(() => {
+              // `setTimeout(..., 0)` schedules a macrotask —
+              // these always run AFTER microtasks drain AND after
+              // the browser's default-action cursor placement.
+              // That's what we need to win over the click's
+              // default.
+              setTimeout(() => {
                 if (typeof this.el.select === "function") {
                   this.el.focus({ preventScroll: true })
                   this.el.select()
@@ -4605,7 +4628,7 @@ defmodule DtuAppWeb.DashboardLive do
                     }
                   }
                 }
-              })
+              }, 0)
             }
 
             this.el.addEventListener("focus", this.select)
