@@ -120,7 +120,12 @@ defmodule DtuApp.AccountsFixtures do
           Map.get(user_attrs, :user_id) ||
             user_fixture().id,
         credential_id: :crypto.strong_rand_bytes(32),
-        public_key: :crypto.strong_rand_bytes(65),
+        # Passkey.public_key is stored as a CBOR-encoded binary (Task 5).
+        # Controllers round-trip through CBOR.decode/1 before handing the
+        # key to Webauthn.Cose.to_public_key/1, so the fixture must be
+        # valid CBOR or the auth happy path hard-pattern-matches and 500s.
+        # This is a minimal P-256 EC2 COSE map per RFC 8152 §7.
+        public_key: CBOR.encode(%{1 => 2, 3 => -7, -1 => 1, -2 => <<4::256>>, -3 => <<4::256>>}),
         sign_count: 0,
         alg: -7,
         transports: [],
