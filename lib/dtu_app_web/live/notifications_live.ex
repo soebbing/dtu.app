@@ -469,17 +469,23 @@ defmodule DtuAppWeb.NotificationsLive do
           </div>
         </.form>
 
-        <!-- Test notification: only show when the browser has actually
-             granted permission, so the click is guaranteed to fire a real
-             system notification (rather than silently failing). -->
-        <%= if Map.get(@notification_state, "state") == "granted" do %>
+        <!-- Test notification: show whenever the user has at least one
+             working delivery path. With browser permission granted, the
+             click fires a real system notification. With email or
+             "both" channel selected (regardless of browser permission),
+             the click delivers a test email via the dispatcher's
+             normal channel routing — so an email-only user can still
+             verify their setup end-to-end without installing the PWA. -->
+        <% notification_state_granted? = Map.get(@notification_state, "state") == "granted"
+        email_capable? = @current_scope.user.notification_channel in ["email", "both"] %>
+        <%= if notification_state_granted? or email_capable? do %>
           <div class="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-6 space-y-2">
             <h2 class="text-lg font-semibold text-zinc-900 dark:text-white">
               {gettext("Test notification")}
             </h2>
             <p class="text-sm text-zinc-500 dark:text-zinc-400">
               {gettext(
-                "Send a one-off test notification to verify the browser is set up correctly. It should appear within a second or two."
+                "Send a one-off test notification to verify your setup. It will appear in your browser if push is enabled, otherwise it will be delivered to your email address."
               )}
             </p>
             <button

@@ -190,6 +190,30 @@ defmodule DtuApp.Notifications.DispatcherTest do
 
       refute_email_sent()
     end
+
+    test "synthetic test event delivers an email when channel=email" do
+      # The /notifications LiveView "Send test notification" button
+      # fires `event: "test"` through `Notifications.broadcast/2`. With
+      # channel="email" the dispatcher must actually deliver an email
+      # (not silently no-op via a missing `render_email/3` clause),
+      # because the panel is now shown even when browser permission
+      # is not granted — the email path is the only delivery signal
+      # the user gets.
+      u = user_with("email", down: false)
+
+      Dispatcher.fire(u, "test", %{
+        event: "test",
+        title: "Test notification",
+        body: "If you can read this, browser notifications are working.",
+        tag: "test"
+      })
+
+      assert_email_sent(subject: "Test notification")
+
+      # History row still records the fire with the user's chosen channel.
+      assert [%{channel: "email", event: "test"}] =
+               Notifications.list_user_notifications(u, 1)
+    end
   end
 
   describe "fire/3 payload shape tolerance" do
