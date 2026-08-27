@@ -294,22 +294,32 @@ defmodule DtuAppWeb.SharedDashboardLive do
 
   # Build the polyline `points` attribute from the per-bucket
   # data returned by `list_day_chart_data_for_dashboard/4`. Each
-  # bucket is roughly a 5-minute window; we plot it at its local
-  # start time (seconds into the user's local day). Watts are
-  # mapped to a 0..200W range; higher peaks are clamped at the
-  # top of the chart. This is intentionally a simple visualization
-  # — the share page doesn't claim a precise y-axis.
+  # bucket is a 5-minute window and the query returns one point per
+  # `(inverter, MPPT)` series per bucket — for the combined ("Total")
+  # view we sum those into a single per-bucket value so the share
+  # page renders ONE polyline (matching its "combined snapshot"
+  # promise). Field names follow the `chart_point()` contract in
+  # `DtuApp.Devices`: `:time` (UTC DateTime) and `:power` (watts).
+  # An earlier draft used `:utc_start` / `:power_w` and crashed with
+  # KeyError on the first non-empty mount — see #175.
   defp build_polyline(points, tz_offset_seconds) do
     points
-    |> Enum.map(fn bucket ->
-      seconds = local_seconds(bucket.utc_start, tz_offset_seconds)
-      watts = clamp(bucket.power_w, 0.0, 5000.0)
+    |> Enum.group_by(& &1.time)
+    |> Enum.map(fn {time, pts} ->
+      watts =
+        pts
+        |> Enum.map(&(&1.power || 0.0))
+        |> Enum.sum()
+        |> clamp(0.0, 5000.0)
+
+      seconds = local_seconds(time, tz_offset_seconds)
       x = seconds / 100
       # 200W at y=10, 0W at y=190. Scale linearly above 200W —
       # 200W → y=10, 5000W → y=0.
       y = watts_to_y(watts)
       "#{Float.round(x, 1)},#{y}"
     end)
+    |> Enum.sort()
     |> Enum.join(" ")
   end
 
