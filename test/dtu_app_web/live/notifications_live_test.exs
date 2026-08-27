@@ -14,9 +14,10 @@ defmodule DtuAppWeb.NotificationsLiveTest do
     # The JS hook on `#notifications-permission` then sends a
     # `notification_state` event with the browser's view, which
     # transitions the assign and renders the right CTA. If the hook's
-    # push is lost, the page is stuck on the loading branch forever
-    # and the "Send test notification" button never appears (it's
-    # gated on `notification_state == "granted"`).
+    # push is lost, the page is stuck on the loading branch forever;
+    # the "Send test notification" button still appears for users
+    # with `notification_channel in ["email", "both"]` (because the
+    # dispatcher's email path is independent of browser permission).
     #
     # The tests below exercise the server side of that round-trip so
     # a future regression on the LiveView handler is caught even if
@@ -30,8 +31,12 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       {:ok, _view, html} = live(conn, ~p"/notifications")
 
       assert html =~ "Checking browser capabilities"
-      # The test-notification card is gated on `"granted"`, so it
-      # must NOT be in the initial render.
+      # The test-notification card is gated on `notification_state_granted?
+      # || email_capable?`. `register_and_log_in_user` leaves
+      # `notification_channel` at the schema default ("push"), and the
+      # initial mount renders `notification_state = "loading"` (not
+      # `"granted"`), so neither branch fires — the card must NOT be
+      # in the initial render.
       refute html =~ "Send test notification"
     end
 
@@ -216,6 +221,75 @@ defmodule DtuAppWeb.NotificationsLiveTest do
     end
   end
 
+  describe "Test notification panel — channel-aware gating" do
+    # The "Send test notification" panel is now visible whenever the
+    # user has at least one working delivery path:
+    #
+    #   * browser permission `granted` → fires a system notification
+    #     (existing behaviour);
+    #   * `notification_channel in ["email", "both"]` → the dispatcher's
+    #     email path delivers the test, even with no browser permission.
+    #
+    # Push-only users without browser permission still see the panel
+    # hidden — there's no other channel that can deliver the test for
+    # them, so showing it would be a click that silently no-ops.
+    setup :register_and_log_in_user
+
+    test "channel=email + permission=default reveals the panel", %{conn: conn, user: user} do
+      import Ecto.Query
+
+      _ =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [notification_channel: "email"]
+        )
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+      # `default` is the JS hook's value when the user hasn't responded
+      # to the permission prompt yet — the typical "I clicked the page
+      # but never said yes/no" state.
+      render_hook(view, "notification_state", %{state: "default", installed: true})
+
+      assert render(view) =~ "Send test notification"
+    end
+
+    test "channel=both + permission=denied reveals the panel", %{conn: conn, user: user} do
+      import Ecto.Query
+
+      _ =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [notification_channel: "both"]
+        )
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+      render_hook(view, "notification_state", %{state: "denied", installed: true})
+
+      # `denied` means the user explicitly rejected the OS prompt — the
+      # browser path is gone for good. With "both" channel the email
+      # path is still available, so the panel must show.
+      assert render(view) =~ "Send test notification"
+    end
+
+    test "channel=push + permission=default hides the panel (no working path)", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+      render_hook(view, "notification_state", %{state: "default", installed: true})
+
+      refute render(view) =~ "Send test notification"
+    end
+
+    test "channel=push + permission=granted still reveals the panel", %{conn: conn} do
+      # Existing behaviour preserved — push-only user with permission
+      # granted sees the panel and the click fires a system notification.
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+      render_hook(view, "notification_state", %{state: "granted", installed: true})
+
+      assert render(view) =~ "Send test notification"
+    end
+  end
+
   describe "Channel-chip selector" do
     # Renders the "Deliver via: Notification | Email | Both" segmented
     # control beneath the three notification checkboxes. The form
@@ -279,14 +353,16 @@ defmodule DtuAppWeb.NotificationsLiveTest do
   describe "Test notification button" do
     # The /notifications page lets the user fire a synthetic notification
     # via the `test_notification` phx-click handler. The button is gated
-    # by `@notification_state == "granted"` (the JS hook's view of the
-    # browser's notification permission), so the render path is gated
-    # client-side — but the server-side `handle_event("test_notification", ...)`
-    # is always available and just fires `Notifications.broadcast/2`.
-    # The tests below pin the server contract: that the broadcast reaches
-    # the per-user topic the LiveView subscribed to in mount/3, so the
-    # JS hook receives a `notify` push_event and renders the system
-    # `new Notification(...)`.
+    # by `notification_state_granted? || email_capable?` (browser
+    # permission OR `notification_channel in ["email", "both"]`),
+    # so the render path is gated client-side — but the server-side
+    # `handle_event("test_notification", ...)` is always available and
+    # just fires `Notifications.broadcast/2` (which routes via the
+    # dispatcher's normal channel logic: push for "push"/"both", email
+    # for "email"/"both"). The tests below pin the server contract: that
+    # the broadcast reaches the per-user topic the LiveView subscribed
+    # to in mount/3, so the JS hook receives a `notify` push_event and
+    # renders the system `new Notification(...)`.
 
     setup :register_and_log_in_user
 

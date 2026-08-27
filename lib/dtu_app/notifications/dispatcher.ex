@@ -29,7 +29,7 @@ defmodule DtuApp.Notifications.Dispatcher do
   require Logger
 
   alias DtuApp.Accounts.User
-  alias DtuApp.Emails.{ConnectionEmail, SunDownEmail, SunUpEmail}
+  alias DtuApp.Emails.{ConnectionEmail, Layout, SunDownEmail, SunUpEmail}
   alias DtuApp.Mailer
   alias DtuApp.Notifications.Notification
   alias DtuApp.Push
@@ -264,6 +264,27 @@ defmodule DtuApp.Notifications.Dispatcher do
   defp render_email(user, "sun_down", p), do: SunDownEmail.render(user, p)
   defp render_email(user, "sun_up", p), do: SunUpEmail.render(user, p)
   defp render_email(user, "dtu_connection", p), do: ConnectionEmail.render(user, p)
+
+  # Synthetic "test" event fired from the `/notifications` LiveView
+  # "Send test notification" button. Renders a minimal brand-styled
+  # email with the producer-supplied title + body (already localised
+  # by the LiveView handler under `Gettext.with_locale/2`). When the
+  # user has `notification_channel in ["email", "both"]` AND no
+  # browser notification permission, this is the path that actually
+  # delivers the "is my setup working?" signal — without it the test
+  # button silently no-ops for email-only users (the `rescue` in
+  # `try_email/3` would otherwise swallow a `FunctionClauseError`).
+  defp render_email(%User{} = user, "test", p) do
+    title = p[:title] || p["title"] || ""
+    body = List.wrap(p[:body] || p["body"] || [])
+
+    Layout.render(
+      title: title,
+      greeting: gettext("Hi,"),
+      body: body,
+      lang: user.locale || "en"
+    )
+  end
 
   # Same shape as `DtuApp.Accounts.UserNotifier.mail_from/0`. We don't
   # reuse that helper because it's private and the notifier module

@@ -4,7 +4,7 @@ msgstr "Language: de\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8
 #: lib/dtu_app_web/live/dashboard_live.ex:1597
 #: lib/dtu_app_web/live/device_live/details.ex:407
 #: lib/dtu_app_web/live/device_live/index.ex:325
-#: lib/dtu_app_web/live/notifications_live.ex:619
+#: lib/dtu_app_web/live/notifications_live.ex:627
 #, elixir-autogen, elixir-format
 msgid "%{n} days ago"
 msgstr "vor %{n} Tagen"
@@ -12,7 +12,7 @@ msgstr "vor %{n} Tagen"
 #: lib/dtu_app_web/live/dashboard_live.ex:1594
 #: lib/dtu_app_web/live/device_live/details.ex:406
 #: lib/dtu_app_web/live/device_live/index.ex:324
-#: lib/dtu_app_web/live/notifications_live.ex:618
+#: lib/dtu_app_web/live/notifications_live.ex:626
 #, elixir-autogen, elixir-format
 msgid "%{n} hours ago"
 msgstr "vor %{n} Stunden"
@@ -20,7 +20,7 @@ msgstr "vor %{n} Stunden"
 #: lib/dtu_app_web/live/dashboard_live.ex:1591
 #: lib/dtu_app_web/live/device_live/details.ex:405
 #: lib/dtu_app_web/live/device_live/index.ex:323
-#: lib/dtu_app_web/live/notifications_live.ex:617
+#: lib/dtu_app_web/live/notifications_live.ex:625
 #, elixir-autogen, elixir-format
 msgid "%{n} minutes ago"
 msgstr "vor %{n} Minuten"
@@ -880,7 +880,7 @@ msgstr "dtu.app ist ein selbstgehostetes Telemetrie-Dashboard fürSolar-Wechselr
 #: lib/dtu_app_web/live/dashboard_live.ex:1588
 #: lib/dtu_app_web/live/device_live/details.ex:404
 #: lib/dtu_app_web/live/device_live/index.ex:322
-#: lib/dtu_app_web/live/notifications_live.ex:616
+#: lib/dtu_app_web/live/notifications_live.ex:624
 #, elixir-autogen, elixir-format
 msgid "just now"
 msgstr "gerade eben"
@@ -1192,7 +1192,7 @@ msgstr "Netto-Verbrauch"
 msgid "Net import"
 msgstr "Netto-Import"
 
-#: lib/dtu_app/emails/sun_down_email.ex:71
+#: lib/dtu_app/emails/sun_down_email.ex:68
 #: lib/dtu_app_web/live/dashboard_live.ex:3150
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Peak power"
@@ -1213,18 +1213,13 @@ msgstr "DTU ist offline"
 msgid "If you can read this, browser notifications are working."
 msgstr "Wenn Sie dies lesen können, funktionieren die Browser-Benachrichtungen."
 
-#: lib/dtu_app_web/live/notifications_live.ex:481
-#, elixir-autogen, elixir-format
-msgid "Send a one-off test notification to verify the browser is set up correctly. It should appear within a second or two."
-msgstr "Senden Sie eine einmalige Test-Benachrichtigung, um zu prüfen, ob der Browser korrekt eingerichtet ist. Sie sollte innerhalb von ein bis zwei Sekunden erscheinen."
-
-#: lib/dtu_app_web/live/notifications_live.ex:492
+#: lib/dtu_app_web/live/notifications_live.ex:500
 #, elixir-autogen, elixir-format
 msgid "Send test notification"
 msgstr "Test-Benachrichtigung senden"
 
 #: lib/dtu_app_web/live/notifications_live.ex:181
-#: lib/dtu_app_web/live/notifications_live.ex:478
+#: lib/dtu_app_web/live/notifications_live.ex:486
 #, elixir-autogen, elixir-format
 msgid "Test notification"
 msgstr "Test-Benachrichtigung"
@@ -1658,8 +1653,8 @@ msgstr "YTD"
 msgid "Year to date"
 msgstr "Jahr bis heute"
 
-#: lib/dtu_app/emails/sun_down_email.ex:68
-#: lib/dtu_app/emails/sun_down_email.ex:73
+#: lib/dtu_app/emails/sun_down_email.ex:65
+#: lib/dtu_app/emails/sun_down_email.ex:70
 #: lib/dtu_app_web/live/dashboard_live.ex:3590
 #, elixir-autogen, elixir-format
 msgid "Yesterday"
@@ -1680,28 +1675,28 @@ msgstr "Ertrag"
 msgid "Current Power"
 msgstr ""
 
-#: lib/dtu_app_web/live/notifications_live.ex:520
+#: lib/dtu_app_web/live/notifications_live.ex:528
 #, elixir-autogen, elixir-format
 msgid "Clear all"
 msgstr "Alle löschen"
 
-#: lib/dtu_app_web/live/notifications_live.ex:517
+#: lib/dtu_app_web/live/notifications_live.ex:525
 #, elixir-autogen, elixir-format
 msgid "Clear all notifications? This cannot be undone."
 msgstr "Alle Benachrichtigungen löschen? Dies kann nicht rückgängig gemacht werden."
 
-#: lib/dtu_app_web/live/notifications_live.ex:558
-#: lib/dtu_app_web/live/notifications_live.ex:559
+#: lib/dtu_app_web/live/notifications_live.ex:566
+#: lib/dtu_app_web/live/notifications_live.ex:567
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Delete notification"
 msgstr "Test-Benachrichtigung"
 
-#: lib/dtu_app_web/live/notifications_live.ex:593
+#: lib/dtu_app_web/live/notifications_live.ex:601
 #, elixir-autogen, elixir-format
 msgid "Next"
 msgstr "Weiter"
 
-#: lib/dtu_app_web/live/notifications_live.ex:527
+#: lib/dtu_app_web/live/notifications_live.ex:535
 #, elixir-autogen, elixir-format
 msgid "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
 msgstr "Noch keine Benachrichtigungen. Die Liste wird automatisch aktualisiert, sobald Ihre Geräte ein Ereignis auslösen oder Sie oben eine Test-Benachrichtigung senden."
@@ -1711,17 +1706,17 @@ msgstr "Noch keine Benachrichtigungen. Die Liste wird automatisch aktualisiert, 
 msgid "Notification history cleared."
 msgstr "Benachrichtigungseinstellungen gespeichert."
 
-#: lib/dtu_app_web/live/notifications_live.ex:581
+#: lib/dtu_app_web/live/notifications_live.ex:589
 #, elixir-autogen, elixir-format
 msgid "Page %{page} of %{total}"
 msgstr "Seite %{page} von %{total}"
 
-#: lib/dtu_app_web/live/notifications_live.ex:578
+#: lib/dtu_app_web/live/notifications_live.ex:586
 #, elixir-autogen, elixir-format, fuzzy
 msgid "Previous"
 msgstr "Vorheriger Zeitraum"
 
-#: lib/dtu_app_web/live/notifications_live.ex:511
+#: lib/dtu_app_web/live/notifications_live.ex:519
 #, elixir-autogen, elixir-format
 msgid "Recent notifications"
 msgstr "Letzte Benachrichtigungen"
@@ -1763,6 +1758,7 @@ msgstr "Zustellung über"
 #: lib/dtu_app/emails/connection_email.ex:27
 #: lib/dtu_app/emails/sun_down_email.ex:29
 #: lib/dtu_app/emails/sun_up_email.ex:27
+#: lib/dtu_app/notifications/dispatcher.ex:283
 #, elixir-autogen, elixir-format
 msgid "Hi,"
 msgstr "Hallo,"
@@ -1773,7 +1769,7 @@ msgid "Nighttime — MQTT is alive but no AC power reading has arrived. The inve
 msgstr "Nachts — MQTT ist aktiv, aber es ist kein AC-Leistungswert eingegangen. Der Wechselrichter sendet keine Telemetrie mehr, z. B. nach Sonnenuntergang."
 
 #: lib/dtu_app/emails/sun_down_chart.ex:79
-#: lib/dtu_app/emails/sun_down_email.ex:95
+#: lib/dtu_app/emails/sun_down_email.ex:92
 #, elixir-autogen, elixir-format
 msgid "No chart available"
 msgstr "Kein Diagramm verfügbar"
@@ -1795,12 +1791,12 @@ msgstr "Wähle, wie du die Benachrichtigungen erhalten möchtest. E-Mail ist ein
 
 #: lib/dtu_app/emails/sun_down_chart.ex:76
 #: lib/dtu_app/emails/sun_down_chart.ex:95
-#: lib/dtu_app/emails/sun_down_email.ex:83
+#: lib/dtu_app/emails/sun_down_email.ex:80
 #, elixir-autogen, elixir-format
 msgid "Today's power curve"
 msgstr "Heutige Leistungskurve"
 
-#: lib/dtu_app/emails/sun_down_email.ex:66
+#: lib/dtu_app/emails/sun_down_email.ex:63
 #, elixir-autogen, elixir-format
 msgid "Today's yield"
 msgstr "Heutiger Ertrag"
@@ -1815,7 +1811,7 @@ msgstr "Dashboard anzeigen"
 msgid "You picked email delivery, but your email address isn't confirmed. Visit account settings to confirm it, otherwise email notifications will be skipped."
 msgstr "Du hast E-Mail gewählt, aber deine E-Mail-Adresse ist nicht bestätigt. Bestätige sie in den Kontoeinstellungen, sonst werden E-Mail-Benachrichtigungen übersprungen."
 
-#: lib/dtu_app/emails/sun_down_email.ex:40
+#: lib/dtu_app/emails/sun_down_email.ex:39
 #, elixir-autogen, elixir-format
 msgid "You're getting this email because you enabled end-of-day summaries."
 msgstr "Du erhältst diese E-Mail, weil du Tageszusammenfassungen aktiviert hast."
@@ -1830,12 +1826,17 @@ msgstr "Du erhältst diese E-Mail, weil du Wechselrichter-Verbindungsbenachricht
 msgid "nighttime"
 msgstr "Nachts"
 
-#: lib/dtu_app/emails/sun_down_email.ex:111
+#: lib/dtu_app/emails/sun_down_email.ex:109
 #, elixir-autogen, elixir-format
 msgid "same as yesterday"
 msgstr "wie gestern"
 
-#: lib/dtu_app/emails/sun_down_email.ex:115
+#: lib/dtu_app/emails/sun_down_email.ex:114
 #, elixir-autogen, elixir-format
 msgid "vs yesterday"
 msgstr "gg. gestern"
+
+#: lib/dtu_app_web/live/notifications_live.ex:489
+#, elixir-autogen, elixir-format
+msgid "Send a one-off test notification to verify your setup. It will appear in your browser if push is enabled, otherwise it will be delivered to your email address."
+msgstr "Sende eine einmalige Test-Benachrichtigung, um dein Setup zu überprüfen. Sie erscheint in deinem Browser, falls Push aktiviert ist, andernfalls wird sie an deine E-Mail-Adresse zugestellt."

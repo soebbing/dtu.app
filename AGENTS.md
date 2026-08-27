@@ -675,20 +675,47 @@ The `/notifications` LiveView exposes three toggles:
   vs. yesterday.
 - `notify_sun_up` — playful first-power ping at sunrise when nightly
   zero-state ends.
-- "Send test notification" button (only enabled when permission state
-  is `granted`).
+- `notification_channel` — segmented control (`push` / `email` /
+  `both`) for the **delivery path** of every fire (see "Delivery
+  paths" below). Independent of the per-event toggles above.
+- "Send test notification" button — visible whenever the user has at
+  least one working delivery path (`notification_state == "granted"`
+  OR `notification_channel in ["email", "both"]`); pushes a synthetic
+  `event: "test"` through `Notifications.broadcast/2` so the dispatcher's
+  normal channel routing delivers the test (browser push when granted,
+  email when email-or-both). Push-only users with no browser permission
+  still see the button hidden — there's no other path that can deliver
+  for them, so a visible button would be a click that silently no-ops.
 
-**Two delivery paths**:
+**Three delivery paths** (`notification_channel` selects which):
 
-- **In-page** — `DtuAppWeb.UserNotifications.broadcast/2` publishes to
-  `user:notification:<id>`; the dashboard's colocated `Notifications`
-  JS hook receives it and calls `new Notification(...)` after
-  deduplicating by `tag` in `localStorage`.
+- **In-page** — `Notifications.broadcast/2` publishes to
+  `user:notification:<id>`; the colocated `Notifications` JS hook on
+  the dashboard and `/notifications` page receives it and calls
+  `new Notification(...)` after deduplicating by `tag` in
+  `localStorage`. Gated by browser permission: when the OS prompt is
+  `default` or `denied`, the hook logs a warning and returns. Always
+  fired alongside push/email so the in-page notification history
+  remains in sync regardless of channel.
 - **Native** — `DtuApp.Push.deliver/2` looks up every
   `push_subscriptions` row for the user, signs (VAPID, RFC 8292),
   encrypts (AES-128-GCM, RFC 8291), and POSTs via Finch to the user's
   push service (FCM, Mozilla autopush, Apple). HTTP 404/410
   (`{:error, :gone}`) deletes the row; other errors log and continue.
+  Used when `notification_channel in ["push", "both"]`.
+- **Email** — `DtuApp.Notifications.Dispatcher.try_email/3` renders the
+  producer's payload through one of `Emails.ConnectionEmail`,
+  `Emails.SunUpEmail`, `Emails.SunDownEmail`, or `Emails.Layout` (for
+  the synthetic `event: "test"` from the "Send test notification"
+  button) and delivers via Swoosh + the configured `Mailer`. Locale
+  resolved under `Gettext.with_locale(DtuAppWeb.Gettext, user.locale,
+  ...)`. Skipped when `confirmed_at == nil` (logged at `:warning`).
+  Used when `notification_channel in ["email", "both"]`.
+
+Both push and email paths are best-effort (`try/rescue` + `:warning`
+log); neither failure bubbles back to the producer. A
+`DtuConnection` reconnect storm never crashes the broker because an
+email render raised.
 
 VAPID keypair is generated idempotently by `bin/gen-vapid` (writes to
 `.env`; `--force` is required to overwrite because rotation
