@@ -4159,8 +4159,9 @@ defmodule DtuAppWeb.DashboardLive do
               id="share-panel"
               class="mt-4 border-t border-zinc-200 dark:border-zinc-700 pt-4"
             >
-              <div
+              <label
                 id="share-toggle-label"
+                for="share-toggle"
                 class="flex items-center gap-3 cursor-pointer select-none"
                 title={gettext("Share today's dashboard read-only")}
               >
@@ -4184,7 +4185,7 @@ defmodule DtuAppWeb.DashboardLive do
                   <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
                   <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
                 </span>
-              </div>
+              </label>
 
               <div
                 id="share-row"
