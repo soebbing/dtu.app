@@ -4222,7 +4222,7 @@ defmodule DtuAppWeb.DashboardLive do
                         value={@share_url}
                         class="flex-1 min-w-0 px-3 py-2 text-sm font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                         data-value={@share_url}
-                        phx-hook="SelectOnFocus"
+                        phx-hook=".SelectOnFocus"
                         aria-label={gettext("Shareable URL")}
                         data-testid="share-url-input"
                       />
@@ -4233,7 +4233,7 @@ defmodule DtuAppWeb.DashboardLive do
                         aria-label={gettext("Copy URL")}
                         class="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
                         data-value={@share_url}
-                        phx-hook="CopyToClipboardWithHint"
+                        phx-hook=".CopyToClipboardWithHint"
                         data-testid="btn-share-copy"
                       >
                         <.icon name="hero-clipboard-document" class="size-5" />
