@@ -4415,7 +4415,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # `this.select()` via the pointer event. Asserting the hook
       # binding is enough to prove all three listeners are
       # registered (they're set up inside `mounted/1`).
-      assert has_element?(view, "#share-url-input[phx-hook='SelectOnFocus']")
+      assert has_element?(view, "#share-url-input[phx-hook='DtuAppWeb.DashboardLive.SelectOnFocus']")
     end
 
     test "the copy button uses the hint hook and has a hidden hint label", %{
@@ -4431,7 +4431,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # The button uses the dedicated hook that flips the icon to
       # emerald AND reveals the "Copied!" hint label.
-      assert has_element?(view, "#btn-share-copy[phx-hook='CopyToClipboardWithHint']")
+      assert has_element?(view, "#btn-share-copy[phx-hook='DtuAppWeb.DashboardLive.CopyToClipboardWithHint']")
 
       # The hint element exists, is initially hidden via
       # `opacity-0`, and carries the user-facing label.
