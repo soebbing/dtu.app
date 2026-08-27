@@ -181,18 +181,19 @@ const NetworkStatus = {
 }
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
+const Hooks = {
+  ...colocatedHooks,
+  NetworkStatus,
+  NotificationPermission,
+  Notifications,
+  OfflineBanner,
+  PushSubscribe,
+  PasskeyFlow
+}
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {
-    ...colocatedHooks,
-    NetworkStatus,
-    NotificationPermission,
-    Notifications,
-    OfflineBanner,
-    PushSubscribe,
-    PasskeyFlow
-  },
+  hooks: Hooks,
 })
 
 // Show progress bar on live navigation and form submits
@@ -208,6 +209,47 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
+
+// Bootstrap `phx-hook` elements on non-LiveView (dead controller)
+// pages. The LiveSocket's internal lifecycle only mounts hooks inside
+// a mounted LiveView session. Plain controller-rendered pages — e.g.
+// /users/log-in and /users/settings — never claim those elements, so
+// `PasskeyFlow.mounted()` never fires and the buttons are inert in a
+// real browser. We run this AFTER `liveSocket.connect()` so the
+// LiveSocket has had a chance to claim LiveView hooks first; for any
+// `[phx-hook]` element NOT inside a `[data-phx-view]` /
+// `[data-phx-session]` ancestor, invoke `mounted()` ourselves with a
+// stubbed view. The stub supplies no-op `pushEvent` / `pushEventTo` /
+// `handleEvent` (PasskeyFlow doesn't call any of them, but other
+// hooks might).
+function bootstrapDeadHooks() {
+  const isInsideLiveView = (el) =>
+    el.closest("[data-phx-view], [data-phx-session]") !== null
+
+  document.querySelectorAll("[phx-hook]").forEach((el) => {
+    if (isInsideLiveView(el)) return
+    const name = el.getAttribute("phx-hook")
+    const Hook = Hooks[name]
+    if (!Hook || !Hook.mounted) return
+    const view = {
+      el,
+      pushEvent: () => {},
+      pushEventTo: () => {},
+      handleEvent: () => {}
+    }
+    try {
+      Hook.mounted.call(view)
+    } catch (_err) {
+      // A crashing hook must not break the rest of the page; the
+      // LiveSocket's own lifecycle logs and continues, so do the same.
+    }
+  })
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bootstrapDeadHooks)
+} else {
+  bootstrapDeadHooks()
+}
 
 // PWA: Register Service Worker
 //
