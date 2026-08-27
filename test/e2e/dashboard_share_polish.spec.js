@@ -119,17 +119,22 @@ test.describe('Acceptance: Share-link UX polish', () => {
     // and the cond block swaps the hint text for the spinner.
     // LiveView delivers the render in a single patch, so by the
     // time the locator resolves the spinner should be in the DOM.
-    const spinner = page.locator('#share-loading-row');
-    await expect(spinner).toBeVisible({ timeout: 3000 });
-    await expect(spinner).toContainText(/Generating link/i);
-
-    // Eventually the URL row replaces the spinner once the task
-    // completes and the handle_info callback fires.
+    //
+    // We don't assert that the spinner is visible here — the
+    // spawned Task that mints the share token can complete before
+    // Playwright's visibility check settles, and the URL row
+    // replaces the spinner in the very next LiveView patch.
+    // Asserting the spinner reliably in E2E is a race against
+    // wall-clock DB roundtrip time, which the synchronous ExUnit
+    // test already covers by capturing the render_click HTML.
+    // For E2E we only need to confirm the END state: the URL row
+    // appears with the share token in the value.
     const urlInput = page.locator('#share-url-input');
     await expect(urlInput).toBeVisible({ timeout: 5000 });
     await expect(urlInput).toHaveValue(/\/s\//);
 
     // The spinner is gone.
+    const spinner = page.locator('#share-loading-row');
     await expect(spinner).toBeHidden();
   });
 
@@ -141,10 +146,30 @@ test.describe('Acceptance: Share-link UX polish', () => {
 
     // Click into the input. The SelectOnFocus hook listens on
     // `click`, `focus`, and `pointerdown` and calls
-    // `this.select()` so Cmd-C / Ctrl-C copies the full URL.
+    // `this.select()` (deferred via setTimeout(0) so it runs
+    // AFTER the browser's default click cursor placement).
     await urlInput.click();
 
-    // Verify the selection covers the entire value (length matches).
+    // Poll the selection state — the deferred select() can land
+    // a tick after the click resolves, so a single read might
+    // catch the browser's mid-click cursor position. expect.poll
+    // retries the evaluator until the assertions pass (or the
+    // 5 s timeout fires).
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const el = document.querySelector('#share-url-input');
+            return {
+              start: el.selectionStart,
+              end: el.selectionEnd,
+              length: el.value.length,
+            };
+          }),
+        { timeout: 5000 }
+      )
+      .toMatchObject({ start: 0, length: expect.any(Number) });
+
     const selection = await page.evaluate(() => {
       const el = document.querySelector('#share-url-input');
       return {
@@ -179,6 +204,23 @@ test.describe('Acceptance: Share-link UX polish', () => {
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.up();
+
+    // Poll the selection state — the deferred select() can land
+    // a tick after the tap resolves.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const el = document.querySelector('#share-url-input');
+            return {
+              start: el.selectionStart,
+              end: el.selectionEnd,
+              length: el.value.length,
+            };
+          }),
+        { timeout: 5000 }
+      )
+      .toMatchObject({ start: 0, length: expect.any(Number) });
 
     const selection = await page.evaluate(() => {
       const el = document.querySelector('#share-url-input');

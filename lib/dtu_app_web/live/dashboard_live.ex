@@ -4575,23 +4575,33 @@ defmodule DtuAppWeb.DashboardLive do
            attribute — it works on desktop clicks but tap-into-input on
            iOS Safari doesn't fire `focus` for readonly inputs in some
            builds, so the URL stays unselected. The hook guarantees the
-           selection on every gesture. --%>
+           selection on every gesture.
+
+           The select() call is wrapped in `setTimeout(..., 0)` so it
+           runs AFTER the browser has finished its default click
+           handling (which would otherwise place the cursor at the
+           click position, undoing our selection). --%>
       <script :type={Phoenix.LiveView.ColocatedHook} name=".SelectOnFocus">
         export default {
           mounted() {
             this.select = () => {
-              if (typeof this.el.select === "function") {
-                this.el.focus({ preventScroll: true })
-                this.el.select()
-                if (typeof this.el.setSelectionRange === "function") {
-                  try {
-                    this.el.setSelectionRange(0, this.el.value.length)
-                  } catch (_err) {
-                    // Some input types (e.g. email) reject setSelectionRange.
-                    // `select()` already covered the common case.
+              // Defer the select to a macrotask so the browser's
+              // synchronous default-action cursor placement (click)
+              // has settled before we override the selection.
+              setTimeout(() => {
+                if (typeof this.el.select === "function") {
+                  this.el.focus({ preventScroll: true })
+                  this.el.select()
+                  if (typeof this.el.setSelectionRange === "function") {
+                    try {
+                      this.el.setSelectionRange(0, this.el.value.length)
+                    } catch (_err) {
+                      // Some input types (e.g. email) reject setSelectionRange.
+                      // `select()` already covered the common case.
+                    }
                   }
                 }
-              }
+              }, 0)
             }
 
             this.el.addEventListener("focus", this.select)
