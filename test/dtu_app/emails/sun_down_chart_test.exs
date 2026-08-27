@@ -43,13 +43,18 @@ defmodule DtuApp.Emails.SunDownChartTest do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
+      # Always land inside today (anchored at noon UTC) so the chart query
+      # matches regardless of when the test runs.
+      base =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00.000000])
+
       # 4 readings, 1 minute apart, going up — enough for a non-degenerate
       # SVG path. `list_day_chart_data_for_dashboard/4`'s aggregate path
       # needs the rows to be > 5 minutes in the past to land in the
       # closed-aggregate bucket; the live-tail fallback walks raw rows
       # directly though, so any timestamp works for the chart to find
       # at least one point.
-      base = DateTime.utc_now() |> DateTime.add(-3600, :second)
 
       for i <- 0..3 do
         DevicesFixtures.reading_fixture(device, %{
@@ -65,7 +70,12 @@ defmodule DtuApp.Emails.SunDownChartTest do
 
     test "rendered SVG starts with the brand viewBox prefix", %{user: user} do
       svg = SunDownChart.render(user, Date.utc_today())
-      assert String.starts_with?(svg, ~s(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 280"))
+
+      assert String.starts_with?(
+               svg,
+               ~s(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 280")
+             )
+
       assert svg =~ ~s(viewBox="0 0 800 280")
     end
 
@@ -87,7 +97,9 @@ defmodule DtuApp.Emails.SunDownChartTest do
         inverter_serial: "INV-A",
         mppt_index: 0,
         ac_power: 200.0,
-        inserted_at: DateTime.add(DateTime.utc_now(), -3600, :second)
+        inserted_at:
+          Date.utc_today()
+          |> DateTime.new!(~T[12:00:00.000000])
       })
 
       svg = SunDownChart.render(user, Date.utc_today())
