@@ -47,8 +47,17 @@ function runSeed() {
       process.env.DATABASE_URL ||
       'ecto://postgres:postgres@localhost:5432/dtu_app_prod',
     SECRET_KEY_BASE: process.env.SECRET_KEY_BASE || 'e2e_test_only',
-    VAPID_PUBLIC_KEY: process.env.VAPID_PUBLIC_KEY || 'e2e_test_only',
-    VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY || 'e2e_test_only',
+    // VAPID placeholders are valid URL-safe-base64 P-256 keys
+    // (87-char public, 43-char private) so any future E2E test that
+    // exercises the Web Push path won't trip
+    // `atob("String contains an invalid character")`. The browser
+    // never actually subscribes under E2E today — these exist only to
+    // satisfy `config/runtime.exs`'s prod-mode VAPID check.
+    VAPID_PUBLIC_KEY:
+      process.env.VAPID_PUBLIC_KEY ||
+      'BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0',
+    VAPID_PRIVATE_KEY:
+      process.env.VAPID_PRIVATE_KEY || 'xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc',
     VAPID_SUBJECT: process.env.VAPID_SUBJECT || 'mailto:e2e@example.com',
     MIX_ENV: process.env.MIX_ENV || 'prod',
   };

@@ -24,9 +24,15 @@ jobs:
     # short-circuits when VAPID is set but not real. We use distinct
     # fixed strings rather than runtime-generated keys so the
     # `MIX_ENV=prod` startup is reproducible across CI runs.
+    #
+    # Both placeholders are valid URL-safe-base64 P-256 key material:
+    # 87 chars public (= ceil(65 * 4 / 3), uncompressed-point), 43 chars
+    # private (= ceil(32 * 4 / 3), scalar). Anything else would trip the
+    # `atob("String contains an invalid character")` check in
+    # `assets/js/push_subscribe.js` if a browser ever tried to subscribe.
     env:
-      VAPID_PUBLIC_KEY: "BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-      VAPID_PRIVATE_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      VAPID_PUBLIC_KEY: "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0"
+      VAPID_PRIVATE_KEY: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc"
       VAPID_SUBJECT: "mailto:ci@localhost"
 
     services:

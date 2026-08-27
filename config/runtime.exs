@@ -171,9 +171,9 @@ end
 # (logged for convenience) so the developer doesn't have to provision
 # keys just to test the OS-notification path. In :test we skip
 # entirely — push tests can inject a stubbed module.
-vapid_pub = System.get_env("VAPID_PUBLIC_KEY", "")
-vapid_priv = System.get_env("VAPID_PRIVATE_KEY", "")
-vapid_sub = System.get_env("VAPID_SUBJECT", "mailto:admin@localhost")
+vapid_pub = System.get_env("VAPID_PUBLIC_KEY", "") |> String.trim()
+vapid_priv = System.get_env("VAPID_PRIVATE_KEY", "") |> String.trim()
+vapid_sub = System.get_env("VAPID_SUBJECT", "mailto:admin@localhost") |> String.trim()
 
 case config_env() do
   :test ->
