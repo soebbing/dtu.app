@@ -165,8 +165,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # against is the UNSIGNED `request_id` from the body.
       cookie_value = body["request_id"]
 
-      {attestation, _credential_id} =
-        fake_attestation(@rp_id, "http://www.example.com", challenge)
+      attestation = fake_attestation(@rp_id, challenge)
 
       conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
 
@@ -195,7 +194,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # with `challenge_expired` rather than `request_id_mismatch`).
       conn = put_req_cookie(conn, "passkey_request_id", "nonexistent")
 
-      {attestation, _} = fake_attestation(@rp_id, "http://www.example.com", <<0::256>>)
+      attestation = fake_attestation(@rp_id, <<0::256>>)
 
       resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -214,7 +213,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       conn = log_in_user(conn, user)
       _begin_resp = post(conn, "/auth/passkey/registration/begin", %{"friendly_name" => "X"})
 
-      {attestation, _} = fake_attestation(@rp_id, "http://www.example.com", <<0::256>>)
+      attestation = fake_attestation(@rp_id, <<0::256>>)
 
       resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -239,6 +238,57 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
       assert json_response(resp, 401)["error"] == "unauthenticated"
     end
+
+    test "429 rate_limited after 10 attempts", %{conn: conn} do
+      # The PasskeyRateLimit plug caps each (remote_ip, action) pair at
+      # 10/minute. The setup block drains the ETS table at the start of
+      # every test so we start the count from zero; the 11th request
+      # should trip the limit and return 429 `too_many_attempts`.
+      user = user_fixture() |> set_password()
+      conn = log_in_user(conn, user)
+
+      Enum.each(1..10, fn _ ->
+        resp = post(conn, "/auth/passkey/registration/begin", %{"friendly_name" => "x"})
+        assert resp.status == 200
+      end)
+
+      resp = post(conn, "/auth/passkey/registration/begin", %{"friendly_name" => "x"})
+      assert resp.status == 429
+      assert json_response(resp, 429)["error"] == "too_many_attempts"
+    end
+
+    test "409 credential_already_enrolled on duplicate credential_id", %{
+      conn: conn,
+      user: user
+    } do
+      # Pre-enroll a passkey with a known credential_id, then submit an
+      # attestation that collides with it. The controller's two 409
+      # branches (`:credential_already_enrolled` from the Ecto unique
+      # index AND the `%Ecto.Changeset{}` branch) both fire here; this
+      # test exercises the index path. The credential_id is supplied to
+      # `fake_attestation/3` so the attestation's clientDataJSON carries
+      # the same id the row already owns.
+      conn = log_in_user(conn, user)
+
+      existing_cred_id = :crypto.strong_rand_bytes(32)
+      passkey_fixture(user, %{credential_id: existing_cred_id})
+
+      begin_resp = post(conn, "/auth/passkey/registration/begin", %{"friendly_name" => "x"})
+      body = json_response(begin_resp, 200)
+      challenge = fetch_challenge_from_cache(body["request_id"])
+
+      attestation = fake_attestation(@rp_id, challenge, existing_cred_id)
+      conn = put_req_cookie(conn, "passkey_request_id", body["request_id"])
+
+      finish_resp =
+        post(conn, "/auth/passkey/registration/finish", %{
+          "request_id" => body["request_id"],
+          "attestation_response" => attestation
+        })
+
+      assert finish_resp.status == 409
+      assert json_response(finish_resp, 409)["error"] == "credential_already_enrolled"
+    end
   end
 
   # ────────────────────────── authentication/begin ──────────────────────────
@@ -262,8 +312,10 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       assert is_binary(body["request_id"])
       assert is_map(body["publicKey"])
       # Conditional mediation: allowCredentials is empty so the browser
-      # picks which credential to use.
-      assert body["publicKey"]["allowCredentials"] in [nil, [], %{}]
+      # picks which credential to use. The controller hardcodes the
+      # value (see `passkey_controller.ex` ~line 229) — assert equality
+      # rather than membership.
+      assert body["publicKey"]["allowCredentials"] == []
 
       # Cache entry uses `kind: :authentication` and `user_id: nil`
       # (anonymous probe — the row's owner isn't known yet).
@@ -311,8 +363,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # The mock auth response uses the challenge STRING to pick a
       # behavior; any string other than "warn"/"originMismatch"/etc
       # takes the happy path (`{:ok, hd(creds), sign_count+1}`).
-      {assertion, _} =
-        fake_assertion(@rp_id, "http://www.example.com", challenge, passkey)
+      assertion = fake_assertion(@rp_id, challenge, passkey)
 
       conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
 
@@ -323,7 +374,10 @@ defmodule DtuAppWeb.PasskeyControllerTest do
         })
 
       assert resp.status == 200
-      assert json_response(resp, 200)["redirect"] =~ "/"
+      # `signed_in_path/1` returns "/". Assert exact match rather than
+      # fuzzy regex — the helper hardcodes the value and the redirect
+      # is load-bearing for the post-login flow.
+      assert json_response(resp, 200)["redirect"] == "/"
 
       # Session cookie set — `log_in_user_from_passkey/3` calls
       # `create_or_extend_session/3`, which writes the user_token to
@@ -341,13 +395,12 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       cookie_value = body["request_id"]
 
       # Build a passkey-shaped struct with a fresh credential_id that
-      # doesn't exist in the DB. `fake_assertion/4` only reads
+      # doesn't exist in the DB. `fake_assertion/3` only reads
       # `passkey.credential_id`; the rest of the struct is ignored by
       # the mock, so a bare map with `:credential_id` is enough.
       fake_credential = %{credential_id: :crypto.strong_rand_bytes(32)}
 
-      {assertion, _} =
-        fake_assertion(@rp_id, "http://www.example.com", challenge, fake_credential)
+      assertion = fake_assertion(@rp_id, challenge, fake_credential)
 
       conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
 
@@ -387,7 +440,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # greater_than: 0)`, so `Accounts.touch_passkey/2` returns
       # `{:error, %Ecto.Changeset{}}` — the controller maps that to
       # 401 `sign_count_not_increasing`.
-      {assertion, _} = fake_assertion(@rp_id, "http://www.example.com", "warn", passkey)
+      assertion = fake_assertion(@rp_id, "warn", passkey)
 
       resp =
         post(conn, "/auth/passkey/authentication/finish", %{
@@ -425,6 +478,45 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       assert resp.status == 409
 
       assert json_response(resp, 409)["error"] == "already_authenticated"
+    end
+
+    # Gap noted in the task brief: the brief lists `origin_mismatch`
+    # against `registration/finish`, but the `Webauthn.RegistrationMock`
+    # doesn't check origin at all (see
+    # `deps/webauthn/lib/webauthn/registration_mock/response.ex`) — so
+    # the scenario is unreachable on registration. The auth mock DOES
+    # key off the challenge STRING `"originMismatch"`, so the
+    # controller's mapping is exercisable on `authentication/finish`
+    # by swapping the cache entry's challenge after `/begin`.
+    test "400 origin_mismatch on authentication/finish", %{
+      conn: conn,
+      passkey: passkey
+    } do
+      begin_resp = post(conn, "/auth/passkey/authentication/begin", %{})
+      body = json_response(begin_resp, 200)
+
+      # Force the controller's origin-mismatch branch by replacing the
+      # cached challenge with the special `"originMismatch"` keyword
+      # the Webauthn auth-mock recognises
+      # (`deps/webauthn/lib/webauthn/authentication_mock/response.ex:34-36`).
+      PasskeyChallengeCache.put(body["request_id"], %{
+        challenge: "originMismatch",
+        user_id: nil,
+        kind: :authentication,
+        friendly_name: nil
+      })
+
+      assertion = fake_assertion(@rp_id, "originMismatch", passkey)
+      conn = put_req_cookie(conn, "passkey_request_id", body["request_id"])
+
+      resp =
+        post(conn, "/auth/passkey/authentication/finish", %{
+          "request_id" => body["request_id"],
+          "assertion_response" => assertion
+        })
+
+      assert resp.status == 400
+      assert json_response(resp, 400)["error"] == "origin_mismatch"
     end
   end
 

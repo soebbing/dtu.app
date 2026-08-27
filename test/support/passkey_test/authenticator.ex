@@ -15,6 +15,14 @@ defmodule PasskeyTest.Authenticator do
   the attestation object and pipes the inner `authData` into
   `Webauthn.AuthenticatorData.parse/1`, so the `authData` we emit must be
   valid per the W3C §6.1 layout.
+
+  Both helpers hard-code `"origin" => "http://www.example.com"` in the
+  clientDataJSON. `Phoenix.ConnTest.build_conn()` defaults to
+  `host: "www.example.com"`, so the controller's `request_origin/1`
+  computes the same origin — no mismatch. The auth mock checks the
+  challenge STRING for `"originMismatch"` (see
+  `deps/webauthn/lib/webauthn/authentication_mock/response.ex`), not
+  the origin field — and the reg mock doesn't check origin at all.
   """
 
   # Auth mock challenge strings → behavior (see
@@ -22,23 +30,28 @@ defmodule PasskeyTest.Authenticator do
   # Inline literals below — no module attribute to keep the warnings
   # log clean.
 
-  # `0b01010001` — UP=1, UV=1, AT=1, ED=0. WebAuthn §6.1: AT must be set
-  # when the authData is followed by attested credential data (which it
-  # is, since registration must carry a credential).
-  @flags <<0x51>>
+  # `0b0100_0001` — UP=1, AT=1, UV=0, ED=0, all RFU bits clear.
+  # W3C WebAuthn §6.1 flag layout (MSB→LSB): ED=7, AT=6, RFU2=5..3,
+  # UV=2, RFU1=1, UP=0. `0x51` (the previous value) had RFU2-bit-4 set
+  # — a reserved-for-future-use bit that MUST be zero. UV=0 is fine
+  # here because the controller doesn't pass `"authenticatorSelection"`
+  # to `Webauthn.registration_challenge/2`; the library defaults to
+  # `userVerification: "preferred"`, which accepts UV=0
+  # (`deps/webauthn/lib/webauthn/registration/response.ex:64-75`).
+  @flags <<0x41>>
 
   @doc """
-  Returns `{attestation_map, credential_id}` for a fresh enrollment.
+  Returns the attestation map `navigator.credentials.create()` would
+  POST to `/auth/passkey/registration/finish`.
 
-  `attestation_map` is the JSON shape `navigator.credentials.create()`
-  would POST to `/auth/passkey/registration/finish`. `credential_id` is
-  the raw bytes — callers must remember it for any later authentication
-  step (the registration mock doesn't persist it; we let the controller
-  persist it).
+  Pass `credential_id` to deterministically pre-enroll a passkey that
+  this attestation collides with (409 test); defaults to fresh random
+  bytes. The returned map's `"id"` / `"rawId"` are the base64url
+  encoding of the supplied `credential_id`.
   """
-  @spec fake_attestation(String.t(), String.t(), String.t()) :: {map(), binary()}
-  def fake_attestation(rp_id, _origin, challenge) do
-    credential_id = :crypto.strong_rand_bytes(32)
+  @spec fake_attestation(String.t(), String.t(), binary() | nil) :: map()
+  def fake_attestation(rp_id, challenge, credential_id \\ nil) do
+    credential_id = credential_id || :crypto.strong_rand_bytes(32)
 
     public_key_cbor =
       CBOR.encode(%{1 => 2, 3 => -7, -1 => 1, -2 => <<4::256>>, -3 => <<4::256>>})
@@ -59,7 +72,7 @@ defmodule PasskeyTest.Authenticator do
         "authData" => auth_data
       })
 
-    response = %{
+    %{
       "id" => Base.url_encode64(credential_id, padding: false),
       "rawId" => Base.url_encode64(credential_id, padding: false),
       "type" => "public-key",
@@ -77,12 +90,11 @@ defmodule PasskeyTest.Authenticator do
         "transports" => ["usb"]
       }
     }
-
-    {response, credential_id}
   end
 
   @doc """
-  Returns `{assertion_map, passkey}` for an existing enrollment.
+  Returns the assertion map `navigator.credentials.get()` would POST to
+  `/auth/passkey/authentication/finish`.
 
   The auth mock doesn't validate signatures — it uses the challenge
   STRING to pick a behavior:
@@ -96,9 +108,9 @@ defmodule PasskeyTest.Authenticator do
   `_rp_id` is accepted for symmetry with `fake_attestation/3` but unused
   (the mock doesn't verify the rp_id hash against authenticatorData).
   """
-  @spec fake_assertion(String.t(), String.t(), String.t(), map()) :: {map(), map()}
-  def fake_assertion(_rp_id, _origin, challenge, passkey) do
-    response = %{
+  @spec fake_assertion(String.t(), String.t(), map()) :: map()
+  def fake_assertion(_rp_id, challenge, passkey) do
+    %{
       "id" => Base.url_encode64(passkey.credential_id, padding: false),
       "rawId" => Base.url_encode64(passkey.credential_id, padding: false),
       "type" => "public-key",
@@ -119,7 +131,5 @@ defmodule PasskeyTest.Authenticator do
         "signature" => Base.url_encode64(<<0::256>>, padding: false)
       }
     }
-
-    {response, passkey}
   end
 end
