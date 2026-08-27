@@ -299,29 +299,35 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   # Share toggle. The toolbar switch sends `"enabled" => "true"|"false"`
-  # (the JS hook serializes booleans that way). On enable: mint a fresh
-  # token, persist the SHA-256 hash, surface the plaintext URL once via
-  # `:share_url`. On disable: revoke the row and clear the URL. Both
-  # modes are best-effort — a DB failure logs at warning and leaves the
-  # UI in its prior state rather than crashing the dashboard.
+  # (the JS hook serializes booleans that way).
+  #
+  # On enable the handler is split into two phases so the UI gets a
+  # chance to render a spinner between the click and the URL appearing:
+  #
+  #   1. `toggle_share` flips `:share_loading?` true and sends a
+  #      follow-up message to itself (`{:mint_share_token, user_id}`).
+  #      The socket reply is rendered immediately, so the toolbar
+  #      swaps the URL row for the spinner before the DB transaction
+  #      starts.
+  #   2. `handle_info({:mint_share_token, _}, socket)` does the actual
+  #      `Accounts.create_shared_link/1` work and emits a second render
+  #      with the URL + `:share_loading?` false.
+  #
+  # The two-phase pattern is what makes the spinner visible — a single
+  # synchronous handler would batch the spinner and the URL into one
+  # render and the user would never see the in-flight state.
+  #
+  # On disable the work is synchronous and the URL row disappears in
+  # one render, so no spinner is needed.
+  #
+  # Both modes are best-effort — a DB failure logs at warning and
+  # leaves the UI in its prior state rather than crashing the
+  # dashboard.
   @impl true
   def handle_event("toggle_share", %{"enabled" => "true"}, socket) do
     user = socket.assigns.current_scope.user
-
-    case Accounts.create_shared_link(user) do
-      {:ok, {plaintext, _link}} ->
-        {:noreply,
-         socket
-         |> assign(:share_active?, true)
-         |> assign(:share_url, url_for_token(plaintext))}
-
-      {:error, reason} ->
-        Logger.warning(
-          "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
-        )
-
-        {:noreply, socket}
-    end
+    send(self(), {:mint_share_token, user.id})
+    {:noreply, assign(socket, :share_loading?, true)}
   end
 
   def handle_event("toggle_share", %{"enabled" => "false"}, socket) do
@@ -331,16 +337,57 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:share_active?, false)
-     |> assign(:share_url, nil)}
+     |> assign(:share_url, nil)
+     |> assign(:share_loading?, false)}
   end
 
   def handle_event("toggle_share", _payload, socket), do: {:noreply, socket}
+
+  defp do_mint_share_token(socket) do
+    user = socket.assigns.current_scope.user
+
+    case Accounts.create_shared_link(user) do
+      {:ok, {plaintext, _link}} ->
+        {:noreply,
+         socket
+         |> assign(:share_active?, true)
+         |> assign(:share_url, url_for_token(plaintext))
+         |> assign(:share_loading?, false)}
+
+      {:error, reason} ->
+        Logger.warning(
+          "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
+        )
+
+        {:noreply,
+         socket
+         |> assign(:share_loading?, false)
+         |> assign(:share_active?, false)
+         |> assign(:share_url, nil)}
+    end
+  end
 
   # Build the public share URL from a plaintext token. Uses the configured
   # PHX_HOST so the link points at the right deployment (dev / staging /
   # production) without a hard-coded hostname.
   defp url_for_token(token) do
     DtuAppWeb.Endpoint.url() <> "/s/" <> token
+  end
+
+  # Phase 2 of the share-toggle enable flow: do the actual DB work
+  # now that the toolbar has already rendered the spinner. We pin
+  # the user id into the message (rather than passing the user
+  # struct) so a stale message from a previous session can't
+  # resurrect a deleted user's share row.
+  @impl true
+  def handle_info({:mint_share_token, user_id}, socket) do
+    current_user_id = socket.assigns.current_scope.user.id
+
+    if user_id == current_user_id do
+      do_mint_share_token(socket)
+    else
+      {:noreply, socket}
+    end
   end
 
   @impl true
@@ -532,10 +579,15 @@ defmodule DtuAppWeb.DashboardLive do
   defp ro_sink_kind?(%Devices.Dtu{kind: :mqtt_ro_sink}), do: true
   defp ro_sink_kind?(_), do: false
 
-  # Read the user's existing share row (if any) and surface two
-  # socket assigns: `:share_active?` for the toggle's on/off state
-  # and `:share_url` for the plaintext URL the UI displays. The
-  # plaintext is intentionally left nil on mount — only the hash
+  # Read the user's existing share row (if any) and surface three
+  # socket assigns:
+  #   * `:share_active?` — toggle's on/off state (persisted row exists?)
+  #   * `:share_url`     — the plaintext URL the UI displays (only set
+  #     after a fresh `create_shared_link/1` call within this session)
+  #   * `:share_loading?` — true while a token mint is in flight, so the
+  #     toolbar can show a spinner instead of a stale (or empty) URL row.
+  #
+  # The plaintext is intentionally left nil on mount — only the hash
   # is persisted, so a returning user can't recover the old URL
   # without regenerating (which invalidates the old row anyway).
   defp assign_share_state(socket, user) do
@@ -544,6 +596,7 @@ defmodule DtuAppWeb.DashboardLive do
     socket
     |> assign(:share_active?, active?)
     |> assign(:share_url, nil)
+    |> assign(:share_loading?, false)
   end
 
   # Helper to construct SVG line chart coordinates and range.
@@ -2539,6 +2592,26 @@ defmodule DtuAppWeb.DashboardLive do
                   </span>
                 </label>
 
+                <%= if @share_loading? do %>
+                  <%!-- Inline spinner shown while the token is being
+                       minted (see `toggle_share` + `handle_info
+                       ({:mint_share_token, _}, _)`). The label is
+                       screen-reader-friendly via `aria-live="polite"`
+                       so assistive tech announces the in-flight state
+                       without interrupting the user. --%>
+                  <div
+                    id="share-loading-row"
+                    class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400"
+                    aria-live="polite"
+                  >
+                    <.icon
+                      name="hero-arrow-path"
+                      class="size-3.5 animate-spin text-emerald-500"
+                    />
+                    <span>{gettext("Generating link…")}</span>
+                  </div>
+                <% end %>
+
                 <%= if @share_active? and @share_url do %>
                   <div
                     id="share-url-row"
@@ -2552,6 +2625,7 @@ defmodule DtuAppWeb.DashboardLive do
                       class="w-72 max-w-[40vw] px-2.5 py-1.5 text-xs font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       data-value={@share_url}
                       phx-hook="CopyToClipboard"
+                      onfocus="this.select()"
                       aria-label={gettext("Shareable URL")}
                     />
                     <button
@@ -2561,10 +2635,21 @@ defmodule DtuAppWeb.DashboardLive do
                       aria-label={gettext("Copy URL")}
                       class="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
                       data-value={@share_url}
-                      phx-hook="CopyToClipboard"
+                      phx-hook="CopyToClipboardWithHint"
                     >
                       <.icon name="hero-clipboard-document" class="size-4" />
                     </button>
+                    <%!-- Visually hidden until the copy hook adds the
+                         `.visible` class on success. `aria-live="polite"`
+                         so screen readers announce the copied state
+                         without stealing focus. --%>
+                    <span
+                      id="share-copy-hint"
+                      class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 transition-opacity"
+                      aria-live="polite"
+                    >
+                      {gettext("Copied!")}
+                    </span>
                   </div>
                 <% end %>
               </div>
@@ -4317,6 +4402,70 @@ defmodule DtuAppWeb.DashboardLive do
           </div>
         <% end %>
       </div>
+
+      <%!-- Colocated JS hook for the share-cluster copy button. The
+           dashboard uses `CopyToClipboard` for the URL input (a small
+           green flash on the icon is enough context) and
+           `CopyToClipboardWithHint` for the dedicated copy button —
+           the latter reveals a "Copied!" label next to the button for
+           1.5 s so the affordance is visible without having to hover
+           the icon. We don't extend the existing `CopyToClipboard`
+           hook because the device-settings page intentionally keeps
+           its own quieter visual feedback, and merging the two would
+           force every other call-site to carry the label element. --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyToClipboardWithHint">
+        export default {
+          mounted() {
+            this.hint = document.getElementById("share-copy-hint")
+
+            this.handler = (event) => {
+              event.preventDefault()
+              const text = this.el.dataset.value || ""
+
+              navigator.clipboard.writeText(text).then(() => {
+                if (this.hint) {
+                  this.hint.classList.add("opacity-100")
+                  this.hint.classList.remove("opacity-0")
+                }
+
+                this.el.classList.add("copied")
+                const svg = this.el.querySelector("svg")
+
+                if (svg) {
+                  svg.dataset.originalClass = svg.getAttribute("class") || ""
+                  svg.setAttribute("class", "size-4 text-emerald-500")
+                }
+
+                clearTimeout(this._resetTimer)
+                this._resetTimer = setTimeout(() => {
+                  if (this.hint) {
+                    this.hint.classList.add("opacity-0")
+                    this.hint.classList.remove("opacity-100")
+                  }
+
+                  this.el.classList.remove("copied")
+
+                  if (svg) {
+                    svg.setAttribute("class", svg.dataset.originalClass || "")
+                  }
+                }, 1500)
+              }).catch((err) => {
+                console.error("CopyToClipboardWithHint hook: copy failed", err)
+              })
+            }
+
+            this.el.addEventListener("click", this.handler)
+          },
+
+          destroyed() {
+            if (this.el && this.handler) {
+              this.el.removeEventListener("click", this.handler)
+            }
+
+            clearTimeout(this._resetTimer)
+          }
+        }
+      </script>
     </Layouts.app>
     """
   end
