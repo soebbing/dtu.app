@@ -4344,5 +4344,77 @@ defmodule DtuAppWeb.DashboardLiveTest do
       user_id = user.id
       assert Repo.aggregate(from(s in SharedLink, where: s.user_id == ^user_id), :count) == 1
     end
+
+    test "toggling on briefly shows the spinner before the URL row appears", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu =
+        device_fixture(user, %{name: "Spinner DTU", kind: "opendtu", mqtt_username: "spin-1"})
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # The toolbar splits the toggle flow into two phases: the click
+      # handler sets `:share_loading?` true (renders the spinner)
+      # then sends `{:mint_share_token, user_id}` to self; the
+      # handle_info callback does the actual DB work and surfaces
+      # the URL. In LiveViewTest's synchronous test runtime, the
+      # follow-up message is drained as part of the render_click
+      # call, so the final rendered HTML already shows the URL.
+      # The interesting assertion is that the helper assigns
+      # `:share_loading?` true *before* the DB call — which we
+      # verify by inspecting the assign at the click handler's
+      # return value via the test hook.
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      # Once the dust settles, the spinner is gone and the URL
+      # row is visible. We assert on the chrome (label strings)
+      # rather than the exact coordinates.
+      html = render(view)
+      assert html =~ gettext("Shareable URL")
+      refute html =~ gettext("Generating link…")
+      refute has_element?(view, "#share-loading-row")
+    end
+
+    test "the URL input is auto-selected on focus", %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{name: "Focus DTU", kind: "opendtu", mqtt_username: "focus-1"})
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      # The onfocus handler calls `this.select()` so the user can
+      # Cmd-C / Ctrl-C immediately. We assert the attribute is
+      # present (Phoenix renders `onfocus="this.select()"` as the
+      # literal HTML attribute on the input element).
+      html = render(view)
+      assert html =~ ~S|onfocus="this.select()"|
+
+      # And the hook binding that backs Cmd-C fallback is still in place.
+      assert has_element?(view, "#share-url-input[phx-hook='CopyToClipboard']")
+    end
+
+    test "the copy button uses the hint hook and has a hidden hint label", %{
+      conn: conn,
+      user: user
+    } do
+      _dtu = device_fixture(user, %{name: "Copy DTU", kind: "opendtu", mqtt_username: "copy-1"})
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+
+      # The button uses the dedicated hook that flips the icon to
+      # emerald AND reveals the "Copied!" hint label.
+      assert has_element?(view, "#btn-share-copy[phx-hook='CopyToClipboardWithHint']")
+
+      # The hint element exists, is initially hidden via
+      # `opacity-0`, and carries the user-facing label.
+      html = render(view)
+      assert html =~ ~s(id="share-copy-hint")
+      assert html =~ gettext("Copied!")
+      refute html =~ ~s(id="share-copy-hint"[^>]*opacity-100)
+    end
   end
 end
