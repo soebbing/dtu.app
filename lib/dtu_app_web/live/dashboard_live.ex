@@ -304,18 +304,23 @@ defmodule DtuAppWeb.DashboardLive do
   # On enable the handler is split into two phases so the UI gets a
   # chance to render a spinner between the click and the URL appearing:
   #
-  #   1. `toggle_share` flips `:share_loading?` true and sends a
-  #      follow-up message to itself (`{:mint_share_token, user_id}`).
-  #      The socket reply is rendered immediately, so the toolbar
-  #      swaps the URL row for the spinner before the DB transaction
-  #      starts.
-  #   2. `handle_info({:mint_share_token, _}, socket)` does the actual
-  #      `Accounts.create_shared_link/1` work and emits a second render
-  #      with the URL + `:share_loading?` false.
+  #   1. `toggle_share` flips `:share_loading?` true and spawns a
+  #      `Task` to run `Accounts.create_shared_link/1` outside the
+  #      LiveView mailbox. The socket reply is rendered immediately,
+  #      so the toolbar swaps the URL row for the spinner BEFORE the
+  #      DB transaction starts.
+  #   2. `handle_info({:share_link_minted, _}, socket)` picks up the
+  #      task result and emits a second render with the URL +
+  #      `:share_loading?` false.
   #
-  # The two-phase pattern is what makes the spinner visible — a single
-  # synchronous handler would batch the spinner and the URL into one
-  # render and the user would never see the in-flight state.
+  # Why a `Task` instead of `send(self(), ...)`? `send/2` keeps the
+  # work on the same LiveView process and the two replies are often
+  # processed close enough together that the user never sees the
+  # spinner state (a single render frame, ~16 ms, is below human
+  # perception). A `Task` runs on its own process so there's a real
+  # wall-clock gap between the spinner render and the URL render.
+  # That's the difference between "feels instant" and "feels like
+  # the click did nothing".
   #
   # On disable the work is synchronous and the URL row disappears in
   # one render, so no spinner is needed.
@@ -326,7 +331,14 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_event("toggle_share", %{"enabled" => "true"}, socket) do
     user = socket.assigns.current_scope.user
-    send(self(), {:mint_share_token, user.id})
+
+    parent_pid = self()
+
+    Task.start(fn ->
+      result = Accounts.create_shared_link(user)
+      send(parent_pid, {:share_link_minted, user.id, result})
+    end)
+
     {:noreply, assign(socket, :share_loading?, true)}
   end
 
@@ -343,28 +355,26 @@ defmodule DtuAppWeb.DashboardLive do
 
   def handle_event("toggle_share", _payload, socket), do: {:noreply, socket}
 
-  defp do_mint_share_token(socket) do
+  defp do_apply_share_link_result(socket, {:ok, {plaintext, _link}}) do
+    {:noreply,
+     socket
+     |> assign(:share_active?, true)
+     |> assign(:share_url, url_for_token(plaintext))
+     |> assign(:share_loading?, false)}
+  end
+
+  defp do_apply_share_link_result(socket, {:error, reason}) do
     user = socket.assigns.current_scope.user
 
-    case Accounts.create_shared_link(user) do
-      {:ok, {plaintext, _link}} ->
-        {:noreply,
-         socket
-         |> assign(:share_active?, true)
-         |> assign(:share_url, url_for_token(plaintext))
-         |> assign(:share_loading?, false)}
+    Logger.warning(
+      "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
+    )
 
-      {:error, reason} ->
-        Logger.warning(
-          "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
-        )
-
-        {:noreply,
-         socket
-         |> assign(:share_loading?, false)
-         |> assign(:share_active?, false)
-         |> assign(:share_url, nil)}
-    end
+    {:noreply,
+     socket
+     |> assign(:share_loading?, false)
+     |> assign(:share_active?, false)
+     |> assign(:share_url, nil)}
   end
 
   # Build the public share URL from a plaintext token. Uses the configured
@@ -374,17 +384,16 @@ defmodule DtuAppWeb.DashboardLive do
     DtuAppWeb.Endpoint.url() <> "/s/" <> token
   end
 
-  # Phase 2 of the share-toggle enable flow: do the actual DB work
-  # now that the toolbar has already rendered the spinner. We pin
-  # the user id into the message (rather than passing the user
-  # struct) so a stale message from a previous session can't
-  # resurrect a deleted user's share row.
+  # Phase 2 of the enable flow: a `Task` (started by `toggle_share`)
+  # finished the DB work and shipped the result back to us. We pin
+  # the user id into the message so a stale message from a previous
+  # session can't resurrect a deleted user's share row.
   @impl true
-  def handle_info({:mint_share_token, user_id}, socket) do
+  def handle_info({:share_link_minted, user_id, result}, socket) do
     current_user_id = socket.assigns.current_scope.user.id
 
     if user_id == current_user_id do
-      do_mint_share_token(socket)
+      do_apply_share_link_result(socket, result)
     else
       {:noreply, socket}
     end
@@ -2553,107 +2562,6 @@ defmodule DtuAppWeb.DashboardLive do
                 </.quick_range_btn>
               </div>
 
-              <%!-- Share cluster: anonymous current-day dashboard share.
-                   Switch toggles a row in `shared_links`; when on, the
-                   plaintext URL appears next to it for one-shot copy.
-                   `ms-auto` pins the cluster to the right edge of the
-                   toolbar row so the quick-range buttons keep their
-                   left-aligned grouping. --%>
-              <div
-                class="flex flex-wrap items-center gap-2 ms-auto border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
-                id="share-cluster"
-              >
-                <label
-                  id="share-toggle-label"
-                  class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer select-none transition"
-                  title={gettext("Share today's dashboard read-only")}
-                >
-                  <.icon name="hero-share" class="size-4 text-zinc-500 dark:text-zinc-400" />
-                  <span class="text-xs font-semibold text-zinc-700 dark:text-zinc-200">
-                    {gettext("Share")}
-                  </span>
-                  <%!-- The visible switch: a checkbox styled as a pill
-                       with a sliding dot. `peer-checked:` Tailwind
-                       variants flip the on-colors without a separate
-                       state class — same accessibility surface as a
-                       real checkbox, just skinned to match the rest
-                       of the toolbar. --%>
-                  <span class="relative inline-flex items-center">
-                    <input
-                      type="checkbox"
-                      id="share-toggle"
-                      phx-click="toggle_share"
-                      phx-value-enabled={to_string(!@share_active?)}
-                      checked={@share_active?}
-                      class="peer sr-only"
-                    />
-                    <span class="w-8 h-4 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
-                    <span class="absolute left-0.5 top-0.5 size-3 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
-                  </span>
-                </label>
-
-                <%= if @share_loading? do %>
-                  <%!-- Inline spinner shown while the token is being
-                       minted (see `toggle_share` + `handle_info
-                       ({:mint_share_token, _}, _)`). The label is
-                       screen-reader-friendly via `aria-live="polite"`
-                       so assistive tech announces the in-flight state
-                       without interrupting the user. --%>
-                  <div
-                    id="share-loading-row"
-                    class="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400"
-                    aria-live="polite"
-                  >
-                    <.icon
-                      name="hero-arrow-path"
-                      class="size-3.5 animate-spin text-emerald-500"
-                    />
-                    <span>{gettext("Generating link…")}</span>
-                  </div>
-                <% end %>
-
-                <%= if @share_active? and @share_url do %>
-                  <div
-                    id="share-url-row"
-                    class="flex items-center gap-1.5"
-                  >
-                    <input
-                      type="text"
-                      id="share-url-input"
-                      readonly
-                      value={@share_url}
-                      class="w-72 max-w-[40vw] px-2.5 py-1.5 text-xs font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      data-value={@share_url}
-                      phx-hook="CopyToClipboard"
-                      onfocus="this.select()"
-                      aria-label={gettext("Shareable URL")}
-                    />
-                    <button
-                      type="button"
-                      id="btn-share-copy"
-                      title={gettext("Copy URL")}
-                      aria-label={gettext("Copy URL")}
-                      class="p-1.5 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
-                      data-value={@share_url}
-                      phx-hook="CopyToClipboardWithHint"
-                    >
-                      <.icon name="hero-clipboard-document" class="size-4" />
-                    </button>
-                    <%!-- Visually hidden until the copy hook adds the
-                         `.visible` class on success. `aria-live="polite"`
-                         so screen readers announce the copied state
-                         without stealing focus. --%>
-                    <span
-                      id="share-copy-hint"
-                      class="text-xs font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 transition-opacity"
-                      aria-live="polite"
-                    >
-                      {gettext("Copied!")}
-                    </span>
-                  </div>
-                <% end %>
-              </div>
-
               <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › — only rendered
                    when the user picked the `Custom` preset; the
                    1D/7D/30D/YTD presets already encode their own
@@ -4236,6 +4144,120 @@ defmodule DtuAppWeb.DashboardLive do
                 </div>
               <% end %>
             <% end %>
+
+          <%!-- Share panel: anonymous current-day dashboard share.
+               Lives below the chart rather than in the toolbar so
+               the URL row never has to compete for horizontal
+               space with the quick-range / period stepper. The
+               three states share the same outer chrome and only
+               swap their inner row (toggle, spinner, or URL row)
+               so the layout doesn't jump when the toggle flips.
+               `aria-live="polite"` on the dynamic inner row
+               announces state changes to screen readers without
+               stealing focus. --%>
+          <div
+            id="share-panel"
+            class="mt-4 border-t border-zinc-200 dark:border-zinc-700 pt-4"
+          >
+            <div
+              id="share-toggle-label"
+              class="flex items-center gap-3 cursor-pointer select-none"
+              title={gettext("Share today's dashboard read-only")}
+            >
+              <.icon name="hero-share" class="size-5 text-zinc-500 dark:text-zinc-400" />
+              <span class="text-sm font-semibold text-zinc-700 dark:text-zinc-200">
+                {gettext("Share today's dashboard read-only")}
+              </span>
+              <%!-- The visible switch: a checkbox styled as a pill
+                   with a sliding dot. `peer-checked:` Tailwind
+                   variants flip the on-colors without a separate
+                   state class. --%>
+              <span class="relative inline-flex items-center">
+                <input
+                  type="checkbox"
+                  id="share-toggle"
+                  phx-click="toggle_share"
+                  phx-value-enabled={to_string(!@share_active?)}
+                  checked={@share_active?}
+                  class="peer sr-only"
+                />
+                <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
+                <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
+              </span>
+            </div>
+
+            <div
+              id="share-row"
+              class="mt-3 min-h-[2.25rem] flex items-center"
+              aria-live="polite"
+            >
+              <%= cond do %>
+                <% @share_loading? -> %>
+                  <%!-- Inline spinner shown while the token is
+                       being minted (see `toggle_share` +
+                       `handle_info({:share_link_minted, _, _}, _)`).
+                       A pure-CSS border-spinner so it doesn't
+                       depend on any icon glyph being available. --%>
+                  <div
+                    id="share-loading-row"
+                    class="flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400"
+                    data-testid="share-loading"
+                  >
+                    <span
+                      class="inline-block size-4 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin"
+                      aria-hidden="true"
+                    ></span>
+                    <span>{gettext("Generating link…")}</span>
+                  </div>
+                <% @share_active? and @share_url -> %>
+                  <div
+                    id="share-url-row"
+                    class="flex items-center gap-2 w-full"
+                  >
+                    <input
+                      type="text"
+                      id="share-url-input"
+                      readonly
+                      value={@share_url}
+                      class="flex-1 min-w-0 px-3 py-2 text-sm font-mono rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      data-value={@share_url}
+                      phx-hook="SelectOnFocus"
+                      aria-label={gettext("Shareable URL")}
+                      data-testid="share-url-input"
+                    />
+                    <button
+                      type="button"
+                      id="btn-share-copy"
+                      title={gettext("Copy URL")}
+                      aria-label={gettext("Copy URL")}
+                      class="shrink-0 p-2 rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-white hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50 transition"
+                      data-value={@share_url}
+                      phx-hook="CopyToClipboardWithHint"
+                      data-testid="btn-share-copy"
+                    >
+                      <.icon name="hero-clipboard-document" class="size-5" />
+                    </button>
+                    <span
+                      id="share-copy-hint"
+                      class="text-sm font-semibold text-emerald-600 dark:text-emerald-400 opacity-0 transition-opacity"
+                      aria-live="polite"
+                      data-testid="share-copy-hint"
+                    >
+                      {gettext("Copied!")}
+                    </span>
+                  </div>
+                <% true -> %>
+                  <p
+                    id="share-hint-text"
+                    class="text-xs text-zinc-500 dark:text-zinc-400"
+                  >
+                    {gettext(
+                      "Anyone with this link can view today's dashboard. The link stays valid until you turn sharing off."
+                    )}
+                  </p>
+              <% end %>
+            </div>
+          </div>
           </div>
 
           <!-- Devices / Inverters status -->
@@ -4422,10 +4444,58 @@ defmodule DtuAppWeb.DashboardLive do
               event.preventDefault()
               const text = this.el.dataset.value || ""
 
-              navigator.clipboard.writeText(text).then(() => {
+              // `navigator.clipboard.writeText` is only available in
+              // secure contexts (HTTPS, or `localhost` on most
+              // browsers). On plain-HTTP LAN IPs (e.g. staging on a
+              // Raspberry Pi) it returns `undefined` — and even when
+              // defined, it can throw on browsers that prompt for
+              // permission and the user clicks "Block". Fall back to
+              // the legacy `document.execCommand("copy")` path via a
+              // temporary textarea so the copy still works in those
+              // environments. The legacy path is deprecated but still
+              // works on every browser we care about.
+              const write = async () => {
+                if (
+                  typeof navigator !== "undefined" &&
+                  navigator.clipboard &&
+                  typeof navigator.clipboard.writeText === "function"
+                ) {
+                  try {
+                    await navigator.clipboard.writeText(text)
+                    return true
+                  } catch (_err) {
+                    // Fall through to the textarea path.
+                  }
+                }
+
+                try {
+                  const ta = document.createElement("textarea")
+                  ta.value = text
+                  ta.setAttribute("readonly", "")
+                  ta.style.position = "fixed"
+                  ta.style.top = "0"
+                  ta.style.left = "0"
+                  ta.style.opacity = "0"
+                  document.body.appendChild(ta)
+                  ta.focus()
+                  ta.select()
+                  const ok = document.execCommand && document.execCommand("copy")
+                  document.body.removeChild(ta)
+                  return !!ok
+                } catch (_err) {
+                  return false
+                }
+              }
+
+              this.showFeedback = (success) => {
                 if (this.hint) {
+                  this.hint.textContent = success ? "Copied!" : "Copy failed"
                   this.hint.classList.add("opacity-100")
                   this.hint.classList.remove("opacity-0")
+                  if (!success) {
+                    this.hint.classList.add("text-amber-600", "dark:text-amber-400")
+                    this.hint.classList.remove("text-emerald-600", "dark:text-emerald-400")
+                  }
                 }
 
                 this.el.classList.add("copied")
@@ -4433,7 +4503,12 @@ defmodule DtuAppWeb.DashboardLive do
 
                 if (svg) {
                   svg.dataset.originalClass = svg.getAttribute("class") || ""
-                  svg.setAttribute("class", "size-4 text-emerald-500")
+                  svg.setAttribute(
+                    "class",
+                    success
+                      ? "size-5 text-emerald-500"
+                      : "size-5 text-amber-500"
+                  )
                 }
 
                 clearTimeout(this._resetTimer)
@@ -4441,6 +4516,15 @@ defmodule DtuAppWeb.DashboardLive do
                   if (this.hint) {
                     this.hint.classList.add("opacity-0")
                     this.hint.classList.remove("opacity-100")
+                    this.hint.classList.remove(
+                      "text-amber-600",
+                      "dark:text-amber-400"
+                    )
+                    this.hint.classList.add(
+                      "text-emerald-600",
+                      "dark:text-emerald-400"
+                    )
+                    this.hint.textContent = "Copied!"
                   }
 
                   this.el.classList.remove("copied")
@@ -4449,8 +4533,15 @@ defmodule DtuAppWeb.DashboardLive do
                     svg.setAttribute("class", svg.dataset.originalClass || "")
                   }
                 }, 1500)
-              }).catch((err) => {
-                console.error("CopyToClipboardWithHint hook: copy failed", err)
+              }
+
+              write().then((ok) => {
+                this.showFeedback(ok)
+                if (!ok) {
+                  console.error(
+                    "CopyToClipboardWithHint hook: copy failed (both clipboard API and execCommand fallback returned false)"
+                  )
+                }
               })
             }
 
@@ -4463,6 +4554,55 @@ defmodule DtuAppWeb.DashboardLive do
             }
 
             clearTimeout(this._resetTimer)
+          }
+        }
+      </script>
+
+      <%!-- SelectOnFocus: selects the full URL on the first user
+           gesture so Cmd-C / Ctrl-C copies it without an extra
+           triple-click. We listen on three events:
+
+             * `focus`    — desktop keyboard navigation (Tab into the
+                            field)
+             * `click`    — desktop mouse click into the field
+             * `pointerdown` — mobile / touch tap (where the browser
+                            may or may not fire `focus` reliably; some
+                            WebKit builds don't focus on tap without
+                            `touch-action: manipulation`)
+
+           We deliberately don't use the inline `onfocus="this.select()"`
+           attribute — it works on desktop clicks but tap-into-input on
+           iOS Safari doesn't fire `focus` for readonly inputs in some
+           builds, so the URL stays unselected. The hook guarantees the
+           selection on every gesture. --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".SelectOnFocus">
+        export default {
+          mounted() {
+            this.select = () => {
+              if (typeof this.el.select === "function") {
+                this.el.focus({ preventScroll: true })
+                this.el.select()
+                if (typeof this.el.setSelectionRange === "function") {
+                  try {
+                    this.el.setSelectionRange(0, this.el.value.length)
+                  } catch (_err) {
+                    // Some input types (e.g. email) reject setSelectionRange.
+                    // `select()` already covered the common case.
+                  }
+                }
+              }
+            }
+
+            this.el.addEventListener("focus", this.select)
+            this.el.addEventListener("click", this.select)
+            this.el.addEventListener("pointerdown", this.select)
+          },
+
+          destroyed() {
+            if (!this.el || !this.select) return
+            this.el.removeEventListener("focus", this.select)
+            this.el.removeEventListener("click", this.select)
+            this.el.removeEventListener("pointerdown", this.select)
           }
         }
       </script>

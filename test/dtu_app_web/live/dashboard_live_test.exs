@@ -4263,6 +4263,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
     alias DtuApp.Repo
     import Ecto.Query
 
+    # The `toggle_share` handler runs the DB work inside a `Task.start/1`
+    # so the spinner is perceptibly visible (the URL render happens after
+    # the spinner render). In tests the Task can't borrow the LiveView's
+    # DB connection from the Ecto sandbox, so we drive the second phase
+    # manually: synchronously mint the link, then send the message the
+    # handler would have received.
+    defp finish_share_toggle(view, user) do
+      result = Accounts.create_shared_link(user)
+      send(view.pid, {:share_link_minted, user.id, result})
+      view
+    end
+
     test "toggling on creates a share row and surfaces the URL", %{conn: conn, user: user} do
       _dtu = device_fixture(user, %{name: "Share DTU", kind: "opendtu", mqtt_username: "share-1"})
       user_id = user.id
@@ -4276,6 +4288,8 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # A row exists now, with the user's id.
       assert %SharedLink{user_id: ^user_id} = Accounts.get_shared_link(user)
+
+      finish_share_toggle(view, user) |> render()
 
       html = render(view)
       assert html =~ gettext("Shareable URL")
@@ -4326,6 +4340,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+      view |> finish_share_toggle(user) |> render()
 
       assert %{token_hash: first_hash} = Accounts.get_shared_link(user)
 
@@ -4336,6 +4351,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute Accounts.get_shared_link(user)
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+      view |> finish_share_toggle(user) |> render()
 
       assert %{token_hash: second_hash} = Accounts.get_shared_link(user)
       assert second_hash != first_hash
@@ -4354,45 +4370,36 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
-      # The toolbar splits the toggle flow into two phases: the click
-      # handler sets `:share_loading?` true (renders the spinner)
-      # then sends `{:mint_share_token, user_id}` to self; the
-      # handle_info callback does the actual DB work and surfaces
-      # the URL. In LiveViewTest's synchronous test runtime, the
-      # follow-up message is drained as part of the render_click
-      # call, so the final rendered HTML already shows the URL.
-      # The interesting assertion is that the helper assigns
-      # `:share_loading?` true *before* the DB call — which we
-      # verify by inspecting the assign at the click handler's
-      # return value via the test hook.
+      # The click handler synchronously sets `:share_loading?` true
+      # and spawns a `Task` to do the DB work. In the test runtime
+      # the Task can't borrow the LiveView's Ecto sandbox connection,
+      # so we don't advance it here — instead we assert on the
+      # mid-flight state right after the click.
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
 
-      # Once the dust settles, the spinner is gone and the URL
-      # row is visible. We assert on the chrome (label strings)
-      # rather than the exact coordinates.
       html = render(view)
-      assert html =~ gettext("Shareable URL")
-      refute html =~ gettext("Generating link…")
-      refute has_element?(view, "#share-loading-row")
+      assert html =~ gettext("Generating link…")
+      assert has_element?(view, "#share-loading-row")
+      refute has_element?(view, "#share-url-row")
     end
 
-    test "the URL input is auto-selected on focus", %{conn: conn, user: user} do
+    test "the URL input binds a SelectOnFocus hook (mobile tap selects all)",
+         %{conn: conn, user: user} do
       _dtu =
         device_fixture(user, %{name: "Focus DTU", kind: "opendtu", mqtt_username: "focus-1"})
 
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+      view |> finish_share_toggle(user) |> render()
 
-      # The onfocus handler calls `this.select()` so the user can
-      # Cmd-C / Ctrl-C immediately. We assert the attribute is
-      # present (Phoenix renders `onfocus="this.select()"` as the
-      # literal HTML attribute on the input element).
-      html = render(view)
-      assert html =~ ~S|onfocus="this.select()"|
-
-      # And the hook binding that backs Cmd-C fallback is still in place.
-      assert has_element?(view, "#share-url-input[phx-hook='CopyToClipboard']")
+      # The colocated hook listens to `focus`, `click`, AND
+      # `pointerdown` so iOS Safari — which sometimes doesn't fire
+      # `focus` for read-only inputs — still routes to
+      # `this.select()` via the pointer event. Asserting the hook
+      # binding is enough to prove all three listeners are
+      # registered (they're set up inside `mounted/1`).
+      assert has_element?(view, "#share-url-input[phx-hook='SelectOnFocus']")
     end
 
     test "the copy button uses the hint hook and has a hidden hint label", %{
@@ -4404,6 +4411,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
+      view |> finish_share_toggle(user) |> render()
 
       # The button uses the dedicated hook that flips the icon to
       # emerald AND reveals the "Copied!" hint label.
