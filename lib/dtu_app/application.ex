@@ -20,7 +20,8 @@ defmodule DtuApp.Application do
          DtuApp.Repo,
          {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
          {Phoenix.PubSub, name: DtuApp.PubSub},
-         {Finch, name: DtuAppWeb.WebPushFinch}
+         {Finch, name: DtuAppWeb.WebPushFinch},
+         {DtuApp.Accounts.PasskeyChallengeCache, []}
        ] ++
          mqtt_broker_children() ++
          [
