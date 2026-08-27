@@ -418,6 +418,47 @@ defmodule DtuAppWeb.NotificationsLive do
             </span>
           </label>
 
+          <div class="mt-6 border-t border-zinc-200 dark:border-zinc-700 pt-4">
+            <h3 class="text-sm font-semibold text-zinc-900 dark:text-white">
+              {gettext("Deliver via")}
+            </h3>
+            <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {gettext(
+                "Pick how you want to receive the notifications above. Email is a good fallback if native push is flaky on your device."
+              )}
+            </p>
+
+            <div
+              class="mt-3 inline-flex rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 p-1"
+              role="radiogroup"
+              aria-label={gettext("Deliver via")}
+            >
+              <%= for {value, label} <- [{"push", gettext("Notification")}, {"email", gettext("Email")}, {"both", gettext("Both")}] do %>
+                <label class="cursor-pointer">
+                  <input
+                    type="radio"
+                    name={@form[:notification_channel].name}
+                    value={value}
+                    checked={@form[:notification_channel].value == value}
+                    class="peer sr-only"
+                  />
+                  <span class="block rounded-md px-3 py-1.5 text-sm font-medium text-zinc-600 dark:text-zinc-400 peer-checked:bg-white dark:peer-checked:bg-zinc-800 peer-checked:text-zinc-900 dark:peer-checked:text-white peer-checked:shadow-sm transition">
+                    {label}
+                  </span>
+                </label>
+              <% end %>
+            </div>
+
+            <%= if @form[:notification_channel].value in ["email", "both"] and
+                  is_nil(@current_scope.user.confirmed_at) do %>
+              <p class="mt-3 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-2 text-xs text-amber-800 dark:text-amber-200">
+                {gettext(
+                  "You picked email delivery, but your email address isn't confirmed. Visit account settings to confirm it, otherwise email notifications will be skipped."
+                )}
+              </p>
+            <% end %>
+          </div>
+
           <div class="flex justify-end">
             <.button
               class="inline-flex items-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition"
