@@ -3,6 +3,14 @@ defmodule DtuAppWeb.DashboardLive do
 
   import Ecto.Query
 
+  # Minimum visible time for the share-loading spinner, in ms. The
+  # DB operations themselves complete in <10ms, so without this floor
+  # the spinner would flash for a single frame and the user would
+  # never see feedback. ~200ms is the lower bound for human-perceptible
+  # motion (under 100ms feels instant, over 200ms feels "the system
+  # is doing something"). Configurable so tests can skip the wait.
+  @share_load_delay_ms Application.compile_env(:dtu_app, :share_load_delay_ms, 200)
+
   alias DtuApp.Devices
   alias DtuApp.Accounts
   alias DtuApp.MqttBroker.Telemetry
@@ -301,29 +309,22 @@ defmodule DtuAppWeb.DashboardLive do
   # Share toggle. The toolbar switch sends `"enabled" => "true"|"false"`
   # (the JS hook serializes booleans that way).
   #
-  # On enable the handler is split into two phases so the UI gets a
-  # chance to render a spinner between the click and the URL appearing:
+  # Both directions are split into two phases so the UI gets a chance
+  # to render the loading spinner between the click and the result:
   #
-  #   1. `toggle_share` flips `:share_loading?` true and spawns a
-  #      `Task` to run `Accounts.create_shared_link/1` outside the
-  #      LiveView mailbox. The socket reply is rendered immediately,
-  #      so the toolbar swaps the URL row for the spinner BEFORE the
-  #      DB transaction starts.
-  #   2. `handle_info({:share_link_minted, _}, socket)` picks up the
-  #      task result and emits a second render with the URL +
-  #      `:share_loading?` false.
+  #   1. `toggle_share` flips `:share_loading?` true and schedules a
+  #      delayed message (`Process.send_after/3`) for the actual DB
+  #      work. The delay is `@share_load_delay_ms` (200ms in prod, 0
+  #      in tests) so the spinner is actually visible — a sub-10ms
+  #      DB delete would otherwise flash the spinner for a single
+  #      frame and the user would see "the click did nothing".
+  #   2. The delayed `handle_info` clause runs the DB work and emits
+  #      a second render with the result + `:share_loading?` false.
   #
-  # Why a `Task` instead of `send(self(), ...)`? `send/2` keeps the
-  # work on the same LiveView process and the two replies are often
-  # processed close enough together that the user never sees the
-  # spinner state (a single render frame, ~16 ms, is below human
-  # perception). A `Task` runs on its own process so there's a real
-  # wall-clock gap between the spinner render and the URL render.
-  # That's the difference between "feels instant" and "feels like
-  # the click did nothing".
-  #
-  # On disable the work is synchronous and the URL row disappears in
-  # one render, so no spinner is needed.
+  # On disable, the URL input and copy button vanish INSTANTLY
+  # (optimistic UI: `:share_active?` and `:share_url` are cleared
+  # synchronously), and the spinner stays in their place until the
+  # delayed revoke completes and the hint text reappears.
   #
   # Both modes are best-effort — a DB failure logs at warning and
   # leaves the UI in its prior state rather than crashing the
@@ -331,26 +332,20 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_event("toggle_share", %{"enabled" => "true"}, socket) do
     user = socket.assigns.current_scope.user
-
-    parent_pid = self()
-
-    Task.start(fn ->
-      result = Accounts.create_shared_link(user)
-      send(parent_pid, {:share_link_minted, user.id, result})
-    end)
-
+    Process.send_after(self(), {:mint_shared_link, user.id}, @share_load_delay_ms)
     {:noreply, assign(socket, :share_loading?, true)}
   end
 
   def handle_event("toggle_share", %{"enabled" => "false"}, socket) do
     user = socket.assigns.current_scope.user
-    :ok = Accounts.revoke_shared_link(user)
+    Process.send_after(self(), {:revoke_shared_link, user.id}, @share_load_delay_ms)
 
     {:noreply,
      socket
+     # Optimistic: input + copy button vanish this render.
      |> assign(:share_active?, false)
      |> assign(:share_url, nil)
-     |> assign(:share_loading?, false)}
+     |> assign(:share_loading?, true)}
   end
 
   def handle_event("toggle_share", _payload, socket), do: {:noreply, socket}
@@ -384,16 +379,36 @@ defmodule DtuAppWeb.DashboardLive do
     DtuAppWeb.Endpoint.url() <> "/s/" <> token
   end
 
-  # Phase 2 of the enable flow: a `Task` (started by `toggle_share`)
-  # finished the DB work and shipped the result back to us. We pin
-  # the user id into the message so a stale message from a previous
-  # session can't resurrect a deleted user's share row.
+  # Phase 2 of the enable flow: the delayed `Process.send_after` from
+  # `toggle_share` fired. Run the DB work synchronously on the LiveView
+  # process (it's <10ms so it doesn't block anything user-perceptible)
+  # and apply the result. Pin the user id so a stale message from a
+  # previous session can't resurrect a deleted user's share row.
   @impl true
-  def handle_info({:share_link_minted, user_id, result}, socket) do
+  def handle_info({:mint_shared_link, user_id}, socket) do
     current_user_id = socket.assigns.current_scope.user.id
 
     if user_id == current_user_id do
-      do_apply_share_link_result(socket, result)
+      user = socket.assigns.current_scope.user
+      do_apply_share_link_result(socket, Accounts.create_shared_link(user))
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Phase 2 of the disable flow: the delayed `Process.send_after` from
+  # `toggle_share` fired. Run the revoke synchronously and clear the
+  # loading flag so the hint text reappears. Pin the user id so a
+  # stale message from a previous session can't dismiss a different
+  # user's spinner.
+  @impl true
+  def handle_info({:revoke_shared_link, user_id}, socket) do
+    current_user_id = socket.assigns.current_scope.user.id
+
+    if user_id == current_user_id do
+      user = socket.assigns.current_scope.user
+      :ok = Accounts.revoke_shared_link(user)
+      {:noreply, assign(socket, :share_loading?, false)}
     else
       {:noreply, socket}
     end
@@ -4162,7 +4177,10 @@ defmodule DtuAppWeb.DashboardLive do
               <label
                 id="share-toggle-label"
                 for="share-toggle"
-                class="flex items-center gap-3 cursor-pointer select-none"
+                class={[
+                  "flex items-center gap-3 select-none",
+                  unless(@share_loading?, do: "cursor-pointer", else: "cursor-wait opacity-70")
+                ]}
                 title={gettext("Share today's dashboard read-only")}
               >
                 <.icon name="hero-share" class="size-5 text-zinc-500 dark:text-zinc-400" />
@@ -4172,7 +4190,9 @@ defmodule DtuAppWeb.DashboardLive do
                 <%!-- The visible switch: a checkbox styled as a pill
                    with a sliding dot. `peer-checked:` Tailwind
                    variants flip the on-colors without a separate
-                   state class. --%>
+                   state class. The pill itself goes translucent
+                   while a server call is in flight so it's
+                   visually clear the click has been registered. --%>
                 <span class="relative inline-flex items-center">
                   <input
                     type="checkbox"
@@ -4180,9 +4200,10 @@ defmodule DtuAppWeb.DashboardLive do
                     phx-click="toggle_share"
                     phx-value-enabled={to_string(!@share_active?)}
                     checked={@share_active?}
+                    disabled={@share_loading?}
                     class="peer sr-only"
                   />
-                  <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 transition-colors"></span>
+                  <span class="w-9 h-5 rounded-full bg-zinc-300 dark:bg-zinc-600 peer-checked:bg-emerald-500 peer-disabled:opacity-50 transition-colors"></span>
                   <span class="absolute left-0.5 top-0.5 size-4 rounded-full bg-white shadow transition-transform peer-checked:translate-x-4"></span>
                 </span>
               </label>

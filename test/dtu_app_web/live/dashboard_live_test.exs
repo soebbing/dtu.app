@@ -4263,15 +4263,26 @@ defmodule DtuAppWeb.DashboardLiveTest do
     alias DtuApp.Repo
     import Ecto.Query
 
-    # The `toggle_share` handler runs the DB work inside a `Task.start/1`
-    # so the spinner is perceptibly visible (the URL render happens after
-    # the spinner render). In tests the Task can't borrow the LiveView's
-    # DB connection from the Ecto sandbox, so we drive the second phase
-    # manually: synchronously mint the link, then send the message the
-    # handler would have received.
+    # The `toggle_share` handler defers the DB work via
+    # `Process.send_after/3` (configured to 0 in test via
+    # `config :dtu_app, :share_load_delay_ms, 0`), so the second phase
+    # runs synchronously inside the LiveView process. We fire the
+    # trigger message manually so the test doesn't have to wait the
+    # production 200 ms; with the delay at 0 the same effect could be
+    # achieved by `render(view)`, but sending the explicit message
+    # makes the test's intent obvious and doesn't depend on the
+    # config being honored.
     defp finish_share_toggle(view, user) do
-      result = Accounts.create_shared_link(user)
-      send(view.pid, {:share_link_minted, user.id, result})
+      send(view.pid, {:mint_shared_link, user.id})
+      view
+    end
+
+    # Mirror of `finish_share_toggle/2` for the disable path. Fires
+    # the trigger the production handler would have scheduled after
+    # 200 ms. The LiveView process runs the revoke directly (it owns
+    # the Ecto sandbox, so no `Task` indirection is needed in tests).
+    defp finish_share_revoke(view, user) do
+      send(view.pid, {:revoke_shared_link, user.id})
       view
     end
 
@@ -4286,10 +4297,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
 
+      # The DB work is now deferred via `Process.send_after/3` (so the
+      # spinner is visible mid-flight in production), so we drive phase
+      # 2 explicitly via `finish_share_toggle/2` before asserting on
+      # the row.
+      view |> finish_share_toggle(user) |> render()
+
       # A row exists now, with the user's id.
       assert %SharedLink{user_id: ^user_id} = Accounts.get_shared_link(user)
-
-      finish_share_toggle(view, user) |> render()
 
       html = render(view)
       assert html =~ gettext("Shareable URL")
@@ -4306,11 +4321,56 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       view |> element("#share-toggle") |> render_click(%{enabled: "false"})
 
+      # The DB work is deferred via `Process.send_after/3` (so the
+      # spinner is visible mid-flight in production). Drive phase 2
+      # explicitly before asserting on the row.
+      view |> finish_share_revoke(user) |> render()
+
       refute Accounts.get_shared_link(user)
       html = render(view)
       # The URL row only renders when share is active AND a plaintext
       # is in flight — after revoke, it's hidden again.
       refute html =~ gettext("Shareable URL")
+    end
+
+    test "toggling off shows the loading spinner, vanishes the URL row instantly, and disables the toggle",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          name: "Spinny Off DTU",
+          kind: "opendtu",
+          mqtt_username: "spinoff-1"
+        })
+
+      # Seed an active share so the page renders the URL row on mount.
+      assert {:ok, {_, _}} = Accounts.create_shared_link(user)
+
+      # Re-mount with a plaintext URL already in flight: we re-use
+      # the enable path's `finish_share_toggle/2` helper to seed it,
+      # because `assign_share_state/2` deliberately doesn't persist
+      # the plaintext URL across reloads (see comment in that fn).
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+      view |> finish_share_toggle(user) |> render()
+
+      assert render(view) =~ gettext("Shareable URL")
+
+      # Click off. Optimistic UI: URL row gone THIS render. Spinner
+      # visible. Toggle disabled so the user can't double-fire.
+      view |> element("#share-toggle") |> render_click(%{enabled: "false"})
+      html = render(view)
+
+      refute html =~ ~s(id="share-url-row")
+      assert html =~ ~s(id="share-loading-row")
+      assert has_element?(view, "#share-toggle[disabled]")
+
+      # Drive the second phase. Spinner clears, hint text reappears,
+      # toggle is interactive again.
+      finish_share_revoke(view, user) |> render()
+      html = render(view)
+
+      refute html =~ ~s(id="share-loading-row")
+      assert html =~ ~s(id="share-hint-text")
+      refute has_element?(view, "#share-toggle[disabled]")
     end
 
     test "a fresh mount with an existing share row shows the toggle on but no URL", %{
@@ -4348,6 +4408,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # deletes the old row before inserting the new one — so we
       # never end up with two rows for the same user.
       view |> element("#share-toggle") |> render_click(%{enabled: "false"})
+      view |> finish_share_revoke(user) |> render()
       refute Accounts.get_shared_link(user)
 
       view |> element("#share-toggle") |> render_click(%{enabled: "true"})
