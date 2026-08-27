@@ -110,8 +110,9 @@ defmodule DtuApp.AccountsFixtures do
     passkey_fixture(%{user_id: user.id}, attrs)
   end
 
-  def passkey_fixture(_attrs, attrs_override) do
-    {user_attrs, pk_attrs} = Map.split(attrs_override, [:user_id])
+  def passkey_fixture(attrs, attrs_override) do
+    merged = Map.merge(attrs, attrs_override)
+    {user_attrs, pk_attrs} = Map.split(merged, [:user_id])
 
     pk_attrs =
       Enum.into(pk_attrs, %{

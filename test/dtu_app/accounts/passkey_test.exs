@@ -83,6 +83,21 @@ defmodule DtuApp.Accounts.PasskeyTest do
     end
   end
 
+  describe "passkey_fixture/2" do
+    test "User-struct form attaches the passkey to the supplied user" do
+      user = user_fixture()
+      passkey = passkey_fixture(user, %{})
+      assert passkey.user_id == user.id
+    end
+
+    test "attrs-map form respects an explicit user_id in overrides" do
+      user = user_fixture()
+      passkey = passkey_fixture(%{user_id: user.id}, %{friendly_name: "Custom"})
+      assert passkey.user_id == user.id
+      assert passkey.friendly_name == "Custom"
+    end
+  end
+
   # ----- helpers -----
 
   defp base_attrs(user, overrides) do
