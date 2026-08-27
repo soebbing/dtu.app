@@ -112,7 +112,11 @@ defmodule DtuAppWeb.SharedDashboardLive do
     |> assign(:stats, stats)
     |> assign(:chart_points, chart_points)
     |> assign(:chart_type, :line)
-    |> assign(:locale, user.locale || "en")
+    # Use the visitor's `Accept-Language` locale (set by `Plugs.Locale`
+    # earlier in the `:public_browser` pipeline), NOT the share owner's
+    # persisted `user.locale`. Visitors want the page in their own
+    # browser language regardless of where the link came from.
+    |> assign(:locale, Gettext.get_locale(DtuAppWeb.Gettext))
   end
 
   # Resolve "today" in the user's local timezone. Mirrors the
