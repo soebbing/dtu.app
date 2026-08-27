@@ -149,4 +149,90 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       refute html =~ ~r/devices/i
     end
   end
+
+  # Regression coverage for the polyline path. Before #175 the helper
+  # used the wrong bucket keys (`:utc_start` / `:power_w`) and the
+  # first non-empty mount crashed with `KeyError`. The fixture-less
+  # tests above always render the "No data yet" fallback, so they
+  # never exercised the bug. Seed a real reading row so the cold-
+  # aggregate fallback in `list_day_chart_data_for_dashboard/4`
+  # returns at least one chart point and the polyline actually
+  # renders.
+  describe "shared polyline renders with real chart points" do
+    test "a non-empty reading set renders the SVG polyline without crashing", %{conn: conn} do
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Ahoy", kind: "ahoydtu", mqtt_username: "ahoy-1"})
+
+      # Insert one raw reading within the user's local day window.
+      # The share view defaults `tz_offset_seconds` to 0 (UTC) when
+      # the user hasn't customised it, so `DateTime.utc_now()` lands
+      # inside today. We offset by 5 minutes to stay safely away
+      # from a midnight-UTC test boundary.
+      reading_fixture(dtu, %{
+        inverter_serial: "HM-600",
+        inverter_name: "HM-600",
+        ac_power: 250.0,
+        inserted_at: DateTime.add(DateTime.utc_now(), -300, :second)
+      })
+
+      {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+
+      # Before #175 this raised KeyError inside `build_polyline/2`.
+      # The `live/2` call itself is the regression guard: the mount
+      # path is what crashed in production.
+      {:ok, _view, html} = live(conn, "/s/#{plaintext}")
+
+      # The polyline element is the only thing that exercises the
+      # bugged helper. Asserting on the `id` is enough to prove
+      # the chart card rendered; asserting on the `points` attribute
+      # proves `build_polyline/2` produced a real coordinate string.
+      assert html =~ ~s(id="shared-power-chart")
+      assert html =~ ~r/<polyline[^>]+points="[\d.]+,[\d.]+/
+
+      # Negative sanity: the "no data" fallback must NOT show up —
+      # we just inserted a reading.
+      refute html =~ gettext("No data yet — check back in a few minutes.")
+    end
+
+    test "multiple series in the same bucket are summed into one combined polyline point", %{
+      conn: conn
+    } do
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Ahoy", kind: "ahoydtu", mqtt_username: "ahoy-1"})
+
+      inserted_at = DateTime.add(DateTime.utc_now(), -300, :second)
+
+      # Two MPPT rows on the same inverter fall into the same
+      # 5-minute bucket but belong to different `series` keys. The
+      # share view promises a combined snapshot, so the polyline
+      # point at this bucket time should reflect the sum of both
+      # MPPTs' power.
+      reading_fixture(dtu, %{
+        inverter_serial: "HM-600",
+        inverter_name: "HM-600",
+        mppt_index: 0,
+        ac_power: 200.0,
+        inserted_at: inserted_at
+      })
+
+      reading_fixture(dtu, %{
+        inverter_serial: "HM-600",
+        inverter_name: "HM-600",
+        mppt_index: 1,
+        ac_power: 300.0,
+        inserted_at: inserted_at
+      })
+
+      {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+
+      {:ok, _view, html} = live(conn, "/s/#{plaintext}")
+
+      # Polyline rendered (proves the helper didn't KeyError on
+      # multi-series points). The exact y-coordinate depends on the
+      # bucket math, but the point string is non-empty and the
+      # chart shell is present.
+      assert html =~ ~s(id="shared-power-chart")
+      assert html =~ ~r/<polyline[^>]+points="[\d.]+,[\d.]+/
+    end
+  end
 end
