@@ -4577,18 +4577,22 @@ defmodule DtuAppWeb.DashboardLive do
            builds, so the URL stays unselected. The hook guarantees the
            selection on every gesture.
 
-           The select() call is wrapped in `setTimeout(..., 0)` so it
-           runs AFTER the browser has finished its default click
-           handling (which would otherwise place the cursor at the
-           click position, undoing our selection). --%>
+           The select() call is wrapped in `queueMicrotask(...)` so
+           it runs AFTER the browser's synchronous default-action
+           cursor placement (click) but BEFORE the next macrotask
+           (e.g. Playwright's next protocol message). The microtask
+           drain lands our select() between the click event and
+           anything else the browser queues, so the cursor doesn't
+           get to keep its click position. --%>
       <script :type={Phoenix.LiveView.ColocatedHook} name=".SelectOnFocus">
         export default {
           mounted() {
             this.select = () => {
-              // Defer the select to a macrotask so the browser's
+              // Defer to a microtask so the browser's
               // synchronous default-action cursor placement (click)
-              // has settled before we override the selection.
-              setTimeout(() => {
+              // settles first. Microtasks drain before the next
+              // macrotask, so the selection we set wins.
+              queueMicrotask(() => {
                 if (typeof this.el.select === "function") {
                   this.el.focus({ preventScroll: true })
                   this.el.select()
@@ -4601,7 +4605,7 @@ defmodule DtuAppWeb.DashboardLive do
                     }
                   }
                 }
-              }, 0)
+              })
             }
 
             this.el.addEventListener("focus", this.select)
