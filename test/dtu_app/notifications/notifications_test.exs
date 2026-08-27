@@ -10,17 +10,50 @@ defmodule DtuApp.NotificationsTest do
     * `delete/2` — only deletes the calling user's row; mismatched
       users get `:noop`.
     * `clear_all/1` — wipes everything for the user.
+    * End-to-end `broadcast/2` → `Dispatcher.fire/3` → Swoosh email
+      + history row (channel "both" path; the regression case for
+      Task 11's whole pipeline).
 
   The DB-write side of `DtuApp.Notifications.broadcast/2` is the
   fan-out chokepoint — all server-side notifiers
   (`SunDown`, `SunUp`, `DtuConnection`) and the test button route
   through it, so a single regression test on
   `broadcast/2` → `record/2` covers all four call sites.
-  """
-  use DtuApp.DataCase, async: true
 
+  `async: false` is required because the integration test uses
+  `Swoosh.TestAssertions` in global mode (Swoosh's test mailbox is
+  process-wide, so the ExUnit case cannot run concurrently). The
+  other describe blocks could run `async: true`, but for the sake
+  of one shared mailbox we keep the whole module synchronous — the
+  wall-clock cost is ~0.3s and the suite is small enough that the
+  trade-off is worth the test isolation guarantee.
+  """
+  use DtuApp.DataCase, async: false
+
+  import Swoosh.TestAssertions
+
+  alias DtuApp.Accounts
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Notification
+
+  setup :set_swoosh_global
+
+  setup context do
+    # Drop any stale `:email` messages left over from the user-fixture
+    # magic-link send so `assert_email_sent` only matches the email
+    # under test. Same helper as `dispatcher_test.exs:42-49`.
+    flush_swoosh_mailbox()
+    context
+  end
+
+  defp flush_swoosh_mailbox do
+    receive do
+      {:email, _} -> flush_swoosh_mailbox()
+      {:emails, _} -> flush_swoosh_mailbox()
+    after
+      0 -> :ok
+    end
+  end
 
   describe "record/2" do
     test "stores the broadcast for the given user" do
@@ -190,6 +223,77 @@ defmodule DtuApp.NotificationsTest do
       # Ecto.NoResultsError, which is rescued by safe_get_user/1.
       # The history write must be skipped too (no user_id to attach).
       assert :ok = Notifications.broadcast(0, basic_payload())
+    end
+  end
+
+  describe "end-to-end with :both channel" do
+    # Whole-pipeline regression for the channel-toggle feature
+    # (Task 11). Drives the path that producers
+    # (`SunDown`/`SunUp`/`DtuConnection`) and the test button all
+    # take: `Notifications.broadcast/2` → `safe_get_user/1` →
+    # `Dispatcher.fire/3` → push (VAPID no-op in test) + Swoosh
+    # email + history row. The user's `notification_channel` is
+    # set to "both" via `Accounts.update_notification_settings/2`,
+    # `notify_sun_down` is true (otherwise the dispatcher gates
+    # both push and email off via `Push.native_enabled?/2`), and
+    # the email is confirmed by `user_fixture/1` (it auto-confirms
+    # via `login_user_by_magic_link/1`).
+    #
+    # Asserts:
+    #   1. `assert_email_sent(subject: ...)` — proves the email
+    #      path rendered and Swoosh delivered via the test
+    #      adapter.
+    #   2. `history.channel == "both"` AND `history.event == ...`
+    #      — proves the dispatcher recorded the fire with the
+    #      user's chosen channel (not just "push" or "email"),
+    #      which is the load-bearing invariant of the whole
+    #      feature: a user who opts into "both" must see "both" in
+    #      their history regardless of which side actually fired.
+    test "broadcast/2 fires push + email AND records history with channel='both'" do
+      user =
+        DtuApp.AccountsFixtures.user_fixture(%{
+          notify_sun_down: true,
+          notify_sun_up: false,
+          notify_dtu_connection: false
+        })
+
+      {:ok, user} =
+        Accounts.update_notification_settings(user, %{notification_channel: "both"})
+
+      # Drop the magic-link email sent by `user_fixture/1` so the
+      # assertion below only matches the dispatcher's email.
+      flush_swoosh_mailbox()
+
+      payload = %{
+        event: "sun_down",
+        title: "Sun down summary",
+        body: ["Today: 12.4 kWh, peak 3,250 W."],
+        tag: "sun_down:2026-08-27",
+        today_yield_kwh: 12.4,
+        yesterday_yield_kwh: 10.1,
+        peak_power_w: 3250,
+        peak_yesterday_w: 2840,
+        chart_svg: "<svg viewBox='0 0 800 280'></svg>",
+        dashboard_path: "/dashboard"
+      }
+
+      # Use the public broadcast/2 entry point (not Dispatcher.fire/3
+      # directly) so the test exercises the in-page PubSub path too,
+      # matching what the producers call. PubSub.broadcast is a
+      # fire-and-forget no-op when no LiveView is subscribed.
+      Notifications.broadcast(user.id, payload)
+
+      # Email went out via Swoosh — subject comes from
+      # `payload.title` (the localized title the producer built).
+      assert_email_sent(subject: "Sun down summary")
+
+      # History row records the user's chosen channel and the event
+      # name — the load-bearing invariant the whole feature pivots
+      # on. One row per fire, channel = user preference at fire
+      # time.
+      assert [history] = Notifications.list_user_notifications(user, 1)
+      assert history.channel == "both"
+      assert history.event == "sun_down"
     end
   end
 
