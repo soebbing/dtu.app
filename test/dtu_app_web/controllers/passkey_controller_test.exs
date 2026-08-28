@@ -413,10 +413,17 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       assert json_response(resp, 401)["error"] == "credential_not_found"
     end
 
-    test "401 sign_count_not_increasing on clone-detector path", %{
-      conn: conn,
-      passkey: passkey
-    } do
+    test "401 sign_count_not_increasing on clone-detector path", %{conn: conn, user: user} do
+      # Re-enroll the fixture's passkey with a non-zero stored
+      # `sign_count`. The auth mock returns `sign_count: 0` for
+      # challenge `"warn"` (see `PasskeyTest.Authenticator` moduledoc),
+      # so under the controller's spec interpretation a clone fires
+      # only when the stored count is non-zero — when both are zero
+      # the authenticator is treated as "doesn't track usage" and the
+      # assertion is accepted. The default fixture `sign_count: 0`
+      # therefore can't drive this branch.
+      passkey = passkey_fixture(user, %{friendly_name: "Clone path", sign_count: 5})
+
       # The auth mock branches on the challenge STRING, so the cache must
       # contain literally `"warn"` for the controller to trigger the
       # clone-detector path. Random challenges from `/begin` won't land
@@ -432,11 +439,11 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
       conn = put_signed_passkey_cookie(conn, request_id)
 
-      # The mock returns `{:warn, hd(creds), 0, msg}` for challenge
-      # "warn". Sign_count=0 means the pre-enrolled passkey's stored
-      # `sign_count: 0` fails `validate_number(:sign_count,
-      # greater_than: 0)`, so `Accounts.touch_passkey/2` returns
-      # `{:error, %Ecto.Changeset{}}` — the controller maps that to
+      # Stored `sign_count: 5`, mock returns `sign_count: 0`. The lib
+      # flags this as a clone (`{:warn, ..., 0, "cloned"}`), the
+      # controller's spec interpretation classifies it as a real
+      # clone (stored non-zero), and the caller's `{:error,
+      # {:sign_count_not_increasing, passkey_id}}` clause maps it to
       # 401 `sign_count_not_increasing`.
       assertion = fake_assertion(@rp_id, "warn", passkey)
 
@@ -448,6 +455,51 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
       assert resp.status == 401
       assert json_response(resp, 401)["error"] == "sign_count_not_increasing"
+    end
+
+    test "200 + login on no-sign-count authenticator (both counts zero)", %{
+      conn: conn,
+      passkey: passkey
+    } do
+      # The default `passkey_fixture` creates the row with `sign_count: 0`,
+      # which mirrors a real authenticator that doesn't track usage
+      # (some Touch ID / Windows Hello / password-manager variants).
+      # When such an authenticator re-asserts, the browser returns
+      # `signCount: 0` again — the lib flags this as a "clone" via
+      # `{:warn, ..., 0, "cloned"}`, but per WebAuthn spec §7.2 step 19
+      # the clone check only applies when AT LEAST ONE count is
+      # non-zero. The controller's spec-aware `verify_auth_response/4`
+      # accepts this case as `{:ok, 0}` and the sign-in proceeds.
+      assert passkey.sign_count == 0
+
+      # Same `PasskeyChallengeCache` + mock trick as the clone test —
+      # `"warn"` is the only challenge string that drives the no-
+      # increase path through the auth mock.
+      request_id = "0123456789abcdef0123456789abcdef"
+
+      PasskeyChallengeCache.put(request_id, %{
+        challenge: "warn",
+        user_id: nil,
+        kind: :authentication,
+        friendly_name: nil
+      })
+
+      conn = put_signed_passkey_cookie(conn, request_id)
+
+      assertion = fake_assertion(@rp_id, "warn", passkey)
+
+      resp =
+        post(conn, "/auth/passkey/authentication/finish", %{
+          "request_id" => request_id,
+          "assertion_response" => assertion
+        })
+
+      # Spec-compliant acceptance: a real-world no-sign-count
+      # authenticator now lands here instead of the previous
+      # `401 sign_count_not_increasing` lockout.
+      assert resp.status == 200
+      assert json_response(resp, 200)["redirect"] == "/"
+      assert resp.resp_cookies["_dtu_app_key"] != nil
     end
 
     test "400 challenge_expired when request_id is unknown", %{conn: _conn} do
