@@ -254,6 +254,35 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       assert html =~ ~s(id="shared-power-chart")
       assert html =~ ~r/<polyline[^>]+points="[\d.]+,[\d.]+/
     end
+
+    test "Y-axis scale labels render at the right edge of the chart", %{conn: conn} do
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Ahoy", kind: "ahoydtu", mqtt_username: "axis-1"})
+
+      # 500 W peak → `y_axis_max/1` rounds up to the next 100 W step
+      # (so 500 W), so the top label reads "500 W". The bottom label
+      # is always "0 W". Both pinned by data-testid for a regression-
+      # safe lookup; the surrounding <text> attributes (right-anchored,
+      # 10px zinc-400) are format-only and would be brittle to assert.
+      reading_fixture(dtu, %{
+        inverter_serial: "HM-600",
+        inverter_name: "HM-600",
+        ac_power: 500.0,
+        inserted_at: DateTime.add(DateTime.utc_now(), -300, :second)
+      })
+
+      {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+      {:ok, _view, html} = live(conn, "/s/#{plaintext}")
+
+      assert html =~ ~r/<text[^>]*data-testid="share-y-max-label"[^>]*>\s*500 W\s*</
+      assert html =~ ~r/<text[^>]*data-testid="share-y-zero-label"[^>]*>\s*0 W\s*</
+
+      # Defensive: the Y-axis labels must not collide with the X-axis
+      # time labels (which sit at y=200). Both Y labels are above the
+      # bottom edge — the top label at y=14, the bottom at y=186.
+      refute html =~ ~r/data-testid="share-y-max-label"[^>]*y="20[0-9]"/
+      refute html =~ ~r/data-testid="share-y-zero-label"[^>]*y="20[0-9]"/
+    end
   end
 
   # Pin the data-driven y-axis behaviour introduced in task #221.

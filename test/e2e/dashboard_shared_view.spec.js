@@ -101,7 +101,7 @@ test.describe('Acceptance: Public shared dashboard', () => {
     await expect(chart).toBeVisible();
   });
 
-  test('chart contains only the polyline + two time-axis labels (no Y-axis numbers)', async ({ page, context }) => {
+  test('chart contains the polyline + time-axis labels + Y-axis scale labels', async ({ page, context }) => {
     const shareUrl = await enableShareAndCaptureUrl(page);
     await context.clearCookies();
     await page.goto(shareUrl);
@@ -109,18 +109,21 @@ test.describe('Acceptance: Public shared dashboard', () => {
 
     // The chart card is always present (`#shared-power-chart`), but
     // its inner content branches: with seed data it renders the SVG
-    // polyline + two `<text>` axis labels; without data it renders
-    // the "No data yet" placeholder (no `<svg>`). Both are valid —
-    // the bug we're guarding against is Y-axis *numbers* in the
-    // populated branch, so skip cleanly when there's no data.
+    // polyline + four `<text>` axis labels (X: 00:00 + 12:00, Y: 0 W
+    // + y_max W); without data it renders the "No data yet"
+    // placeholder (no `<svg>`). Both are valid — skip cleanly when
+    // there's no data.
     const svg = page.locator('#shared-power-chart svg');
     const polylineCount = await page.locator('#shared-power-chart polyline').count();
     test.skip(polylineCount === 0, 'no chart data for the seeded user — skipping label assertions');
 
     await expect(svg).toBeVisible();
 
-    // Two <text> labels, both clock-time strings. Anything else
-    // (numeric axis labels, hidden tick marks) is a regression.
+    // Four <text> labels: two clock-time strings + two wattage
+    // strings. The Y-axis labels are formatted as "<int> W" so they
+    // aren't bare numeric values (the pre-fix bug from task #221
+    // dumped the polyline `points` string into a `<text>` element,
+    // which IS a bare numeric — caught by the next assertion).
     // Use `textContent` (not `innerText`) because Playwright's
     // `innerText` strips SVG text in some shadow-DOM combinations,
     // and HEEx emits the labels with surrounding whitespace.
@@ -129,10 +132,22 @@ test.describe('Acceptance: Public shared dashboard', () => {
         .map((t) => t.textContent.trim())
         .sort()
     );
-    expect(textLabels).toEqual(['00:00', '12:00']);
+
+    // The exact y_max depends on the day's peak (rounded up to the
+    // next 100 W step by `y_axis_max/1`), so assert the *shape* of
+    // the set: two clock-time labels + exactly two labels of the
+    // form "<int> W" where one of them is the literal "0 W". Pinning
+    // the literal y_max value here would make the test brittle to
+    // any future change in the seed's peak wattage.
+    const clockLabels = textLabels.filter((s) => /^\d\d:\d\d$/.test(s));
+    const wattLabels = textLabels.filter((s) => /^\d+ W$/.test(s));
+    expect(clockLabels.sort()).toEqual(['00:00', '12:00']);
+    expect(wattLabels).toContain('0 W');
+    expect(wattLabels.length).toBe(2);
 
     // No <text> element should contain a bare numeric value —
-    // task #221's regression signature.
+    // task #221's regression signature. The new Y-axis labels are
+    // "0 W" / "<int> W" so they fail the `^-?\d+(\.\d+)?$` match.
     const numericTextCount = await svg.evaluate((node) =>
       Array.from(node.querySelectorAll('text')).filter((t) => /^-?\d+(\.\d+)?$/.test(t.textContent.trim())).length
     );

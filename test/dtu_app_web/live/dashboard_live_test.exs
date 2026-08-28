@@ -4319,6 +4319,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       {:ok, view, _html} = live(conn, ~p"/dashboard")
       assert Accounts.get_shared_link(user)
 
+      # Mount auto-mints a fresh URL when the share row already exists
+      # (see `assign_share_state/3 :mint`). Flush that auto-mint first
+      # so the toggle is enabled when we try to click it — the spinner
+      # is still on-screen here until the mint resolves.
+      view |> finish_share_toggle(user) |> render()
+
       view |> element("#share-toggle") |> render_click(%{enabled: "false"})
 
       # The DB work is deferred via `Process.send_after/3` (so the
@@ -4458,6 +4464,56 @@ defmodule DtuAppWeb.DashboardLiveTest do
       view |> finish_share_toggle(user) |> render()
 
       assert has_element?(view, "#share-url-row")
+    end
+
+    test "mounting with an existing share row auto-mints a fresh URL (no 'toggle on, no URL' state)",
+         %{conn: conn, user: user} do
+      # Regression for the UX gap where a returning user (page reload
+      # while sharing is on) would land on a "toggle checked, no URL
+      # field" state — the toggle was on, but the input below was
+      # blank and only the generic "anyone with this link" hint was
+      # shown. `assign_share_state/3` now accepts a `:mint` option
+      # that schedules the same mint flow `toggle_share` uses, so the
+      # user lands on the URL input + copy button instead.
+      _dtu =
+        device_fixture(user, %{
+          name: "Reload DTU",
+          kind: "opendtu",
+          mqtt_username: "reload-1"
+        })
+
+      # Pre-create a share row in the DB, simulating "user shared
+      # yesterday, reloads today".
+      {:ok, {_, _}} = Accounts.create_shared_link(user)
+      assert Accounts.get_shared_link(user)
+
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      # Initial render: spinner is up while the auto-mint runs.
+      # The DataTestid pin matches the production template, so a
+      # template regression that drops the spinner wouldn't be hidden
+      # by a generic `Generating link…` substring match elsewhere.
+      assert html =~ ~s(data-testid="share-loading")
+      assert html =~ gettext("Generating link…")
+
+      # The toggle is disabled during the in-flight mint — same as
+      # during a click-driven toggle, see `disabled={@share_loading?}`
+      # on the share-toggle input. Asserting `disabled` (not just
+      # opacity-70) keeps the click guard honest.
+      assert has_element?(view, "#share-toggle[disabled]")
+
+      # Flush the auto-mint. `finish_share_toggle/2` is the test-runtime
+      # shim that runs the mint synchronously inside the LiveView
+      # process (the prod `Process.send_after` would also work — it's
+      # configured to 0 ms in test).
+      view |> finish_share_toggle(user) |> render()
+
+      # After the mint resolves, the URL row replaces the spinner.
+      # Re-asserts the existing post-mint shape from the toggle path,
+      # proving both paths land in the same UI state.
+      assert has_element?(view, "#share-url-row")
+      assert has_element?(view, "#btn-share-copy")
+      assert has_element?(view, "#share-toggle:not([disabled])")
     end
 
     test "the URL input binds a SelectOnFocus hook (mobile tap selects all)",

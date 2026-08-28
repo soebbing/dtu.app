@@ -88,13 +88,20 @@ defmodule DtuAppWeb.DashboardLive do
       # from the user schema here so the LiveView re-render on every
       # reading picks up the same value without a re-read.
       |> assign(:cents_per_kwh, user.cents_per_kwh)
-      # Anonymous share toggle for the current-day dashboard. On mount we
-      # only know whether sharing is on (the row exists) — the plaintext
-      # URL token is never persisted, so a page reload leaves the toggle
-      # visibly on but the URL field blank. The user toggles off+on to
-      # mint a new URL (which invalidates the old share row). This keeps
-      # "show URL once, then it's gone if you didn't copy it" honest.
-      |> assign_share_state(user)
+      # Anonymous share toggle for the current-day dashboard. The
+      # plaintext URL token is never persisted, so a returning user
+      # (page reload while sharing is on) would otherwise land on a
+      # confusing "toggle on, no URL" state — the toggle is checked,
+      # but the input below is empty and the only hint is the
+      # generic "anyone with this link" copy.
+      #
+      # Pass `mint: true` so `assign_share_state/3` schedules the
+      # same mint flow `toggle_share` uses; ~200ms after mount the
+      # spinner resolves into the URL input + copy button. This
+      # silently invalidates the prior row, which matches the
+      # toggle-on behavior the user already accepts (the same flow
+      # runs when they re-enable sharing).
+      |> assign_share_state(user, mint: true)
       |> assign(:consumption_stats, %{
         current_consumption: 0.0,
         today_consumption: 0.0,
@@ -611,16 +618,29 @@ defmodule DtuAppWeb.DashboardLive do
   #   * `:share_loading?` — true while a token mint is in flight, so the
   #     toolbar can show a spinner instead of a stale (or empty) URL row.
   #
-  # The plaintext is intentionally left nil on mount — only the hash
-  # is persisted, so a returning user can't recover the old URL
-  # without regenerating (which invalidates the old row anyway).
-  defp assign_share_state(socket, user) do
+  # Options:
+  #   * `:mint` (default `false`) — when the share row already exists,
+  #     schedule the same delayed-mint flow `toggle_share` uses, so a
+  #     returning user (page reload while sharing is on) lands on a
+  #     populated URL field instead of the "toggle on, no URL" state.
+  #     The mint invalidates the prior row (same behavior as toggling
+  #     sharing off-and-on), and the 200ms loading-spinner render keeps
+  #     the UI honest about the in-flight work.
+  defp assign_share_state(socket, user, opts) do
     active? = Accounts.get_shared_link(user) != nil
 
-    socket
-    |> assign(:share_active?, active?)
-    |> assign(:share_url, nil)
-    |> assign(:share_loading?, false)
+    socket =
+      socket
+      |> assign(:share_active?, active?)
+      |> assign(:share_url, nil)
+      |> assign(:share_loading?, false)
+
+    if active? and Keyword.get(opts, :mint, false) do
+      Process.send_after(self(), {:mint_shared_link, user.id}, @share_load_delay_ms)
+      assign(socket, :share_loading?, true)
+    else
+      socket
+    end
   end
 
   # Helper to construct SVG line chart coordinates and range.
