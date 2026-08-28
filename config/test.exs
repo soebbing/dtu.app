@@ -36,6 +36,30 @@ config :dtu_app, :mqtt_broker, enabled: false
 # `test/dtu_app/notifications/*.exs`.
 config :dtu_app, :notifier_children, enabled: false
 
+# The `DtuApp.MqttBroker.Telemetry` and `DtuApp.MqttBroker.TopicRegistry`
+# GenServers are started in the application supervisor (not gated by
+# `:notifier_children`) because `DtuApp.MqttBroker.TopicRegistryTest`
+# reads the live ETS-backed topic map from the running GenServer. Their
+# `init/1` callbacks subscribe to PubSub topics (`dtu:uplink`,
+# `dtu:presence`, `dtu:ro_fanout`) — that subscription path is what
+# races the SQL sandbox in CI:
+#
+#   * a `MqttBrokerTest` calls `Broker.handle_publish/4`, which
+#     broadcasts `{:uplink, _}` on `dtu:uplink`;
+#   * the long-lived GenServers receive that broadcast async and call
+#     `Repo` from their `handle_info/2`;
+#   * if the next test's setup (`user_fixture → Time.utc_now →
+#     Repo.query_now`) starts before that Repo call returns, the
+#     sandbox is already checked out by the GenServer — the next
+#     checkout blocks for `queue_target` ms then raises
+#     `DBConnection.ConnectionError: connection not available`.
+#
+# Same fix as the notifier producers: don't subscribe in :test. The
+# GenServers still run (so `TopicRegistryTest` can read ETS), and the
+# few tests that drive `handle_info/2` directly do so synchronously on
+# the test process, which owns the connection.
+config :dtu_app, :mqtt_broker_subscribers, enabled: false
+
 # In test we don't send emails
 config :dtu_app, DtuApp.Mailer, adapter: Swoosh.Adapters.Test
 
