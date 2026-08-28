@@ -28,12 +28,14 @@ defmodule DtuAppWeb.PasskeyController do
   require Logger
 
   # ── Relying-party identity ────────────────────────────────────────
-  # Compiled at boot from `config :dtu_app, :webauthn_rp_id / :webauthn_rp_name`
-  # (see `config/runtime.exs` / `config/test.exs`). The defaults are
-  # "localhost" / "dtu.app" — safe for dev, prod needs WEBAUTHN_RP_ID
-  # + WEBAUTHN_RP_NAME env vars.
-  @rp_id Application.compile_env(:dtu_app, [:webauthn_rp_id], "localhost")
-  @rp_name Application.compile_env(:dtu_app, [:webauthn_rp_name], "dtu.app")
+  # Read at REQUEST time via `Application.get_env/3`, NOT compile-time:
+  # the values come from `config/runtime.exs`, which only runs at boot
+  # of a release — so compile-time reads (Application.compile_env/3) hit
+  # an empty dictionary and OTP 26+'s validate_compile_env refuses to
+  # boot when the runtime key is set later. Per-environment RP identity
+  # MUST be runtime-configurable (different deploys use different
+  # WEBAUTHN_RP_ID values), so baking it into the BEAM is the wrong
+  # shape. Defaults match `config/runtime.exs` and `config/test.exs`.
   # ES256 + RS256. Matches the algorithm set in the demo browsers and
   # is the minimum a real authenticator will offer — adding more algs
   # just expands the attack surface for attestation trust.
@@ -473,8 +475,8 @@ defmodule DtuAppWeb.PasskeyController do
     |> Map.take([name])
   end
 
-  defp rp_id, do: @rp_id
-  defp rp_name, do: @rp_name
+  defp rp_id, do: Application.get_env(:dtu_app, :webauthn_rp_id, "localhost")
+  defp rp_name, do: Application.get_env(:dtu_app, :webauthn_rp_name, "dtu.app")
 
   # Browser-sent `credential_id` is base64url (no padding) — see
   # `navigator.credentials.get()`'s `PublicKeyCredential.id` contract.
