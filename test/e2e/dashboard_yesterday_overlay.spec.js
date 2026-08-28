@@ -69,11 +69,18 @@ test.describe('Acceptance Tests: Dashboard day-comparison overlay', () => {
     // Round-trip: 1D → 7D → 1D. The ghost condition depends on
     // `time_range == "today"` and `live == true`; verify the
     // socket-driven preset switch restores the live view.
+    //
+    // Wait for the LiveSocket before EACH click. `beforeEach` only
+    // waits once after login; the socket can reconnect between
+    // clicks under heavy CI load and a click fired during a
+    // reconnect is silently dropped (the chart-title never updates).
+    await waitForLiveSocketConnected(page);
     await page.locator('#btn-range-7d').click();
-    await expect(page.locator('#chart-title')).toContainText('Last 7 days');
+    await expect(page.locator('#chart-title')).toContainText('Last 7 days', { timeout: 15000 });
 
+    await waitForLiveSocketConnected(page);
     await page.locator('#btn-range-1d').click();
-    await expect(page.locator('#chart-title')).toContainText("Today's Production Curve");
+    await expect(page.locator('#chart-title')).toContainText("Today's Production Curve", { timeout: 15000 });
 
     // The legend container (`#chart-legend`) is the outer block
     // whose inner Yesterday row is conditional. On 1D, the block

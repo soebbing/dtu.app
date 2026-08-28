@@ -76,29 +76,42 @@ async function fillEnergyRateAndSubmit(page, value) {
   await input.fill(value);
 
   // The form is a regular HTML POST (not LiveView), so submit and
-  // wait for the redirect back to /users/settings. The button is a
-  // bare `<button>` (no explicit `type` attribute, which defaults to
-  // `submit` inside a form), so we identify it by its label "Save
-  // Settings" — that's the only button on /users/settings with that
-  // text and the email/password forms use different labels.
+  // wait for the round-trip to complete. We can't `waitForURL` here
+  // because the form posts back to the same page we're already on
+  // (`/users/settings`) — `waitForURL` would resolve immediately
+  // and we'd race the 303-redirected GET.
+  //
+  // Waiting on the POST response guarantees the form was accepted
+  // before the test moves on; the subsequent redirect + GET + flash
+  // render is then awaited by `getSuccessFlash` polling for the
+  // flash locator.
+  //
+  // The button is a bare `<button>` (no explicit `type` attribute,
+  // which defaults to `submit` inside a form), so we identify it by
+  // its label "Save Settings" — that's the only button on
+  // /users/settings with that text and the email/password forms use
+  // different labels.
   const form = page.locator('#update_settings');
   await Promise.all([
-    page.waitForURL(/\/users\/settings/, { timeout: 10000 }),
+    page.waitForResponse(
+      r => r.url().endsWith('/users/settings') && r.request().method() === 'POST',
+      { timeout: 15000 }
+    ),
     form.getByRole('button', { name: /Save Settings/i }).click()
   ]);
 }
 
 async function getSuccessFlash(page) {
-  // The flash messages are rendered in the page-wide flash container
-  // (a fixed-position div with `role="alert"`). Wait briefly for the
-  // flash to appear after a redirect — Phoenix's view-render after
-  // the POST → 303 → GET round-trip can race the assertion.
-  const flash = page.locator('[role="alert"]').first();
-  try {
-    await flash.waitFor({ state: 'visible', timeout: 5000 });
-  } catch {
-    return '';
-  }
+  // The success flash is rendered by `CoreComponents.flash/1` with
+  // `id="flash-info"` (see lib/dtu_app_web/components/core_components.ex).
+  // We target it by ID rather than the looser `[role="alert"]` because
+  // the settings page also contains a hidden passkey error container
+  // (`<div data-passkey-error hidden role="alert">`) that would
+  // otherwise be `.first()` — hidden elements have `role="alert"`
+  // too, so the broad selector resolves to the wrong node and the
+  // waitFor(visible) times out.
+  const flash = page.locator('#flash-info');
+  await flash.waitFor({ state: 'visible', timeout: 15000 });
   return (await flash.textContent()) ?? '';
 }
 
