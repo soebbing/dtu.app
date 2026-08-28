@@ -178,8 +178,13 @@ config :dtu_app,
 
 config :dtu_app, :webauthn_rp_name, System.get_env("WEBAUTHN_RP_NAME") || "dtu.app"
 
-# Kill switch — flip to "false" in prod for the first 24 h after deploy.
-config :dtu_app, :passkeys_enabled, System.get_env("PASSKEYS_ENABLED") != "false"
+# Kill switch — defaults OFF in :prod for the 24h monitoring window
+# after first launch, defaults ON in :dev/:test. Operators flip with
+# `PASSKEYS_ENABLED=true` (enable) or `PASSKEYS_ENABLED=false` (disable).
+# See `DtuAppWeb.Passkeys.KillSwitch` for the decision matrix.
+config :dtu_app,
+       :passkeys_enabled,
+       DtuAppWeb.Passkeys.KillSwitch.enabled?(System.get_env("PASSKEYS_ENABLED"), config_env())
 
 # ── Web Push (VAPID) ───────────────────────────────────────────────────────
 # Required for native browser notifications delivered by the service
