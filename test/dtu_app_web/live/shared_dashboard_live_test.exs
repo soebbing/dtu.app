@@ -189,6 +189,26 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       assert html =~ ~s(id="shared-power-chart")
       assert html =~ ~r/<polyline[^>]+points="[\d.]+,[\d.]+/
 
+      # Regression: the polyline points string must NOT bleed into
+      # the page as visible text. The earlier bug used
+      # `{polyline_points = build_polyline(...)}` — HEEx brace
+      # shorthand both assigns AND renders, dumping the whole
+      # `246.0,190.0 249.0,190.0 …` string into the card above the
+      # SVG. The fix uses `<% ... %>` (assign-only). Asserting
+      # `points="` only appears inside the `<polyline>` element
+      # catches any regression that re-introduces the render.
+      polyline_open = Regex.run(~r/<polyline[^>]*>/, html) |> List.first()
+
+      assert polyline_open =~ ~s(points="),
+             "expected the polyline points attribute to be present"
+
+      # Strip the polyline element out, then assert the coordinate
+      # string never appears in the remaining (visible) HTML.
+      leftover = String.replace(html, polyline_open, "")
+
+      refute leftover =~ ~r/\b\d+\.\d+,\d+\.\d+/,
+             "polyline coordinates must not appear as visible text outside the <polyline> element"
+
       # Negative sanity: the "no data" fallback must NOT show up —
       # we just inserted a reading.
       refute html =~ gettext("No data yet — check back in a few minutes.")

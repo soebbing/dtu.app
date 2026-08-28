@@ -260,7 +260,13 @@ defmodule DtuAppWeb.SharedDashboardLive do
           {gettext("No data yet — check back in a few minutes.")}
         </div>
       <% else %>
-        {polyline_points = build_polyline(@points, @tz_offset_seconds)}
+        <%!-- `<% ... %>` (not `{ ... }`) — the brace form is shorthand
+             for "assign AND render", which would dump the whole
+             polyline string as visible text content above the SVG.
+             The block form binds the variable without emitting it;
+             the `<polyline points={polyline_points}>` below
+             interpolates the string as an SVG attribute. --%>
+        <% polyline_points = build_polyline(@points, @tz_offset_seconds) %>
         <%!-- Static SVG chart: viewBox 0 0 864 200; x maps to
              seconds-into-local-day (0-86399), y inverts watts
              (0 W at y=190, 200 W or more at y=10). Two axis
