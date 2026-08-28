@@ -266,11 +266,13 @@ defmodule DtuAppWeb.SharedDashboardLive do
              The block form binds the variable without emitting it;
              the `<polyline points={polyline_points}>` below
              interpolates the string as an SVG attribute. --%>
-        <% polyline_points = build_polyline(@points, @tz_offset_seconds) %>
+        <% {polyline_points, y_max} = build_polyline(@points, @tz_offset_seconds) %>
         <%!-- Static SVG chart: viewBox 0 0 864 200; x maps to
              seconds-into-local-day (0-86399), y inverts watts
              (0 W at y=190, 200 W or more at y=10). Two axis
-             labels at the bottom show midnight + noon. --%>
+             labels at the bottom show midnight + noon, two Y-axis
+             labels at the right edge show the scale (`y_max` at the
+             top, `0 W` at the bottom). --%>
         <svg viewBox="0 0 864 200" class="w-full h-48" preserveAspectRatio="none">
           <line
             x1="0"
@@ -289,6 +291,29 @@ defmodule DtuAppWeb.SharedDashboardLive do
             stroke-width="1"
             stroke-dasharray="3 3"
           />
+          <%!-- Y-axis scale labels, right-anchored so they sit at
+               the right margin and don't collide with the polyline.
+               `y_max` is rounded up to the next 100 W (50 W for tiny
+               installs) by `y_axis_max/1` so the topmost data point
+               never lands exactly on the chart edge. --%>
+          <text
+            x="862"
+            y="14"
+            class="fill-zinc-400 text-[10px]"
+            text-anchor="end"
+            data-testid="share-y-max-label"
+          >
+            {format_watts(y_max)}
+          </text>
+          <text
+            x="862"
+            y="186"
+            class="fill-zinc-400 text-[10px]"
+            text-anchor="end"
+            data-testid="share-y-zero-label"
+          >
+            {gettext("0 W")}
+          </text>
           <polyline
             points={polyline_points}
             class="fill-none stroke-emerald-500"
@@ -318,6 +343,10 @@ defmodule DtuAppWeb.SharedDashboardLive do
   # `DtuApp.Devices`: `:time` (UTC DateTime) and `:power` (watts).
   # An earlier draft used `:utc_start` / `:power_w` and crashed with
   # KeyError on the first non-empty mount — see #175.
+  #
+  # Returns `{points_string, y_max}` so the template can label both
+  # the polyline AND the Y-axis (`y_max` at the top, `0 W` at the
+  # bottom) without recomputing the bucketed series.
   defp build_polyline(points, tz_offset_seconds) do
     # Compute per-bucket watts once so we can derive both the Y-scale and
     # the polyline points from the same numbers. Without this two-pass,
@@ -340,14 +369,17 @@ defmodule DtuAppWeb.SharedDashboardLive do
 
     y_max = y_axis_max(bucketed)
 
-    bucketed
-    |> Enum.map(fn {time, watts} ->
-      seconds = local_seconds(time, tz_offset_seconds)
-      x = seconds / 100
-      y = watts_to_y(watts, y_max)
-      "#{Float.round(x, 1)},#{y}"
-    end)
-    |> Enum.join(" ")
+    points_string =
+      bucketed
+      |> Enum.map(fn {time, watts} ->
+        seconds = local_seconds(time, tz_offset_seconds)
+        x = seconds / 100
+        y = watts_to_y(watts, y_max)
+        "#{Float.round(x, 1)},#{y}"
+      end)
+      |> Enum.join(" ")
+
+    {points_string, y_max}
   end
 
   defp local_seconds(%DateTime{} = utc, tz_offset_seconds) do
