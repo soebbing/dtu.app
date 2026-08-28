@@ -166,13 +166,24 @@ end
 
 # ── Passkeys / WebAuthn ────────────────────────────────────────────────────
 # RP ID (origin's effective domain) and RP name (human-readable party name
-# shown by the browser during the ceremony). Defaults are dev-friendly —
-# override in prod via WEBAUTHN_RP_ID / WEBAUTHN_RP_NAME env vars.
+# shown by the browser during the ceremony). Defaults are env-aware:
+# `:dev`/`:test` → `"localhost"`, everything else → `"dtu.app"`. The
+# per-env default lives in `DtuAppWeb.Passkeys.RpId.default/1` so it can
+# be pinned by a unit test (see `test/dtu_app_web/passkeys/rp_id_test.exs`);
+# operators override in any env via the `WEBAUTHN_RP_ID` env var.
+#
+# Why env-aware: the WebAuthn spec requires `rp.id` to be a
+# registrable-domain suffix of the page origin. A prod deploy at
+# `https://dtu.app` cannot use `"localhost"` — the browser raises
+# `SecurityError: The operation is insecure` from
+# `navigator.credentials.create/get`. The previous "always localhost"
+# default was a transcription drift from the spec; this hardens the
+# default at the actual deploy target.
 config :dtu_app,
        :webauthn_rp_id,
        (case System.get_env("WEBAUTHN_RP_ID") do
-          nil -> "localhost"
-          "" -> "localhost"
+          nil -> DtuAppWeb.Passkeys.RpId.default(config_env())
+          "" -> DtuAppWeb.Passkeys.RpId.default(config_env())
           val -> val
         end)
 
