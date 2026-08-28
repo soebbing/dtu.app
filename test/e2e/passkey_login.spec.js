@@ -11,6 +11,31 @@
 // autofill chip. The conditional-mediation path is covered by a manual
 // smoke test in Task 9's checklist.
 //
+// All three tests share a SINGLE enrolled passkey (named
+// `SHARED_KEY_NAME` below). Tests 2 and 3 reuse the credential enrolled
+// by test 1 instead of enrolling their own. Why:
+//
+//   `DtuAppWeb.Plugs.PasskeyRateLimit` caps each `(127.0.0.1, <action>)`
+//   pair at 10 hits per 60 s. In CI the Playwright config retries each
+//   serial block up to 2 more times (3 attempts total), and `serial`
+//   mode means a failure retries the WHOLE block — so enrollment would
+//   otherwise burn `registration_options` + `verify_registration` hits
+//   three times in one window. Sharing a single enrollment keeps every
+//   per-action counter under the budget even at full retry pressure
+//   (max 9 hits per action across all attempts; the 10/60s ceiling has
+//   headroom to spare).
+//
+//   Test 1 still covers "enroll, log out, log in with passkey" exactly
+//   as before — it owns the enrollment. Test 2 covers the
+//   failed-ceremony fallback by removing the virtual authenticator
+//   (no fresh enrollment needed; the server-side
+//   `authentication_options` + the browser's `NotAllowedError` are
+//   independent of how many keys exist on the server). Test 3 covers
+//   "removing a passkey makes it unusable" by deleting the shared key
+//   and then attempting to authenticate with it — the server-side
+//   `verify_authentication` rejection is what makes the login fail,
+//   which is the whole point of the assertion.
+//
 // Notes on the pages under test:
 //
 //   * `/users/log-in` and `/users/settings` are DEAD (controller-rendered)
@@ -38,6 +63,10 @@ const {
 // Seeded by `priv/repo/seeds.exs` (re-run by the Playwright globalSetup).
 const E2E_EMAIL = 'test@example.com';
 const E2E_PASSWORD = 'password123456';
+
+// One enrolled passkey, shared by all three tests in this file. See
+// the top-of-file comment for the rate-limit-budget rationale.
+const SHARED_KEY_NAME = 'MacBook Touch ID';
 
 /**
  * Wait until `assets/js/app.js` has run its `bootstrapDeadHooks()` shim,
@@ -113,10 +142,64 @@ async function enrollPasskey(page, friendlyName) {
   await clickPasskeyButton(page, '#passkeys-card');
 
   // The hook calls `location.reload()` on success; the enrolled key then
-  // appears in the list.
+  // appears in the list. Wait for the visible list AND for the reload
+  // itself to fully settle (`networkidle`), so subsequent navigations
+  // in the same test don't race the still-in-flight reload and surface
+  // as `ERR_ABORTED`.
   await expect(
     page.locator('#passkeys-card').getByText(friendlyName, { exact: false })
   ).toBeVisible({ timeout: 15000 });
+  await page.waitForLoadState('networkidle');
+}
+
+/**
+ * Remove every passkey on the settings page whose friendly name matches
+ * the given string. The Remove link is
+ * `<.link method="post" data-confirm=...>`, which `phoenix_html.js`
+ * turns into a generated form gated behind `window.confirm`.
+ *
+ * Used at the start of test 1 to wipe any leftover passkeys from a
+ * previous retry of this serial block (the seeds wipe the DB only once
+ * per `npx playwright test` invocation, not per retry), so each retry
+ * begins from a clean "0 keys with this name" state. Also used inside
+ * test 3 to wipe everything before deleting + attempting to log in.
+ *
+ * Always uses `page.goto('/users/settings')` (not `page.reload()`):
+ * after `PasskeyFlow`'s post-enrollment `location.reload()`, a second
+ * `page.reload()` races the in-flight navigation and surfaces as
+ * `ERR_ABORTED`. `goto` to the same URL still triggers a fresh request
+ * and is more deterministic — `waitForPasskeyHook` then guarantees the
+ * hook has re-bound before the loop runs.
+ */
+async function removeAllPasskeysNamed(page, friendlyName) {
+  await page.goto('/users/settings');
+  await waitForPasskeyHook(page);
+
+  while (
+    (await page
+      .locator('#passkeys-card li')
+      .filter({ hasText: friendlyName })
+      .count()) > 0
+  ) {
+    const deleteResponse = page.waitForResponse(
+      (r) => /\/users\/settings\/passkeys\/.*\/delete$/.test(r.url())
+    );
+    page.once('dialog', (dialog) => dialog.accept());
+    await page
+      .locator('#passkeys-card li')
+      .filter({ hasText: friendlyName })
+      .getByRole('link', { name: /Remove/i })
+      .first()
+      .click();
+    await deleteResponse;
+
+    // The app registers a Service Worker, and the GET that follows the
+    // delete's 302 can be answered from its cache — showing the passkey
+    // that was just removed. Re-navigate explicitly so the assertion sees
+    // server-rendered state.
+    await page.goto('/users/settings');
+    await waitForPasskeyHook(page);
+  }
 }
 
 /**
@@ -177,7 +260,14 @@ test.describe('Acceptance: Passkey login', () => {
   test('enroll → log out → log back in with passkey', async ({ page }) => {
     await logInWithPassword(page);
 
-    await enrollPasskey(page, 'MacBook Touch ID');
+    // Wipe any leftover passkeys from a previous retry of this serial
+    // block before enrolling — see top-of-file comment. The seeds run
+    // only once per `npx playwright test` invocation, so a failed-then-
+    // retried block can otherwise land here with the previous attempt's
+    // row still present.
+    await removeAllPasskeysNamed(page, SHARED_KEY_NAME);
+
+    await enrollPasskey(page, SHARED_KEY_NAME);
 
     await logOut(page);
 
@@ -194,8 +284,12 @@ test.describe('Acceptance: Passkey login', () => {
 
   test('failed passkey authentication falls back to email + password', async ({ page, context }) => {
     await logInWithPassword(page);
-    await enrollPasskey(page, 'Doomed Key');
     await logOut(page);
+
+    // Re-uses the key enrolled by the FIRST test in this serial block —
+    // see top-of-file comment. The failure mode we exercise here is
+    // "the browser refused to assert" (NotAllowedError), which has
+    // nothing to do with how many keys the server knows about.
 
     // ---- Make the ceremony fail ----
     // CDP has no "refuse this assertion" flag, so we remove the virtual
@@ -228,25 +322,24 @@ test.describe('Acceptance: Passkey login', () => {
 
   test('removing a passkey makes it unusable for the next login', async ({ page }) => {
     await logInWithPassword(page);
-    await enrollPasskey(page, 'To Remove');
+
+    // The `beforeEach` installed a FRESH virtual authenticator for this
+    // test — the one test 1 enrolled into was torn down by test 2's
+    // `removeVirtualAuthenticator` (and the afterEach's teardown). So
+    // we re-enroll here: the fresh authenticator needs a credential the
+    // browser can assert before the server gets a chance to reject it.
+    // This is the second enrollment in the spec (test 1 was the first),
+    // which still fits the 10/60s/IP/per-action budget for `serial`
+    // retries — see the top-of-file comment for the math.
+    await enrollPasskey(page, SHARED_KEY_NAME);
 
     // The remove link is `<.link method="post" data-confirm=...>`, which
     // `phoenix_html.js` turns into a generated form gated behind
-    // `window.confirm`.
-    const deleteResponse = page.waitForResponse(
-      (r) => /\/users\/settings\/passkeys\/.*\/delete$/.test(r.url())
-    );
-    // Target the Remove link in THIS passkey's row. `.first()` would hit
-    // whichever key sorts first — earlier tests in this file enroll their
-    // own keys against the same seeded user and nothing cleans them up
-    // between tests, so the list is not guaranteed to hold just one.
-    page.once('dialog', (dialog) => dialog.accept());
-    await page
-      .locator('#passkeys-card li')
-      .filter({ hasText: 'To Remove' })
-      .getByRole('link', { name: /Remove/i })
-      .click();
-    await deleteResponse;
+    // `window.confirm`. `removeAllPasskeysNamed` wipes every row matching
+    // the friendly name so the `.getByRole` below sees exactly one match
+    // (Playwright strict mode would otherwise error on a retry that left
+    // a duplicate row from the previous attempt).
+    await removeAllPasskeysNamed(page, SHARED_KEY_NAME);
 
     // The app registers a Service Worker, and the GET that follows the
     // delete's 302 can be answered from its cache — showing the passkey
@@ -254,7 +347,7 @@ test.describe('Acceptance: Passkey login', () => {
     // server-rendered state.
     await page.goto('/users/settings');
     await expect(
-      page.locator('#passkeys-card').getByText('To Remove', { exact: false })
+      page.locator('#passkeys-card').getByText(SHARED_KEY_NAME, { exact: false })
     ).toHaveCount(0, { timeout: 15000 });
 
     await logOut(page);
