@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 // E2E coverage for the WIP dashboard historical features:
 //   - seeded telemetry renders the Today production curve + stat cards

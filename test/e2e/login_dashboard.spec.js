@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 test.describe('Acceptance Tests: Authentication, Dashboard & DTU Creation', () => {
   test('successfully logs in, displays dashboard, and manages system-defined DTUs', async ({ page }) => {

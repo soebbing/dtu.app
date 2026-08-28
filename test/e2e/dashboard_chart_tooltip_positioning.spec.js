@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 // E2E regression for the chart tooltip overlay's cursor-tracking
 // math.

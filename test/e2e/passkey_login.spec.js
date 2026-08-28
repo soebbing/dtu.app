@@ -59,6 +59,16 @@ const {
   installVirtualAuthenticator,
   removeVirtualAuthenticator,
 } = require('./_helpers');
+// Side-effect import: registers a `test.beforeEach` that aborts the
+// passkey `fireConditionalMediation` probe (`POST
+// /auth/passkey/authentication/begin` fired by the `PasskeyFlow` hook
+// on every `/users/log-in` mount). Without this every visit to the
+// login page would burn one `authentication_options` hit against
+// `DtuAppWeb.Plugs.PasskeyRateLimit`'s 10/60s/IP budget and trip the
+// limiter partway through the suite. `allowBegin` is the per-page
+// one-shot escape hatch used right before the "Use a passkey" button
+// click — see `test/e2e/_setup/global-fixture.js`.
+const { allowBegin } = require('./_setup/global-fixture');
 
 // Seeded by `priv/repo/seeds.exs` (re-run by the Playwright globalSetup).
 const E2E_EMAIL = 'test@example.com';
@@ -202,54 +212,15 @@ async function removeAllPasskeysNamed(page, friendlyName) {
   }
 }
 
-/**
- * Stop the hook's conditional-mediation probe from reaching the server.
- *
- * On mount, `PasskeyFlow` fires a non-awaited
- * `POST /auth/passkey/authentication/begin` so the browser can offer an
- * autofill chip. That costs one `authentication_options` hit against
- * `DtuAppWeb.Plugs.PasskeyRateLimit`'s 10-per-60s-per-IP window on EVERY
- * visit to `/users/log-in` — including the plain password logins these
- * tests do — which trips the limiter partway through the file and turns
- * later tests into spurious 429 failures. It also leaves a
- * `navigator.credentials.get()` outstanding, which makes Chromium's
- * conditional-UI machinery stall Playwright's click actionability.
- *
- * We are not testing the conditional path (headless Chromium doesn't
- * support it reliably), so abort those requests and only let the ones the
- * tests explicitly trigger through.
- */
-async function blockConditionalMediation(page) {
-  let allow = false;
-
-  await page.route('**/auth/passkey/authentication/begin', (route) =>
-    allow ? route.continue() : route.abort()
-  );
-
-  return {
-    // One-way switch, flipped immediately before the test clicks "Use a
-    // passkey". It is not reset afterwards: the hook issues its fetch
-    // asynchronously, so re-arming the block on the next tick would race
-    // the very request we just enabled. Each test navigates to
-    // `/users/log-in` at most once after flipping, so at most one extra
-    // conditional probe gets through.
-    allowBegin() {
-      allow = true;
-    },
-  };
-}
-
 test.describe('Acceptance: Passkey login', () => {
   // Serial, not parallel: `PasskeyRateLimit` keys its sliding window on
   // (IP, ceremony action), and every worker here shares the loopback IP.
   test.describe.configure({ mode: 'serial' });
 
   let authenticatorId;
-  let mediation;
 
   test.beforeEach(async ({ page, context }) => {
     authenticatorId = await installVirtualAuthenticator(page, context);
-    mediation = await blockConditionalMediation(page);
   });
 
   test.afterEach(async ({ page, context }) => {
@@ -274,7 +245,7 @@ test.describe('Acceptance: Passkey login', () => {
     // ---- Authenticate with the passkey ----
     await page.goto('/users/log-in');
     await waitForPasskeyHook(page);
-    mediation.allowBegin();
+    await allowBegin(page);
     await clickPasskeyButton(page, '#passkey-login-card');
 
     // The hook follows `body.redirect` from the finish endpoint.
@@ -303,7 +274,7 @@ test.describe('Acceptance: Passkey login', () => {
 
     await page.goto('/users/log-in');
     await waitForPasskeyHook(page);
-    mediation.allowBegin();
+    await allowBegin(page);
     await clickPasskeyButton(page, '#passkey-login-card');
 
     // No redirect: still on the login page, form still rendered.
@@ -357,7 +328,7 @@ test.describe('Acceptance: Passkey login', () => {
     // knows it, so `/finish` rejects and the hook surfaces the banner.
     await page.goto('/users/log-in');
     await waitForPasskeyHook(page);
-    mediation.allowBegin();
+    await allowBegin(page);
     await clickPasskeyButton(page, '#passkey-login-card');
 
     await expect(

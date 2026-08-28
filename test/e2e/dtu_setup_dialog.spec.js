@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 test.describe('Acceptance Tests: DTU Setup Instructions Dialog & Localization', () => {
   

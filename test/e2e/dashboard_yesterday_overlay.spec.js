@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 test.describe('Acceptance Tests: Dashboard day-comparison overlay', () => {
   // The day-comparison (yesterday) ghost overlay only renders on the
