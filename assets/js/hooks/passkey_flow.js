@@ -98,9 +98,22 @@ const PasskeyFlow = {
         ? await navigator.credentials.create({ publicKey: pk })
         : await navigator.credentials.get({ publicKey: pk });
     } catch (err) {
-      // User cancelled or browser refused — silent.
+      // User cancelled the ceremony (closed the OS prompt, hit Esc,
+      // walked away) — silent UX.
       if (err && err.name === "NotAllowedError") return;
-      throw err;
+      // Other DOMExceptions are user-actionable and need a banner:
+      //   * SecurityError     — `rp.id` doesn't match the page origin
+      //                         (most common prod failure: the server's
+      //                         `WEBAUTHN_RP_ID` is wrong for the
+      //                         deploy target) or the page is in an
+      //                         insecure context.
+      //   * InvalidStateError — this authenticator already holds a
+      //                         matching credential (re-enrollment).
+      //   * NotSupportedError — no usable authenticator on this device.
+      // Without this branch they escape to the unhandled-rejection
+      // handler and the operator only finds out via DevTools.
+      this._showErrorKey((err && err.name) || "unknown_error");
+      return;
     }
 
     const finishBody = JSON.stringify({
@@ -178,10 +191,21 @@ const PasskeyFlow = {
     }
   },
 
+  // Render an error banner for a failed fetch response (server-side
+  // ceremony error — 4xx/5xx from the controller). Reads `%{error: ...}`
+  // out of the JSON body and falls back to `"unknown_error"`.
   async showError(resp) {
     let body = {};
     try { body = await resp.json(); } catch (_) {}
-    const errorKey = body.error || "unknown_error";
+    this._showErrorKey(body.error || "unknown_error");
+  },
+
+  // Render an error banner for a browser-side failure (DOMException
+  // from `navigator.credentials.create/get` — `SecurityError`,
+  // `InvalidStateError`, `NotSupportedError`, etc.). Called directly
+  // so the WebAuthn catch block doesn't have to fabricate a fake
+  // `Response` to reuse `showError/1`.
+  _showErrorKey(errorKey) {
     const banner = document.querySelector("[data-passkey-error]");
     if (banner) {
       banner.textContent = `Passkey error: ${errorKey}`;
