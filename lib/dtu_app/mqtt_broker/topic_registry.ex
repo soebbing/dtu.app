@@ -144,6 +144,13 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
+  # Mirrors `DtuApp.MqttBroker.Telemetry.subscribers_enabled?/0` — read
+  # at request time so the override in `config/test.exs` (or any future
+  # runtime override) takes effect without a recompile.
+  defp subscribers_enabled? do
+    Application.get_env(:dtu_app, :mqtt_broker_subscribers, [])[:enabled] != false
+  end
+
   @impl true
   def init(:ok) do
     # Trap exits so a sandbox-teardown race during tests (where the
@@ -166,9 +173,24 @@ defmodule DtuApp.MqttBroker.TopicRegistry do
     # per-DTU FIFO eviction.
     :ets.new(table_name(), [:set, :public, {:read_concurrency, true}, :named_table])
 
-    Broker.subscribe_uplink()
+    # Subscribing to PubSub is gated on `:mqtt_broker_subscribers`.
+    # Mirrors the gate in `DtuApp.MqttBroker.Telemetry.init/1`: in :test,
+    # `MqttBrokerTest` calls `Broker.handle_publish/4` directly, which
+    # broadcasts on `dtu:uplink`; this GenServer would then receive the
+    # `{:uplink, _}` async and race the SQL sandbox owner of the next
+    # test. Skipping the subscribe here keeps the GenServer alive for
+    # `DtuApp.MqttBroker.TopicRegistryTest`'s synchronous `handle_info/2`
+    # calls + ETS reads while preventing the async race.
+    if subscribers_enabled?() do
+      Broker.subscribe_uplink()
+      Logger.info("[TopicRegistry] subscribed to DTU uplinks")
+    else
+      Logger.info(
+        "[TopicRegistry] PubSub subscriptions skipped (mqtt_broker_subscribers disabled)"
+      )
+    end
+
     schedule_prune()
-    Logger.info("[TopicRegistry] subscribed to DTU uplinks")
     {:ok, %{}}
   end
 

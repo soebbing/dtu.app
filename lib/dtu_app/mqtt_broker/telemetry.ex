@@ -160,6 +160,15 @@ defmodule DtuApp.MqttBroker.Telemetry do
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
+  # Read at REQUEST time via `Application.get_env/3`, NOT compile-time —
+  # the value is set in `config/test.exs` and any future per-env override
+  # in `runtime.exs` would otherwise hit the same OTP 26 `validate_compile_env`
+  # trap as the WebAuthn RP ID (see the parallel note in
+  # `DtuAppWeb.PasskeyController`). Default `true` matches production.
+  defp subscribers_enabled? do
+    Application.get_env(:dtu_app, :mqtt_broker_subscribers, [])[:enabled] != false
+  end
+
   # --- GenServer --------------------------------------------------------------
 
   @impl true
@@ -175,10 +184,27 @@ defmodule DtuApp.MqttBroker.Telemetry do
     # every linked caller. We forward all `:EXIT` signals to
     # `handle_info/2` and ignore them there.
     Process.flag(:trap_exit, true)
-    Broker.subscribe_uplink()
-    Broker.subscribe_presence()
-    Broker.subscribe_ro_fanout()
-    Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
+    # Subscribing to PubSub is gated on the `:mqtt_broker_subscribers`
+    # config flag. In `:test` the broker is off and no real uplink
+    # traffic exists, but `MqttBrokerTest` calls `Broker.handle_publish/4`
+    # directly — that broadcasts on `dtu:uplink`, which the long-lived
+    # GenServer would receive async and process via `Repo`, racing the
+    # SQL sandbox owner of the next test. Disabling the subscribe here
+    # means the only way `handle_info({:uplink, ...})` is exercised in
+    # :test is via a direct call from the test process (synchronous,
+    # connection already owned by the test). Production / dev keep the
+    # default (`enabled: true`) — see `config/runtime.exs` and
+    # `config/dev.exs` for the explicit defaults, and
+    # `config/test.exs` for the override.
+    if subscribers_enabled?() do
+      Broker.subscribe_uplink()
+      Broker.subscribe_presence()
+      Broker.subscribe_ro_fanout()
+      Logger.info("[Telemetry] subscribed to DTU uplinks and presence")
+    else
+      Logger.info("[Telemetry] PubSub subscriptions skipped (mqtt_broker_subscribers disabled)")
+    end
+
     {:ok, %{buffers: %{}}}
   end
 
