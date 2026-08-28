@@ -42,12 +42,30 @@ defmodule DtuApp.Accounts.Passkey do
     passkey
     # `force_changes: true` so that a usage update with the same
     # `sign_count` as the persisted record still produces a change
-    # for `validate_number/3` to inspect. Without it, Ecto's `cast/4`
+    # for `validate_change/3` to inspect. Without it, Ecto's `cast/4`
     # drops the field when the new value equals the existing value,
     # silently letting `sign_count` stall (the WebAuthn clone-detector
     # trap we explicitly want to catch).
     |> cast(attrs, [:sign_count, :last_used_at], force_changes: true)
     |> validate_required([:sign_count, :last_used_at])
-    |> validate_number(:sign_count, greater_than: passkey.sign_count)
+    |> validate_change(:sign_count, fn :sign_count, new_count ->
+      # The strict-monotonic check is the WebAuthn clone detector
+      # (spec §7.2 step 19). The spec carves out the no-sign-count-
+      # authenticator case: when BOTH stored and new counts are zero,
+      # the authenticator simply doesn't track usage and equality is
+      # the legitimate state. Otherwise the new count must be
+      # strictly greater than the stored one — anything else is a
+      # clone signal.
+      cond do
+        new_count > passkey.sign_count ->
+          []
+
+        new_count == 0 and passkey.sign_count == 0 ->
+          []
+
+        true ->
+          [sign_count: "must be strictly greater than the stored value (replay signal)"]
+      end
+    end)
   end
 end

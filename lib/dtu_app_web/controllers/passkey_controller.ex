@@ -313,11 +313,29 @@ defmodule DtuAppWeb.PasskeyController do
           {:error, :not_found} ->
             json(conn |> put_status(:bad_request), %{error: "challenge_expired"})
 
+          # `verify_auth_response/4` rejected a non-increasing
+          # sign_count as a possible clone (spec §7.2 step 19). The
+          # stored `sign_count` was non-zero AND the authenticator's
+          # response was <= it — the textbook clone-detector trigger.
+          # Surface as 401 `sign_count_not_increasing`. This branch
+          # only fires when the controller's spec interpretation
+          # explicitly classifies the warning as a clone; the
+          # no-sign-count-authenticator case (both counts zero) is
+          # accepted by `verify_auth_response/4` and never reaches
+          # here. The `passkey.id` is carried in the error tuple
+          # because the surrounding `with`-block doesn't bind
+          # `passkey` into the `else` clauses.
+          {:error, {:sign_count_not_increasing, passkey_id}} ->
+            Logger.warning("passkey authentication replay passkey_id=#{inspect(passkey_id)}")
+
+            json(conn |> put_status(:unauthorized), %{error: "sign_count_not_increasing"})
+
           # `Accounts.touch_passkey/2` rejected the new sign_count via
-          # `Passkey.usage_changeset/2`'s `validate_number(:sign_count,
-          # greater_than: passkey.sign_count)`. The authenticator
-          # returned a count <= the one we already stored — the
-          # WebAuthn "cloned authenticator" trap (spec §6 step 5).
+          # `Passkey.usage_changeset/2`'s strict-monotonic validation.
+          # Defence-in-depth: `verify_auth_response/4` already
+          # classifies the library's `{:warn, ...}` per spec, so this
+          # branch only fires if a direct caller of `touch_passkey/2`
+          # (e.g. a future admin/migration path) writes a bad value.
           # `Repo.update/1` returns `{:error, %Ecto.Changeset{}}`, so
           # the bare-struct pattern must be wrapped in a tagged tuple.
           {:error, %Ecto.Changeset{} = cs} ->
@@ -501,13 +519,21 @@ defmodule DtuAppWeb.PasskeyController do
   # `Webauthn.Cose.to_public_key/1`.
   #
   # The library returns `{:ok, _credential, new_sign_count}` on a
-  # happy signature, or `{:warn, _credential, new_sign_count, _msg}`
-  # when the authenticator's reported `sign_count` is <= the stored
-  # one. We forward both to the caller with the new sign_count; the
-  # subsequent `Accounts.touch_passkey/2` call rejects the non-
-  # increasing case via `Passkey.usage_changeset/2`, which the
-  # controller maps to 401 `sign_count_not_increasing` (spec §6
-  # step 5 — clone detection).
+  # happy signature, or `{:warn, _credential, 0, "cloned"}` whenever
+  # the authenticator's reported `sign_count` is not strictly
+  # greater than the stored one. The library's check is overly
+  # conservative: per WebAuthn spec §7.2 step 19, the clone check
+  # only applies when AT LEAST ONE of the two counts is non-zero —
+  # when both are zero, the authenticator (some Touch ID / Windows
+  # Hello / password-manager variants) simply doesn't track usage,
+  # and locking the user out would block legitimate sign-ins. We
+  # surface both cases distinctly: `{:ok, 0}` for the no-sign-count
+  # path (subsequent `touch_passkey/2` writes `last_used_at` and
+  # leaves `sign_count` at zero) and
+  # `{:error, {:sign_count_not_increasing, passkey.id}}` for a true
+  # clone, which the caller maps to 401 — the `passkey.id` is carried
+  # in the tuple so the `with`-block error clause can log it (the
+  # `passkey` variable itself is not in scope there).
   defp verify_auth_response(passkey, challenge, response, conn) do
     {:ok, public_key, _rest} = CBOR.decode(passkey.public_key)
 
@@ -528,8 +554,11 @@ defmodule DtuAppWeb.PasskeyController do
       {:ok, _credential, new_sign_count} ->
         {:ok, new_sign_count}
 
-      {:warn, _credential, new_sign_count, _msg} ->
-        {:ok, new_sign_count}
+      {:warn, _credential, _new_sign_count, _msg} when passkey.sign_count == 0 ->
+        {:ok, 0}
+
+      {:warn, _credential, _new_sign_count, _msg} ->
+        {:error, {:sign_count_not_increasing, passkey.id}}
 
       {:error, _reason} = err ->
         err
