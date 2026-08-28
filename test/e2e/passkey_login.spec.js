@@ -304,7 +304,21 @@ test.describe('Acceptance: Passkey login', () => {
     await clickPasskeyButton(page, '#passkey-login-card');
 
     // The hook follows `body.redirect` from the finish endpoint.
-    await page.waitForURL(/\/(dashboard|)$/, { timeout: 15000 });
+    //
+    // `page.waitForURL` with default `waitUntil: "load"` would race
+    // the navigation here: the hook drives `window.location.href =
+    // body.redirect`, and the `load` event isn't always observed by
+    // Playwright within the timeout — the dev server's slow `/dashboard`
+    // render plus any pre-fetched service-worker content leaves the
+    // `load` lifecycle event un-fired. `waitForFunction` polling
+    // `window.location.pathname` directly is independent of the page's
+    // lifecycle and stops the moment the browser actually committed
+    // the new URL.
+    await page.waitForFunction(
+      () => window.location.pathname === '/' || window.location.pathname === '/dashboard',
+      null,
+      { timeout: 15000, polling: 50 }
+    );
     await expect(page).not.toHaveURL(/\/users\/log-in/);
   });
 
