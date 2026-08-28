@@ -86,3 +86,20 @@ config :web_push,
     private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
     subject: "mailto:test@localhost"
   }
+
+# Explicit test value for the WebAuthn relying-party ID. Mirrors the
+# dev/prod default ("localhost") and forces a known value regardless of
+# any WEBAUTHN_RP_ID env var that may be set on a developer's machine —
+# the ceremony's origin check is unforgiving about host mismatches.
+config :dtu_app, :webauthn_rp_id, "localhost"
+config :dtu_app, :webauthn_rp_name, "dtu.app"
+
+# Inject WebAuthn library mocks for tests. The library dispatches via
+# `Application.compile_env(:webauthn, :auth_response/:registration_response, ...)`
+# at boot — pointing these at the *Mock variants lets tests skip signature
+# verification (which would otherwise require real crypto). The auth mock
+# branches on the challenge STRING: `"warn"` forces sign_count=0 (clone
+# detector path), `"originMismatch"` returns the origin error, anything
+# else returns the happy-path `{:ok, cred, sign_count+1}`.
+config :webauthn, :auth_response, Webauthn.AuthenticationMock.Response
+config :webauthn, :registration_response, Webauthn.RegistrationMock.Response

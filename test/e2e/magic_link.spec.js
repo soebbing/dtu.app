@@ -6,6 +6,7 @@
 // lands in the Mailpit inbox instead of being swallowed by the in-memory
 // adapter.
 const { test, expect, request } = require('@playwright/test');
+require('./_setup/global-fixture');
 
 const MAILPIT_URL = process.env.MAILPIT_URL || 'http://localhost:8025';
 // The CI-seeded user, also used by login_dashboard.spec.js and

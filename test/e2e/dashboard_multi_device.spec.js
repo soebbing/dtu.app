@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+require('./_setup/global-fixture');
 
 // E2E coverage for the dashboard's multi-device behaviour.
 //

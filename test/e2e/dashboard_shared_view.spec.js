@@ -25,6 +25,7 @@
 
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 const E2E_EMAIL = 'test@example.com';
 const E2E_PASSWORD = 'password123456';

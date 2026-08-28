@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 test.describe('Acceptance Tests: Dashboard range preset toolbar', () => {
   // Range preset switching happens via the LiveView WebSocket, so we
@@ -49,8 +50,20 @@ test.describe('Acceptance Tests: Dashboard range preset toolbar', () => {
   });
 
   test('clicking 30D renders "Last 30 days" chart title', async ({ page }) => {
+    // `beforeEach` already waited for the LiveSocket to connect once
+    // after login, but the dashboard LiveView's socket can drop
+    // between the beforeEach and this point under heavy CI load
+    // (parallel suites create extra requests). Wait again right
+    // before the click so the `phx-click` event is guaranteed to
+    // be delivered — otherwise a reconnect in flight eats the click
+    // and the chart-title never updates.
+    await waitForLiveSocketConnected(page);
     await page.locator('#btn-range-30d').click();
-    await expect(page.locator('#chart-title')).toContainText('Last 30 days');
+    // The LiveView re-render runs `assign_dashboard_data/4`, which
+    // queries a hypertable; under load that path can exceed the
+    // 5 s default. 15 s is generous but still fails loudly on a
+    // genuine regression.
+    await expect(page.locator('#chart-title')).toContainText('Last 30 days', { timeout: 15000 });
   });
 
   test('clicking YTD renders "Year to date" chart title', async ({ page }) => {

@@ -7,6 +7,20 @@ defmodule DtuApp.Application do
 
   @impl true
   def start(_type, _args) do
+    # Public named ETS table for the passkey rate-limit plug. Created
+    # here, BEFORE the supervision tree starts, so it lives for the
+    # lifetime of the application master process — `:public` and
+    # `:named_table` make it accessible from any process via
+    # `:ets.lookup/2` / `:ets.insert/2` without a GenServer wrapper.
+    # `read_concurrency: true` lets many requests read in parallel;
+    # `write_concurrency` stays off (single writer at a time, which
+    # is fine for our traffic). The brief's intended tuple form
+    # `{:ets, :passkey_rate_limit, opts}` is the deprecated
+    # `Supervisor.Spec` shorthand and is rejected by current
+    # supervisors — creating the table pre-supervision is the
+    # canonical Elixir pattern for a top-level named table.
+    :ets.new(:passkey_rate_limit, [:set, :public, :named_table, read_concurrency: true])
+
     # Finch HTTP pool dedicated to the `web_push` library. We
     # supervise our own pool (named `DtuAppWeb.WebPushFinch`) so
     # push traffic never shares a connection pool with anything
@@ -20,7 +34,8 @@ defmodule DtuApp.Application do
          DtuApp.Repo,
          {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
          {Phoenix.PubSub, name: DtuApp.PubSub},
-         {Finch, name: DtuAppWeb.WebPushFinch}
+         {Finch, name: DtuAppWeb.WebPushFinch},
+         {DtuApp.Accounts.PasskeyChallengeCache, []}
        ] ++
          mqtt_broker_children() ++
          [

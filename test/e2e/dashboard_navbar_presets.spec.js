@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 // Acceptance tests for the navbar + 1D-specific Current Power tile
 // + preset-button affordances (cursor + loading spinner).

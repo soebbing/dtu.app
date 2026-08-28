@@ -62,6 +62,39 @@ defmodule DtuAppWeb.Router do
     plug :fetch_current_scope_for_user
   end
 
+  # WebAuthn / passkey ceremony endpoints. Same shape as `:push_api`
+  # (JSON-accepting, CSRF-protected, session-fetching) but WITHOUT
+  # `fetch_current_scope_for_user`: registration requires auth,
+  # authentication requires anonymity, and reading the cookie ourselves
+  # per action is clearer than a one-size-fits-all assign.
+  #
+  # The rate-limit plug sits between `:fetch_live_flash` and
+  # `:protect_from_forgery` (spec §9). Placement matters:
+  #   * AFTER `:fetch_session` is unnecessary — rate limit keys on
+  #     `remote_ip`, not the user. Putting it earlier means CSRF-blocked
+  #     requests still consume a quota slot, which is fine (an attacker
+  #     sending cross-origin requests should still be throttled).
+  #   * BEFORE `:protect_from_forgery` means the plug runs even when
+  #     the request fails CSRF, so a flood of CSRF-bad requests still
+  #     returns 429 (not 403) past the limit — spec §9 "rate limit
+  #     per-action granularity" requires this.
+  #   * BEFORE `:put_secure_browser_headers` means the plug can still
+  #     set its own `put_status(:too_many_requests)` without the secure
+  #     headers plug re-touching the response.
+  #
+  # The `:passkey_action` private key is set per-route (Task 5/6) so
+  # the plug can apply a separate 10/min/IP counter per ceremony
+  # endpoint instead of a single 10/min/IP bucket for all four. Falls
+  # back to `"default"` when no route key is set, which is harmless.
+  pipeline :passkey_api do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug DtuAppWeb.Plugs.PasskeyRateLimit
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+  end
+
   scope "/", DtuAppWeb do
     pipe_through :browser
 
@@ -146,6 +179,38 @@ defmodule DtuAppWeb.Router do
     get "/push/vapid/public_key", PushController, :vapid_public_key
     post "/push/subscribe", PushController, :subscribe
     post "/push/unsubscribe", PushController, :unsubscribe
+  end
+
+  # Passkey ceremony endpoints. The kill switch (`PASSKEYS_ENABLED`)
+  # hides them; when disabled, every action returns 404 via the
+  # controller-level `guard/2`.
+  #
+  # Each controller action sets `conn.private[:passkey_action]`
+  # itself (via `Plug.Conn.put_private/3` as the first line of the
+  # action body) so `DtuAppWeb.Plugs.PasskeyRateLimit` (running in
+  # the `:passkey_api` pipeline) keys its 10/min/IP sliding window
+  # on the specific ceremony. Per-route `plug :passkey_action, "<name>"`
+  # would have been more declarative but `plug` only works inside a
+  # pipeline in Phoenix, not at the route level — so the per-action
+  # put_private is the working alternative. Without these keys the
+  # plug falls back to `"default"`, which collapses all four
+  # endpoints into a single bucket.
+  scope "/", DtuAppWeb do
+    pipe_through :passkey_api
+
+    post "/auth/passkey/registration/begin", PasskeyController, :registration_options
+    post "/auth/passkey/registration/finish", PasskeyController, :verify_registration
+    post "/auth/passkey/authentication/begin", PasskeyController, :authentication_options
+    post "/auth/passkey/authentication/finish", PasskeyController, :verify_authentication
+  end
+
+  # Passkey management endpoints (settings page). Standard browser
+  # pipeline: form posts get the CSRF token from the layout and the
+  # session cookie drives auth.
+  scope "/", DtuAppWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    post "/users/settings/passkeys/:id/delete", UserSettingsController, :delete_passkey
   end
 
   scope "/", DtuAppWeb do

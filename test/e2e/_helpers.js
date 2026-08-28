@@ -111,8 +111,44 @@ async function waitForLiveSocketConnected(page, opts = {}) {
   );
 }
 
+// Virtual WebAuthn authenticator (CDP `WebAuthn.enable` +
+// `WebAuthn.addVirtualAuthenticator`). Lets the e2e specs simulate
+// a hardware authenticator without a real device.
+//
+// Usage:
+//   let authenticatorId;
+//   test.beforeEach(async ({ page, context }) => {
+//     authenticatorId = await installVirtualAuthenticator(page, context);
+//   });
+//   test.afterEach(async ({ page, context }) => {
+//     await removeVirtualAuthenticator(page, context, authenticatorId);
+//   });
+
+async function installVirtualAuthenticator(page, context) {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true
+    }
+  });
+  return authenticatorId;
+}
+
+async function removeVirtualAuthenticator(page, context, authenticatorId) {
+  if (!authenticatorId) return;
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+}
+
 module.exports = {
   waitForLiveSocketConnected,
+  installVirtualAuthenticator,
+  removeVirtualAuthenticator,
   // Exported for tests that want to assert a specific
   // event name (rather than hard-coding it).
   LIVEVIEW_JOINED_EVENT,

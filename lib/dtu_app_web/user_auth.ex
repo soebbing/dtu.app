@@ -45,6 +45,28 @@ defmodule DtuAppWeb.UserAuth do
   end
 
   @doc """
+  Logs the user in from a successful passkey authentication.
+
+  Mirrors `log_in_user/3`'s session setup — mints a session token via
+  `create_or_extend_session/3` (which sets the remember-me cookie if
+  `params["remember_me"]` is `"true"` or a prior `:user_remember_me`
+  was stored in the session) — and returns a conn the controller
+  pipes into `json(%{redirect: ...})`. We deliberately skip the
+  `redirect/2` call here because the passkey ceremony is a JS-hook
+  flow that needs the redirect target returned as JSON, not as an
+  HTTP 302 (spec §6 step 7 "Return 200 `{ redirect: '/' }`").
+  Calling `redirect/2` would also mark the conn as `sent`, breaking
+  the controller's downstream `json/2` with `Plug.Conn.AlreadySentError`.
+  """
+  def log_in_user_from_passkey(conn, %DtuApp.Accounts.User{} = user, params \\ %{}) do
+    user_return_to = get_session(conn, :user_return_to)
+
+    conn
+    |> create_or_extend_session(user, params)
+    |> json(%{redirect: user_return_to || signed_in_path(conn)})
+  end
+
+  @doc """
   Logs the user out.
 
   It clears all session data for safety. See renew_session.

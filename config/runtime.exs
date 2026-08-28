@@ -164,6 +164,28 @@ if config_env() == :prod do
   config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end
 
+# ── Passkeys / WebAuthn ────────────────────────────────────────────────────
+# RP ID (origin's effective domain) and RP name (human-readable party name
+# shown by the browser during the ceremony). Defaults are dev-friendly —
+# override in prod via WEBAUTHN_RP_ID / WEBAUTHN_RP_NAME env vars.
+config :dtu_app,
+       :webauthn_rp_id,
+       (case System.get_env("WEBAUTHN_RP_ID") do
+          nil -> "localhost"
+          "" -> "localhost"
+          val -> val
+        end)
+
+config :dtu_app, :webauthn_rp_name, System.get_env("WEBAUTHN_RP_NAME") || "dtu.app"
+
+# Kill switch — defaults OFF in :prod for the 24h monitoring window
+# after first launch, defaults ON in :dev/:test. Operators flip with
+# `PASSKEYS_ENABLED=true` (enable) or `PASSKEYS_ENABLED=false` (disable).
+# See `DtuAppWeb.Passkeys.KillSwitch` for the decision matrix.
+config :dtu_app,
+       :passkeys_enabled,
+       DtuAppWeb.Passkeys.KillSwitch.enabled?(System.get_env("PASSKEYS_ENABLED"), config_env())
+
 # ── Web Push (VAPID) ───────────────────────────────────────────────────────
 # Required for native browser notifications delivered by the service
 # worker when no tab is open. All three VAPID_* vars come from the

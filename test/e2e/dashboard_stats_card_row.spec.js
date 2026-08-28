@@ -1,5 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { waitForLiveSocketConnected } = require('./_helpers');
+require('./_setup/global-fixture');
 
 // Acceptance tests for the new 5-up stats card row above the chart.
 // Replaces the legacy 4-up row (Current Generation / Today's Total

@@ -77,6 +77,11 @@ defmodule DtuApp.MixProject do
       {:finch, "~> 0.19"},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
+      # WebAuthn / FIDO2 server-side ceremony (challenge generation,
+      # attestation parsing, signature verification). Used by
+      # `DtuAppWeb.PasskeyController` to enroll and authenticate
+      # passkeys. See `docs/superpowers/specs/2026-08-27-passkeys-design.md`.
+      {:webauthn, "~> 0.0.9"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
