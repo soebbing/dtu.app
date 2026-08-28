@@ -432,18 +432,12 @@ defmodule DtuAppWeb.PasskeyController do
     )
   end
 
-  # Reconstructs the origin URL from `conn.scheme` / `conn.host` /
-  # `conn.port` (provided by `Plug.Conn`). The brief's design said
-  # `conn.assigns[:origin]` would be set by `:protect_from_forgery`
-  # — that turned out to be incorrect; Plug's CSRF plug does not
-  # populate that assign. Building the origin from `Plug.Conn`'s
-  # fields is equivalent and avoids a pipeline mutation.
+  # Reconstructs the URL origin WebAuthn ceremonies compare against
+  # `clientDataJSON.origin`. Delegated to `DtuAppWeb.Passkeys.Origin`
+  # so the WHATWG default-port-stripping and `X-Forwarded-Port`
+  # behavior are unit-testable (see `test/dtu_app_web/passkeys/origin_test.exs`).
   defp request_origin(conn) do
-    scheme = conn.scheme |> to_string()
-    host = conn.host
-    port = conn.port
-
-    "#{scheme}://#{host}#{if port, do: ":#{port}", else: ""}"
+    DtuAppWeb.Passkeys.Origin.from_conn(conn)
   end
 
   defp generate_request_id do
