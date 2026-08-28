@@ -71,7 +71,30 @@ defmodule DtuAppWeb.PasskeyController do
               Enum.map(existing_ids, fn id ->
                 %{"id" => id, "type" => "public-key"}
               end),
-            "timeout" => @timeout_ms
+            "timeout" => @timeout_ms,
+            # Passkeys don't need attestation, and asking for it hurts:
+            # `webauthn`'s default is "direct", whose packed/basic
+            # statements are rejected by `trustworthy?/2` unless the
+            # authenticator's root cert is in the library's bundled
+            # trust store ("Untrusted Root Certificate"). Platform
+            # authenticators (Touch ID, Windows Hello) and the CDP
+            # virtual authenticator all fall outside it. "none" is the
+            # WebAuthn recommendation for this use case and is also
+            # better for user privacy.
+            "attestation" => "none",
+            # The login page runs a USERNAME-LESS ceremony
+            # (`allowCredentials: []`), which only works if the
+            # credential is DISCOVERABLE (a resident key). Without this
+            # the library defaults `authenticatorSelection` to `%{}`,
+            # authenticators mint a non-discoverable credential, and
+            # `navigator.credentials.get()` on `/users/log-in` finds
+            # nothing and rejects with `NotAllowedError` — which the
+            # hook swallows, so "Use a passkey" silently does nothing.
+            "authenticatorSelection" => %{
+              "residentKey" => "required",
+              "requireResidentKey" => true,
+              "userVerification" => "preferred"
+            }
           })
 
         request_id = generate_request_id()
@@ -126,7 +149,7 @@ defmodule DtuAppWeb.PasskeyController do
                    "rp" => %{"id" => rp_id()}
                  },
                  Map.get(response["response"] || %{}, "attestationObject", ""),
-                 get_in(response, ["response", "clientDataJSON"]) || ""
+                 raw_client_data_json(response)
                ),
              %{} = acd <- Map.get(auth_data, :attested_credential_data),
              {:ok, passkey} <-
@@ -437,14 +460,16 @@ defmodule DtuAppWeb.PasskeyController do
     end
   end
 
+  # `put_passkey_cookie/2` writes the cookie with `sign: true`, so the
+  # value on the wire is a signed token, not the raw request_id. It has
+  # to be read back with `fetch_cookies(conn, signed: [name])` — a plain
+  # `fetch_cookies/1` yields the still-signed string, which never equals
+  # the request_id in the body and made every `finish` call fail with
+  # `request_id_mismatch`.
   defp fetch_cookie(conn, name) do
-    case conn.cookies do
-      %Plug.Conn.Unfetched{} ->
-        conn.fetch_cookies().cookies
-
-      cookies ->
-        cookies
-    end
+    conn
+    |> Plug.Conn.fetch_cookies(signed: [name])
+    |> Map.fetch!(:cookies)
     |> Map.take([name])
   end
 
@@ -503,7 +528,7 @@ defmodule DtuAppWeb.PasskeyController do
       "rp" => %{"id" => rp_id()}
     }
 
-    case Webauthn.auth_response(request, response) do
+    case Webauthn.auth_response(request, put_raw_client_data_json(response)) do
       {:ok, _credential, new_sign_count} ->
         {:ok, new_sign_count}
 
@@ -514,4 +539,30 @@ defmodule DtuAppWeb.PasskeyController do
         err
     end
   end
+
+  # `webauthn ~> 0.0.9` expects `clientDataJSON` as the RAW JSON bytes —
+  # it calls `Jason.decode/1` on it directly and hashes it verbatim for
+  # the signature check. The browser hands it to us base64url-encoded
+  # (see `assets/js/utils/base64url.js`'s `serializeCredential/1`), so
+  # it has to be decoded here first. `attestationObject`,
+  # `authenticatorData` and `signature` stay base64url — the library
+  # decodes those itself.
+  defp raw_client_data_json(response) do
+    case get_in(response, ["response", "clientDataJSON"]) do
+      raw when is_binary(raw) ->
+        case Base.url_decode64(raw, padding: false) do
+          {:ok, json} -> json
+          :error -> raw
+        end
+
+      _ ->
+        ""
+    end
+  end
+
+  defp put_raw_client_data_json(%{"response" => %{} = inner} = response) do
+    %{response | "response" => Map.put(inner, "clientDataJSON", raw_client_data_json(response))}
+  end
+
+  defp put_raw_client_data_json(response), do: response
 end

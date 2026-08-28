@@ -46,18 +46,49 @@ export function serializeCredential(credential) {
   };
 }
 
-// Recursively convert base64url strings in a `publicKey` object into
-// Uint8Arrays (and ArrayBuffers where the WebAuthn API requires them).
+// Convert the base64url-encoded BINARY members of a server-sent
+// `publicKey` options object into ArrayBuffers, leaving every other
+// member untouched.
+//
+// Only these members are binary per the WebAuthn spec:
+//   * `challenge`
+//   * `user.id`                       (registration)
+//   * `excludeCredentials[].id`       (registration)
+//   * `allowCredentials[].id`         (authentication)
+//
+// Everything else is a plain string the browser needs verbatim
+// (`rp.id`, `rp.name`, `user.name`, `user.displayName`, `attestation`,
+// `pubKeyCredParams[].type`, `authenticatorSelection.*`, transports, …).
+// Decoding those indiscriminately not only corrupts them, it can throw:
+// `atob("dtu.app")` raises `InvalidCharacterError` because "." is not a
+// base64 character.
 export function decodePublicKey(pk) {
   if (pk == null) return pk;
-  if (typeof pk === "string") return decode(pk).buffer;
-  if (Array.isArray(pk)) return pk.map(decodePublicKey);
-  if (typeof pk === "object") {
-    const out = {};
-    for (const k of Object.keys(pk)) {
-      out[k] = decodePublicKey(pk[k]);
-    }
-    return out;
+  if (typeof pk !== "object") return pk;
+
+  const out = { ...pk };
+
+  if (typeof out.challenge === "string") {
+    out.challenge = decode(out.challenge).buffer;
   }
-  return pk;
+
+  if (out.user && typeof out.user === "object") {
+    out.user = { ...out.user };
+    if (typeof out.user.id === "string") {
+      out.user.id = decode(out.user.id).buffer;
+    }
+  }
+
+  for (const key of ["excludeCredentials", "allowCredentials"]) {
+    if (Array.isArray(out[key])) {
+      out[key] = out[key].map((cred) => {
+        if (!cred || typeof cred !== "object") return cred;
+        const next = { ...cred };
+        if (typeof next.id === "string") next.id = decode(next.id).buffer;
+        return next;
+      });
+    }
+  }
+
+  return out;
 }

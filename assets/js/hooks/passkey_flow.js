@@ -145,12 +145,16 @@ const PasskeyFlow = {
       .then((data) => {
         if (!data) return;
         const pk = decodePublicKey(data.publicKey);
-        return navigator.credentials.get({ publicKey: pk, mediation: "conditional" });
-      })
-      .then((cred) => {
-        if (!cred) return;
-        // Reuse the request_id we captured from the begin fetch above.
-        this.completeConditional(cred, data.request_id);
+        // `data` is captured here so `completeConditional` can reuse the
+        // request_id; referencing it from the next `.then` would be a
+        // ReferenceError (swallowed by the trailing `.catch`, which is
+        // why the conditional path silently did nothing).
+        return navigator.credentials
+          .get({ publicKey: pk, mediation: "conditional" })
+          .then((cred) => {
+            if (!cred) return;
+            return this.completeConditional(cred, data.request_id);
+          });
       })
       .catch(() => {/* user dismissed */});
   },

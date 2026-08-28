@@ -33,9 +33,10 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
   Note on cookie plumbing: `Phoenix.ConnTest.dispatch/5` does NOT
   forward `resp_cookies` from one request to the next, so each `/finish`
-  test must `put_req_cookie(conn, "passkey_request_id", value)` with the
-  value extracted from the preceding `/begin` body (or hard-coded for
-  negative-path tests).
+  test must `put_signed_passkey_cookie(conn, value)` with the value
+  extracted from the preceding `/begin` body (or hard-coded for
+  negative-path tests). The helper signs the value, because the cookie is
+  written with `sign: true` and read back with `fetch_cookies(signed:)`.
   """
 
   use DtuAppWeb.ConnCase, async: false
@@ -158,16 +159,13 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       assert begin_resp.status == 200
       body = json_response(begin_resp, 200)
       challenge = fetch_challenge_from_cache(body["request_id"])
-      # The controller signs the cookie at response time, but `conn.cookies`
-      # (post `fetch_cookies`) stores the value exactly as sent in the
-      # Cookie header — Plug doesn't verify signatures on the request
-      # side, only when writing. So the value the controller compares
-      # against is the UNSIGNED `request_id` from the body.
+      # `put_signed_passkey_cookie/2` re-signs this the way the endpoint
+      # does, mirroring what the browser echoes back.
       cookie_value = body["request_id"]
 
       attestation = fake_attestation(@rp_id, challenge)
 
-      conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
+      conn = put_signed_passkey_cookie(conn, cookie_value)
 
       finish_resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -192,7 +190,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # Force the cookie to match an unknown request_id so the cookie-vs-
       # body check passes and we get to the cache lookup (which then 400s
       # with `challenge_expired` rather than `request_id_mismatch`).
-      conn = put_req_cookie(conn, "passkey_request_id", "nonexistent")
+      conn = put_signed_passkey_cookie(conn, "nonexistent")
 
       attestation = fake_attestation(@rp_id, <<0::256>>)
 
@@ -226,7 +224,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
     end
 
     test "401 when not authenticated", %{conn: _conn} do
-      conn = build_conn() |> put_req_cookie("passkey_request_id", "x")
+      conn = build_conn() |> put_signed_passkey_cookie("x")
 
       resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -278,7 +276,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       challenge = fetch_challenge_from_cache(body["request_id"])
 
       attestation = fake_attestation(@rp_id, challenge, existing_cred_id)
-      conn = put_req_cookie(conn, "passkey_request_id", body["request_id"])
+      conn = put_signed_passkey_cookie(conn, body["request_id"])
 
       finish_resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -365,7 +363,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # takes the happy path (`{:ok, hd(creds), sign_count+1}`).
       assertion = fake_assertion(@rp_id, challenge, passkey)
 
-      conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
+      conn = put_signed_passkey_cookie(conn, cookie_value)
 
       resp =
         post(conn, "/auth/passkey/authentication/finish", %{
@@ -402,7 +400,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
       assertion = fake_assertion(@rp_id, challenge, fake_credential)
 
-      conn = put_req_cookie(conn, "passkey_request_id", cookie_value)
+      conn = put_signed_passkey_cookie(conn, cookie_value)
 
       resp =
         post(conn, "/auth/passkey/authentication/finish", %{
@@ -432,7 +430,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
         friendly_name: nil
       })
 
-      conn = put_req_cookie(conn, "passkey_request_id", request_id)
+      conn = put_signed_passkey_cookie(conn, request_id)
 
       # The mock returns `{:warn, hd(creds), 0, msg}` for challenge
       # "warn". Sign_count=0 means the pre-enrolled passkey's stored
@@ -453,7 +451,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
     end
 
     test "400 challenge_expired when request_id is unknown", %{conn: _conn} do
-      conn = build_conn() |> put_req_cookie("passkey_request_id", "nonexistent")
+      conn = build_conn() |> put_signed_passkey_cookie("nonexistent")
 
       resp =
         post(conn, "/auth/passkey/authentication/finish", %{
@@ -507,7 +505,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       })
 
       assertion = fake_assertion(@rp_id, "originMismatch", passkey)
-      conn = put_req_cookie(conn, "passkey_request_id", body["request_id"])
+      conn = put_signed_passkey_cookie(conn, body["request_id"])
 
       resp =
         post(conn, "/auth/passkey/authentication/finish", %{
@@ -546,7 +544,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
       # `Phoenix.ConnTest.dispatch/5` doesn't forward `resp_cookies` between
       # requests, so the `passkey_request_id` cookie has to be replayed by
       # hand (see the module doc).
-      conn = put_req_cookie(conn, "passkey_request_id", reg_id)
+      conn = put_signed_passkey_cookie(conn, reg_id)
 
       finish_resp =
         post(conn, "/auth/passkey/registration/finish", %{
@@ -578,7 +576,7 @@ defmodule DtuAppWeb.PasskeyControllerTest do
 
       assertion = fake_assertion(@rp_id, auth_challenge, %{credential_id: cred_id})
 
-      fresh_conn = put_req_cookie(fresh_conn, "passkey_request_id", auth_id)
+      fresh_conn = put_signed_passkey_cookie(fresh_conn, auth_id)
 
       auth_finish =
         post(fresh_conn, "/auth/passkey/authentication/finish", %{
@@ -620,5 +618,22 @@ defmodule DtuAppWeb.PasskeyControllerTest do
   defp sweep_cache do
     table = :ets.whereis(PasskeyChallengeCache)
     :ets.delete_all_objects(table)
+  end
+
+  # `put_passkey_cookie/2` writes `passkey_request_id` with `sign: true`,
+  # and the controller reads it back with
+  # `fetch_cookies(conn, signed: ["passkey_request_id"])`. A real browser
+  # echoes the SIGNED value, so the tests have to as well — injecting the
+  # bare request_id makes signature verification drop the cookie and every
+  # `/finish` call 400s with `request_id_mismatch`.
+  defp put_signed_passkey_cookie(conn, value) do
+    signed =
+      %{build_conn() | secret_key_base: DtuAppWeb.Endpoint.config(:secret_key_base)}
+      |> Plug.Conn.put_resp_cookie("passkey_request_id", value, sign: true)
+      |> Map.fetch!(:resp_cookies)
+      |> Map.fetch!("passkey_request_id")
+      |> Map.fetch!(:value)
+
+    put_req_cookie(conn, "passkey_request_id", signed)
   end
 end
