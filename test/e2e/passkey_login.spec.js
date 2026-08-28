@@ -22,8 +22,23 @@
 //   otherwise burn `registration_options` + `verify_registration` hits
 //   three times in one window. Sharing a single enrollment keeps every
 //   per-action counter under the budget even at full retry pressure
-//   (max 9 hits per action across all attempts; the 10/60s ceiling has
-//   headroom to spare).
+//   (max 6 hits per action across all attempts; the 10/60s ceiling has
+//   headroom to spare — see also the per-attempt-to-retry math
+//   immediately below).
+//
+//   Test 3 doesn't re-enroll either — it captures the credential test 1
+//   enrolled (via `getVirtualAuthenticatorCredentials`) and re-injects
+//   it into the fresh authenticator test 3's `beforeEach` installs
+//   (via `addVirtualAuthenticatorCredential`). Without that injection,
+//   test 3's authenticator would be empty and the browser-side
+//   `navigator.credentials.get()` would have nothing to assert, so
+//   test 3 would have to enroll — bringing the per-retry
+//   `registration_options` / `verify_registration` budget to 12 hits
+//   per action (3 attempts × 2 enrollments × 2 calls), tripping the
+//   rate limiter and surfacing `Passkey error: too_many_attempts` on
+//   the settings page during test 1's enrollment. The injection
+//   halves that, to a comfortable 6 hits per action across all three
+//   attempts.
 //
 //   Test 1 still covers "enroll, log out, log in with passkey" exactly
 //   as before — it owns the enrollment. Test 2 covers the
@@ -58,6 +73,8 @@ const { test, expect } = require('@playwright/test');
 const {
   installVirtualAuthenticator,
   removeVirtualAuthenticator,
+  getVirtualAuthenticatorCredentials,
+  addVirtualAuthenticatorCredential,
 } = require('./_helpers');
 // Side-effect import: registers a `test.beforeEach` that aborts the
 // passkey `fireConditionalMediation` probe (`POST
@@ -218,9 +235,33 @@ test.describe('Acceptance: Passkey login', () => {
   test.describe.configure({ mode: 'serial' });
 
   let authenticatorId;
+  // Captured by test 1 after its `enrollPasskey` succeeds, then
+  // re-injected into the fresh authenticator test 3's `beforeEach`
+  // installs — see the top-of-file comment for the rate-limit-budget
+  // rationale. `null` until test 1 runs at least once.
+  let cachedCredential = null;
 
-  test.beforeEach(async ({ page, context }) => {
+  test.beforeEach(async ({ page, context }, testInfo) => {
     authenticatorId = await installVirtualAuthenticator(page, context);
+    // Test 3 needs an already-enrolled credential to attempt
+    // authentication after deleting its DB row. Without injection,
+    // test 3's fresh authenticator has nothing to assert and test 3
+    // would have to enroll — see top-of-file comment for the budget
+    // math. The `testInfo.title` guard matters because injecting on
+    // test 1's `beforeEach` would put a stale (post-retry) credential
+    // into an empty fresh authenticator; test 1 always enrolls fresh,
+    // so injecting at that point is harmless but pointless.
+    if (
+      cachedCredential &&
+      testInfo.title === 'removing a passkey makes it unusable for the next login'
+    ) {
+      await addVirtualAuthenticatorCredential(
+        page,
+        context,
+        authenticatorId,
+        cachedCredential
+      );
+    }
   });
 
   test.afterEach(async ({ page, context }) => {
@@ -228,7 +269,7 @@ test.describe('Acceptance: Passkey login', () => {
     authenticatorId = null;
   });
 
-  test('enroll → log out → log back in with passkey', async ({ page }) => {
+  test('enroll → log out → log back in with passkey', async ({ page, context }) => {
     await logInWithPassword(page);
 
     // Wipe any leftover passkeys from a previous retry of this serial
@@ -239,6 +280,20 @@ test.describe('Acceptance: Passkey login', () => {
     await removeAllPasskeysNamed(page, SHARED_KEY_NAME);
 
     await enrollPasskey(page, SHARED_KEY_NAME);
+
+    // Stash the fresh credential so test 3 (which runs later in this
+    // `serial` block) can inject it into its own authenticator instead
+    // of enrolling again — see top-of-file comment for the
+    // rate-limit-budget rationale. Exactly one credential exists at
+    // this point: test 1 just enrolled, `removeAllPasskeysNamed` wiped
+    // any leftovers above, and no other test has touched the
+    // authenticator yet.
+    const credentials = await getVirtualAuthenticatorCredentials(
+      page,
+      context,
+      authenticatorId
+    );
+    cachedCredential = credentials[0];
 
     await logOut(page);
 
@@ -294,22 +349,20 @@ test.describe('Acceptance: Passkey login', () => {
   test('removing a passkey makes it unusable for the next login', async ({ page }) => {
     await logInWithPassword(page);
 
-    // The `beforeEach` installed a FRESH virtual authenticator for this
-    // test — the one test 1 enrolled into was torn down by test 2's
-    // `removeVirtualAuthenticator` (and the afterEach's teardown). So
-    // we re-enroll here: the fresh authenticator needs a credential the
-    // browser can assert before the server gets a chance to reject it.
-    // This is the second enrollment in the spec (test 1 was the first),
-    // which still fits the 10/60s/IP/per-action budget for `serial`
-    // retries — see the top-of-file comment for the math.
-    await enrollPasskey(page, SHARED_KEY_NAME);
-
-    // The remove link is `<.link method="post" data-confirm=...>`, which
-    // `phoenix_html.js` turns into a generated form gated behind
-    // `window.confirm`. `removeAllPasskeysNamed` wipes every row matching
-    // the friendly name so the `.getByRole` below sees exactly one match
-    // (Playwright strict mode would otherwise error on a retry that left
-    // a duplicate row from the previous attempt).
+    // `beforeEach` installed a fresh virtual authenticator AND injected
+    // the credential test 1 enrolled (see top-of-file comment for why).
+    // No re-enrollment is needed — the injected credential matches the
+    // DB row test 1 left behind, so `removeAllPasskeysNamed` below
+    // wipes exactly that row, and the subsequent authentication
+    // attempt fails server-side (server no longer knows the
+    // credential) rather than browser-side.
+    //
+    // The remove link is `<.link method="post" data-confirm=...>`,
+    // which `phoenix_html.js` turns into a generated form gated
+    // behind `window.confirm`. `removeAllPasskeysNamed` wipes every
+    // row matching the friendly name so the `.getByRole` below sees
+    // exactly one match (Playwright strict mode would otherwise error
+    // on a retry that left a duplicate row from the previous attempt).
     await removeAllPasskeysNamed(page, SHARED_KEY_NAME);
 
     // The app registers a Service Worker, and the GET that follows the
