@@ -1026,13 +1026,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
          %{conn: _conn, user: _user} do
       # Pins the defensive fallback added alongside the rose-500 fix so
       # a future palette typo (or a future Tailwind shade removal) doesn't
-      # 500 the dashboard again. We invoke the private helper through
-      # `apply/3` so we can hit the `{:error, _}` branch without exposing
-      # the function publicly.
-      assert DtuAppWeb.DashboardLive.tooltip_to_hex("rose", "500") == "#6b7280"
+      # 500 the dashboard again. The helper lives in
+      # `DtuAppWeb.DashboardLive.ChartPalette` now (extracted in PR
+      # #dashboard-refactor) so we hit it there.
+      assert DtuAppWeb.DashboardLive.ChartPalette.tooltip_to_hex("rose", "500") ==
+               "#6b7280"
+
       # And the happy path still works for the shades that ARE in the map.
-      assert DtuAppWeb.DashboardLive.tooltip_to_hex("rose", "600") == "#e11d48"
-      assert DtuAppWeb.DashboardLive.tooltip_to_hex("emerald", "900") == "#064e3b"
+      assert DtuAppWeb.DashboardLive.ChartPalette.tooltip_to_hex("rose", "600") ==
+               "#e11d48"
+
+      assert DtuAppWeb.DashboardLive.ChartPalette.tooltip_to_hex("emerald", "900") ==
+               "#064e3b"
     end
   end
 

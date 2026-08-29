@@ -18,6 +18,16 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuApp.Notifications
   alias DtuApp.PushSubscriptions
 
+  # Chart math + colour helpers live in sibling modules under
+  # `dashboard_live/` so this file stops growing past 4500 lines.
+  # `ChartHelpers` owns the pure SVG coordinate math (X-axis range,
+  # Y-axis gridlines, time-to-pixel mapping, "now" indicator X).
+  # `ChartPalette` owns the per-series colour assignment + Tailwind
+  # hex lookup used by the tooltip swatches. See the module docs on
+  # each for the rationale.
+  alias DtuAppWeb.DashboardLive.ChartHelpers
+  alias DtuAppWeb.DashboardLive.ChartPalette
+
   require Logger
 
   @timezone_topic "dtu:timezone"
@@ -875,7 +885,8 @@ defmodule DtuAppWeb.DashboardLive do
     # Chart dimensions: width 800, height 250 (with 20px top padding).
     # X range is dynamic: zoomed to data when present, full day (00:00–
     # 24:00) when empty. See `chart_time_range/2` below.
-    {x_min_seconds, x_max_seconds} = chart_time_range(chart_points, tz_offset_seconds)
+    {x_min_seconds, x_max_seconds} =
+      ChartHelpers.chart_time_range(chart_points, tz_offset_seconds)
     x_span = x_max_seconds - x_min_seconds
 
     # Group points by series (one line per (inverter, MPPT) pair) and
@@ -988,7 +999,7 @@ defmodule DtuAppWeb.DashboardLive do
     # MPPT line to differentiate against anymore — using a single
     # bright shade keeps each inverter's line clearly visible against
     # the tinted area fill.
-    inverter_color = inverte_order_to_color(series_points)
+    inverter_color = ChartPalette.inverte_order_to_color(series_points)
 
     series_palette =
       Enum.map(series_points, fn {series, _pts} ->
@@ -1019,7 +1030,7 @@ defmodule DtuAppWeb.DashboardLive do
     # The chart's lines, legend, and tooltip already convey all the
     # information; the fill was just visual noise.
 
-    x_labels = chart_x_labels(x_min_seconds, x_max_seconds)
+    x_labels = ChartHelpers.chart_x_labels(x_min_seconds, x_max_seconds)
 
     # Time series per series for the tooltip hook. Encoded as JSON
     # strings (data-points="...") so the JS hook can look up the value
@@ -1032,7 +1043,7 @@ defmodule DtuAppWeb.DashboardLive do
       Enum.map(series_points, fn {series, coords} ->
         {series,
          Enum.map(coords, fn {_x, y, seconds} ->
-           %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
+           %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
          end)}
       end)
       |> Map.new()
@@ -1090,7 +1101,7 @@ defmodule DtuAppWeb.DashboardLive do
     # both uniformly.
     total_points_data =
       Enum.map(total_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
+        %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
       end)
 
     # Consumption overlay: household draw (W) from a paired Shelly
@@ -1134,7 +1145,7 @@ defmodule DtuAppWeb.DashboardLive do
 
     consumption_points_data =
       Enum.map(consumption_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: power_at_from_unified_y(y, zero_y, y_max)}
+        %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
       end)
 
     # Net flow overlay — production minus consumption, plotted on the
@@ -1235,7 +1246,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:y_max, y_max)
     |> assign(:y_min, y_min)
     |> assign(:zero_y, zero_y)
-    |> assign(:y_gridlines, chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height))
+    |> assign(:y_gridlines, ChartHelpers.chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height))
     |> assign(:series_paths, series_paths)
     |> assign(:yesterday_paths, yesterday_paths)
     |> assign(:series_palette, series_palette)
@@ -1255,178 +1266,20 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:net_coords, net_coords)
     |> assign(:net_points_data, net_points_data)
     |> assign(:net_palette, {"indigo", "500"})
+    |> assign(
+      :now_marker_x,
+      if(opts[:live?],
+        do: ChartHelpers.now_marker_x(x_min_seconds, x_max_seconds, tz_offset_seconds),
+        else: nil
+      )
+    )
   end
 
-  # Reverse the per-series / total / consumption Y coord back to watts
-  # against the unified Y-axis. When the chart extends below zero
-  # (`y_min < 0`), the zero line sits at `zero_y` instead of the
-  # default y=135, so the reverse mapping must use the upper-half
-  # scale (`zero_y - 20` pixels over `y_max` W) — the same factor
-  # the forward mapping uses.
-  defp power_at_from_unified_y(y, zero_y, y_max),
-    do: round((zero_y - y) / max(zero_y - 20.0, 1.0) * y_max)
-
-  # Compute the chart's X-axis time range (in LOCAL seconds-of-day,
-  # so the labels read in the user's timezone).
-  #
-  #   * Empty `chart_points`         → full day (00:00–24:00)
-  #   * Non-empty `chart_points`      → from the floor-of-the-hour of the
-  #                                     first data point to the next full
-  #                                     hour after the last data point
-  #
-  # Bucket boundaries are multiples of 5 minutes (UTC). Their hour-of-day
-  # in the user's zone is `rem(bucket_utc_hour + tz_offset_hours, 24)`,
-  # so we shift first/last before computing the range. `end_hour`
-  # adds a 1-hour buffer so the line doesn't end at the chart's right
-  # edge.
-  @spec chart_time_range([%{required(:time) => DateTime.t()}], integer()) ::
-          {non_neg_integer(), pos_integer()}
-  defp chart_time_range([], _tz_offset_seconds), do: {0, 86_400}
-
-  defp chart_time_range(points, tz_offset_seconds) do
-    first_local = shift_local(Enum.min_by(points, & &1.time).time, tz_offset_seconds)
-    last_local = shift_local(Enum.max_by(points, & &1.time).time, tz_offset_seconds)
-
-    start_hour = first_local.hour
-    end_hour = min(last_local.hour + 1, 24)
-
-    # Ensure at least a 1-hour window so single-bucket data (e.g. one
-    # point at 12:00) still draws as a 1-hour segment instead of a
-    # single-pixel spike.
-    end_hour = max(end_hour, min(start_hour + 1, 24))
-
-    {start_hour * 3600, end_hour * 3600}
-  end
-
-  # Convert a UTC DateTime to a (possibly-wrapped) LOCAL seconds-of-day.
-  # Used by the chart's range computation, the X-axis label generator,
-  # and the ChartTooltip data embedding. Returns a `%Time{}` struct
-  # because we only need hour/minute/second — and we want the wrap
-  # to happen naturally (23 + 2h offset in CET = 01 next day).
-  @spec shift_local(DateTime.t(), integer()) :: %Time{}
-  defp shift_local(%DateTime{} = dt, tz_offset_seconds) do
-    shifted = DateTime.add(dt, tz_offset_seconds, :second)
-    # DateTime.add can return a datetime on the previous or next day;
-    # we only care about the time-of-day component.
-    %Time{
-      hour: shifted.hour,
-      minute: shifted.minute,
-      second: shifted.second,
-      microsecond: {0, 0}
-    }
-  end
-
-  # Generate X-axis label positions for the chart. Returns a list of
-  # `{x, label}` tuples where `x` is the SVG x-coordinate (0–800) and
-  # `label` is the LOCAL time-of-day string (e.g. "07:00"). Labels
-  # always include the chart's start and end hours; intermediate hours
-  # are spaced at 1 or 2 hours depending on the total span. The step
-  # is capped at 2 hours regardless of zoom — a 24-hour view shows a
-  # tick every 2 hours (00:00, 02:00, …, 24:00), a ≤2h zoom shows
-  # every hour. The previous ladder (1/2/3/6) traded tick density for
-  # label clutter at long spans; the user's explicit ask was a max
-  # 2-hour interval.
-  @spec chart_x_labels(non_neg_integer(), pos_integer()) :: [{float(), String.t()}]
-  defp chart_x_labels(x_min_seconds, x_max_seconds) do
-    start_hour = div(x_min_seconds, 3600)
-    end_hour = div(x_max_seconds, 3600)
-    total_hours = end_hour - start_hour
-
-    step =
-      cond do
-        total_hours <= 2 -> 1
-        true -> 2
-      end
-
-    span = x_max_seconds - x_min_seconds
-
-    for hour <- start_hour..end_hour,
-        hour == start_hour or hour == end_hour or rem(hour - start_hour, step) == 0 do
-      seconds = hour * 3600
-      x = (seconds - x_min_seconds) / span * 800.0
-      {Float.round(x, 1), format_hour_label(hour)}
-    end
-  end
-
-  # Format a local hour-of-day (0–24) as "HH:00". The ChartTooltip
-  # also uses this for its tooltip body.
-  defp format_hour_label(0), do: "00:00"
-  defp format_hour_label(24), do: "24:00"
-  defp format_hour_label(hour) when hour < 10, do: "0#{hour}:00"
-  defp format_hour_label(hour), do: "#{hour}:00"
-
-  # Generate the Y-axis gridline + label positions for the chart.
-  # Returns a list of `{watts, y_pixel}` tuples, ascending. The
-  # gridline step is 500 W (the user's explicit ask: "at least every
-  # 500 W"). The set always includes the chart's edge ticks (`y_min`
-  # and `y_max`) plus every 500 W step in between, regardless of
-  # whether `y_min` is zero or below.
-  #
-  # Examples:
-  #   * y_min = 0,   y_max = 400 → [0, 400]  (400 isn't a 500 step;
-  #     the next aligned tick above 0 is 500, but that's above y_max,
-  #     so it's dropped — only the edges remain). In practice y_max
-  #     is rounded up to a multiple of 100, so this is the common
-  #     "small peak" case.
-  #   * y_min = 0,   y_max = 500 → [0, 500]
-  #   * y_min = 0,   y_max = 2500 → [0, 500, 1000, 1500, 2000, 2500]
-  #   * y_min = -500, y_max = 2500 → [-500, 0, 500, 1000, …, 2500]
-  #   * y_min = -100, y_max = 2500 → [-100, 0, 500, …, 2500] — the
-  #     -100 edge tick is preserved even though it's not on the 500 W
-  #     grid (the bottom edge of the chart must always be labelled).
-  #
-  # The function returns raw watts + pixel positions; the SVG template
-  # iterates the list and renders each tick with a dashed stroke for
-  # the `watts == 0` case.
-  @spec chart_y_gridlines(float(), float(), float(), float(), float()) :: [{float(), float()}]
-  defp chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height) do
-    step = 500.0
-
-    # First interior tick above y_min aligned to the 500 W grid, then
-    # the edge ticks (y_min and y_max) added back in. We add the
-    # edges separately so a non-500-multiple edge (y_min = -100, say)
-    # still gets a label even though it's off the grid.
-    interior_first = Float.ceil(y_min / step) * step
-
-    interior_last = Float.floor(y_max / step) * step
-
-    interior = tick_range(interior_first, interior_last, step)
-
-    # Dedupe edges if they happen to coincide with an interior tick
-    # (e.g. y_min = 0, y_max = 500 → interior = [0, 500], edges are
-    # the same set — no dups needed).
-    edges = Enum.uniq([y_min, y_max, 0.0])
-
-    ticks =
-      (interior ++ edges)
-      |> Enum.uniq()
-      |> Enum.sort()
-
-    pixels_per_watt_positive = (zero_y - 20.0) / y_max
-    pixels_per_watt_negative = (chart_bottom_y - zero_y) / max(lower_height, 1.0)
-
-    for tick <- ticks do
-      y_pixel =
-        if tick >= 0.0 do
-          zero_y - tick * pixels_per_watt_positive
-        else
-          chart_bottom_y - abs(tick) * pixels_per_watt_negative
-        end
-
-      {tick, Float.round(y_pixel, 1)}
-    end
-  end
-
-  # Inclusive ascending range from `first` to `last` in `step`
-  # increments. Uses arithmetic to avoid Float drift on long runs.
-  defp tick_range(first, last, step) do
-    if first > last do
-      []
-    else
-      count = trunc((last - first) / step) + 1
-      Enum.map(0..(count - 1), &(first + &1 * step))
-    end
-  end
+  # Chart math + Y-axis formatting helpers (`shift_local/2`,
+  # `chart_time_range/2`, `chart_x_labels/2`, `chart_y_gridlines/5`,
+  # `tick_range/3`, `format_hour_label/1`, `power_at_from_unified_y/3`,
+  # `now_marker_x/4`) all live in `DtuAppWeb.DashboardLive.ChartHelpers`
+  # now — see that module for the rationale and the per-function docs.
 
   # Today's date in the user's local timezone. `Date.utc_today()`
   # would give us "today in London"; for a Berlin user looking at the
@@ -1502,88 +1355,6 @@ defmodule DtuAppWeb.DashboardLive do
   defp period_fallback("month"), do: "Selected month"
   defp period_fallback("year"), do: "Selected year"
   defp period_fallback(_), do: "Selected period"
-
-  # Deterministic palette: assign each (dtu_id, inverter_serial) pair a
-  # base hue from a fixed set, in the order they first appear. Stable
-  # across requests so the chart doesn't flicker.
-  @palette ~w(emerald amber sky violet rose fuchsia cyan lime orange teal)
-
-  defp inverte_order_to_color(series_points) do
-    series_points
-    |> Enum.map(fn {series, _} -> {elem(series, 0), elem(series, 1)} end)
-    |> Enum.uniq()
-    |> Enum.with_index()
-    |> Map.new(fn {{dtu_id, serial}, idx} ->
-      {{dtu_id, serial}, Enum.at(@palette, rem(idx, length(@palette)))}
-    end)
-  end
-
-  # Map a (base, shade) Tailwind palette pair to a hex color string.
-  # The ChartTooltip JS hook renders the tooltip's color swatches as
-  # inline `style="background-color: …"` (we can't reach CSS custom
-  # properties or theme tokens from a colocated hook without shipping
-  # the Tailwind output as JSON), so we resolve to a concrete hex.
-  # Values are the Tailwind v3 default emerald/amber/sky/violet/rose/
-  # fuchsia/cyan/lime/orange/teal palette at the requested shade.
-  @tailwind_colors %{
-    {"emerald", "400"} => "#34d399",
-    {"emerald", "600"} => "#059669",
-    {"emerald", "800"} => "#065f46",
-    {"emerald", "900"} => "#064e3b",
-    {"amber", "400"} => "#fbbf24",
-    {"amber", "600"} => "#d97706",
-    {"amber", "800"} => "#92400e",
-    {"amber", "900"} => "#78350f",
-    {"sky", "400"} => "#38bdf8",
-    {"sky", "600"} => "#0284c7",
-    {"sky", "800"} => "#075985",
-    {"sky", "900"} => "#0c4a6e",
-    {"violet", "400"} => "#a78bfa",
-    {"violet", "600"} => "#7c3aed",
-    {"violet", "800"} => "#5b21b6",
-    {"violet", "900"} => "#4c1d95",
-    {"rose", "400"} => "#fb7185",
-    {"rose", "600"} => "#e11d48",
-    {"rose", "800"} => "#9f1239",
-    {"rose", "900"} => "#881337",
-    {"fuchsia", "400"} => "#e879f9",
-    {"fuchsia", "600"} => "#c026d3",
-    {"fuchsia", "800"} => "#86198f",
-    {"fuchsia", "900"} => "#701a75",
-    {"cyan", "400"} => "#22d3ee",
-    {"cyan", "600"} => "#0891b2",
-    {"cyan", "800"} => "#155e75",
-    {"cyan", "900"} => "#164e63",
-    {"lime", "400"} => "#a3e635",
-    {"lime", "600"} => "#65a30d",
-    {"lime", "800"} => "#3f6212",
-    {"lime", "900"} => "#365314",
-    {"orange", "400"} => "#fb923c",
-    {"orange", "600"} => "#ea580c",
-    {"orange", "800"} => "#9a3412",
-    {"orange", "900"} => "#7c2d12",
-    {"teal", "400"} => "#2dd4bf",
-    {"teal", "600"} => "#0d9488",
-    {"teal", "800"} => "#115e59",
-    {"teal", "900"} => "#134e4a"
-  }
-  @doc """
-  Resolve a Tailwind (`base`, `shade`) pair to a hex color, falling back
-  to a neutral grey when the pair isn't in `@tailwind_colors`. The map
-  only ships 400/600/800/900 shades — picking a 500 from habit was a
-  silent crash that 500'd the whole dashboard for users with a paired
-  Shelly. The grey fallback keeps the chart readable even when the
-  palette is misconfigured.
-
-  Public so the regression test in `test/dtu_app_web/live/dashboard_live_test.exs`
-  can pin both the happy-path and the missing-shade fallback.
-  """
-  def tooltip_to_hex(base, shade) do
-    case Map.fetch(@tailwind_colors, {base, shade}) do
-      {:ok, hex} -> hex
-      :error -> "#6b7280"
-    end
-  end
 
   # MPPT-specific shades were used when the chart plotted per-MPPT
   # lines (`mppt_index = 0` was the AC aggregate, 1+ were per-string
@@ -3471,7 +3242,7 @@ defmodule DtuAppWeb.DashboardLive do
                          own curve is the comparison the user asked for. -->
                     <%= for {series, path} <- @yesterday_paths do %>
                       <% {ybase, yshade} = Map.get(@series_palette, series, {"zinc", "400"}) %>
-                      <% ystroke_hex = tooltip_to_hex(ybase, yshade) %>
+                      <% ystroke_hex = ChartPalette.tooltip_to_hex(ybase, yshade) %>
                       <path
                         d={path}
                         fill="none"
@@ -3495,7 +3266,7 @@ defmodule DtuAppWeb.DashboardLive do
                          curve. -->
                     <%= for {series, path} <- @series_paths do %>
                       <% {base, shade} = Map.get(@series_palette, series) %>
-                      <% stroke_hex = tooltip_to_hex(base, shade) %>
+                      <% stroke_hex = ChartPalette.tooltip_to_hex(base, shade) %>
                       <% series_json =
                         Jason.encode!(%{
                           dtu_id: elem(series, 0),
@@ -3529,7 +3300,7 @@ defmodule DtuAppWeb.DashboardLive do
                         }) %>
                       <% total_points_json = Jason.encode!(@total_points_data) %>
                       <% {tbase, tshade} = @total_palette %>
-                      <% total_stroke_hex = tooltip_to_hex(tbase, tshade) %>
+                      <% total_stroke_hex = ChartPalette.tooltip_to_hex(tbase, tshade) %>
                       <path
                         d={@total_path}
                         fill="none"
@@ -3560,7 +3331,7 @@ defmodule DtuAppWeb.DashboardLive do
                         }) %>
                       <% consumption_points_json = Jason.encode!(@consumption_points_data) %>
                       <% {cbase, cshade} = @consumption_palette %>
-                      <% consumption_stroke_hex = tooltip_to_hex(cbase, cshade) %>
+                      <% consumption_stroke_hex = ChartPalette.tooltip_to_hex(cbase, cshade) %>
                       <path
                         d={@consumption_path}
                         fill="none"
@@ -3592,7 +3363,7 @@ defmodule DtuAppWeb.DashboardLive do
                         }) %>
                       <% net_points_json = Jason.encode!(@net_points_data) %>
                       <% {nbase, nshade} = @net_palette %>
-                      <% net_stroke_hex = tooltip_to_hex(nbase, nshade) %>
+                      <% net_stroke_hex = ChartPalette.tooltip_to_hex(nbase, nshade) %>
                       <path
                         d={@net_path}
                         fill="none"
@@ -3648,6 +3419,45 @@ defmodule DtuAppWeb.DashboardLive do
                       style="display:none"
                       id="chart-guide-line"
                     />
+                    <%!-- Now marker - solid vertical line and label pill drawn
+                         on top of the data curves but below the cursor guide.
+                         Hidden on historical views (assign_line_chart_data/6
+                         sets nil unless :live? is true). --%>
+
+                    <%= if @now_marker_x do %>
+                      <line
+                        x1={@now_marker_x}
+                        y1="24"
+                        x2={@now_marker_x}
+                        y2="250"
+                        stroke="#6366f1"
+                        class="dark:stroke-indigo-400"
+                        stroke-width="1.5"
+                        opacity="0.65"
+                        pointer-events="none"
+                      />
+                      <g pointer-events="none">
+                        <rect
+                          x={@now_marker_x - 18}
+                          y="6"
+                          width="36"
+                          height="14"
+                          rx="3"
+                          fill="#6366f1"
+                          class="dark:fill-indigo-400"
+                        />
+                        <text
+                          x={@now_marker_x}
+                          y="16"
+                          text-anchor="middle"
+                          fill="white"
+                          class="dark:fill-zinc-900"
+                          font-size="10"
+                          font-weight="600"
+                          font-family="ui-sans-serif, system-ui, sans-serif"
+                        >now</text>
+                      </g>
+                    <% end %>
 
                     <!-- Floating tooltip overlay rendered by the
                          ChartTooltip hook. Hidden by default; positioned
