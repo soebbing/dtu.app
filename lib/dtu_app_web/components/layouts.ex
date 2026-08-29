@@ -8,6 +8,47 @@ defmodule DtuAppWeb.Layouts do
   alias DtuAppWeb.NetworkStatusIndicator
   alias DtuAppWeb.OfflineBanner
 
+  @repo_url "https://github.com/soebbing/dtu.app"
+
+  @doc """
+  Maps the footer `@version` assign to a clickable GitHub URL.
+
+  Recognized shapes:
+    * Calver release tag (e.g. `2026-08-28-9`) → release page
+    * Branch name (e.g. `main`, `fix/foo-bar`) → tree view
+    * Anything else (`dev`, Mix.Project SemVer) → repo root
+
+  The Calver pattern mirrors the tag format this repo's release
+  workflow pushes (see `.github/workflows/`); `mix project version`
+  falls back to a SemVer string at runtime when neither a tag nor a
+  branch name is available, which gets bucketed into the
+  "anything else" arm.
+  """
+  @spec release_href(String.t()) :: String.t()
+  def release_href(version) when is_binary(version) do
+    cond do
+      dev?(version) -> @repo_url
+      calver?(version) -> "#{@repo_url}/releases/tag/#{version}"
+      branch?(version) -> "#{@repo_url}/tree/#{version}"
+      true -> @repo_url
+    end
+  end
+
+  # The literal `dev` placeholder (see `config/runtime.exs` — used
+  # when no env var, git, or Mix.Project version resolves).
+  defp dev?("dev"), do: true
+  defp dev?(_), do: false
+
+  # Calver tag: `YYYY-MM-DD-N` — the shape `release.yml` pushes.
+  defp calver?(version), do: version =~ ~r/^\d{4}-\d{2}-\d{2}-\d+$/
+
+  # Branch name: alphanumerics, dashes, underscores, and slashes —
+  # matches git's typical ref format. Dots are excluded because
+  # SemVer strings (`0.1.0`) would otherwise sneak through here.
+  defp branch?(version) do
+    version != "" and version =~ ~r{^[A-Za-z0-9_\-/]+$}
+  end
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
