@@ -43,7 +43,10 @@ defmodule DtuAppWeb.PageControllerTest do
 
   describe "footer version" do
     test "shows the configured :dtu_app, :version" do
-      original = Application.get_env(:dtu_app, :version)
+      # Use the same default (`"dev"`) the locale plug reads with, so
+      # `original` is never `nil` — that way on_exit restores the
+      # expected string and async siblings can't observe a leaked nil.
+      original = Application.get_env(:dtu_app, :version, "dev")
       Application.put_env(:dtu_app, :version, "vTEST-1234")
       on_exit(fn -> Application.put_env(:dtu_app, :version, original) end)
 
