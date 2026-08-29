@@ -2332,6 +2332,75 @@ defmodule DtuAppWeb.DashboardLive do
               </.link>
             </div>
           </div>
+
+          <%!-- "How it works" rail: a quiet three-step promise below
+               the welcome card. The welcome card's paragraph already
+               explains MQTT and per-device credentials; the rail names
+               the three beats without repeating the detail. Three
+               numbered steps lay out in a single column on mobile and
+               a three-up row on `md:` so the numbers + dividers read
+               as a sequence instead of three isolated icons. --%>
+          <div
+            class="rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 md:p-8"
+            id="onboarding-how-it-works"
+          >
+            <h2 class="text-base font-semibold tracking-tight text-zinc-900 dark:text-white">
+              {gettext("How it works")}
+            </h2>
+            <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+              {gettext("Three steps from sign-up to a live chart. Each step takes about a minute.")}
+            </p>
+            <ol class="mt-5 grid grid-cols-1 gap-4 md:grid-cols-3 md:gap-0">
+              <li class="flex md:flex-col items-start gap-3 md:gap-0 md:pr-6">
+                <span
+                  class="shrink-0 inline-flex items-center justify-center size-7 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-sm font-semibold"
+                  aria-hidden="true"
+                >
+                  1
+                </span>
+                <div class="md:mt-3">
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-white">
+                    {gettext("Register")}
+                  </p>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {gettext("Add your DTU on the Devices page.")}
+                  </p>
+                </div>
+              </li>
+              <li class="flex md:flex-col items-start gap-3 md:gap-0 md:px-6 md:border-x md:border-zinc-200 md:dark:border-zinc-800">
+                <span
+                  class="shrink-0 inline-flex items-center justify-center size-7 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-sm font-semibold"
+                  aria-hidden="true"
+                >
+                  2
+                </span>
+                <div class="md:mt-3">
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-white">
+                    {gettext("Connect")}
+                  </p>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {gettext("Point your DTU at our broker with the credentials we show you.")}
+                  </p>
+                </div>
+              </li>
+              <li class="flex md:flex-col items-start gap-3 md:gap-0 md:pl-6">
+                <span
+                  class="shrink-0 inline-flex items-center justify-center size-7 rounded-full bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-sm font-semibold"
+                  aria-hidden="true"
+                >
+                  3
+                </span>
+                <div class="md:mt-3">
+                  <p class="text-sm font-semibold text-zinc-900 dark:text-white">
+                    {gettext("See live data")}
+                  </p>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {gettext("Watch watts appear on this chart as soon as the sun is up.")}
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </div>
         <% else %>
           <!-- Toolbar: Switcher & Time Ranges -->
           <div class="flex flex-col gap-4">
