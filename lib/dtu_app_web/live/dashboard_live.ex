@@ -887,6 +887,7 @@ defmodule DtuAppWeb.DashboardLive do
     # 24:00) when empty. See `chart_time_range/2` below.
     {x_min_seconds, x_max_seconds} =
       ChartHelpers.chart_time_range(chart_points, tz_offset_seconds)
+
     x_span = x_max_seconds - x_min_seconds
 
     # Group points by series (one line per (inverter, MPPT) pair) and
@@ -1246,7 +1247,10 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:y_max, y_max)
     |> assign(:y_min, y_min)
     |> assign(:zero_y, zero_y)
-    |> assign(:y_gridlines, ChartHelpers.chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height))
+    |> assign(
+      :y_gridlines,
+      ChartHelpers.chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height)
+    )
     |> assign(:series_paths, series_paths)
     |> assign(:yesterday_paths, yesterday_paths)
     |> assign(:series_palette, series_palette)
@@ -3455,7 +3459,9 @@ defmodule DtuAppWeb.DashboardLive do
                           font-size="10"
                           font-weight="600"
                           font-family="ui-sans-serif, system-ui, sans-serif"
-                        >now</text>
+                        >
+                          now
+                        </text>
                       </g>
                     <% end %>
 
