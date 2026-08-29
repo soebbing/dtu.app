@@ -265,4 +265,104 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
       Float.round(x, 1)
     end
   end
+
+  @doc """
+  Pixel X positions + local-time labels for sunrise / sunset guide
+  lines on the 1D chart. Computed via `DtuApp.SunCalc.sunrise_sunset_utc/3`
+  for the given user's geographic position on the local calendar
+  `date`, then mapped onto the chart's `[x_min_seconds, x_max_seconds]`
+  X range using the same `(local_seconds - x_min) / span * width`
+  formula the per-series path code uses.
+
+  Returns `{sunrise_x, sunset_x, sunrise_label, sunset_label}` where
+  each element is either:
+    * a `float()` in `[0.0, 800.0]` — line is rendered at that X
+    * a `String.t()` like `"04:43"` — local-time label for the
+      event, in the user's timezone
+    * `nil` — both are suppressed together: either no location
+      captured yet, the sun event outside the chart's window, or
+      polar day/night (one half is nil)
+
+  `x` and `label` for a given event always succeed or fail together
+  — the chart shows either both or neither.
+
+  The chart's `date_local` is the user's local calendar date (NOT
+  UTC) so the calculation picks the right sunrise/sunset for
+  "today in Berlin" rather than "today in UTC" — a Berlin user
+  loading the dashboard at 00:30 local time sees the chart for
+  the just-started Berlin day, not the still-ongoing UTC day.
+
+  Nil latitudes / longitudes (the user hasn't granted geolocation
+  permission yet) return `{nil, nil, nil, nil}` so the template
+  renders nothing — silently matching the rest of the app's "no
+  data = no UI" convention.
+  """
+  @spec sun_markers(
+          float() | integer() | nil,
+          float() | integer() | nil,
+          Date.t(),
+          non_neg_integer(),
+          pos_integer(),
+          integer()
+        ) ::
+          {float() | String.t() | nil, float() | String.t() | nil, float() | String.t() | nil,
+           float() | String.t() | nil}
+  def sun_markers(nil, _lon, _date, _x_min, _x_max, _tz), do: {nil, nil, nil, nil}
+  def sun_markers(_lat, nil, _date, _x_min, _x_max, _tz), do: {nil, nil, nil, nil}
+
+  def sun_markers(lat, lon, %Date{} = date_local, x_min_seconds, x_max_seconds, tz_offset_seconds) do
+    {sunrise_utc, sunset_utc} = DtuApp.SunCalc.sunrise_sunset_utc(lat, lon, date_local)
+
+    sr_x = local_seconds_to_x(sunrise_utc, x_min_seconds, x_max_seconds, tz_offset_seconds)
+    ss_x = local_seconds_to_x(sunset_utc, x_min_seconds, x_max_seconds, tz_offset_seconds)
+
+    {
+      sr_x,
+      ss_x,
+      # Label follows the X: when the sun event falls outside the
+      # chart's window (or polar day/night makes the event nil to
+      # begin with), the label is also nil — the template only
+      # renders label text inside the same `case` clause that
+      # renders the line, so suppressing both together keeps the
+      # invariant "label exists ↔ line drawn" trivially true.
+      if(sr_x, do: format_local_label(sunrise_utc, tz_offset_seconds)),
+      if(ss_x, do: format_local_label(sunset_utc, tz_offset_seconds))
+    }
+  end
+
+  # "HH:MM" label for a UTC `DateTime`, shifted into the user's
+  # local timezone. Returns `nil` when the input is nil (polar
+  # day / polar night). We don't bother with seconds — the chart's
+  # X-axis labels are hour-aligned and the user reads minutes
+  # at most, so second-precision would be visual noise.
+  defp format_local_label(nil, _tz), do: nil
+
+  defp format_local_label(%DateTime{} = utc, tz_offset_seconds) do
+    shifted = DateTime.add(utc, tz_offset_seconds, :second)
+
+    :io_lib.format("~2..0B:~2..0B", [shifted.hour, shifted.minute])
+    |> IO.iodata_to_binary()
+  end
+
+  # Map a UTC `DateTime` to its pixel X position on the chart, or
+  # `nil` when the event falls outside the chart's visible range.
+  # The wrap-around (a positive tz_offset_seconds can push past
+  # midnight) mirrors the same `(seconds + offset + 86_400*4) |> rem`
+  # pattern `now_marker_x/4` and the per-series path code use.
+  defp local_seconds_to_x(nil, _x_min, _x_max, _tz), do: nil
+
+  defp local_seconds_to_x(%DateTime{} = utc, x_min_seconds, x_max_seconds, tz_offset_seconds) do
+    utc_seconds = utc.hour * 3600 + utc.minute * 60 + utc.second
+
+    local_seconds =
+      (utc_seconds + tz_offset_seconds + @seconds_per_day * 4) |> rem(@seconds_per_day)
+
+    span = x_max_seconds - x_min_seconds
+
+    if local_seconds < x_min_seconds or local_seconds > x_max_seconds do
+      nil
+    else
+      Float.round((local_seconds - x_min_seconds) / span * @chart_width, 1)
+    end
+  end
 end

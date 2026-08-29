@@ -142,6 +142,20 @@ defmodule DtuAppWeb.DashboardLive do
 
   def handle_event("set_timezone", _payload, socket), do: {:noreply, socket}
 
+  # `phx-push` path: the JS hook's `this.pushEvent("set_location", ...)`
+  # arrives here when the browser's `navigator.geolocation` resolves
+  # positively. Mirrors the `set_timezone` flow above — the colocated
+  # hook only pushes when both coords are finite numbers (denial /
+  # unavailable / timeout all silently fall through), so the guard
+  # here is a defence in depth against a corrupted payload.
+  @impl true
+  def handle_event("set_location", %{"latitude" => lat, "longitude" => lon}, socket)
+      when is_number(lat) and is_number(lon) do
+    handle_info({:set_location, {lat, lon}}, socket)
+  end
+
+  def handle_event("set_location", _payload, socket), do: {:noreply, socket}
+
   @impl true
   def handle_event("select_dtu", %{"id" => id_str}, socket) do
     selected_id = if id_str == "total", do: nil, else: String.to_integer(id_str)
@@ -518,6 +532,30 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   def handle_info({:set_timezone, _other}, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_info({:set_location, {lat, lon}}, socket) when is_number(lat) and is_number(lon) do
+    # Persist on the user record so the server-side chart render
+    # (which has no LV's own state to read from) can compute
+    # astronomical sunrise / sunset on subsequent refreshes —
+    # not just this one. Best-effort: a failed write doesn't break
+    # the render, the chart simply won't show sun markers this
+    # round.
+    user = socket.assigns.current_scope.user
+
+    _ = DtuApp.Accounts.update_user_location(user, %{latitude: lat, longitude: lon})
+
+    {:noreply,
+     assign_dashboard_data(
+       socket,
+       user,
+       socket.assigns.selected_dtu_id,
+       socket.assigns.time_range,
+       socket.assigns.selected_period
+     )}
+  end
+
+  def handle_info({:set_location, _other}, socket), do: {:noreply, socket}
 
   # Forward per-user `:notification` PubSub events (fired by
   # `broadcast_dtu_connection/3` and the future sun-down scheduler)
@@ -1275,6 +1313,24 @@ defmodule DtuAppWeb.DashboardLive do
       if(opts[:live?],
         do: ChartHelpers.now_marker_x(x_min_seconds, x_max_seconds, tz_offset_seconds),
         else: nil
+      )
+    )
+    # Sunrise / sunset guide-line X positions. Only computed when
+    # the user has a captured geographic position (the JS hook
+    # pushes it on every dashboard mount via `set_location`); the
+    # helper returns `{nil, nil}` for nil coords so the template
+    # renders nothing. We pass the chart's local date so the
+    # "today" branch shows today's sunrise/sunset and the historical-
+    # day branch shows that specific day's (slightly different) pair.
+    |> assign(
+      :sun_markers,
+      ChartHelpers.sun_markers(
+        user.latitude,
+        user.longitude,
+        local_date,
+        x_min_seconds,
+        x_max_seconds,
+        tz_offset_seconds
       )
     )
   end
@@ -3423,6 +3479,78 @@ defmodule DtuAppWeb.DashboardLive do
                       style="display:none"
                       id="chart-guide-line"
                     />
+                    <%!-- Sunrise / sunset vertical guide lines. Drawn after
+                         the cursor guide's source line above (but rendered
+                         here, before the now marker) so the SVG paint order
+                         keeps them visually underneath both the now marker
+                         AND the live cursor. Both lines + their tiny
+                         "HH:MM" labels are amber so they're visually
+                         distinct from the indigo now-marker and the slate
+                         cursor guide. `@sun_markers` is the 4-tuple
+                         `{sr_x, ss_x, sr_label, ss_label}` from
+                         `ChartHelpers.sun_markers/6`; each X and label
+                         is nil together — the chart shows either both
+                         or neither per event. --%>
+                    <%= case @sun_markers do %>
+                      <% {sr_x, _, sr_label, _} when not is_nil(sr_x) -> %>
+                        <line
+                          x1={sr_x}
+                          y1="20"
+                          x2={sr_x}
+                          y2="250"
+                          stroke="#f59e0b"
+                          class="dark:stroke-amber-400"
+                          stroke-width="1"
+                          stroke-dasharray="3,3"
+                          opacity="0.55"
+                          pointer-events="none"
+                        />
+                        <g pointer-events="none">
+                          <text
+                            x={sr_x}
+                            y="14"
+                            text-anchor="middle"
+                            fill="#b45309"
+                            class="dark:fill-amber-300"
+                            font-size="9"
+                            font-weight="600"
+                            font-family="ui-sans-serif, system-ui, sans-serif"
+                          >
+                            ↑ {sr_label}
+                          </text>
+                        </g>
+                      <% _ -> %>
+                    <% end %>
+                    <%= case @sun_markers do %>
+                      <% {_, ss_x, _, ss_label} when not is_nil(ss_x) -> %>
+                        <line
+                          x1={ss_x}
+                          y1="20"
+                          x2={ss_x}
+                          y2="250"
+                          stroke="#f59e0b"
+                          class="dark:stroke-amber-400"
+                          stroke-width="1"
+                          stroke-dasharray="3,3"
+                          opacity="0.55"
+                          pointer-events="none"
+                        />
+                        <g pointer-events="none">
+                          <text
+                            x={ss_x}
+                            y="14"
+                            text-anchor="middle"
+                            fill="#b45309"
+                            class="dark:fill-amber-300"
+                            font-size="9"
+                            font-weight="600"
+                            font-family="ui-sans-serif, system-ui, sans-serif"
+                          >
+                            ↓ {ss_label}
+                          </text>
+                        </g>
+                      <% _ -> %>
+                    <% end %>
                     <%!-- Now marker - solid vertical line and label pill drawn
                          on top of the data curves but below the cursor guide.
                          Hidden on historical views (assign_line_chart_data/6
@@ -3648,6 +3776,38 @@ defmodule DtuAppWeb.DashboardLive do
                       this.pushEvent("set_timezone", {
                         offset_seconds: String(offsetSeconds)
                       });
+
+                      // Push the browser's geographic position so the
+                      // server can compute astronomical sunrise / sunset
+                      // for the chart's vertical guide lines. Best-effort:
+                      // permission denial, unavailable API, and timeout
+                      // all silently fall through (the chart simply
+                      // shows no sun markers for users without captured
+                      // coords). We deliberately do NOT prompt the user
+                      // again on subsequent hook mounts — `set_location`
+                      // re-fires on every page load, but only AFTER a
+                      // successful resolve; a denial sticks for the
+                      // session unless the user manually clears the
+                      // site permission.
+                      if (navigator.geolocation) {
+                        navigator.geolocation.getCurrentPosition(
+                          (pos) => {
+                            this.pushEvent("set_location", {
+                              latitude: pos.coords.latitude,
+                              longitude: pos.coords.longitude
+                            });
+                          },
+                          () => {
+                            // Silent: user denied, position unavailable,
+                            // or timeout. The chart will simply omit
+                            // sun markers; no error UI needed.
+                          },
+                          // 10s timeout is well above the typical
+                          // 1–3s fix time but well below the user's
+                          // patience for a "loading" state.
+                          { timeout: 10_000, maximumAge: 60_000 }
+                        );
+                      }
 
                       // Legend click -> toggle the matching path's
                       // `display:none`. No LiveView round-trip needed;

@@ -57,6 +57,23 @@ defmodule DtuApp.Accounts.User do
     # doesn't change anyone's behaviour silently.
     field :notification_channel, :string, default: "push"
 
+    # User's geographic position (decimal degrees, WGS84). Captured
+    # once by the dashboard's colocated JS hook from
+    # `navigator.geolocation` and persisted via
+    # `DtuApp.Accounts.update_user_location/2`. Used server-side by
+    # `DtuApp.SunCalc` to compute astronomical sunrise/sunset on the
+    # chart's X axis. Nullable: existing users and users who decline
+    # the browser's geolocation prompt keep both columns nil and the
+    # chart simply shows no sun markers (rather than an "unknown"
+    # placeholder, which would be visual noise for the majority case).
+    # Decimal precision 9 / scale 6 (≈ 11 cm at the equator, well
+    # below what browser geolocation APIs resolve to anyway; float
+    # drift would corrupt the sunrise/sunset calc near solstice) is
+    # set on the migration side — Ecto's `field/3` doesn't accept
+    # precision/scale options, only the migration does.
+    field :latitude, :decimal
+    field :longitude, :decimal
+
     has_one :shared_link, DtuApp.Accounts.SharedLink
 
     timestamps(type: :utc_datetime)
@@ -64,6 +81,16 @@ defmodule DtuApp.Accounts.User do
 
   @supported_locales ~w(en de fr)
   @valid_channels ~w(push email both)
+
+  # Latitude / longitude validation bounds (decimal degrees, WGS84).
+  # Anything outside this range is impossible on Earth and almost
+  # certainly a corrupted payload (e.g. a JS bug that swaps the two
+  # axes or applies the wrong sign) — reject it at the changeset
+  # boundary so the SunCalc never sees garbage. Module attributes
+  # can't hold float ranges, so we define them as `{min, max}` tuples
+  # and unpack in the validator.
+  @lat_bounds {-90.0, 90.0}
+  @lon_bounds {-180.0, 180.0}
 
   @doc """
   A user changeset for registering or changing the email.
@@ -184,6 +211,58 @@ defmodule DtuApp.Accounts.User do
     |> validate_inclusion(:notification_channel, @valid_channels,
       message: "must be one of: push, email, both"
     )
+  end
+
+  @doc """
+  A changeset for the user's geographic position. Used by
+  `DtuApp.Accounts.update_user_location/2`, which is fed by the
+  dashboard's colocated JS hook after
+  `navigator.geolocation.getCurrentPosition(...)` resolves.
+
+  Both fields are cast as floats (the underlying column type is
+  `:decimal` for exact storage, but Ecto handles the
+  float→Decimal conversion on write so callers can pass plain JS
+  numbers — Phoenix's params parser emits floats for JSON numbers).
+  Either field may be `nil` so a partial payload (e.g. latitude
+  arrives but longitude is missing because of a partial
+  position.coords) drops both to nil atomically rather than
+  recording a half-sensible position.
+
+  Range validation matches real-world bounds (decimal degrees,
+  WGS84) so a corrupted payload — wrong sign, swapped axes — is
+  caught at the changeset boundary instead of corrupting the
+  sunrise/sunset calc downstream. The error messages are
+  plain-string (the User module doesn't `use Gettext`); the
+  controller / LiveView layer is expected to translate them
+  through `Ecto.Changeset.traverse_errors/2` if needed.
+  """
+  def location_changeset(user, attrs) do
+    user
+    |> cast(attrs, [:latitude, :longitude])
+    |> validate_change(:latitude, fn _, value ->
+      case value do
+        nil ->
+          []
+
+        lat when is_number(lat) and lat >= elem(@lat_bounds, 0) and lat <= elem(@lat_bounds, 1) ->
+          []
+
+        _ ->
+          [latitude: "must be between -90 and 90"]
+      end
+    end)
+    |> validate_change(:longitude, fn _, value ->
+      case value do
+        nil ->
+          []
+
+        lon when is_number(lon) and lon >= elem(@lon_bounds, 0) and lon <= elem(@lon_bounds, 1) ->
+          []
+
+        _ ->
+          [longitude: "must be between -180 and 180"]
+      end
+    end)
   end
 
   @doc """

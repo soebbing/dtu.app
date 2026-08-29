@@ -74,4 +74,92 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpersTest do
       assert ChartHelpers.now_marker_x(8 * 3600, 20 * 3600, 5 * 3600, utc(5, 0, 0)) == 133.3
     end
   end
+
+  describe "sun_markers/6" do
+    # Berlin coords. We use the live `SunCalc` rather than fixed
+    # times so this test doesn't go stale when the algorithm is
+    # tweaked — the integration is what matters, not pinning the
+    # more-than-minute-precision output of SunCalc itself (which
+    # has its own test suite with ±10min tolerance).
+    @berlin_lat 52.520_008
+    @berlin_lon 13.404_954
+
+    test "Berlin on the summer solstice (CEST = UTC+2)" do
+      # Sunrise ≈ 04:43 local = 02:43 UTC, sunset ≈ 21:33 local = 19:33 UTC.
+      # The helper operates in LOCAL seconds; with tz_offset = 7200
+      # sunrise local is 4*3600 + 43*60 ≈ 16_980s, sunset local ≈ 77_580s.
+      # On a full-day chart (00:00–24:00 in local seconds, span 86_400):
+      # sunrise_x ≈ 16980/86400 * 800 ≈ 157.2
+      # sunset_x  ≈ 77580/86400 * 800 ≈ 718.3
+      assert {sr, ss, sr_label, ss_label} =
+               ChartHelpers.sun_markers(@berlin_lat, @berlin_lon, ~D[2026-06-21], 0, 86_400, 7200)
+
+      assert is_float(sr) and sr > 150.0 and sr < 170.0
+      assert is_float(ss) and ss > 710.0 and ss < 730.0
+      # Labels are local HH:MM strings — Berlin summer is CEST = UTC+2,
+      # so sunrise local is 04:43, sunset local is 21:33.
+      assert sr_label =~ ~r/^0[4-5]:\d\d$/
+      assert ss_label =~ ~r/^2[1-2]:\d\d$/
+    end
+
+    test "Berlin on the winter solstice (CET = UTC+1)" do
+      # Sunrise ≈ 08:15 local = 07:15 UTC, sunset ≈ 15:54 local = 14:54 UTC.
+      # Local seconds (tz = 3600): sunrise 8*3600 + 15*60 ≈ 29_700s,
+      # sunset 15*3600 + 54*60 ≈ 56_040s.
+      # sunrise_x ≈ 29700/86400 * 800 ≈ 275.0
+      # sunset_x  ≈ 56040/86400 * 800 ≈ 518.9
+      assert {sr, ss, sr_label, ss_label} =
+               ChartHelpers.sun_markers(@berlin_lat, @berlin_lon, ~D[2026-12-21], 0, 86_400, 3600)
+
+      assert is_float(sr) and sr > 265.0 and sr < 285.0
+      assert is_float(ss) and ss > 520.0 and ss < 540.0
+      # Berlin winter is CET = UTC+1, so sunrise local is 08:15,
+      # sunset local is 15:54.
+      assert sr_label =~ ~r/^0[78]:\d\d$/
+      assert ss_label =~ ~r/^15:\d\d$/
+    end
+
+    test "nil coords → all nils" do
+      assert {nil, nil, nil, nil} =
+               ChartHelpers.sun_markers(nil, 13.4, ~D[2026-06-21], 0, 86_400, 7200)
+
+      assert {nil, nil, nil, nil} =
+               ChartHelpers.sun_markers(52.5, nil, ~D[2026-06-21], 0, 86_400, 7200)
+    end
+
+    test "out-of-window marker returns nil for that event (X + label together)" do
+      # Zoomed chart: 10:00–14:00 local. On the winter solstice in
+      # Berlin, sunrise is ~08:15 (BEFORE 10:00, so sunrise_x = nil)
+      # and sunset is ~15:54 (AFTER 14:00, so sunset_x = nil).
+      assert {sr, ss, sr_label, ss_label} =
+               ChartHelpers.sun_markers(
+                 @berlin_lat,
+                 @berlin_lon,
+                 ~D[2026-12-21],
+                 10 * 3600,
+                 14 * 3600,
+                 3600
+               )
+
+      assert sr == nil and ss == nil
+      assert sr_label == nil and ss_label == nil
+    end
+
+    test "in-window marker at right edge of chart returns x≈800" do
+      # Berlin winter sunset is 15:54 local; on a 06:00–16:00 chart
+      # it's near the right edge. Sunset_local_seconds ≈ 57_240.
+      # x ≈ (57240 - 21600) / 36000 * 800 ≈ 793.0
+      assert {_sr, ss, _sr_label, _ss_label} =
+               ChartHelpers.sun_markers(
+                 @berlin_lat,
+                 @berlin_lon,
+                 ~D[2026-12-21],
+                 6 * 3600,
+                 16 * 3600,
+                 3600
+               )
+
+      assert is_float(ss) and ss > 780.0 and ss < 810.0
+    end
+  end
 end
