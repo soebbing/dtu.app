@@ -27,6 +27,19 @@ defmodule DtuAppWeb.DashboardLive do
   # each for the rationale.
   alias DtuAppWeb.DashboardLive.ChartHelpers
   alias DtuAppWeb.DashboardLive.ChartPalette
+  alias DtuAppWeb.DashboardLive.PeriodSelectable
+  alias DtuAppWeb.DashboardLive.TimeHelpers
+
+  # Template-side helpers from `PeriodSelectable` (calendar input
+  # value/min/max + historical-empty predicate) — kept as bare-name
+  # calls so the HEEx template reads naturally.
+  import PeriodSelectable,
+    only: [
+      date_input_value: 1,
+      date_min_bound: 1,
+      date_max_bound: 1,
+      historical_empty?: 5
+    ]
 
   require Logger
 
@@ -124,7 +137,7 @@ defmodule DtuAppWeb.DashboardLive do
         peak_export: 0.0,
         peak_import: 0.0
       })
-      |> assign_selectable_periods(user, nil)
+      |> PeriodSelectable.assign_selectable_periods(user, nil)
       |> assign_dashboard_data(user, nil, "today", nil)
 
     {:ok, socket}
@@ -161,7 +174,7 @@ defmodule DtuAppWeb.DashboardLive do
     selected_id = if id_str == "total", do: nil, else: String.to_integer(id_str)
     user = socket.assigns.current_scope.user
 
-    socket = assign_selectable_periods(socket, user, selected_id)
+    socket = PeriodSelectable.assign_selectable_periods(socket, user, selected_id)
 
     socket =
       socket
@@ -272,7 +285,10 @@ defmodule DtuAppWeb.DashboardLive do
     user = socket.assigns.current_scope.user
     dtu_id = socket.assigns.selected_dtu_id
     granularity = socket.assigns.granularity
-    current = socket.assigns.selected_period || local_today(socket.assigns.user_tz_offset_seconds)
+
+    current =
+      socket.assigns.selected_period ||
+        TimeHelpers.local_today(socket.assigns.user_tz_offset_seconds)
 
     period = shift_period(current, granularity, dir)
 
@@ -450,7 +466,7 @@ defmodule DtuAppWeb.DashboardLive do
     user = socket.assigns.current_scope.user
     selected_id = socket.assigns.selected_dtu_id
 
-    socket = assign_selectable_periods(socket, user, selected_id)
+    socket = PeriodSelectable.assign_selectable_periods(socket, user, selected_id)
 
     # Every reading also touches the DTU's `last_seen_at` (see
     # `DtuApp.MqttBroker.Telemetry`), so re-read the device list here
@@ -1342,55 +1358,15 @@ defmodule DtuAppWeb.DashboardLive do
   # now — see that module for the rationale and the per-function docs.
 
   # Today's date in the user's local timezone. `Date.utc_today()`
-  # would give us "today in London"; for a Berlin user looking at the
-  # dashboard at 23:30 UTC (= 00:30 Berlin next day) we want the
-  # Berlin date so the chart shows the day they're actually in.
-  @spec local_today(integer()) :: Date.t()
-  defp local_today(tz_offset_seconds) do
-    # Use the database clock so "today in the user's timezone" matches
-    # the day the readings table's `inserted_at` was bucketed under.
-    # See `DtuApp.Time`.
-    DtuApp.Time.utc_now()
-    |> DateTime.add(tz_offset_seconds, :second)
-    |> DateTime.to_date()
-  end
-
-  # Convert a local date (as the user sees it on the dashboard) to the
-  # inclusive UTC day range `[start_utc, end_utc]` that the DB query
-  # needs to fetch readings for that local day.
-  @spec utc_day_range_for_local_date(Date.t(), integer()) ::
-          {DateTime.t(), DateTime.t()}
-  def utc_day_range_for_local_date(%Date{} = local_date, tz_offset_seconds) do
-    {:ok, start_local} = DateTime.new(local_date, ~T[00:00:00])
-    {:ok, end_local} = DateTime.new(local_date, ~T[23:59:59])
-
-    {DateTime.add(start_local, -tz_offset_seconds, :second),
-     DateTime.add(end_local, -tz_offset_seconds, :second)}
-  end
+  # `local_today/1`, `utc_day_range_for_local_date/2`,
+  # `format_peak_time/2`, and `format_time_hhmm/1` live in
+  # `DtuAppWeb.DashboardLive.TimeHelpers` (extracted for testability
+  # — see that module's @moduledoc).
 
   # Empty `series_paths` map is OK; we just need a default for the
   # `path_data` assign so the template always has a string.
   defp hd_or_first_key(map) when map_size(map) == 0, do: nil
   defp hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
-
-  # Format a UTC DateTime as the user's local HH:MM. Falls back to `—`
-  # when the time is nil (the bucket-peak helper returns nil for an
-  # empty window — no buckets means no peak time). The shift uses the
-  # same `tz_offset_seconds` channel as the chart axis labels so the
-  # peak-time card and the chart agree on what "13:42" means.
-  @spec format_peak_time(DateTime.t() | nil, integer()) :: String.t()
-  def format_peak_time(nil, _tz_offset_seconds), do: "—"
-
-  def format_peak_time(%DateTime{} = dt, tz_offset_seconds) do
-    dt
-    |> DateTime.add(tz_offset_seconds, :second)
-    |> format_time_hhmm()
-  end
-
-  defp format_time_hhmm(%DateTime{} = dt) do
-    :io_lib.format("~2..0B:~2..0B", [dt.hour, dt.minute])
-    |> IO.iodata_to_binary()
-  end
 
   # Human-readable label for the active period. Drives the sub-caption
   # under the Yield card's headline ("Last 7 days", "Year to date", …)
@@ -1463,17 +1439,6 @@ defmodule DtuAppWeb.DashboardLive do
     socket
     |> assign(:y_max, y_max)
     |> assign(:bars, bars)
-  end
-
-  defp assign_selectable_periods(socket, user, dtu_id) do
-    dates = Devices.list_selectable_dates(user, dtu_id)
-
-    socket
-    |> assign(:selectable_dates, dates)
-    |> assign(:selectable_days, build_selectable_days(dates))
-    |> assign(:selectable_weeks, build_selectable_weeks(dates))
-    |> assign(:selectable_months, build_selectable_months(dates))
-    |> assign(:selectable_years, build_selectable_years(dates))
   end
 
   # --- Time-picker helpers ----------------------------------------------------
@@ -1565,14 +1530,6 @@ defmodule DtuAppWeb.DashboardLive do
   defp stepper_label(%Date{} = date, "year"), do: to_string(date.year)
   defp stepper_label(year, _), do: to_string(year)
 
-  # Value for the native date input (yyyy-mm-dd).
-  defp date_input_value(%Date{} = date), do: Date.to_iso8601(date)
-
-  defp date_input_value(year) when is_integer(year),
-    do: Date.new!(year, 1, 1) |> Date.to_iso8601()
-
-  defp date_input_value(_), do: Date.utc_today() |> Date.to_iso8601()
-
   # Human-readable "X ago" label for a past `DateTime`. Falls back to an
   # absolute YYYY-MM-DD HH:MM string for points in time more than a week
   # back, since minute/hour counts get unwieldy beyond that. Clamps future
@@ -1597,21 +1554,6 @@ defmodule DtuAppWeb.DashboardLive do
         Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
     end
   end
-
-  # Earliest date with data, for the calendar's `min` bound (yyyy-mm-dd, or nil).
-  defp date_min_bound([]), do: nil
-  defp date_min_bound(dates), do: dates |> Enum.min(Date) |> Date.to_iso8601()
-
-  # Latest date with data, for the calendar's `max` bound.
-  defp date_max_bound([]), do: nil
-  defp date_max_bound(dates), do: dates |> Enum.max(Date) |> Date.to_iso8601()
-
-  # True when the current historical granularity has no data to show.
-  defp historical_empty?("day", days, _, _, _), do: days == []
-  defp historical_empty?("week", _, weeks, _, _), do: weeks == []
-  defp historical_empty?("month", _, _, months, _), do: months == []
-  defp historical_empty?("year", _, _, _, years), do: years == []
-  defp historical_empty?(_, _, _, _, _), do: false
 
   defp quick_range_btn(assigns) do
     ~H"""
@@ -1651,58 +1593,6 @@ defmodule DtuAppWeb.DashboardLive do
       </span>
     </button>
     """
-  end
-
-  defp build_selectable_days(dates) do
-    dates
-    |> Enum.map(fn date ->
-      label = Calendar.strftime(date, "%Y-%m-%d")
-      {label, Date.to_string(date)}
-    end)
-  end
-
-  defp build_selectable_weeks(dates) do
-    dates
-    |> Enum.group_by(fn d ->
-      :calendar.iso_week_number({d.year, d.month, d.day})
-    end)
-    |> Enum.map(fn {{year, week}, week_dates} ->
-      representative_date = hd(week_dates)
-      monday = Date.add(representative_date, -(Date.day_of_week(representative_date) - 1))
-
-      label =
-        gettext("Year %{year}, Week %{week} (starting %{monday})",
-          year: year,
-          week: week,
-          monday: monday
-        )
-
-      {label, Date.to_string(monday)}
-    end)
-    |> Enum.sort_by(fn {_, val} -> val end, :desc)
-  end
-
-  defp build_selectable_months(dates) do
-    dates
-    |> Enum.map(fn d -> {d.year, d.month} end)
-    |> Enum.uniq()
-    |> Enum.map(fn {year, month} ->
-      first_day = Date.new!(year, month, 1)
-      translated_month = Gettext.gettext(DtuAppWeb.Gettext, Calendar.strftime(first_day, "%B"))
-      label = "#{translated_month} #{first_day.year}"
-      {label, Date.to_string(first_day)}
-    end)
-    |> Enum.sort_by(fn {_, val} -> val end, :desc)
-  end
-
-  defp build_selectable_years(dates) do
-    dates
-    |> Enum.map(& &1.year)
-    |> Enum.uniq()
-    |> Enum.map(fn year ->
-      {to_string(year), to_string(year)}
-    end)
-    |> Enum.sort(:desc)
   end
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
@@ -1762,7 +1652,7 @@ defmodule DtuAppWeb.DashboardLive do
         # trips back-to-back. The `today_local` is computed from the
         # user's tz offset so the bucket boundaries line up with the
         # rest of the dashboard's local-day window.
-        today_local = local_today(tz_offset_seconds)
+        today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {today_utc_start, today_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
@@ -1829,7 +1719,7 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              List.first(selectable) || local_today(tz_offset_seconds)
+              List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
           end
 
         # Convert the user-facing local date to the UTC range that
@@ -1868,7 +1758,7 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
+              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
               Date.add(latest_date, -(Date.day_of_week(latest_date) - 1))
           end
 
@@ -1925,7 +1815,7 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
+              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
               Date.new!(latest_date.year, latest_date.month, 1)
           end
 
@@ -1982,7 +1872,7 @@ defmodule DtuAppWeb.DashboardLive do
 
             _ ->
               selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || local_today(tz_offset_seconds)
+              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
               latest_date.year
           end
 
@@ -2049,7 +1939,7 @@ defmodule DtuAppWeb.DashboardLive do
         # `local_day_utc_range/2` returns {utc_start, utc_end}; for a
         # rolling 7-day window we anchor on `today_local` so the peak
         # watts query covers the same span the bar chart plots.
-        today_local = local_today(tz_offset_seconds)
+        today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {seven_day_utc_start, seven_day_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
@@ -2103,7 +1993,7 @@ defmodule DtuAppWeb.DashboardLive do
 
         stats = Devices.compute_range_period_stats(yields, 30)
 
-        today_local = local_today(tz_offset_seconds)
+        today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {thirty_day_utc_start, thirty_day_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
@@ -2771,7 +2661,7 @@ defmodule DtuAppWeb.DashboardLive do
                             class="text-3xl font-semibold text-zinc-900 dark:text-white"
                             id="stat-peak-time"
                           >
-                            {format_peak_time(@stats.peak_time, @user_tz_offset_seconds)}
+                            {TimeHelpers.format_peak_time(@stats.peak_time, @user_tz_offset_seconds)}
                           </div>
                         </dd>
                       </dl>
