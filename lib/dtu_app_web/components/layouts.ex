@@ -24,7 +24,7 @@ defmodule DtuAppWeb.Layouts do
   branch name is available, which gets bucketed into the
   "anything else" arm.
   """
-  @spec release_href(String.t()) :: String.t()
+  @spec release_href(any()) :: String.t()
   def release_href(version) when is_binary(version) do
     cond do
       dev?(version) -> @repo_url
@@ -33,6 +33,14 @@ defmodule DtuAppWeb.Layouts do
       true -> @repo_url
     end
   end
+
+  # Defensive fallback: the `@version` assign is a string in every
+  # supported environment (Calver tag, branch name, `dev`, or
+  # `Mix.Project` SemVer), but a stale `Application.put_env` or a
+  # future config-shape change could surface a non-binary value at
+  # render time. Crashing the request is the wrong response — point
+  # the user at the repo root instead.
+  def release_href(_), do: @repo_url
 
   # The literal `dev` placeholder (see `config/runtime.exs` — used
   # when no env var, git, or Mix.Project version resolves).

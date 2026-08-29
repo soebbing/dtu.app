@@ -44,4 +44,30 @@ defmodule DtuAppWeb.LayoutsTest do
                "https://github.com/soebbing/dtu.app"
     end
   end
+
+  describe "release_href/1 — defensive fallback (non-binary)" do
+    # The `@version` assign is a string in every supported environment,
+    # but a stale `Application.put_env` or a future config-shape change
+    # could surface a non-binary value at render time. The function
+    # must not crash the request — point at the repo root instead.
+    test "nil falls back to the repo root" do
+      assert Layouts.release_href(nil) ==
+               "https://github.com/soebbing/dtu.app"
+    end
+
+    test "true (the leaked :version symptom from async test races) falls back" do
+      assert Layouts.release_href(true) ==
+               "https://github.com/soebbing/dtu.app"
+    end
+
+    test "an integer falls back" do
+      assert Layouts.release_href(0) ==
+               "https://github.com/soebbing/dtu.app"
+    end
+
+    test "an atom other than `dev` falls back" do
+      assert Layouts.release_href(:something) ==
+               "https://github.com/soebbing/dtu.app"
+    end
+  end
 end
