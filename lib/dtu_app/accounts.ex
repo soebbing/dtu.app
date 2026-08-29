@@ -202,6 +202,35 @@ defmodule DtuApp.Accounts do
   end
 
   @doc """
+  Persists the user's geographic position (decimal degrees, WGS84).
+  Called by the dashboard once per session when the colocated JS
+  hook resolves `navigator.geolocation.getCurrentPosition(...)`.
+
+  Mirrors `update_user_tz_offset/2`'s best-effort contract: a failed
+  write returns `{:error, reason}` rather than crashing the
+  LiveView render, and a successful write returns `:ok` (not
+  `{:ok, %User{}}`) so callers can use a one-line
+  `_ = Accounts.update_user_location(user, ...)` check without
+  pattern matching.
+
+  `latitude` / `longitude` may be `nil` (the hook passes nil when
+  the user denied geolocation or the browser doesn't support it) —
+  `User.location_changeset/2` handles the nil-through case and
+  zeros out any stored partial position from a prior write.
+  """
+  @spec update_user_location(User.t(), %{latitude: float() | nil, longitude: float() | nil}) ::
+          :ok | {:error, term()}
+  def update_user_location(user, %{latitude: _, longitude: _} = attrs) do
+    user
+    |> User.location_changeset(attrs)
+    |> Repo.update()
+    |> case do
+      {:ok, _user} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
   Builds a settings-changeset for the user. The form on
   `/users/settings` posts `euros_per_kwh` (a decimal string); the
   underlying `User.settings_changeset/2` converts that to whole
