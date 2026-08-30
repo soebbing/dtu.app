@@ -197,6 +197,22 @@ config :dtu_app,
        :passkeys_enabled,
        DtuAppWeb.Passkeys.KillSwitch.enabled?(System.get_env("PASSKEYS_ENABLED"), config_env())
 
+# Rate-limit — defaults ON in every env (the plug is cheap: in-memory
+# ETS sliding window keyed on `(remote_ip, action)`, and the existing
+# controller test "429 rate_limited after 10 attempts" assumes
+# enforcement is on in :test). CI flips it OFF via
+# `PASSKEYS_RATE_LIMIT_ENABLED=false` so the Playwright e2e suite
+# (--workers=1, retries: 2) doesn't trip the 10/60s/IP budget on its
+# own retries. Operators can override with
+# `PASSKEYS_RATE_LIMIT_ENABLED=true` (default) / `…=false` (bypass).
+# See `DtuAppWeb.Passkeys.RateLimit` for the decision matrix.
+config :dtu_app,
+       :passkey_rate_limit_enabled,
+       DtuAppWeb.Passkeys.RateLimit.enabled?(
+         System.get_env("PASSKEYS_RATE_LIMIT_ENABLED"),
+         config_env()
+       )
+
 # ── Web Push (VAPID) ───────────────────────────────────────────────────────
 # Required for native browser notifications delivered by the service
 # worker when no tab is open. All three VAPID_* vars come from the

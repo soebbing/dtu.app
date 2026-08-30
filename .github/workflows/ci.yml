@@ -179,6 +179,26 @@ jobs:
           # `DtuAppWeb.Passkeys.KillSwitch`); the e2e tests need the card to
           # render, so override explicitly. Safe — CI does not ship.
           PASSKEYS_ENABLED: "true"
+          # Pin `rp.id` to `localhost`. The server runs in MIX_ENV=prod, where
+          # the env-aware default for `WEBAUTHN_RP_ID` is "dtu.app" (see
+          # `DtuAppWeb.Passkeys.RpId.default/1`). But the e2e origin is
+          # `http://localhost:4000`, and the WebAuthn spec requires `rp.id` to
+          # be a registrable-domain suffix of the origin's effective domain —
+          # `localhost` is NOT a suffix of `dtu.app`, so the browser throws
+          # `SecurityError` from `navigator.credentials.create()`. Setting
+          # `WEBAUTHN_RP_ID=localhost` matches the test origin and unblocks
+          # `passkey_login.spec.js`. Safe — CI does not ship.
+          WEBAUTHN_RP_ID: "localhost"
+          # Disable the passkey rate limiter for the e2e suite. The server
+          # runs in MIX_ENV=prod, which enables `DtuAppWeb.Plugs.PasskeyRateLimit`
+          # at 10 hits / 60 s / (IP, action). Under Playwright's `retries: 2`
+          # (= 3 attempts per serial block), the cumulative `authentication_options`
+          # hits per CI run can exceed the budget, and a single
+          # `passkey_login.spec.js` failure surfaces as
+          # `Passkey error: too_many_attempts`. The unit test
+          # `passkey_rate_limit_test.exs` already pins the plug's logic, so
+          # disabling it in CI doesn't lose coverage. Safe — CI does not ship.
+          PASSKEYS_RATE_LIMIT_ENABLED: "false"
 
       - name: Wait for Phoenix Server
         run: |
