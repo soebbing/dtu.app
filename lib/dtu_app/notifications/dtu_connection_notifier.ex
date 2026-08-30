@@ -53,10 +53,16 @@ defmodule DtuApp.Notifications.DtuConnection do
       the user. Recent-active = "this is a real offline event"; stale =
       "the broker just reconnected to a DTU that was already dead."
     * `prior_uptime?(connected_at)` — the device must have been online
-      for at least `@recency_seconds` before the disconnect. Without
-      this guard, a brief WiFi reconnect storm (connect → 30s later
-      disconnect) would fire "Your inverter has gone offline" on a
-      device that was never actually online long enough to merit one.
+      for at least `@prior_uptime_seconds` (15 min) before the
+      disconnect. Without this guard, a brief WiFi reconnect storm
+      (connect → 30s later disconnect) would fire "Your inverter has
+      gone offline" on a device that was never actually online long
+      enough to merit one. 15 min was chosen over the original 5 min
+      after user reports of "dozens of offline pushes" from inverters
+      that flap every few minutes — a 5-min threshold still lets
+      long-cycle flappers through, a 15-min threshold requires a
+      genuinely stable session before a disconnect is notification-
+      worthy.
     * `not was_disconnected?` — the prior `disconnected?` flag (read
       BEFORE `remember_disconnect/2` mutates it) must be false. This
       is the duplicate-fire gate: a burst of `:dtu_disconnected`
@@ -67,6 +73,21 @@ defmodule DtuApp.Notifications.DtuConnection do
       `disconnected?: true` gate. The DB-backed
       `dtu_connection_states.disconnected` row carries the suppression
       across producer restarts.
+    * `cooldown_over?(last_offline_fired_at)` — the per-device
+      `last_offline_fired_at` timestamp must be older than
+      `@cooldown_seconds` (30 min), OR nil (never fired). This is
+      orthogonal to `was_disconnected?` — that gate only suppresses
+      duplicate fires within ONE offline period; this gate suppresses
+      re-fires across MANY offline periods when a device flaps in
+      short cycles (connect → disconnect → reconnect → disconnect…)
+      and each cycle is long enough to satisfy `prior_uptime?`. A
+      user-reported failure mode: a WiFi-fragile inverter that drops
+      every 20 min generated one push per cycle. The 30-min cooldown
+      caps that at one push per 30-min window per device. The
+      timestamp is kept in the in-memory cache only — restart resets
+      it. We don't persist across deploys because a deploy landing
+      mid-flap-cycle shouldn't lock the user out of a genuine-outage
+      notification for 30 min post-deploy.
   """
 
   use GenServer
@@ -92,6 +113,21 @@ defmodule DtuApp.Notifications.DtuConnection do
   # A disconnect whose `last_seen_at` is older than this is treated as
   # a stale post-deploy reconnect, not a real offline event.
   @recency_seconds 300
+
+  # The "must have been online continuously for X before a disconnect
+  # is notification-worthy" threshold. Raised from the historical
+  # `@recency_seconds` (5 min) after user reports that inverters which
+  # flap every few minutes (connect → ~10 min later → disconnect →
+  # reconnect → ~10 min later → disconnect …) still produced one push
+  # per cycle. 15 min catches the long-cycle flapper without dropping
+  # notifications on devices that genuinely reconnect and stay up.
+  @prior_uptime_seconds 900
+
+  # Per-device re-fire cooldown. After a `:went_offline` fires, the
+  # same device is suppressed for this many seconds — even across
+  # connect/disconnect cycles. See the moduledoc's disconnect-gating
+  # paragraph for the design rationale.
+  @cooldown_seconds 1800
 
   @doc "The PubSub topic this producer subscribes to. Exposed for tests."
   def presence_topic, do: @presence_topic
@@ -214,25 +250,45 @@ defmodule DtuApp.Notifications.DtuConnection do
       %{user_id: _user_id, name: _name, last_seen_at: last_seen_at} ->
         # Fix C1: in addition to the existing recency guard on
         # `last_seen_at`, require the device to have been online
-        # for at least @recency_seconds before we call it "offline".
-        # Without this gate, a brief WiFi reconnect (connect → 30s
-        # later disconnect) would fire "Your inverter has gone
-        # offline" — a misleading notification on a device that was
-        # never actually online long enough to merit one.
-        # `connected_at` is recorded in state at connect-time below.
+        # for at least @prior_uptime_seconds before we call it
+        # "offline". Without this gate, a brief WiFi reconnect
+        # (connect → 30s later disconnect) would fire "Your inverter
+        # has gone offline" — a misleading notification on a device
+        # that was never actually online long enough to merit one.
+        # 15 min was chosen over the historical 5 min after user
+        # reports of long-cycle flap storms. `connected_at` is
+        # recorded in state at connect-time below.
         connected_at = get_connected_at(state, device_id)
 
-        if recently_active?(last_seen_at) and prior_uptime?(connected_at) and
-             not was_disconnected? do
-          # Route through `fire_for_status/2` so we share the
-          # User-struct lookup with the connect path — `fire/3`
-          # takes a `%User{}` (we need the user's locale to scope
-          # gettext), not a bare user_id. A stale-state race where
-          # the user has been deleted between the safe_lookup and
-          # fire_for_status is handled inside safe_get_user/1
-          # (`nil → :ok` no-op).
-          fire_for_status(device_id, :went_offline)
-        end
+        # Per-device re-fire cooldown. Read BEFORE the fire — the
+        # gate fires on `cooldown_over?` (which is true for `nil`
+        # and for timestamps older than @cooldown_seconds). If all
+        # four gates pass, the fire path stamps the current time
+        # into state via `remember_offline_fire/2` so the next
+        # disconnect within @cooldown_seconds is gated silent.
+        last_fired_at = get_last_offline_fired_at(state, device_id)
+
+        # The `if` expression returns its last value; the `else`
+        # branch yields `state` unchanged when any gate fails.
+        # Without the explicit `else`, Elixir would warn about an
+        # unused reassignment inside the `if` block (the `if`
+        # body is its own scope, so a re-bound `state` inside it
+        # would not be visible to the `{:noreply, state}` below).
+        state =
+          if recently_active?(last_seen_at) and prior_uptime?(connected_at) and
+               not was_disconnected? and cooldown_over?(last_fired_at) do
+            # Route through `fire_for_status/2` so we share the
+            # User-struct lookup with the connect path — `fire/3`
+            # takes a `%User{}` (we need the user's locale to scope
+            # gettext), not a bare user_id. A stale-state race where
+            # the user has been deleted between the safe_lookup and
+            # fire_for_status is handled inside safe_get_user/1
+            # (`nil → :ok` no-op).
+            fire_for_status(device_id, :went_offline)
+            remember_offline_fire(state, device_id)
+          else
+            state
+          end
 
         {:noreply, state}
     end
@@ -367,16 +423,53 @@ defmodule DtuApp.Notifications.DtuConnection do
   end
 
   # C1 gate: the device must have been online for at least
-  # @recency_seconds before a disconnect can be called "offline".
+  # @prior_uptime_seconds before a disconnect can be called "offline".
   # `connected_at` is stamped at every connect (above); a `nil`
   # value means we've never seen a connect for this device — the
   # conservative answer is to suppress the fire (we have no way
   # to confirm prior uptime).
   defp prior_uptime?(%DateTime{} = connected_at) do
-    DateTime.before?(connected_at, DateTime.add(Time.utc_now(), -@recency_seconds, :second))
+    DateTime.before?(connected_at, DateTime.add(Time.utc_now(), -@prior_uptime_seconds, :second))
   end
 
   defp prior_uptime?(_), do: false
+
+  # Read the timestamp of the most recent `:went_offline` fire for this
+  # device. `nil` when we have never fired (the common case for the
+  # very first disconnect of a device).
+  defp get_last_offline_fired_at(state, device_id) do
+    case Map.get(state, device_id) do
+      %{last_offline_fired_at: %DateTime{} = at} -> at
+      _ -> nil
+    end
+  end
+
+  # Cooldown gate: returns true if the per-device re-fire window is
+  # open. `nil` (never fired) is always open. A timestamp within
+  # `@cooldown_seconds` is closed (suppress the fire). A timestamp
+  # older than `@cooldown_seconds` is open (allow the fire).
+  defp cooldown_over?(nil), do: true
+
+  defp cooldown_over?(%DateTime{} = last_fired_at) do
+    DateTime.before?(
+      last_fired_at,
+      DateTime.add(Time.utc_now(), -@cooldown_seconds, :second)
+    )
+  end
+
+  # Stamp `last_offline_fired_at` on the device's state entry so the
+  # next disconnect within `@cooldown_seconds` is gated silent by
+  # `cooldown_over?/1`. No-op for devices we have no entry for — the
+  # caller is responsible for only stamping after a successful fire.
+  defp remember_offline_fire(state, device_id) do
+    case Map.get(state, device_id) do
+      nil ->
+        state
+
+      info ->
+        Map.put(state, device_id, Map.put(info, :last_offline_fired_at, Time.utc_now()))
+    end
+  end
 
   defp safe_lookup(device_id) do
     try do
