@@ -141,7 +141,9 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
     await expect(page.locator('#solar-chart-svg')).toBeVisible();
 
     // Step forward until we reach a future day with no readings. The
-    // line chart is replaced by the #empty-chart placeholder.
+    // chart container + SVG keep rendering (cloud-cover band,
+    // axes, gridlines, sun/now markers stay visible); an inline
+    // #empty-chart caption appears beneath them.
     for (let i = 0; i < 10; i++) {
       await page.locator('#btn-history-next').click();
 

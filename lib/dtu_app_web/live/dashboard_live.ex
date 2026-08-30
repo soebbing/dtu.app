@@ -3204,25 +3204,6 @@ defmodule DtuAppWeb.DashboardLive do
                   </foreignObject>
                 </svg>
 
-                <%!-- Empty-state overlay: shown when there's no
-                       production data for the day (e.g. at night, on
-                       a fresh account, or before any data has been
-                       logged). The cloud-cover band still renders
-                       behind it because the SVG is always present. --%>
-                <%= if @path_data == "" do %>
-                  <div
-                    class="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none"
-                    id="empty-chart"
-                  >
-                    <div class="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/70 px-6 py-4">
-                      <.icon name="hero-presentation-chart-line" class="h-10 w-10 text-zinc-400 mb-2" />
-                      <p class="text-sm text-zinc-500 dark:text-zinc-400">
-                        {gettext("No power readings logged for this day.")}
-                      </p>
-                    </div>
-                  </div>
-                <% end %>
-
                 <%!-- Legend: Total line first (the headline), then one entry
                        per (inverter, MPPT) series in the same order as the
                        paths above. Each entry is a real <button> so it's
@@ -3316,6 +3297,28 @@ defmodule DtuAppWeb.DashboardLive do
                         <span class="text-zinc-700 dark:text-zinc-300">{label}</span>
                       </button>
                     <% end %>
+                  </div>
+                <% end %>
+
+                <%!-- Empty-state message: shown when there's no
+                       production data for the day (e.g. at night, on
+                       a fresh account, or before any data has been
+                       logged). Sits BELOW the chart (and the legend,
+                       if present) in normal document flow — the SVG
+                       above stays fully visible so the cloud-cover
+                       band, axes, gridlines, sun markers, and now
+                       marker remain unobstructed. The earlier
+                       absolute-positioned overlay (with a 70% opaque
+                       card centred on top of the SVG) covered the
+                       cloud band and made the dashboard look
+                       chartless at night. --%>
+                <%= if @path_data == "" do %>
+                  <div
+                    class="mt-3 flex items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400"
+                    id="empty-chart"
+                  >
+                    <.icon name="hero-presentation-chart-line" class="h-4 w-4" />
+                    <p>{gettext("No power readings logged for this day.")}</p>
                   </div>
                 <% end %>
               </div>

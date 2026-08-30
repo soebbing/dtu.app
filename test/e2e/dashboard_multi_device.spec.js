@@ -385,8 +385,9 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
   test('Balcony Inverter (no today data) renders an empty chart and zero stats', async ({ page }) => {
     // The Balcony Inverter (AhoyDTU, id 2) has historical readings
     // but none for today. Selecting it must:
-    //   * show the empty-chart placeholder (`#empty-chart`) instead
-    //     of a rendered curve, since `path_data == ""`
+    //   * show the inline `#empty-chart` caption beneath the SVG
+    //     (the SVG itself still renders so any cloud-cover band
+    //     stays visible)
     //   * zero the live "Current Generation" stat (no recent reading)
     //   * zero the Yield stat (no today readings)
     // The switcher must stay visible (we're still >1 device total).
