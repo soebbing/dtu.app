@@ -33,6 +33,13 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
        cache on `init/1`; the first disconnect after restart stays
        silent (no duplicate notification for a device the user
        already knew was offline).
+    7. **`per-device re-fire cooldown`** — once `:went_offline` has
+       fired for a device, subsequent `:went_offline` fires for the
+       SAME device are suppressed for `@cooldown_seconds` (30 min),
+       even across clean reconnect cycles. Catches the "inverter
+       flaps every 20 min" failure mode the per-offline-period dedup
+       (point 5) doesn't address. The `last_offline_fired_at`
+       timestamp is in-memory only; restart resets it.
   """
   use DtuApp.DataCase, async: false
 
@@ -99,9 +106,9 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   end
 
   # Seed the producer's local cache with a `connected_at` timestamp
-  # older than @recency_seconds. Required by fix C1's gate: the
+  # older than @prior_uptime_seconds. Required by fix C1's gate: the
   # disconnect side must not fire when the device was online for
-  # less than the recency threshold (the existing recency guard
+  # less than the prior-uptime threshold (the existing recency guard
   # looks at `last_seen_at`; the new gate also looks at
   # `connected_at` to ensure prior uptime).
   #
@@ -110,21 +117,22 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   # reading — the connect handler reads `last_seen_at` from state
   # (the cache the disconnect path populated), not the DB row.
   # `disconnected?: false` here is intentional: the test models
-  # "the device was online for >5 min, then just disconnected" —
+  # "the device was online for >15 min, then just disconnected" —
   # the producer hasn't observed an offline yet, so the new
   # `not was_disconnected?` gate on the disconnect handler lets
   # the fire through. (Setting `disconnected?: true` would model
   # "the producer already fired for an earlier offline period"
   # — that scenario is covered by the duplicate-suppression tests
   # below.)
-  defp seed_connected_at!(device_id, %DateTime{} = at) do
+  defp seed_connected_at!(device_id, %DateTime{} = at, last_offline_fired_at \\ nil) do
     :sys.replace_state(DtuConnection, fn state ->
       Map.put(state, device_id, %{
         user_id: nil,
         name: nil,
         last_seen_at: Time.utc_now_usec(),
         disconnected?: false,
-        connected_at: at
+        connected_at: at,
+        last_offline_fired_at: last_offline_fired_at
       })
     end)
   end
@@ -133,12 +141,12 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a recently-active device's disconnect produces a dtu_connection notification" do
       user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Test DTU"})
-      # Seed the producer's connected-at to >5 min ago so the C1
+      # Seed the producer's connected-at to >15 min ago so the C1
       # gate (require prior uptime) passes — only the existing
       # recency guard should allow the fire. `last_seen_at` must
       # remain within the 5-min recency window (the existing
       # recently_active?/1 guard), so we set it to 1 min ago.
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -296,7 +304,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # the moduledoc on `Notifications.SunUp`.
       user = user_fixture(%{notify_dtu_connection: false})
       dtu = device_fixture(user, %{name: "Opt-out DTU"})
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -433,7 +441,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Bursty DTU"})
 
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -470,7 +478,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Reconnect DTU"})
 
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -487,7 +495,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       # Reconnect — clears the marker. The producer stamps
       # `connected_at` at the current time on connect; bump it
-      # back to >5 min ago so the second disconnect's C1
+      # back to >15 min ago so the second disconnect's C1
       # (`prior_uptime?`) gate still passes. Models "the device
       # was online long enough to be worth a second offline
       # notification."
@@ -498,11 +506,23 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       )
 
       :sys.replace_state(DtuConnection, fn state ->
-        Map.update!(
-          state,
-          dtu.id,
-          &Map.put(&1, :connected_at, DateTime.add(Time.utc_now_usec(), -600, :second))
-        )
+        Map.update!(state, dtu.id, fn entry ->
+          entry
+          |> Map.put(:connected_at, DateTime.add(Time.utc_now_usec(), -1800, :second))
+          # The per-device re-fire cooldown (introduced alongside the
+          # tightened dedup window) stamps `last_offline_fired_at` on
+          # every `:went_offline` fire. Without backdating it here,
+          # the second disconnect would be suppressed by
+          # `cooldown_over?/1` (the first fire happened <1s ago),
+          # and this test's intent — "the per-offline-period gate
+          # must NOT prevent the second fire after a real reconnect
+          # cycle" — would be masked by the orthogonal cooldown.
+          # The dedicated cooldown tests in the
+          # "per-device re-fire cooldown" describe block exercise
+          # the cooldown itself; this test pins the
+          # `was_disconnected?` gate in isolation.
+          |> Map.put(:last_offline_fired_at, DateTime.add(Time.utc_now_usec(), -3600, :second))
+        end)
       end)
 
       # Back-online fires because we observed a disconnect previously.
@@ -535,7 +555,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
 
       # Simulate "the producer crashed while knowing this device was
       # offline" — write the row directly.
-      connected_at = DateTime.add(Time.utc_now_usec(), -600, :second)
+      connected_at = DateTime.add(Time.utc_now_usec(), -1800, :second)
 
       {:ok, _} =
         %DtuApp.Notifications.DtuConnectionState{}
@@ -574,6 +594,161 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     end
   end
 
+  describe "per-device re-fire cooldown" do
+    # The user-facing bug this gates: a WiFi-fragile inverter that
+    # disconnects every ~10 min (well above the @prior_uptime_seconds
+    # threshold once a session is established) used to fire
+    # `:went_offline` on every cycle. The per-offline-period dedup
+    # (`was_disconnected?` gate) only suppresses duplicates within ONE
+    # offline period; this gate suppresses re-fires ACROSS many offline
+    # periods within @cooldown_seconds. The timestamp is in-memory only
+    # (see the moduledoc on `DtuConnection`); restart resets it.
+
+    test "a second disconnect within 30 min is silent" do
+      # The first disconnect fires; the second disconnect after a
+      # clean reconnect cycle (which clears `disconnected?` but
+      # leaves `last_offline_fired_at` fresh) is gated silent by
+      # `cooldown_over?/1`. Without this gate, a flapping device
+      # produces one push per cycle.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Cooldown DTU"})
+
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
+      touch_last_seen!(dtu, -60)
+
+      :ok = Notifications.subscribe(user.id)
+
+      # First offline period — fires.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_cd_1", dtu.id}
+      )
+
+      assert_receive {:notification, payload1}, 1_000
+      assert payload1.title =~ "offline"
+
+      # Reconnect — clears the per-offline-period marker but leaves
+      # `last_offline_fired_at` stamped from the first fire.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_cd_reconnect", dtu.id}
+      )
+
+      assert_receive {:notification, _payload2}, 1_000
+
+      # Backdate `connected_at` so the second disconnect's C1 gate
+      # still passes (mirrors the duplicate-suppression test above).
+      # `last_offline_fired_at` is intentionally NOT backdated here —
+      # it's the variable under test.
+      :sys.replace_state(DtuConnection, fn state ->
+        connected_at = DateTime.add(Time.utc_now_usec(), -1800, :second)
+
+        Map.update!(state, dtu.id, &Map.put(&1, :connected_at, connected_at))
+      end)
+
+      touch_last_seen!(dtu, -60)
+
+      # Second offline period — within the 30-min cooldown, so the
+      # `cooldown_over?/1` gate suppresses the fire. The
+      # `was_disconnected?` gate would already allow it (the
+      # connect cleared the marker), so a regression in the cooldown
+      # gate is what we're catching here.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_cd_2", dtu.id}
+      )
+
+      refute_receive {:notification, _}, 500
+    end
+
+    test "a disconnect after 30 min fires again" do
+      # Symmetric to the previous test: backdate
+      # `last_offline_fired_at` to >@cooldown_seconds ago and verify
+      # the cooldown gate releases — the second disconnect after a
+      # reconnect cycle DOES fire. Pin this so a future "always
+      # suppress after first fire" regression breaks here rather than
+      # in production.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Cooldown Open DTU"})
+
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
+      touch_last_seen!(dtu, -60)
+
+      :ok = Notifications.subscribe(user.id)
+
+      # First offline period — fires.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_co_1", dtu.id}
+      )
+
+      assert_receive {:notification, _payload1}, 1_000
+
+      # Reconnect — clears the marker, stamps `connected_at = now`.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_co_reconnect", dtu.id}
+      )
+
+      assert_receive {:notification, _payload2}, 1_000
+
+      # Backdate BOTH the new `connected_at` (so C1 passes) AND
+      # `last_offline_fired_at` (so the cooldown is open for the
+      # second fire). The "last_offline_fired_at" backdate is the
+      # variable under test here — it models "30 min have passed
+      # since the last fire."
+      :sys.replace_state(DtuConnection, fn state ->
+        Map.update!(state, dtu.id, fn entry ->
+          entry
+          |> Map.put(:connected_at, DateTime.add(Time.utc_now_usec(), -1800, :second))
+          |> Map.put(:last_offline_fired_at, DateTime.add(Time.utc_now_usec(), -1801, :second))
+        end)
+      end)
+
+      touch_last_seen!(dtu, -60)
+
+      # Second offline period — cooldown is open (>30 min since the
+      # last fire), C1 passes (>15 min since the prior connect),
+      # `was_disconnected?` is false (cleared by the reconnect), so
+      # all four gates pass and the fire goes through.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_co_2", dtu.id}
+      )
+
+      assert_receive {:notification, payload3}, 1_000
+      assert payload3.title =~ "offline"
+    end
+
+    test "the first disconnect for a never-fired device is unaffected by the cooldown" do
+      # Sanity check that the cooldown gate is open (cooldown_over?
+      # returns true) for devices with no prior fire. Otherwise we'd
+      # silently break first-time-offline notifications.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "First Fire DTU"})
+
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
+      touch_last_seen!(dtu, -60)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_disconnected, "client_first_fire", dtu.id}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.title =~ "offline"
+    end
+  end
+
   describe "user locale propagation" do
     # The producer runs as a long-lived GenServer without a request
     # context, so a bare `gettext/1` would default to whatever
@@ -600,7 +775,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a German user's disconnect title matches the German catalog" do
       user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "de")
       dtu = device_fixture(user, %{name: "Mein Dach"})
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -626,7 +801,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a French user's disconnect title matches the French catalog" do
       user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -650,7 +825,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     test "a French user's body uses the French translation for %{name} interpolation" do
       user = with_locale_user(user_fixture(%{notify_dtu_connection: true}), "fr")
       dtu = device_fixture(user, %{name: "Mon toit"})
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
@@ -685,7 +860,7 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       # path stays intact.
       user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Roof inverter"})
-      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -600, :second))
+      seed_connected_at!(dtu.id, DateTime.add(Time.utc_now_usec(), -1800, :second))
       touch_last_seen!(dtu, -60)
 
       :ok = Notifications.subscribe(user.id)
