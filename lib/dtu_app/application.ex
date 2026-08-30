@@ -28,6 +28,10 @@ defmodule DtuApp.Application do
     # never back up unrelated HTTP work. `config :web_push, finch:
     # DtuAppWeb.WebPushFinch` (in `runtime.exs`) tells the library
     # which pool to use.
+    # 15-min TTL cache for Open-Meteo responses, keyed by
+    # 1°-rounded coords + local date. Drives the cloud-cover
+    # band + stat card on the dashboard; pure in-memory, so the
+    # cache re-fetches after a process restart.
     children =
       ([
          DtuAppWeb.Telemetry,
@@ -35,7 +39,8 @@ defmodule DtuApp.Application do
          {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
          {Phoenix.PubSub, name: DtuApp.PubSub},
          {Finch, name: DtuAppWeb.WebPushFinch},
-         {DtuApp.Accounts.PasskeyChallengeCache, []}
+         {DtuApp.Accounts.PasskeyChallengeCache, []},
+         {DtuApp.Weather.Cache, []}
        ] ++
          mqtt_broker_children() ++
          [

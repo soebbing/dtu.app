@@ -1345,6 +1345,75 @@ defmodule DtuAppWeb.DashboardLive do
         tz_offset_seconds
       )
     )
+    # Cloud-cover band: same nil-through contract — the
+    # `Weather.cloud_cover_for/3` facade returns `nil` for nil coords
+    # or upstream failure, so the template branches on the empty list
+    # without a separate "have we got coords?" check. `past_days` is
+    # pinned to the chart's range so the band covers the same window
+    # the user is looking at (YTD and Custom get 30 to stay within
+    # Open-Meteo's 92-day max and the 15-min cache window).
+    |> assign(
+      :cloud_cover_band,
+      build_cloud_cover_band(user, x_min_seconds, x_max_seconds, tz_offset_seconds)
+    )
+    |> assign(:current_cloud_cover, weather_current_condition(user))
+    |> assign(:current_cloud_cover_pct, weather_current_pct(user))
+  end
+
+  defp build_cloud_cover_band(user, x_min_seconds, x_max_seconds, tz_offset_seconds) do
+    case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
+      nil ->
+        []
+
+      {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
+        readings =
+          Enum.zip(times, values) |> Enum.map(fn {time, pct} -> %{time: time, pct: pct} end)
+
+        ChartHelpers.cloud_cover_band(
+          readings,
+          x_min_seconds,
+          x_max_seconds,
+          tz_offset_seconds,
+          800
+        )
+
+      _ ->
+        []
+    end
+  end
+
+  defp weather_current_condition(%{latitude: nil}), do: nil
+  defp weather_current_condition(%{longitude: nil}), do: nil
+
+  defp weather_current_condition(user) do
+    DtuApp.Weather.current_condition(user.latitude, user.longitude)
+  end
+
+  defp weather_current_pct(%{latitude: nil}), do: nil
+  defp weather_current_pct(%{longitude: nil}), do: nil
+
+  defp weather_current_pct(user) do
+    case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
+      {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
+        case most_recent_pct(times, values) do
+          nil -> nil
+          pct -> pct
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp most_recent_pct([], _), do: nil
+  defp most_recent_pct(_, []), do: nil
+
+  defp most_recent_pct([_t], [v]), do: v
+
+  defp most_recent_pct(times, values) do
+    pairs = Enum.zip(times, values)
+    {_t, pct} = Enum.max_by(pairs, fn {t, _} -> DateTime.to_unix(t, :second) end)
+    pct
   end
 
   # Chart math + Y-axis formatting helpers (`shift_local/2`,
@@ -2297,6 +2366,8 @@ defmodule DtuAppWeb.DashboardLive do
               time_range={@time_range}
               user_tz_offset_seconds={@user_tz_offset_seconds}
               locale={@locale}
+              cloud_cover={@current_cloud_cover}
+              cloud_cover_pct={@current_cloud_cover_pct}
             />
           <% end %>
 
@@ -2931,6 +3002,42 @@ defmodule DtuAppWeb.DashboardLive do
                           pointer-events="none"
                         />
                       <% end %>
+                    <% end %>
+
+                    <%!-- Cloud-cover band overlay. Drawn between the
+                         data series and the cursor guide so it sits
+                         underneath the live cursor + tooltip but
+                         above the curves (it's an *ambient* signal,
+                         not data the user is interacting with).
+                         Each hourly reading renders a thin vertical
+                         `<rect>` with opacity scaled by the
+                         cloud-cover percentage (0% = transparent,
+                         100% = most visible). Cloud cover 0% is
+                         rendered as transparent — no fill, no
+                         visual footprint — so a clear sky doesn't
+                         litter the chart. The band width is
+                         800 / 48 ≈ 16.7px per hourly bucket,
+                         matching the hourly sampling granularity
+                         from Open-Meteo. Hidden entirely when
+                         `@cloud_cover_band == []` (nil coords or
+                         upstream failure). --%>
+                    <%= if @cloud_cover_band != [] do %>
+                      <g
+                        id="chart-cloud-cover-band"
+                        pointer-events="none"
+                        data-testid="cloud-cover-band"
+                      >
+                        <%= for entry <- @cloud_cover_band do %>
+                          <rect
+                            x={entry.x - 8.4}
+                            y="20"
+                            width="16.7"
+                            height="230"
+                            fill="rgb(148 163 184 / #{Float.round(0.05 + entry.pct * 0.0035, 3)})"
+                            pointer-events="none"
+                          />
+                        <% end %>
+                      </g>
                     <% end %>
 
                     <!-- Vertical guide line drawn at the cursor's X
