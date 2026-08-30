@@ -402,10 +402,31 @@ defmodule DtuAppWeb.DashboardLive.Components do
   attr :locale, :string, required: true
   attr :cloud_cover, :any, default: nil
   attr :cloud_cover_pct, :any, default: nil
+  # `:granted | :not_asked | :loading | :denied` — drives which
+  # sub-render the cloud-cover card slot produces (data card vs.
+  # "Share location" prompt vs. loading spinner vs. nothing).
+  # Set by the dashboard on mount (initial state derived from the
+  # user's persisted lat/lon) and updated by the
+  # `location_loading` / `location_denied` handlers.
+  attr :geolocation_state, :atom,
+    default: :not_asked,
+    values: [:granted, :not_asked, :loading, :denied]
+
+  # Mirrors the same condition the dashboard's
+  # `DtuApp.Accounts.user_has_geolocation?/1` already computed —
+  # passed through so the component can avoid re-deriving it (and
+  # so the data card is rendered when upstream weather data is
+  # present even if `@cloud_cover` happens to be nil for a
+  # transient reason).
+  attr :user_has_geolocation, :boolean, default: false
 
   def stat_card_row(assigns) do
     ~H"""
-    <% cols =
+    <% # The cloud-cover card slot always occupies a column when
+    # there's any chance of showing it — `:not_asked` (button)
+    # and `:loading` (spinner) both count, only `:denied` skips
+    # the column so the row reflows back to its previous size.
+    cols =
       3 +
         if(@range_preset == "1d" and @stats.current_power > 0,
           do: 1,
@@ -419,7 +440,7 @@ defmodule DtuAppWeb.DashboardLive.Components do
           do: 1,
           else: 0
         ) +
-        if(@cloud_cover, do: 1, else: 0) %>
+        if(@geolocation_state == :denied, do: 0, else: 1) %>
     <% cols_class =
       cond do
         cols <= 3 -> "lg:grid-cols-3"
@@ -679,34 +700,117 @@ defmodule DtuAppWeb.DashboardLive.Components do
          stays empty in that case). Sky-blue colour so it visually
          separates from the amber yield cards, the rose consumption
          cards, and the indigo live signal. --%>
-      <%= if @cloud_cover do %>
-        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-          <div class="px-4 py-5 sm:p-6">
-            <div class="flex items-center">
-              <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                <.icon name="hero-cloud" class="h-6 w-6" />
-              </div>
-              <div class="ml-5 w-0 flex-1">
-                <dl>
-                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                    {gettext("Cloud cover")}
-                  </dt>
-                  <dd class="flex items-baseline">
-                    <div
-                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                      id="stat-cloud-cover-pct"
-                    >
-                      {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%"}
-                    </div>
-                    <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
-                      {cloud_cover_label(@cloud_cover)}
-                    </p>
-                  </dd>
-                </dl>
+      <%!-- Cloud-cover card slot. Renders one of four states:
+             * `:granted` + `@cloud_cover` populated  → data card
+               ("Cloud cover: 25% / clear").
+             * `:granted` + `@cloud_cover` nil       → data card
+               with "—" placeholder (coords are saved but the
+               upstream Open-Meteo fetch failed / no data for today).
+             * `:not_asked`                          → "Share location"
+               prompt with explanation + button wired to
+               `.RequestLocation` (the colocated JS hook that calls
+               `navigator.geolocation.getCurrentPosition` and pushes
+               the result back as `set_location` / `location_denied`).
+             * `:loading`                            → the button shows
+               a spinner + "Requesting…" while the browser permission
+               prompt is up.
+             * `:denied`                             → renders nothing;
+               the user explicitly chose that the card hide after a
+               denial. On the next page mount the assign re-initialises
+               from the persisted coords (still nil), so the prompt
+               comes back if the user unblocks the site in their
+               browser settings and reloads. --%>
+      <%= case @geolocation_state do %>
+        <% :granted -> %>
+          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-center">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dl>
+                    <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                      {gettext("Cloud cover")}
+                    </dt>
+                    <dd class="flex items-baseline">
+                      <div
+                        class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                        id="stat-cloud-cover-pct"
+                      >
+                        {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%", else: "—"}
+                      </div>
+                      <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                        {if @cloud_cover,
+                          do: cloud_cover_label(@cloud_cover),
+                          else: gettext("no data")}
+                      </p>
+                    </dd>
+                  </dl>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        <% :not_asked -> %>
+          <div
+            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700"
+            id="cloud-cover-cta"
+          >
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-start">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dt class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                    {gettext("Cloud cover")}
+                  </dt>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {gettext(
+                      "Share your location to show local cloud cover on today's chart and as a stat card."
+                    )}
+                  </p>
+                  <button
+                    type="button"
+                    id="request-location-btn"
+                    phx-hook=".RequestLocation"
+                    class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
+                  >
+                    <.icon name="hero-map-pin" class="h-4 w-4" />
+                    {gettext("Share location")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% :loading -> %>
+          <div
+            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700"
+            id="cloud-cover-loading"
+          >
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-center">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                    {gettext("Cloud cover")}
+                  </dt>
+                  <dd class="mt-1 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+                    <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
+                    {gettext("Requesting…")}
+                  </dd>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% :denied -> %>
+          <%!-- Card is intentionally hidden on denial per the product
+                 decision. The slot still occupies its column slot
+                 count when state != :denied (see `cols` above); once
+                 we're here that column folds back into the previous
+                 grid size. --%>
       <% end %>
     </div>
     """

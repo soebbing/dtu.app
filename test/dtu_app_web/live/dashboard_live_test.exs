@@ -4015,7 +4015,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # Default cents_per_kwh is nil → @savings is nil → savings card
       # stays hidden. Three baseline cards (yield, peak power, peak
-      # time) + current_power = 4 → `lg:grid-cols-4`.
+      # time) + current_power = 4 → plus the cloud-cover card slot
+      # (the user has no lat/lon, so it renders as the "Share
+      # location" prompt and still occupies its column) → 5 →
+      # `lg:grid-cols-5`.
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ ~s(id="stat-current-power"),
@@ -4030,20 +4033,23 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ ~s(id="stat-saved"),
              "Savings card must stay hidden without a configured rate"
 
+      assert html =~ ~s(id="cloud-cover-cta"),
+             "Cloud-cover card slot renders the 'Share location' prompt when user has no lat/lon"
+
       # Production row uses the exact class signature
-      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4`
+      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5`
       # (HEEx compiles the grid div's class list as one string).
       # Without a Shelly, no other grid on the page carries
-      # `lg:grid-cols-4`, so the literal class match uniquely
+      # `lg:grid-cols-5`, so the literal class match uniquely
       # identifies the production row.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"/,
-             "production row grid must use lg:grid-cols-4 (1D, current power + 3 baseline, no savings)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
+             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + cloud slot, no savings)"
 
       # The current-power card lives inside that grid. Allow any
       # characters (including HEEx comments and nested wrappers)
       # between the grid div and the leaf id.
-      assert html =~ ~r/lg:grid-cols-4[\s\S]*?id="stat-current-power"/
+      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
     end
 
     test "1D with savings configured: production row uses lg:grid-cols-5", %{
@@ -4075,18 +4081,17 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(id="stat-saved"),
              "Savings card must render once a rate is configured"
 
-      # Three baseline + current_power + savings = 5 → `lg:grid-cols-5`.
+      # Three baseline + current_power + savings + cloud-cover slot
+      # (the test user has no lat/lon, so the slot renders the
+      # "Share location" prompt and still occupies a column) = 6 →
+      # `lg:grid-cols-6`.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
-             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + savings)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/,
+             "production row grid must use lg:grid-cols-6 (1D, current power + 3 baseline + savings + cloud slot)"
 
-      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
+      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-current-power"/
 
-      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-saved"/
-
-      # The stale `lg:grid-cols-6` must NOT be applied to the
-      # production row — that was the bug.
-      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
+      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-saved"/
     end
 
     test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)",
@@ -4113,12 +4118,15 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ ~s(id="stat-saved"),
              "Savings card stays hidden without a configured rate"
 
-      # Three baseline cards (yield, peak power, peak time) → 3-up.
+      # Three baseline cards (yield, peak power, peak time) + the
+      # cloud-cover card slot (test user has no lat/lon, slot
+      # renders the "Share location" prompt and occupies its
+      # column) = 4 → `lg:grid-cols-4`.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"/,
-             "production row grid must use lg:grid-cols-3 (7D, 3 baseline, no current power, no savings)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"/,
+             "production row grid must use lg:grid-cols-4 (7D, 3 baseline + cloud slot, no current power, no savings)"
 
-      assert html =~ ~r/lg:grid-cols-3[\s\S]*?id="stat-yield-kwh"/
+      assert html =~ ~r/lg:grid-cols-4[\s\S]*?id="stat-yield-kwh"/
 
       # The stale `lg:grid-cols-5` / `lg:grid-cols-6` must NOT be
       # applied here either.
