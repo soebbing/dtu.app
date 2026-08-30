@@ -4015,11 +4015,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # Default cents_per_kwh is nil → @savings is nil → savings card
       # stays hidden. Three baseline cards (yield, peak power, peak
-      # time) + current_power = 4 panels — the cloud-cover slot is
-      # suppressed because it would push the row above the 4-up cap.
-      # The test user has no lat/lon; the slot would have rendered as
-      # the "Share location" prompt, but it's hidden at this row
-      # width regardless of geolocation state.
+      # time) + current_power = 4 base panels; the 1D live preset
+      # permits up to 5 panels, so the cloud-cover slot fits. The
+      # test user has no lat/lon, so the slot renders as the "Share
+      # location" prompt and occupies the 5th column → `lg:grid-cols-5`.
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ ~s(id="stat-current-power"),
@@ -4034,23 +4033,23 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ ~s(id="stat-saved"),
              "Savings card must stay hidden without a configured rate"
 
-      refute html =~ ~s(id="cloud-cover-cta"),
-             "Cloud-cover slot stays hidden when the row is already at 4 panels"
+      assert html =~ ~s(id="cloud-cover-cta"),
+             "Cloud-cover card slot renders the 'Share location' prompt when user has no lat/lon (1D allows 5-up)"
 
       # Production row uses the exact class signature
-      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4`
+      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5`
       # (HEEx compiles the grid div's class list as one string).
       # Without a Shelly, no other grid on the page carries
-      # `lg:grid-cols-4`, so the literal class match uniquely
+      # `lg:grid-cols-5`, so the literal class match uniquely
       # identifies the production row.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"/,
-             "production row grid must use lg:grid-cols-4 (1D, current power + 3 baseline, cloud suppressed)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
+             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + cloud slot, no savings)"
 
       # The current-power card lives inside that grid. Allow any
       # characters (including HEEx comments and nested wrappers)
       # between the grid div and the leaf id.
-      assert html =~ ~r/lg:grid-cols-4[\s\S]*?id="stat-current-power"/
+      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
     end
 
     test "1D with savings configured: production row uses lg:grid-cols-5", %{
