@@ -2747,31 +2747,28 @@ defmodule DtuAppWeb.DashboardLive do
             </h2>
 
             <%= if @chart_type == :line do %>
-              <%= if @path_data == "" do %>
-                <div
-                  class="flex flex-col items-center justify-center h-64 border-2 border-dashed border-zinc-300 dark:border-zinc-700 rounded-lg"
-                  id="empty-chart"
+              <%!-- The chart container always renders — even when
+                   there's no production data for the day (e.g. at
+                   night, on a freshly-created account, or before any
+                   data has been logged) — so the cloud-cover band,
+                   axes, gridlines, sun markers, and now marker stay
+                   visible. The "No power readings" empty-state sits
+                   on top as a centred overlay when path_data is
+                   empty. --%>
+              <div
+                class="relative w-full overflow-hidden"
+                id="solar-chart-container"
+                phx-hook=".ChartTooltip"
+              >
+                <!-- Chart SVG -->
+                <svg
+                  viewBox="0 0 800 280"
+                  class="w-full h-auto overflow-visible"
+                  id="solar-chart-svg"
+                  data-x-min-seconds={@x_min_seconds}
+                  data-x-max-seconds={@x_max_seconds}
                 >
-                  <.icon name="hero-presentation-chart-line" class="h-12 w-12 text-zinc-400 mb-2" />
-                  <p class="text-sm text-zinc-500 dark:text-zinc-400">
-                    {gettext("No power readings logged for this day.")}
-                  </p>
-                </div>
-              <% else %>
-                <div
-                  class="relative w-full overflow-hidden"
-                  id="solar-chart-container"
-                  phx-hook=".ChartTooltip"
-                >
-                  <!-- Chart SVG -->
-                  <svg
-                    viewBox="0 0 800 280"
-                    class="w-full h-auto overflow-visible"
-                    id="solar-chart-svg"
-                    data-x-min-seconds={@x_min_seconds}
-                    data-x-max-seconds={@x_max_seconds}
-                  >
-                    <!-- Grid Lines + Y-Axis Labels. The chart renders one
+                  <!-- Grid Lines + Y-Axis Labels. The chart renders one
                          horizontal gridline + tick label per 500 W step
                          (`@y_gridlines`, computed by `chart_y_gridlines/5`).
                          The list covers `[y_min, y_max]` aligned to the 500 W
@@ -2786,59 +2783,59 @@ defmodule DtuAppWeb.DashboardLive do
                          heavier baseline. For DTU-only users the 0 W tick
                          coincides with this baseline (since zero_y = 250),
                          and the 0 W label sits just below the chart. -->
-                    {chart_grid_bottom = 250.0}
-                    <%= for {watts, y_pixel} <- @y_gridlines do %>
-                      <% is_zero = watts == 0.0 %>
-                      <line
-                        x1="0"
-                        y1={y_pixel}
-                        x2="800"
-                        y2={y_pixel}
-                        stroke="#f4f4f5"
-                        class="dark:stroke-zinc-700"
-                        stroke-width="1"
-                        stroke-dasharray={if is_zero, do: "4", else: nil}
-                      />
-                      <text
-                        x="5"
-                        y={y_pixel + 12}
-                        class="text-[10px] font-medium fill-zinc-400"
-                      >
-                        {Devices.format_number(watts, 0, @locale)} W
-                      </text>
-                    <% end %>
+                  {chart_grid_bottom = 250.0}
+                  <%= for {watts, y_pixel} <- @y_gridlines do %>
+                    <% is_zero = watts == 0.0 %>
                     <line
                       x1="0"
-                      y1={chart_grid_bottom}
+                      y1={y_pixel}
                       x2="800"
-                      y2={chart_grid_bottom}
-                      stroke="#e4e4e7"
-                      class="dark:stroke-zinc-600"
-                      stroke-width="1.5"
+                      y2={y_pixel}
+                      stroke="#f4f4f5"
+                      class="dark:stroke-zinc-700"
+                      stroke-width="1"
+                      stroke-dasharray={if is_zero, do: "4", else: nil}
                     />
+                    <text
+                      x="5"
+                      y={y_pixel + 12}
+                      class="text-[10px] font-medium fill-zinc-400"
+                    >
+                      {Devices.format_number(watts, 0, @locale)} W
+                    </text>
+                  <% end %>
+                  <line
+                    x1="0"
+                    y1={chart_grid_bottom}
+                    x2="800"
+                    y2={chart_grid_bottom}
+                    stroke="#e4e4e7"
+                    class="dark:stroke-zinc-600"
+                    stroke-width="1.5"
+                  />
 
-                    <!-- X-Axis Labels (Time slots). Dynamically positioned to
+                  <!-- X-Axis Labels (Time slots). Dynamically positioned to
                          fit the chart's X-axis range — full day (00:00–
                          24:00) when no data, or zoomed to data when
                          present (see `chart_time_range/1`). -->
-                    <%= for {{x, label}, edge} <- Enum.with_index(@x_labels) do %>
-                      <% anchor =
-                        cond do
-                          edge == 0 -> "start"
-                          edge == length(@x_labels) - 1 -> "end"
-                          true -> "middle"
-                        end %>
-                      <text
-                        x={x}
-                        y="270"
-                        class="text-[10px] font-medium fill-zinc-400"
-                        text-anchor={anchor}
-                      >
-                        {label}
-                      </text>
-                    <% end %>
+                  <%= for {{x, label}, edge} <- Enum.with_index(@x_labels) do %>
+                    <% anchor =
+                      cond do
+                        edge == 0 -> "start"
+                        edge == length(@x_labels) - 1 -> "end"
+                        true -> "middle"
+                      end %>
+                    <text
+                      x={x}
+                      y="270"
+                      class="text-[10px] font-medium fill-zinc-400"
+                      text-anchor={anchor}
+                    >
+                      {label}
+                    </text>
+                  <% end %>
 
-                    <!-- Yesterday ghost overlay (1D / live view only):
+                  <!-- Yesterday ghost overlay (1D / live view only):
                          translucent, dashed per-inverter paths that sit
                          BEHIND today's solid curves so the day-over-day
                          comparison reads at a glance. Rendered first
@@ -2846,165 +2843,165 @@ defmodule DtuAppWeb.DashboardLive do
                          paints on top. Hidden on historical day/week/
                          month/year views, where the selected period's
                          own curve is the comparison the user asked for. -->
-                    <%= for {series, path} <- @yesterday_paths do %>
-                      <% {ybase, yshade} = Map.get(@series_palette, series, {"zinc", "400"}) %>
-                      <% ystroke_hex = ChartPalette.tooltip_to_hex(ybase, yshade) %>
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={ystroke_hex}
-                        stroke-width="1.5"
-                        stroke-opacity="0.35"
-                        stroke-dasharray="4 3"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        data-ghost="true"
-                        data-legend-key={"yesterday:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}"}
-                      />
-                    <% end %>
+                  <%= for {series, path} <- @yesterday_paths do %>
+                    <% {ybase, yshade} = Map.get(@series_palette, series, {"zinc", "400"}) %>
+                    <% ystroke_hex = ChartPalette.tooltip_to_hex(ybase, yshade) %>
+                    <path
+                      d={path}
+                      fill="none"
+                      stroke={ystroke_hex}
+                      stroke-width="1.5"
+                      stroke-opacity="0.35"
+                      stroke-dasharray="4 3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      data-ghost="true"
+                      data-legend-key={"yesterday:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}"}
+                    />
+                  <% end %>
 
-                    <!-- One SVG path per inverter. Each path carries its
+                  <!-- One SVG path per inverter. Each path carries its
                          (time, power) data points as a JSON data attribute
                          so the ChartTooltip hook can look up the cursor-
                          time value without parsing the SVG `d=` string.
                          The Total line is rendered last so it sits on top
                          of every per-inverter path — it's the headline
                          curve. -->
-                    <%= for {series, path} <- @series_paths do %>
-                      <% {base, shade} = Map.get(@series_palette, series) %>
-                      <% stroke_hex = ChartPalette.tooltip_to_hex(base, shade) %>
-                      <% series_json =
-                        Jason.encode!(%{
-                          dtu_id: elem(series, 0),
-                          serial: elem(series, 1),
-                          mppt_index: elem(series, 2),
-                          name: elem(series, 3)
-                        }) %>
-                      <% points_json = Jason.encode!(Map.get(@series_points_data, series, [])) %>
-                      <% legend_key =
-                        "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
-                      <path
-                        d={path}
-                        fill="none"
-                        stroke={stroke_hex}
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        data-series={series_json}
-                        data-points={points_json}
-                        data-stroke={stroke_hex}
-                        data-legend-key={legend_key}
-                      />
-                    <% end %>
-                    <%= if @total_path != "" do %>
-                      <% total_json =
-                        Jason.encode!(%{
-                          is_total: true,
-                          name: gettext("Total"),
-                          serial: "",
-                          mppt_index: -1
-                        }) %>
-                      <% total_points_json = Jason.encode!(@total_points_data) %>
-                      <% {tbase, tshade} = @total_palette %>
-                      <% total_stroke_hex = ChartPalette.tooltip_to_hex(tbase, tshade) %>
-                      <path
-                        d={@total_path}
-                        fill="none"
-                        stroke={total_stroke_hex}
-                        stroke-width="3"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        data-series={total_json}
-                        data-points={total_points_json}
-                        data-stroke={total_stroke_hex}
-                        data-legend-key="total"
-                      />
-                    <% end %>
+                  <%= for {series, path} <- @series_paths do %>
+                    <% {base, shade} = Map.get(@series_palette, series) %>
+                    <% stroke_hex = ChartPalette.tooltip_to_hex(base, shade) %>
+                    <% series_json =
+                      Jason.encode!(%{
+                        dtu_id: elem(series, 0),
+                        serial: elem(series, 1),
+                        mppt_index: elem(series, 2),
+                        name: elem(series, 3)
+                      }) %>
+                    <% points_json = Jason.encode!(Map.get(@series_points_data, series, [])) %>
+                    <% legend_key =
+                      "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
+                    <path
+                      d={path}
+                      fill="none"
+                      stroke={stroke_hex}
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      data-series={series_json}
+                      data-points={points_json}
+                      data-stroke={stroke_hex}
+                      data-legend-key={legend_key}
+                    />
+                  <% end %>
+                  <%= if @total_path != "" do %>
+                    <% total_json =
+                      Jason.encode!(%{
+                        is_total: true,
+                        name: gettext("Total"),
+                        serial: "",
+                        mppt_index: -1
+                      }) %>
+                    <% total_points_json = Jason.encode!(@total_points_data) %>
+                    <% {tbase, tshade} = @total_palette %>
+                    <% total_stroke_hex = ChartPalette.tooltip_to_hex(tbase, tshade) %>
+                    <path
+                      d={@total_path}
+                      fill="none"
+                      stroke={total_stroke_hex}
+                      stroke-width="3"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      data-series={total_json}
+                      data-points={total_points_json}
+                      data-stroke={total_stroke_hex}
+                      data-legend-key="total"
+                    />
+                  <% end %>
 
-                    <%!-- Consumption overlay (Shelly Plus 3EM household draw).
+                  <%!-- Consumption overlay (Shelly Plus 3EM household draw).
                          Drawn after the Total so it sits on top — it's a
                          separate metric, not another inverter. Rendered
                          with a dashed stroke so it's visually distinct
                          from the solid Total line. Hidden when the user
                          has no Shelly device or no consumption data yet. --%>
-                    <%= if @consumption_path != "" do %>
-                      <% consumption_json =
-                        Jason.encode!(%{
-                          is_consumption: true,
-                          name: gettext("Consumption"),
-                          serial: "",
-                          mppt_index: -2
-                        }) %>
-                      <% consumption_points_json = Jason.encode!(@consumption_points_data) %>
-                      <% {cbase, cshade} = @consumption_palette %>
-                      <% consumption_stroke_hex = ChartPalette.tooltip_to_hex(cbase, cshade) %>
-                      <path
-                        d={@consumption_path}
-                        fill="none"
-                        stroke={consumption_stroke_hex}
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        stroke-dasharray="6,4"
-                        data-series={consumption_json}
-                        data-points={consumption_points_json}
-                        data-stroke={consumption_stroke_hex}
-                        data-legend-key="consumption"
-                      />
-                    <% end %>
+                  <%= if @consumption_path != "" do %>
+                    <% consumption_json =
+                      Jason.encode!(%{
+                        is_consumption: true,
+                        name: gettext("Consumption"),
+                        serial: "",
+                        mppt_index: -2
+                      }) %>
+                    <% consumption_points_json = Jason.encode!(@consumption_points_data) %>
+                    <% {cbase, cshade} = @consumption_palette %>
+                    <% consumption_stroke_hex = ChartPalette.tooltip_to_hex(cbase, cshade) %>
+                    <path
+                      d={@consumption_path}
+                      fill="none"
+                      stroke={consumption_stroke_hex}
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-dasharray="6,4"
+                      data-series={consumption_json}
+                      data-points={consumption_points_json}
+                      data-stroke={consumption_stroke_hex}
+                      data-legend-key="consumption"
+                    />
+                  <% end %>
 
-                    <%!-- Net flow overlay (production minus consumption). Drawn
+                  <%!-- Net flow overlay (production minus consumption). Drawn
                          last so it sits on top of every other series. The
                          SVG's vertical center (y=135) is the zero line —
                          negative values (export) plot downward, positive
                          values (import) plot upward. Hidden when the
                          user hasn't paired both an inverter and a Shelly. --%>
-                    <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
-                      <% net_json =
-                        Jason.encode!(%{
-                          is_net: true,
-                          name: gettext("Net flow"),
-                          serial: "",
-                          mppt_index: -3
-                        }) %>
-                      <% net_points_json = Jason.encode!(@net_points_data) %>
-                      <% {nbase, nshade} = @net_palette %>
-                      <% net_stroke_hex = ChartPalette.tooltip_to_hex(nbase, nshade) %>
-                      <path
-                        d={@net_path}
-                        fill="none"
-                        stroke={net_stroke_hex}
-                        stroke-width="2.5"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        data-series={net_json}
-                        data-points={net_points_json}
-                        data-stroke={net_stroke_hex}
-                        data-legend-key="net"
-                      />
-                      <%!-- Zero line for the net flow axis — the dashed
+                  <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
+                    <% net_json =
+                      Jason.encode!(%{
+                        is_net: true,
+                        name: gettext("Net flow"),
+                        serial: "",
+                        mppt_index: -3
+                      }) %>
+                    <% net_points_json = Jason.encode!(@net_points_data) %>
+                    <% {nbase, nshade} = @net_palette %>
+                    <% net_stroke_hex = ChartPalette.tooltip_to_hex(nbase, nshade) %>
+                    <path
+                      d={@net_path}
+                      fill="none"
+                      stroke={net_stroke_hex}
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      data-series={net_json}
+                      data-points={net_points_json}
+                      data-stroke={net_stroke_hex}
+                      data-legend-key="net"
+                    />
+                    <%!-- Zero line for the net flow axis — the dashed
                            grid line at @zero_y already marks this
                            position when `y_min < 0`, so we only render
                            the dedicated (slightly darker) reference
                            line when the chart is positive-only (no net
                            flow below zero). The two would otherwise
                            stack on top of each other. --%>
-                      <%= if @y_min >= 0.0 do %>
-                        <line
-                          x1="0"
-                          y1="135"
-                          x2="800"
-                          y2="135"
-                          stroke="#a1a1aa"
-                          class="dark:stroke-zinc-500"
-                          stroke-width="1"
-                          stroke-dasharray="2,2"
-                          pointer-events="none"
-                        />
-                      <% end %>
+                    <%= if @y_min >= 0.0 do %>
+                      <line
+                        x1="0"
+                        y1="135"
+                        x2="800"
+                        y2="135"
+                        stroke="#a1a1aa"
+                        class="dark:stroke-zinc-500"
+                        stroke-width="1"
+                        stroke-dasharray="2,2"
+                        pointer-events="none"
+                      />
                     <% end %>
+                  <% end %>
 
-                    <%!-- Cloud-cover band overlay. Drawn between the
+                  <%!-- Cloud-cover band overlay. Drawn between the
                          data series and the cursor guide so it sits
                          underneath the live cursor + tooltip but
                          above the curves (it's an *ambient* signal,
@@ -3021,26 +3018,26 @@ defmodule DtuAppWeb.DashboardLive do
                          from Open-Meteo. Hidden entirely when
                          `@cloud_cover_band == []` (nil coords or
                          upstream failure). --%>
-                    <%= if @cloud_cover_band != [] do %>
-                      <g
-                        id="chart-cloud-cover-band"
-                        pointer-events="none"
-                        data-testid="cloud-cover-band"
-                      >
-                        <%= for entry <- @cloud_cover_band do %>
-                          <rect
-                            x={entry.x - 8.4}
-                            y="20"
-                            width="16.7"
-                            height="230"
-                            fill="rgb(148 163 184 / #{Float.round(0.05 + entry.pct * 0.0035, 3)})"
-                            pointer-events="none"
-                          />
-                        <% end %>
-                      </g>
-                    <% end %>
+                  <%= if @cloud_cover_band != [] do %>
+                    <g
+                      id="chart-cloud-cover-band"
+                      pointer-events="none"
+                      data-testid="cloud-cover-band"
+                    >
+                      <%= for entry <- @cloud_cover_band do %>
+                        <rect
+                          x={entry.x - 8.4}
+                          y="20"
+                          width="16.7"
+                          height="230"
+                          fill="rgb(148 163 184 / #{Float.round(0.05 + entry.pct * 0.0035, 3)})"
+                          pointer-events="none"
+                        />
+                      <% end %>
+                    </g>
+                  <% end %>
 
-                    <!-- Vertical guide line drawn at the cursor's X
+                  <!-- Vertical guide line drawn at the cursor's X
                          position. Hidden by default; the ChartTooltip
                          hook shows it on hover/touch. Rendered LAST
                          (after every data path) so the SVG paint
@@ -3048,20 +3045,20 @@ defmodule DtuAppWeb.DashboardLive do
                          curves — earlier in document order, the
                          strokes would paint over the dashed line
                          wherever the cursor sits near a series. -->
-                    <line
-                      x1="0"
-                      y1="20"
-                      x2="0"
-                      y2="250"
-                      stroke="#a1a1aa"
-                      class="dark:stroke-zinc-500"
-                      stroke-width="1"
-                      stroke-dasharray="2,2"
-                      pointer-events="none"
-                      style="display:none"
-                      id="chart-guide-line"
-                    />
-                    <%!-- Sunrise / sunset vertical guide lines. Drawn after
+                  <line
+                    x1="0"
+                    y1="20"
+                    x2="0"
+                    y2="250"
+                    stroke="#a1a1aa"
+                    class="dark:stroke-zinc-500"
+                    stroke-width="1"
+                    stroke-dasharray="2,2"
+                    pointer-events="none"
+                    style="display:none"
+                    id="chart-guide-line"
+                  />
+                  <%!-- Sunrise / sunset vertical guide lines. Drawn after
                          the cursor guide's source line above (but rendered
                          here, before the now marker) so the SVG paint order
                          keeps them visually underneath both the now marker
@@ -3073,109 +3070,109 @@ defmodule DtuAppWeb.DashboardLive do
                          `ChartHelpers.sun_markers/6`; each X and label
                          is nil together — the chart shows either both
                          or neither per event. --%>
-                    <%= case @sun_markers do %>
-                      <% {sr_x, _, sr_label, _} when not is_nil(sr_x) -> %>
-                        <line
-                          x1={sr_x}
-                          y1="20"
-                          x2={sr_x}
-                          y2="250"
-                          stroke="#f59e0b"
-                          class="dark:stroke-amber-400"
-                          stroke-width="1"
-                          stroke-dasharray="3,3"
-                          opacity="0.55"
-                          pointer-events="none"
-                        />
-                        <g pointer-events="none">
-                          <text
-                            x={sr_x}
-                            y="14"
-                            text-anchor="middle"
-                            fill="#b45309"
-                            class="dark:fill-amber-300"
-                            font-size="9"
-                            font-weight="600"
-                            font-family="ui-sans-serif, system-ui, sans-serif"
-                          >
-                            ↑ {sr_label}
-                          </text>
-                        </g>
-                      <% _ -> %>
-                    <% end %>
-                    <%= case @sun_markers do %>
-                      <% {_, ss_x, _, ss_label} when not is_nil(ss_x) -> %>
-                        <line
-                          x1={ss_x}
-                          y1="20"
-                          x2={ss_x}
-                          y2="250"
-                          stroke="#f59e0b"
-                          class="dark:stroke-amber-400"
-                          stroke-width="1"
-                          stroke-dasharray="3,3"
-                          opacity="0.55"
-                          pointer-events="none"
-                        />
-                        <g pointer-events="none">
-                          <text
-                            x={ss_x}
-                            y="14"
-                            text-anchor="middle"
-                            fill="#b45309"
-                            class="dark:fill-amber-300"
-                            font-size="9"
-                            font-weight="600"
-                            font-family="ui-sans-serif, system-ui, sans-serif"
-                          >
-                            ↓ {ss_label}
-                          </text>
-                        </g>
-                      <% _ -> %>
-                    <% end %>
-                    <%!-- Now marker - solid vertical line and label pill drawn
+                  <%= case @sun_markers do %>
+                    <% {sr_x, _, sr_label, _} when not is_nil(sr_x) -> %>
+                      <line
+                        x1={sr_x}
+                        y1="20"
+                        x2={sr_x}
+                        y2="250"
+                        stroke="#f59e0b"
+                        class="dark:stroke-amber-400"
+                        stroke-width="1"
+                        stroke-dasharray="3,3"
+                        opacity="0.55"
+                        pointer-events="none"
+                      />
+                      <g pointer-events="none">
+                        <text
+                          x={sr_x}
+                          y="14"
+                          text-anchor="middle"
+                          fill="#b45309"
+                          class="dark:fill-amber-300"
+                          font-size="9"
+                          font-weight="600"
+                          font-family="ui-sans-serif, system-ui, sans-serif"
+                        >
+                          ↑ {sr_label}
+                        </text>
+                      </g>
+                    <% _ -> %>
+                  <% end %>
+                  <%= case @sun_markers do %>
+                    <% {_, ss_x, _, ss_label} when not is_nil(ss_x) -> %>
+                      <line
+                        x1={ss_x}
+                        y1="20"
+                        x2={ss_x}
+                        y2="250"
+                        stroke="#f59e0b"
+                        class="dark:stroke-amber-400"
+                        stroke-width="1"
+                        stroke-dasharray="3,3"
+                        opacity="0.55"
+                        pointer-events="none"
+                      />
+                      <g pointer-events="none">
+                        <text
+                          x={ss_x}
+                          y="14"
+                          text-anchor="middle"
+                          fill="#b45309"
+                          class="dark:fill-amber-300"
+                          font-size="9"
+                          font-weight="600"
+                          font-family="ui-sans-serif, system-ui, sans-serif"
+                        >
+                          ↓ {ss_label}
+                        </text>
+                      </g>
+                    <% _ -> %>
+                  <% end %>
+                  <%!-- Now marker - solid vertical line and label pill drawn
                          on top of the data curves but below the cursor guide.
                          Hidden on historical views (assign_line_chart_data/6
                          sets nil unless :live? is true). --%>
 
-                    <%= if @now_marker_x do %>
-                      <line
-                        x1={@now_marker_x}
-                        y1="24"
-                        x2={@now_marker_x}
-                        y2="250"
-                        stroke="#6366f1"
-                        class="dark:stroke-indigo-400"
-                        stroke-width="1.5"
-                        opacity="0.65"
-                        pointer-events="none"
+                  <%= if @now_marker_x do %>
+                    <line
+                      x1={@now_marker_x}
+                      y1="24"
+                      x2={@now_marker_x}
+                      y2="250"
+                      stroke="#6366f1"
+                      class="dark:stroke-indigo-400"
+                      stroke-width="1.5"
+                      opacity="0.65"
+                      pointer-events="none"
+                    />
+                    <g pointer-events="none">
+                      <rect
+                        x={@now_marker_x - 18}
+                        y="6"
+                        width="36"
+                        height="14"
+                        rx="3"
+                        fill="#6366f1"
+                        class="dark:fill-indigo-400"
                       />
-                      <g pointer-events="none">
-                        <rect
-                          x={@now_marker_x - 18}
-                          y="6"
-                          width="36"
-                          height="14"
-                          rx="3"
-                          fill="#6366f1"
-                          class="dark:fill-indigo-400"
-                        />
-                        <text
-                          x={@now_marker_x}
-                          y="16"
-                          text-anchor="middle"
-                          fill="white"
-                          class="dark:fill-zinc-900"
-                          font-size="10"
-                          font-weight="600"
-                          font-family="ui-sans-serif, system-ui, sans-serif"
-                        >
-                          now
-                        </text>
-                      </g>
-                    <% end %>
+                      <text
+                        x={@now_marker_x}
+                        y="16"
+                        text-anchor="middle"
+                        fill="white"
+                        class="dark:fill-zinc-900"
+                        font-size="10"
+                        font-weight="600"
+                        font-family="ui-sans-serif, system-ui, sans-serif"
+                      >
+                        now
+                      </text>
+                    </g>
+                  <% end %>
 
-                    <!-- Floating tooltip overlay rendered by the
+                  <!-- Floating tooltip overlay rendered by the
                          ChartTooltip hook. Hidden by default; positioned
                          via the foreignObject's x/y attributes as the
                          cursor moves. `pointer-events: none` so it
@@ -3185,126 +3182,145 @@ defmodule DtuAppWeb.DashboardLive do
                          — the foreignObject would otherwise be
                          painted under the data strokes wherever a
                          series crosses the tooltip box. -->
-                    <foreignObject
-                      x="0"
-                      y="0"
-                      width="200"
-                      height="160"
-                      pointer-events="none"
-                      style="display:none;overflow:visible"
-                      id="chart-tooltip"
+                  <foreignObject
+                    x="0"
+                    y="0"
+                    width="200"
+                    height="160"
+                    pointer-events="none"
+                    style="display:none;overflow:visible"
+                    id="chart-tooltip"
+                  >
+                    <div
+                      xmlns="http://www.w3.org/1999/xhtml"
+                      class="rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
                     >
                       <div
-                        xmlns="http://www.w3.org/1999/xhtml"
-                        class="rounded-md border border-zinc-200 bg-white/95 px-2.5 py-1.5 shadow-md backdrop-blur dark:border-zinc-700 dark:bg-zinc-900/95"
+                        id="chart-tooltip-body"
+                        class="font-mono text-xs text-zinc-700 dark:text-zinc-200"
                       >
-                        <div
-                          id="chart-tooltip-body"
-                          class="font-mono text-xs text-zinc-700 dark:text-zinc-200"
-                        >
-                        </div>
                       </div>
-                    </foreignObject>
-                  </svg>
+                    </div>
+                  </foreignObject>
+                </svg>
 
-                  <%!-- Legend: Total line first (the headline), then one entry
+                <%!-- Empty-state overlay: shown when there's no
+                       production data for the day (e.g. at night, on
+                       a fresh account, or before any data has been
+                       logged). The cloud-cover band still renders
+                       behind it because the SVG is always present. --%>
+                <%= if @path_data == "" do %>
+                  <div
+                    class="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none"
+                    id="empty-chart"
+                  >
+                    <div class="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-zinc-300 dark:border-zinc-700 bg-white/70 dark:bg-zinc-900/70 px-6 py-4">
+                      <.icon name="hero-presentation-chart-line" class="h-10 w-10 text-zinc-400 mb-2" />
+                      <p class="text-sm text-zinc-500 dark:text-zinc-400">
+                        {gettext("No power readings logged for this day.")}
+                      </p>
+                    </div>
+                  </div>
+                <% end %>
+
+                <%!-- Legend: Total line first (the headline), then one entry
                        per (inverter, MPPT) series in the same order as the
                        paths above. Each entry is a real <button> so it's
                        keyboard- and screen-reader-accessible; the
                        ChartTooltip hook toggles the matching path's hidden
                        class on click. --%>
-                  <%= if map_size(@series_legend) > 0 or @total_path != "" or @consumption_path != "" or map_size(@yesterday_paths) > 0 do %>
-                    <div
-                      class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
-                      id="chart-legend"
-                    >
-                      <%= if @total_path != "" do %>
-                        <% {tbase, tshade} = @total_palette %>
-                        <button
-                          type="button"
-                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
-                          data-legend-key="total"
-                          aria-pressed="true"
-                        >
-                          <span
-                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{tbase}-#{tshade}"}
-                            aria-hidden="true"
-                          />
-                          <span class="text-zinc-700 dark:text-zinc-300">
-                            {gettext("Total")}
-                          </span>
-                        </button>
-                      <% end %>
-                      <%= if @consumption_path != "" do %>
-                        <% {cbase, cshade} = @consumption_palette %>
-                        <button
-                          type="button"
-                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
-                          data-legend-key="consumption"
-                          aria-pressed="true"
-                        >
-                          <span
-                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{cbase}-#{cshade}"}
-                            aria-hidden="true"
-                          />
-                          <span class="text-zinc-700 dark:text-zinc-300">
-                            {gettext("Consumption")}
-                          </span>
-                        </button>
-                      <% end %>
-                      <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
-                        <% {nbase, nshade} = @net_palette %>
-                        <button
-                          type="button"
-                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
-                          data-legend-key="net"
-                          aria-pressed="true"
-                        >
-                          <span
-                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{nbase}-#{nshade}"}
-                            aria-hidden="true"
-                          />
-                          <span class="text-zinc-700 dark:text-zinc-300">
-                            {gettext("Net flow")}
-                          </span>
-                        </button>
-                      <% end %>
-                      <%= if map_size(@yesterday_paths) > 0 do %>
+                <%= if map_size(@series_legend) > 0 or @total_path != "" or @consumption_path != "" or map_size(@yesterday_paths) > 0 do %>
+                  <div
+                    class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs"
+                    id="chart-legend"
+                  >
+                    <%= if @total_path != "" do %>
+                      <% {tbase, tshade} = @total_palette %>
+                      <button
+                        type="button"
+                        class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                        data-legend-key="total"
+                        aria-pressed="true"
+                      >
                         <span
-                          class="inline-flex items-center gap-1.5 rounded px-1 py-0.5 text-zinc-500 dark:text-zinc-400"
-                          aria-label={gettext("Yesterday (day-over-day comparison)")}
-                        >
-                          <span
-                            class="inline-block h-0.5 w-4 rounded border-t border-dashed border-zinc-400 dark:border-zinc-500"
-                            aria-hidden="true"
-                          />
-                          <span class="text-xs">
-                            {gettext("Yesterday")}
-                          </span>
+                          class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{tbase}-#{tshade}"}
+                          aria-hidden="true"
+                        />
+                        <span class="text-zinc-700 dark:text-zinc-300">
+                          {gettext("Total")}
                         </span>
-                      <% end %>
-                      <%= for {series, label} <- @series_legend do %>
-                        <% {base, shade} = Map.get(@series_palette, series) %>
-                        <% legend_key =
-                          "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
-                        <button
-                          type="button"
-                          class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
-                          data-legend-key={legend_key}
-                          aria-pressed="true"
-                        >
-                          <span
-                            class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{base}-#{shade}"}
-                            aria-hidden="true"
-                          />
-                          <span class="text-zinc-700 dark:text-zinc-300">{label}</span>
-                        </button>
-                      <% end %>
-                    </div>
-                  <% end %>
-                </div>
+                      </button>
+                    <% end %>
+                    <%= if @consumption_path != "" do %>
+                      <% {cbase, cshade} = @consumption_palette %>
+                      <button
+                        type="button"
+                        class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                        data-legend-key="consumption"
+                        aria-pressed="true"
+                      >
+                        <span
+                          class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{cbase}-#{cshade}"}
+                          aria-hidden="true"
+                        />
+                        <span class="text-zinc-700 dark:text-zinc-300">
+                          {gettext("Consumption")}
+                        </span>
+                      </button>
+                    <% end %>
+                    <%= if @net_path != "" and @has_inverter? and @has_shelly? do %>
+                      <% {nbase, nshade} = @net_palette %>
+                      <button
+                        type="button"
+                        class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                        data-legend-key="net"
+                        aria-pressed="true"
+                      >
+                        <span
+                          class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{nbase}-#{nshade}"}
+                          aria-hidden="true"
+                        />
+                        <span class="text-zinc-700 dark:text-zinc-300">
+                          {gettext("Net flow")}
+                        </span>
+                      </button>
+                    <% end %>
+                    <%= if map_size(@yesterday_paths) > 0 do %>
+                      <span
+                        class="inline-flex items-center gap-1.5 rounded px-1 py-0.5 text-zinc-500 dark:text-zinc-400"
+                        aria-label={gettext("Yesterday (day-over-day comparison)")}
+                      >
+                        <span
+                          class="inline-block h-0.5 w-4 rounded border-t border-dashed border-zinc-400 dark:border-zinc-500"
+                          aria-hidden="true"
+                        />
+                        <span class="text-xs">
+                          {gettext("Yesterday")}
+                        </span>
+                      </span>
+                    <% end %>
+                    <%= for {series, label} <- @series_legend do %>
+                      <% {base, shade} = Map.get(@series_palette, series) %>
+                      <% legend_key =
+                        "series:#{elem(series, 0)}:#{elem(series, 1)}:#{elem(series, 2)}" %>
+                      <button
+                        type="button"
+                        class="legend-toggle inline-flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 hover:bg-zinc-100 dark:hover:bg-zinc-700/50"
+                        data-legend-key={legend_key}
+                        aria-pressed="true"
+                      >
+                        <span
+                          class={"legend-swatch inline-block h-2.5 w-2.5 rounded-sm bg-#{base}-#{shade}"}
+                          aria-hidden="true"
+                        />
+                        <span class="text-zinc-700 dark:text-zinc-300">{label}</span>
+                      </button>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
 
-                <%!-- Colocated JS hook: shows a vertical guide line + a
+              <%!-- Colocated JS hook: shows a vertical guide line + a
                      tooltip with the time and per-series power at the
                      cursor's position. The tooltip body is rendered
                      directly into the DOM (no LiveView round-trip) so
@@ -3312,330 +3328,329 @@ defmodule DtuAppWeb.DashboardLive do
                      from the SVG's `data-series` / `data-points`
                      attributes; the time range from `data-x-min-seconds`
                      / `data-x-max-seconds`. --%>
-                <script :type={Phoenix.LiveView.ColocatedHook} name=".ChartTooltip">
-                  export default {
-                    mounted() {
-                      // The chart X-axis labels and the bucket times
-                      // embedded in `data-points` are pre-shifted to
-                      // LOCAL time on the server (`assign_line_chart_data/5`
-                      // applies `tz_offset_seconds`). The chart range, the
-                      // tooltip body and the cursor math all use those
-                      // local values directly — no client-side timezone
-                      // conversion is needed here.
-                      this.svg = this.el.querySelector("#solar-chart-svg");
-                      this.guide = this.svg.querySelector("#chart-guide-line");
-                      this.tooltip = this.svg.querySelector("#chart-tooltip");
-                      this.body = this.svg.querySelector("#chart-tooltip-body");
-                      this.legend = this.el.querySelector("#chart-legend");
+              <script :type={Phoenix.LiveView.ColocatedHook} name=".ChartTooltip">
+                export default {
+                  mounted() {
+                    // The chart X-axis labels and the bucket times
+                    // embedded in `data-points` are pre-shifted to
+                    // LOCAL time on the server (`assign_line_chart_data/5`
+                    // applies `tz_offset_seconds`). The chart range, the
+                    // tooltip body and the cursor math all use those
+                    // local values directly — no client-side timezone
+                    // conversion is needed here.
+                    this.svg = this.el.querySelector("#solar-chart-svg");
+                    this.guide = this.svg.querySelector("#chart-guide-line");
+                    this.tooltip = this.svg.querySelector("#chart-tooltip");
+                    this.body = this.svg.querySelector("#chart-tooltip-body");
+                    this.legend = this.el.querySelector("#chart-legend");
 
-                      this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
-                      this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+                    this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
+                    this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
 
-                      // Track which series the user has hidden via the
-                      // legend so the tooltip can skip them on the next
-                      // hover. Keys survive LiveView re-renders because
-                      // they're derived from the server template, not
-                      // from DOM node identity.
-                      this.hiddenKeys = new Set();
+                    // Track which series the user has hidden via the
+                    // legend so the tooltip can skip them on the next
+                    // hover. Keys survive LiveView re-renders because
+                    // they're derived from the server template, not
+                    // from DOM node identity.
+                    this.hiddenKeys = new Set();
 
-                      this.series = Array.from(
-                        this.svg.querySelectorAll("path[data-series][data-points]")
-                      ).map((p) => ({
-                        meta: JSON.parse(p.dataset.series),
-                        points: JSON.parse(p.dataset.points),
-                        color: p.dataset.stroke,
-                        key: p.dataset.legendKey || null
-                      }));
+                    this.series = Array.from(
+                      this.svg.querySelectorAll("path[data-series][data-points]")
+                    ).map((p) => ({
+                      meta: JSON.parse(p.dataset.series),
+                      points: JSON.parse(p.dataset.points),
+                      color: p.dataset.stroke,
+                      key: p.dataset.legendKey || null
+                    }));
 
-                      // Push the browser's UTC offset (in seconds,
-                      // positive east of UTC) so the LiveView can
-                      // re-render labels / chart range with the right
-                      // timezone. The very first render uses the default
-                      // offset of 0 (UTC) until this fires — see the
-                      // `set_timezone` handler in DashboardLive.
-                      const offsetMinutes = new Date().getTimezoneOffset();
-                      const offsetSeconds = -offsetMinutes * 60;
-                      this.pushEvent("set_timezone", {
-                        offset_seconds: String(offsetSeconds)
+                    // Push the browser's UTC offset (in seconds,
+                    // positive east of UTC) so the LiveView can
+                    // re-render labels / chart range with the right
+                    // timezone. The very first render uses the default
+                    // offset of 0 (UTC) until this fires — see the
+                    // `set_timezone` handler in DashboardLive.
+                    const offsetMinutes = new Date().getTimezoneOffset();
+                    const offsetSeconds = -offsetMinutes * 60;
+                    this.pushEvent("set_timezone", {
+                      offset_seconds: String(offsetSeconds)
+                    });
+
+                    // Push the browser's geographic position so the
+                    // server can compute astronomical sunrise / sunset
+                    // for the chart's vertical guide lines. Best-effort:
+                    // permission denial, unavailable API, and timeout
+                    // all silently fall through (the chart simply
+                    // shows no sun markers for users without captured
+                    // coords). We deliberately do NOT prompt the user
+                    // again on subsequent hook mounts — `set_location`
+                    // re-fires on every page load, but only AFTER a
+                    // successful resolve; a denial sticks for the
+                    // session unless the user manually clears the
+                    // site permission.
+                    if (navigator.geolocation) {
+                      navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                          this.pushEvent("set_location", {
+                            latitude: pos.coords.latitude,
+                            longitude: pos.coords.longitude
+                          });
+                        },
+                        () => {
+                          // Silent: user denied, position unavailable,
+                          // or timeout. The chart will simply omit
+                          // sun markers; no error UI needed.
+                        },
+                        // 10s timeout is well above the typical
+                        // 1–3s fix time but well below the user's
+                        // patience for a "loading" state.
+                        { timeout: 10_000, maximumAge: 60_000 }
+                      );
+                    }
+
+                    // Legend click -> toggle the matching path's
+                    // `display:none`. No LiveView round-trip needed;
+                    // the next hover rebuilds the tooltip rows from
+                    // `this.series` and skips anything in
+                    // `this.hiddenKeys`.
+                    this.legendClick = (e) => {
+                      const btn = e.target.closest("button.legend-toggle");
+                      if (!btn) return;
+                      const key = btn.dataset.legendKey;
+                      if (!key) return;
+                      // Re-query the SVG path on every click rather than
+                      // caching it in `pathsByKey`. LiveView re-renders
+                      // swap the path elements out for fresh ones, so a
+                      // cached reference would point at a detached node
+                      // that no longer affects what's on screen.
+                      const path = this.svg.querySelector(
+                        `path[data-legend-key="${CSS.escape(key)}"]`
+                      );
+                      if (!path) return;
+                      const nowHidden = !this.hiddenKeys.has(key);
+                      if (nowHidden) {
+                        this.hiddenKeys.add(key);
+                        path.style.display = "none";
+                        btn.setAttribute("aria-pressed", "false");
+                        btn.classList.add("opacity-40");
+                      } else {
+                        this.hiddenKeys.delete(key);
+                        path.style.display = "";
+                        btn.setAttribute("aria-pressed", "true");
+                        btn.classList.remove("opacity-40");
+                      }
+                    };
+                    // Listen on the hook container (`#solar-chart-container`)
+                    // rather than `#chart-legend` so the handler survives
+                    // LiveView re-renders that swap the legend strip out
+                    // for a fresh one — events from the new buttons still
+                    // bubble up to the container, and we re-query the
+                    // matching path on every click so we still operate on
+                    // the live DOM node.
+                    this.el.addEventListener("click", this.legendClick);
+
+                    this.handlers = {
+                      mousemove: (e) => this.move(e),
+                      mouseleave: () => this.hide(),
+                      touchstart: (e) => this.move(e),
+                      touchmove: (e) => this.move(e),
+                      touchend: () => this.hide(),
+                      touchcancel: () => this.hide(),
+                      resize: () => this.refRect()
+                    };
+
+                    for (const [event, handler] of Object.entries(this.handlers)) {
+                      if (event === "resize") {
+                        window.addEventListener(event, handler);
+                      } else {
+                        this.svg.addEventListener(event, handler, { passive: true });
+                      }
+                    }
+                  },
+
+                  destroyed() {
+                    for (const [event, handler] of Object.entries(this.handlers)) {
+                      if (event === "resize") {
+                        window.removeEventListener(event, handler);
+                      } else {
+                        this.svg.removeEventListener(event, handler);
+                      }
+                    }
+                    if (this.legendClick) {
+                      this.el.removeEventListener("click", this.legendClick);
+                    }
+                  },
+
+                  refRect() {
+                    this.rect = this.svg.getBoundingClientRect();
+                    // The SVG declares `viewBox="0 0 800 280"` and
+                    // stretches to the container's full width via
+                    // `class="w-full"`. When the container is wider
+                    // than 800 CSS px (desktop), one user unit maps
+                    // to (rect.width / 800) CSS px; when narrower
+                    // (mobile), one user unit maps to less. The
+                    // cursor's local `x` and the tooltip's flip
+                    // threshold live in CSS px, but the `<line x1
+                    // x2>` and `<foreignObject x>` attributes we
+                    // write are in user units — so we compute the
+                    // scale once per layout pass and convert at
+                    // write time. Falls back to 1:1 if the SVG
+                    // hasn't been laid out yet (rect.width = 0 →
+                    // divide-by-zero would otherwise blow up
+                    // later).
+                    this.scaleX = this.rect.width > 0 ? this.rect.width / 800 : 1;
+                  },
+
+                  move(e) {
+                    e.preventDefault();
+                    const touch = e.touches && e.touches[0];
+                    const clientX = touch ? touch.clientX : e.clientX;
+                    this.refRect();
+                    const x = clientX - this.rect.left;
+                    if (x < 0 || x > this.rect.width) {
+                      this.hide();
+                      return;
+                    }
+
+                    const span = this.xMax - this.xMin;
+                    const time = span > 0
+                      ? this.xMin + (x / this.rect.width) * span
+                      : this.xMin;
+
+                    // The guide line's x1/x2 attributes are in user
+                    // units; convert from the cursor's CSS-pixel
+                    // offset so the line sits at the cursor on
+                    // desktop (where rect.width > 800) and mobile
+                    // alike.
+                    const xUnits = x / this.scaleX;
+                    this.guide.setAttribute("x1", String(xUnits));
+                    this.guide.setAttribute("x2", String(xUnits));
+                    this.guide.style.display = "";
+
+                    // Drop rows whose legend entry was toggled off
+                    // before computing nearest-bucket lookup.
+                    const rows = this.series
+                      .filter((s) => s.points.length > 0)
+                      .filter((s) => !this.hiddenKeys.has(s.key))
+                      .map((s) => {
+                        const nearest = this.nearest(s.points, time);
+                        return { ...s, value: nearest ? nearest.power : null };
+                      })
+                      // Total, Consumption, and Net flow are headline
+                      // metrics — sort them above the per-inverter lines
+                      // so the first thing the reader sees in the tooltip
+                      // is generation, draw, and net flow (in that
+                      // order). Otherwise preserve server render order.
+                      .sort((a, b) => {
+                        const rank = (m) =>
+                          m.is_total ? 0 : m.is_consumption ? 1 : m.is_net ? 2 : 3;
+                        return rank(a.meta) - rank(b.meta);
                       });
 
-                      // Push the browser's geographic position so the
-                      // server can compute astronomical sunrise / sunset
-                      // for the chart's vertical guide lines. Best-effort:
-                      // permission denial, unavailable API, and timeout
-                      // all silently fall through (the chart simply
-                      // shows no sun markers for users without captured
-                      // coords). We deliberately do NOT prompt the user
-                      // again on subsequent hook mounts — `set_location`
-                      // re-fires on every page load, but only AFTER a
-                      // successful resolve; a denial sticks for the
-                      // session unless the user manually clears the
-                      // site permission.
-                      if (navigator.geolocation) {
-                        navigator.geolocation.getCurrentPosition(
-                          (pos) => {
-                            this.pushEvent("set_location", {
-                              latitude: pos.coords.latitude,
-                              longitude: pos.coords.longitude
-                            });
-                          },
-                          () => {
-                            // Silent: user denied, position unavailable,
-                            // or timeout. The chart will simply omit
-                            // sun markers; no error UI needed.
-                          },
-                          // 10s timeout is well above the typical
-                          // 1–3s fix time but well below the user's
-                          // patience for a "loading" state.
-                          { timeout: 10_000, maximumAge: 60_000 }
-                        );
-                      }
+                    this.body.innerHTML = this.renderRows(time, rows);
 
-                      // Legend click -> toggle the matching path's
-                      // `display:none`. No LiveView round-trip needed;
-                      // the next hover rebuilds the tooltip rows from
-                      // `this.series` and skips anything in
-                      // `this.hiddenKeys`.
-                      this.legendClick = (e) => {
-                        const btn = e.target.closest("button.legend-toggle");
-                        if (!btn) return;
-                        const key = btn.dataset.legendKey;
-                        if (!key) return;
-                        // Re-query the SVG path on every click rather than
-                        // caching it in `pathsByKey`. LiveView re-renders
-                        // swap the path elements out for fresh ones, so a
-                        // cached reference would point at a detached node
-                        // that no longer affects what's on screen.
-                        const path = this.svg.querySelector(
-                          `path[data-legend-key="${CSS.escape(key)}"]`
-                        );
-                        if (!path) return;
-                        const nowHidden = !this.hiddenKeys.has(key);
-                        if (nowHidden) {
-                          this.hiddenKeys.add(key);
-                          path.style.display = "none";
-                          btn.setAttribute("aria-pressed", "false");
-                          btn.classList.add("opacity-40");
-                        } else {
-                          this.hiddenKeys.delete(key);
-                          path.style.display = "";
-                          btn.setAttribute("aria-pressed", "true");
-                          btn.classList.remove("opacity-40");
-                        }
-                      };
-                      // Listen on the hook container (`#solar-chart-container`)
-                      // rather than `#chart-legend` so the handler survives
-                      // LiveView re-renders that swap the legend strip out
-                      // for a fresh one — events from the new buttons still
-                      // bubble up to the container, and we re-query the
-                      // matching path on every click so we still operate on
-                      // the live DOM node.
-                      this.el.addEventListener("click", this.legendClick);
+                    // Position the tooltip just to the right of
+                    // the cursor (4 px gap so it hugs the guide
+                    // line without overlapping the data point);
+                    // flip to the left when there's no room. The
+                    // flip decision + the gap math are in CSS px
+                    // (measured against the cursor's local x) so
+                    // the visual feel is identical on desktop and
+                    // mobile — and `tooltipWidthCss` accounts for
+                    // the fact that the foreignObject's static
+                    // `width="200"` is in user units, so the box
+                    // actually renders at 200 * scaleX CSS px.
+                    const tooltipWidthCss = 200 * this.scaleX;
+                    const tooltipLeftCss =
+                      x > this.rect.width - tooltipWidthCss - 20
+                        ? Math.max(0, x - tooltipWidthCss - 10)
+                        : Math.min(this.rect.width - tooltipWidthCss, x + 4);
+                    // The foreignObject's `x` attribute is in user
+                    // units; convert from the CSS-pixel position
+                    // we just chose. Without this conversion the
+                    // tooltip lands at (x * scaleX) CSS px — i.e.
+                    // further from the cursor on every viewport
+                    // wider than 800 CSS px (desktop).
+                    this.tooltip.setAttribute(
+                      "x",
+                      String(tooltipLeftCss / this.scaleX)
+                    );
+                    this.tooltip.style.display = "";
+                  },
 
-                      this.handlers = {
-                        mousemove: (e) => this.move(e),
-                        mouseleave: () => this.hide(),
-                        touchstart: (e) => this.move(e),
-                        touchmove: (e) => this.move(e),
-                        touchend: () => this.hide(),
-                        touchcancel: () => this.hide(),
-                        resize: () => this.refRect()
-                      };
+                  hide() {
+                    if (this.guide) this.guide.style.display = "none";
+                    if (this.tooltip) this.tooltip.style.display = "none";
+                  },
 
-                      for (const [event, handler] of Object.entries(this.handlers)) {
-                        if (event === "resize") {
-                          window.addEventListener(event, handler);
-                        } else {
-                          this.svg.addEventListener(event, handler, { passive: true });
-                        }
-                      }
-                    },
-
-                    destroyed() {
-                      for (const [event, handler] of Object.entries(this.handlers)) {
-                        if (event === "resize") {
-                          window.removeEventListener(event, handler);
-                        } else {
-                          this.svg.removeEventListener(event, handler);
-                        }
-                      }
-                      if (this.legendClick) {
-                        this.el.removeEventListener("click", this.legendClick);
-                      }
-                    },
-
-                    refRect() {
-                      this.rect = this.svg.getBoundingClientRect();
-                      // The SVG declares `viewBox="0 0 800 280"` and
-                      // stretches to the container's full width via
-                      // `class="w-full"`. When the container is wider
-                      // than 800 CSS px (desktop), one user unit maps
-                      // to (rect.width / 800) CSS px; when narrower
-                      // (mobile), one user unit maps to less. The
-                      // cursor's local `x` and the tooltip's flip
-                      // threshold live in CSS px, but the `<line x1
-                      // x2>` and `<foreignObject x>` attributes we
-                      // write are in user units — so we compute the
-                      // scale once per layout pass and convert at
-                      // write time. Falls back to 1:1 if the SVG
-                      // hasn't been laid out yet (rect.width = 0 →
-                      // divide-by-zero would otherwise blow up
-                      // later).
-                      this.scaleX = this.rect.width > 0 ? this.rect.width / 800 : 1;
-                    },
-
-                    move(e) {
-                      e.preventDefault();
-                      const touch = e.touches && e.touches[0];
-                      const clientX = touch ? touch.clientX : e.clientX;
-                      this.refRect();
-                      const x = clientX - this.rect.left;
-                      if (x < 0 || x > this.rect.width) {
-                        this.hide();
-                        return;
-                      }
-
-                      const span = this.xMax - this.xMin;
-                      const time = span > 0
-                        ? this.xMin + (x / this.rect.width) * span
-                        : this.xMin;
-
-                      // The guide line's x1/x2 attributes are in user
-                      // units; convert from the cursor's CSS-pixel
-                      // offset so the line sits at the cursor on
-                      // desktop (where rect.width > 800) and mobile
-                      // alike.
-                      const xUnits = x / this.scaleX;
-                      this.guide.setAttribute("x1", String(xUnits));
-                      this.guide.setAttribute("x2", String(xUnits));
-                      this.guide.style.display = "";
-
-                      // Drop rows whose legend entry was toggled off
-                      // before computing nearest-bucket lookup.
-                      const rows = this.series
-                        .filter((s) => s.points.length > 0)
-                        .filter((s) => !this.hiddenKeys.has(s.key))
-                        .map((s) => {
-                          const nearest = this.nearest(s.points, time);
-                          return { ...s, value: nearest ? nearest.power : null };
-                        })
-                        // Total, Consumption, and Net flow are headline
-                        // metrics — sort them above the per-inverter lines
-                        // so the first thing the reader sees in the tooltip
-                        // is generation, draw, and net flow (in that
-                        // order). Otherwise preserve server render order.
-                        .sort((a, b) => {
-                          const rank = (m) =>
-                            m.is_total ? 0 : m.is_consumption ? 1 : m.is_net ? 2 : 3;
-                          return rank(a.meta) - rank(b.meta);
-                        });
-
-                      this.body.innerHTML = this.renderRows(time, rows);
-
-                      // Position the tooltip just to the right of
-                      // the cursor (4 px gap so it hugs the guide
-                      // line without overlapping the data point);
-                      // flip to the left when there's no room. The
-                      // flip decision + the gap math are in CSS px
-                      // (measured against the cursor's local x) so
-                      // the visual feel is identical on desktop and
-                      // mobile — and `tooltipWidthCss` accounts for
-                      // the fact that the foreignObject's static
-                      // `width="200"` is in user units, so the box
-                      // actually renders at 200 * scaleX CSS px.
-                      const tooltipWidthCss = 200 * this.scaleX;
-                      const tooltipLeftCss =
-                        x > this.rect.width - tooltipWidthCss - 20
-                          ? Math.max(0, x - tooltipWidthCss - 10)
-                          : Math.min(this.rect.width - tooltipWidthCss, x + 4);
-                      // The foreignObject's `x` attribute is in user
-                      // units; convert from the CSS-pixel position
-                      // we just chose. Without this conversion the
-                      // tooltip lands at (x * scaleX) CSS px — i.e.
-                      // further from the cursor on every viewport
-                      // wider than 800 CSS px (desktop).
-                      this.tooltip.setAttribute(
-                        "x",
-                        String(tooltipLeftCss / this.scaleX)
-                      );
-                      this.tooltip.style.display = "";
-                    },
-
-                    hide() {
-                      if (this.guide) this.guide.style.display = "none";
-                      if (this.tooltip) this.tooltip.style.display = "none";
-                    },
-
-                    nearest(points, time) {
-                      // `points` is sorted ascending by time; binary search
-                      // for the closest entry to the cursor's time.
-                      let lo = 0;
-                      let hi = points.length - 1;
-                      while (lo < hi) {
-                        const mid = (lo + hi) >> 1;
-                        if (points[mid].time < time) lo = mid + 1;
-                        else hi = mid;
-                      }
-                      const a = points[lo - 1];
-                      const b = points[lo];
-                      if (!a) return b;
-                      if (!b) return a;
-                      return Math.abs(a.time - time) < Math.abs(b.time - time) ? a : b;
-                    },
-
-                    seriesLabel(meta) {
-                      // Per-MPPT lines were collapsed into the
-                      // inverter's AC row on the server (see the
-                      // `Enum.filter` in `assign_line_chart_data/5`),
-                      // so the tooltip only ever sees the Total /
-                      // Consumption / Net-flow pseudo-series or one
-                      // row per inverter. No `MPPT N` / `(AC)` suffix
-                      // is needed.
-                      if (meta.is_total) return meta.name || "Total";
-                      if (meta.is_consumption) return meta.name || "Consumption";
-                      if (meta.is_net) return meta.name || "Net flow";
-                      return meta.name || meta.serial || "";
-                    },
-
-                    renderRows(time, rows) {
-                      const hh = String(Math.floor(time / 3600)).padStart(2, "0");
-                      const mm = String(Math.floor((time % 3600) / 60)).padStart(2, "0");
-                      const header =
-                        '<div class="font-semibold mb-1 tabular-nums">' +
-                        hh + ":" + mm +
-                        "</div>";
-                      const body = rows
-                        .map((r) => {
-                          const val = r.value == null ? "—" : Math.round(r.value) + " W";
-                          const swatch =
-                            '<span class="inline-block h-2 w-2 rounded-sm mr-1.5" ' +
-                            'style="background-color:' + r.color + '"></span>';
-                          const rowClass = r.meta.is_total
-                            ? "flex items-center justify-between gap-3 font-semibold"
-                            : "flex items-center justify-between gap-3";
-                          return (
-                            '<div class="' + rowClass + '">' +
-                            '<span class="truncate">' + swatch + this.escape(this.seriesLabel(r.meta)) + "</span>" +
-                            '<span class="tabular-nums font-medium">' + val + "</span>" +
-                            "</div>"
-                          );
-                        })
-                        .join("");
-                      return header + body;
-                    },
-
-                    escape(s) {
-                      return String(s).replace(/[&<>"']/g, (c) => ({
-                        "&": "&amp;",
-                        "<": "&lt;",
-                        ">": "&gt;",
-                        '"': "&quot;",
-                        "'": "&#39;"
-                      })[c]);
+                  nearest(points, time) {
+                    // `points` is sorted ascending by time; binary search
+                    // for the closest entry to the cursor's time.
+                    let lo = 0;
+                    let hi = points.length - 1;
+                    while (lo < hi) {
+                      const mid = (lo + hi) >> 1;
+                      if (points[mid].time < time) lo = mid + 1;
+                      else hi = mid;
                     }
+                    const a = points[lo - 1];
+                    const b = points[lo];
+                    if (!a) return b;
+                    if (!b) return a;
+                    return Math.abs(a.time - time) < Math.abs(b.time - time) ? a : b;
+                  },
+
+                  seriesLabel(meta) {
+                    // Per-MPPT lines were collapsed into the
+                    // inverter's AC row on the server (see the
+                    // `Enum.filter` in `assign_line_chart_data/5`),
+                    // so the tooltip only ever sees the Total /
+                    // Consumption / Net-flow pseudo-series or one
+                    // row per inverter. No `MPPT N` / `(AC)` suffix
+                    // is needed.
+                    if (meta.is_total) return meta.name || "Total";
+                    if (meta.is_consumption) return meta.name || "Consumption";
+                    if (meta.is_net) return meta.name || "Net flow";
+                    return meta.name || meta.serial || "";
+                  },
+
+                  renderRows(time, rows) {
+                    const hh = String(Math.floor(time / 3600)).padStart(2, "0");
+                    const mm = String(Math.floor((time % 3600) / 60)).padStart(2, "0");
+                    const header =
+                      '<div class="font-semibold mb-1 tabular-nums">' +
+                      hh + ":" + mm +
+                      "</div>";
+                    const body = rows
+                      .map((r) => {
+                        const val = r.value == null ? "—" : Math.round(r.value) + " W";
+                        const swatch =
+                          '<span class="inline-block h-2 w-2 rounded-sm mr-1.5" ' +
+                          'style="background-color:' + r.color + '"></span>';
+                        const rowClass = r.meta.is_total
+                          ? "flex items-center justify-between gap-3 font-semibold"
+                          : "flex items-center justify-between gap-3";
+                        return (
+                          '<div class="' + rowClass + '">' +
+                          '<span class="truncate">' + swatch + this.escape(this.seriesLabel(r.meta)) + "</span>" +
+                          '<span class="tabular-nums font-medium">' + val + "</span>" +
+                          "</div>"
+                        );
+                      })
+                      .join("");
+                    return header + body;
+                  },
+
+                  escape(s) {
+                    return String(s).replace(/[&<>"']/g, (c) => ({
+                      "&": "&amp;",
+                      "<": "&lt;",
+                      ">": "&gt;",
+                      '"': "&quot;",
+                      "'": "&#39;"
+                    })[c]);
                   }
-                </script>
-              <% end %>
+                }
+              </script>
             <% else %>
               <!-- Bar Chart -->
               <%= if Enum.all?(@bars, &(&1.value == 0.0)) do %>

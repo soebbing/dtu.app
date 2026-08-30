@@ -31,6 +31,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ "0 W"
       assert html =~ "0.0 kWh"
       assert html =~ "No power readings logged for this day."
+      # Regression: the chart container (and SVG with axes, gridlines,
+      # cloud-cover band slot, sun markers, and now marker) must
+      # still render even when there's no production data for the
+      # day — only the empty-state overlay replaces the production
+      # paths. Previously the chart container was REPLACED by the
+      # empty-state div, which hid the cloud-cover band and made the
+      # dashboard look chartless at night.
+      assert html =~ ~s|id="solar-chart-container"|
+      assert html =~ ~s|id="solar-chart-svg"|
+      assert html =~ ~s|id="empty-chart"|
     end
 
     test "renders dashboard in German when the user has German locale", %{conn: conn, user: user} do
