@@ -102,6 +102,23 @@ defmodule DtuAppWeb.DashboardLive do
       # once at mount; the user's locale doesn't change mid-session, so
       # the assign is read-only after this point.
       |> assign(:locale, Gettext.get_locale(DtuAppWeb.Gettext))
+      # Cloud-cover-card geolocation state. `:granted` when the user
+      # has captured lat/lon (the card renders the data); `:not_asked`
+      # when the user has none (the card renders a "Share location"
+      # button). `:loading` and `:denied` are set by the
+      # `location_loading` / `location_denied` handlers below and
+      # stay sticky through subsequent `assign_dashboard_data` calls
+      # (the helper deliberately doesn't touch this assign). On a
+      # full page reload the assign re-initialises from the user's
+      # persisted coords, so a denied-then-granted user recovers
+      # naturally on the next mount.
+      |> assign(
+        :geolocation_state,
+        if(DtuApp.Accounts.user_has_geolocation?(user),
+          do: :granted,
+          else: :not_asked
+        )
+      )
       # Energy rate for the "Saved today" card. The user sets this on
       # `/users/settings`; if it's nil the savings card is hidden. Read
       # from the user schema here so the LiveView re-render on every
@@ -164,6 +181,29 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   def handle_event("set_location", _payload, socket), do: {:noreply, socket}
+
+  # Cloud-cover card geolocation state transitions. The button in
+  # the card slot is wired to `.RequestLocation` (a colocated JS
+  # hook); on click the hook calls `navigator.geolocation
+  # .getCurrentPosition` and pushes one of:
+  #
+  #   * `location_loading` — the prompt is up; flip the card to
+  #     the loading state (button disabled, "Requesting…" label)
+  #     so the user gets immediate visual feedback.
+  #   * `set_location` — handled above; success path.
+  #   * `location_denied` — PERMISSION_DENIED / POSITION_UNAVAILABLE
+  #     / TIMEOUT. We treat all three as "hide the card" per the
+  #     product decision: a denied user has no in-app retry path,
+  #     the browser's site settings is the recovery surface, and
+  #     on the next page mount the button comes back.
+  @impl true
+  def handle_event("location_loading", _payload, socket) do
+    {:noreply, assign(socket, :geolocation_state, :loading)}
+  end
+
+  def handle_event("location_denied", _payload, socket) do
+    {:noreply, assign(socket, :geolocation_state, :denied)}
+  end
 
   @impl true
   def handle_event("select_dtu", %{"id" => id_str}, socket) do
@@ -555,16 +595,39 @@ defmodule DtuAppWeb.DashboardLive do
     # round.
     user = socket.assigns.current_scope.user
 
-    _ = DtuApp.Accounts.update_user_location(user, %{latitude: lat, longitude: lon})
+    case DtuApp.Accounts.update_user_location(user, %{latitude: lat, longitude: lon}) do
+      :ok ->
+        # Re-read so the just-persisted coords are visible to the
+        # upcoming `assign_dashboard_data` (the in-memory `user`
+        # struct still has the OLD nil values). Without this, the
+        # cloud-cover card would re-render the "Share location"
+        # button even though coords are now saved.
+        refreshed_user = DtuApp.Accounts.get_user!(user.id)
 
-    {:noreply,
-     assign_dashboard_data(
-       socket,
-       user,
-       socket.assigns.selected_dtu_id,
-       socket.assigns.time_range,
-       socket.assigns.selected_period
-     )}
+        {:noreply,
+         socket
+         |> assign(:geolocation_state, :granted)
+         |> assign_dashboard_data(
+           refreshed_user,
+           socket.assigns.selected_dtu_id,
+           socket.assigns.time_range,
+           socket.assigns.selected_period
+         )}
+
+      {:error, _reason} ->
+        # Write failed — treat as a denial from the user's POV so
+        # the card hides rather than showing a stale "Requesting…"
+        # forever. The next page mount re-prompts from scratch.
+        {:noreply,
+         socket
+         |> assign(:geolocation_state, :denied)
+         |> assign_dashboard_data(
+           user,
+           socket.assigns.selected_dtu_id,
+           socket.assigns.time_range,
+           socket.assigns.selected_period
+         )}
+    end
   end
 
   def handle_info({:set_location, _other}, socket), do: {:noreply, socket}
@@ -1358,6 +1421,12 @@ defmodule DtuAppWeb.DashboardLive do
     )
     |> assign(:current_cloud_cover, weather_current_condition(user))
     |> assign(:current_cloud_cover_pct, weather_current_pct(user))
+    # Mirrored from `user.latitude` / `user.longitude` so the cloud-
+    # cover card slot can branch on "user has coords" without
+    # reaching into the user struct from the template. Re-derived
+    # on every `assign_dashboard_data` call so it stays fresh after
+    # `set_location` persists a new position.
+    |> assign(:user_has_geolocation, DtuApp.Accounts.user_has_geolocation?(user))
   end
 
   defp build_cloud_cover_band(user, x_min_seconds, x_max_seconds, tz_offset_seconds) do
@@ -2368,6 +2437,8 @@ defmodule DtuAppWeb.DashboardLive do
               locale={@locale}
               cloud_cover={@current_cloud_cover}
               cloud_cover_pct={@current_cloud_cover_pct}
+              geolocation_state={@geolocation_state}
+              user_has_geolocation={@user_has_geolocation}
             />
           <% end %>
 
@@ -3378,37 +3449,15 @@ defmodule DtuAppWeb.DashboardLive do
                       offset_seconds: String(offsetSeconds)
                     });
 
-                    // Push the browser's geographic position so the
-                    // server can compute astronomical sunrise / sunset
-                    // for the chart's vertical guide lines. Best-effort:
-                    // permission denial, unavailable API, and timeout
-                    // all silently fall through (the chart simply
-                    // shows no sun markers for users without captured
-                    // coords). We deliberately do NOT prompt the user
-                    // again on subsequent hook mounts — `set_location`
-                    // re-fires on every page load, but only AFTER a
-                    // successful resolve; a denial sticks for the
-                    // session unless the user manually clears the
-                    // site permission.
-                    if (navigator.geolocation) {
-                      navigator.geolocation.getCurrentPosition(
-                        (pos) => {
-                          this.pushEvent("set_location", {
-                            latitude: pos.coords.latitude,
-                            longitude: pos.coords.longitude
-                          });
-                        },
-                        () => {
-                          // Silent: user denied, position unavailable,
-                          // or timeout. The chart will simply omit
-                          // sun markers; no error UI needed.
-                        },
-                        // 10s timeout is well above the typical
-                        // 1–3s fix time but well below the user's
-                        // patience for a "loading" state.
-                        { timeout: 10_000, maximumAge: 60_000 }
-                      );
-                    }
+                    // Note: geolocation used to be auto-requested here
+                    // on every dashboard mount. The cloud-cover card
+                    // now owns that flow (see `.RequestLocation` in
+                    // the cloud-cover card slot) — the user clicks a
+                    // "Share location" button to opt in. Sun markers
+                    // still depend on captured coords; if the user
+                    // grants via the card, the next dashboard mount
+                    // (or a LiveView re-render after `set_location`)
+                    // will paint them.
 
                     // Legend click -> toggle the matching path's
                     // `display:none`. No LiveView round-trip needed;
@@ -4258,6 +4307,78 @@ defmodule DtuAppWeb.DashboardLive do
             this.el.removeEventListener("focus", this.select)
             this.el.removeEventListener("click", this.select)
             this.el.removeEventListener("pointerdown", this.select)
+          }
+        }
+      </script>
+
+      <%!-- Colocated hook bound to the "Share location" button
+             inside the cloud-cover card slot. Triggers
+             `navigator.geolocation.getCurrentPosition` and pushes
+             the result back to the server so the dashboard re-renders
+             with the captured lat/lon. See
+             `handle_event("location_loading", ...)` and the existing
+             `set_location` handler. Failure paths (PERMISSION_DENIED
+             / POSITION_UNAVAILABLE / TIMEOUT) all push
+             `location_denied`, which the server uses to flip the
+             card to `:denied` (hidden). --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".RequestLocation">
+        export default {
+          mounted() {
+            this.onClick = (event) => {
+              // Browsers may have already disabled the button if a
+              // previous click is in flight; bail rather than queue
+              // a second prompt (the browser would still ignore the
+              // second one, but the visual state on our side is
+              // cleaner if we don't try).
+              if (this.el.disabled) return;
+
+              if (!navigator.geolocation) {
+                // The browser doesn't expose geolocation at all
+                // (very old browsers, insecure contexts). Treat
+                // identically to a denial: the card hides, the user
+                // can recover on a different device / context.
+                this.pushEvent("location_denied", {});
+                return;
+              }
+
+              // Disable + announce loading immediately so a rapid
+              // double-click doesn't fire two prompts and so the
+              // user sees the click registered even before the
+              // browser shows its permission dialog. The server
+              // flips the slot to the loading card via the
+              // `location_loading` event we push below.
+              this.el.disabled = true;
+              this.pushEvent("location_loading", {});
+
+              navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                  this.pushEvent("set_location", {
+                    latitude: pos.coords.latitude,
+                    longitude: pos.coords.longitude
+                  });
+                },
+                () => {
+                  // PERMISSION_DENIED (1) / POSITION_UNAVAILABLE (2)
+                  // / TIMEOUT (3) all collapse to "denied" from the
+                  // user's POV — the cloud-cover card hides until
+                  // the next page mount.
+                  this.pushEvent("location_denied", {});
+                },
+                // 10s is well above the typical 1–3s fix time but
+                // well below the user's patience for a "loading"
+                // state. `maximumAge: 0` forces a fresh read rather
+                // than the cached 60s value the auto-prompt used.
+                { timeout: 10_000, maximumAge: 0 }
+              );
+            };
+
+            this.el.addEventListener("click", this.onClick);
+          },
+
+          destroyed() {
+            if (this.el && this.onClick) {
+              this.el.removeEventListener("click", this.onClick);
+            }
           }
         }
       </script>

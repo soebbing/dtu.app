@@ -231,6 +231,20 @@ defmodule DtuApp.Accounts do
   end
 
   @doc """
+  True when the user has a captured geographic position — both
+  `latitude` and `longitude` are non-nil. Either being nil means the
+  geolocation permission has not (yet) been granted, the user denied,
+  or the browser never resolved a fix.
+
+  Used by the cloud-cover card slot to decide whether to render the
+  live data card or the "Share location" prompt.
+  """
+  @spec user_has_geolocation?(User.t()) :: boolean()
+  def user_has_geolocation?(%User{latitude: nil}), do: false
+  def user_has_geolocation?(%User{longitude: nil}), do: false
+  def user_has_geolocation?(%User{latitude: _, longitude: _}), do: true
+
+  @doc """
   Builds a settings-changeset for the user. The form on
   `/users/settings` posts `euros_per_kwh` (a decimal string); the
   underlying `User.settings_changeset/2` converts that to whole
