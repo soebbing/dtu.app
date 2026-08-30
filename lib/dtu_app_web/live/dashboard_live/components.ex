@@ -424,15 +424,17 @@ defmodule DtuAppWeb.DashboardLive.Components do
     ~H"""
     <% # Column count is computed in two stages. `base_cols` covers
     # every panel EXCEPT the cloud-cover slot; the slot is then
-    # added only when it keeps the row at ≤ 4 panels. The 4-up cap
-    # is a product decision: beyond four cards per row the
-    # per-card density hurts readability of the headline numbers
-    # (especially on the 1D live view where the current-power tile
-    # already eats a column). Cloud cover is the lowest-priority
-    # conditional card, so it's the first to be dropped when
-    # there isn't room — `:not_asked` (button) and `:loading`
-    # (spinner) are both suppressed along with the data card, and
-    # `:denied` continues to render nothing.
+    # added only when it keeps the row within the per-view cap.
+    # The 1D live preset allows up to 5 panels (current-power
+    # tile + 3 baseline + cloud-cover — the headline row + the
+    # ambient weather signal that PR #199 introduced alongside
+    # the chart band). Other presets cap at 4: beyond that the
+    # per-card density hurts readability of the headline numbers.
+    # Cloud cover is the lowest-priority conditional card, so
+    # it's the first to be dropped when there isn't room —
+    # `:not_asked` (button) and `:loading` (spinner) are both
+    # suppressed along with the data card, and `:denied`
+    # continues to render nothing.
     base_cols =
       3 +
         if(@range_preset == "1d" and @stats.current_power > 0,
@@ -448,7 +450,9 @@ defmodule DtuAppWeb.DashboardLive.Components do
           else: 0
         )
 
-    show_cloud = @geolocation_state != :denied and base_cols < 4
+    max_cols = if @range_preset == "1d", do: 5, else: 4
+
+    show_cloud = @geolocation_state != :denied and base_cols < max_cols
 
     cols = base_cols + if(show_cloud, do: 1, else: 0) %>
     <% cols_class =
