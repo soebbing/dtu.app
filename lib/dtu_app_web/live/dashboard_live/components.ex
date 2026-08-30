@@ -422,11 +422,18 @@ defmodule DtuAppWeb.DashboardLive.Components do
 
   def stat_card_row(assigns) do
     ~H"""
-    <% # The cloud-cover card slot always occupies a column when
-    # there's any chance of showing it — `:not_asked` (button)
-    # and `:loading` (spinner) both count, only `:denied` skips
-    # the column so the row reflows back to its previous size.
-    cols =
+    <% # Column count is computed in two stages. `base_cols` covers
+    # every panel EXCEPT the cloud-cover slot; the slot is then
+    # added only when it keeps the row at ≤ 4 panels. The 4-up cap
+    # is a product decision: beyond four cards per row the
+    # per-card density hurts readability of the headline numbers
+    # (especially on the 1D live view where the current-power tile
+    # already eats a column). Cloud cover is the lowest-priority
+    # conditional card, so it's the first to be dropped when
+    # there isn't room — `:not_asked` (button) and `:loading`
+    # (spinner) are both suppressed along with the data card, and
+    # `:denied` continues to render nothing.
+    base_cols =
       3 +
         if(@range_preset == "1d" and @stats.current_power > 0,
           do: 1,
@@ -439,8 +446,11 @@ defmodule DtuAppWeb.DashboardLive.Components do
             @consumption_stats.current_consumption > 0,
           do: 1,
           else: 0
-        ) +
-        if(@geolocation_state == :denied, do: 0, else: 1) %>
+        )
+
+    show_cloud = @geolocation_state != :denied and base_cols < 4
+
+    cols = base_cols + if(show_cloud, do: 1, else: 0) %>
     <% cols_class =
       cond do
         cols <= 3 -> "lg:grid-cols-3"
@@ -720,97 +730,98 @@ defmodule DtuAppWeb.DashboardLive.Components do
                from the persisted coords (still nil), so the prompt
                comes back if the user unblocks the site in their
                browser settings and reloads. --%>
-      <%= case @geolocation_state do %>
-        <% :granted -> %>
-          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-center">
-                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                  <.icon name="hero-cloud" class="h-6 w-6" />
+      <%= if show_cloud do %>
+        <%= case @geolocation_state do %>
+          <% :granted -> %>
+            <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+              <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center">
+                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                    <.icon name="hero-cloud" class="h-6 w-6" />
+                  </div>
+                  <div class="ml-5 w-0 flex-1">
+                    <dl>
+                      <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                        {gettext("Cloud cover")}
+                      </dt>
+                      <dd class="flex items-baseline">
+                        <div
+                          class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                          id="stat-cloud-cover-pct"
+                        >
+                          {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%", else: "—"}
+                        </div>
+                        <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                          {if @cloud_cover,
+                            do: cloud_cover_label(@cloud_cover),
+                            else: gettext("no data")}
+                        </p>
+                      </dd>
+                    </dl>
+                  </div>
                 </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dl>
+              </div>
+            </div>
+          <% :not_asked -> %>
+            <div
+              class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700"
+              id="cloud-cover-cta"
+            >
+              <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-start">
+                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                    <.icon name="hero-cloud" class="h-6 w-6" />
+                  </div>
+                  <div class="ml-5 w-0 flex-1">
+                    <dt class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                      {gettext("Cloud cover")}
+                    </dt>
+                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      {gettext(
+                        "Share your location to show local cloud cover on today's chart and as a stat card."
+                      )}
+                    </p>
+                    <button
+                      type="button"
+                      id="request-location-btn"
+                      phx-hook=".RequestLocation"
+                      class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
+                    >
+                      <.icon name="hero-map-pin" class="h-4 w-4" />
+                      {gettext("Share location")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          <% :loading -> %>
+            <div
+              class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700"
+              id="cloud-cover-loading"
+            >
+              <div class="px-4 py-5 sm:p-6">
+                <div class="flex items-center">
+                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                    <.icon name="hero-cloud" class="h-6 w-6" />
+                  </div>
+                  <div class="ml-5 w-0 flex-1">
                     <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
                       {gettext("Cloud cover")}
                     </dt>
-                    <dd class="flex items-baseline">
-                      <div
-                        class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                        id="stat-cloud-cover-pct"
-                      >
-                        {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%", else: "—"}
-                      </div>
-                      <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
-                        {if @cloud_cover,
-                          do: cloud_cover_label(@cloud_cover),
-                          else: gettext("no data")}
-                      </p>
+                    <dd class="mt-1 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+                      <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
+                      {gettext("Requesting…")}
                     </dd>
-                  </dl>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        <% :not_asked -> %>
-          <div
-            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700"
-            id="cloud-cover-cta"
-          >
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-start">
-                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                  <.icon name="hero-cloud" class="h-6 w-6" />
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dt class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                    {gettext("Cloud cover")}
-                  </dt>
-                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    {gettext(
-                      "Share your location to show local cloud cover on today's chart and as a stat card."
-                    )}
-                  </p>
-                  <button
-                    type="button"
-                    id="request-location-btn"
-                    phx-hook=".RequestLocation"
-                    class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
-                  >
-                    <.icon name="hero-map-pin" class="h-4 w-4" />
-                    {gettext("Share location")}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        <% :loading -> %>
-          <div
-            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700"
-            id="cloud-cover-loading"
-          >
-            <div class="px-4 py-5 sm:p-6">
-              <div class="flex items-center">
-                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                  <.icon name="hero-cloud" class="h-6 w-6" />
-                </div>
-                <div class="ml-5 w-0 flex-1">
-                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                    {gettext("Cloud cover")}
-                  </dt>
-                  <dd class="mt-1 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-                    <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
-                    {gettext("Requesting…")}
-                  </dd>
-                </div>
-              </div>
-            </div>
-          </div>
-        <% :denied -> %>
-          <%!-- Card is intentionally hidden on denial per the product
-                 decision. The slot still occupies its column slot
-                 count when state != :denied (see `cols` above); once
-                 we're here that column folds back into the previous
-                 grid size. --%>
+          <% :denied -> %>
+            <%!-- :denied is unreachable: the outer `if show_cloud do`
+                 only enters the case when `@geolocation_state !=
+                 :denied`. Kept as a case arm for completeness so a
+                 future value lands somewhere explicit. --%>
+        <% end %>
       <% end %>
     </div>
     """
