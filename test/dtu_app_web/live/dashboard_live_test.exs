@@ -34,10 +34,13 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Regression: the chart container (and SVG with axes, gridlines,
       # cloud-cover band slot, sun markers, and now marker) must
       # still render even when there's no production data for the
-      # day — only the empty-state overlay replaces the production
-      # paths. Previously the chart container was REPLACED by the
-      # empty-state div, which hid the cloud-cover band and made the
-      # dashboard look chartless at night.
+      # day. The #empty-chart element is an inline caption below the
+      # SVG, not an overlay on top of it — the previous overlay (a
+      # 70%-opaque card centred on top of the chart) covered the
+      # cloud-cover band and made the dashboard look chartless at
+      # night. Earlier than that, the chart container was REPLACED
+      # by the empty-state div, which hid the cloud-cover band
+      # entirely. Both regressions must stay fixed.
       assert html =~ ~s|id="solar-chart-container"|
       assert html =~ ~s|id="solar-chart-svg"|
       assert html =~ ~s|id="empty-chart"|

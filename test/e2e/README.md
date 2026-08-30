@@ -45,8 +45,9 @@ and a seeded database.
   lists every device plus the Total button, switching between devices narrows
   the chart to that device's inverters and updates the fleet-Total line, the
   "Today's Total Yield" stat card changes per selection, a device with no
-  today data renders the empty-chart placeholder with zero stats, and the
-  filter applies to historical Day view too.
+  today data renders an inline empty-chart caption (the chart container +
+  SVG still render so the cloud-cover band stays visible) with zero stats,
+  and the filter applies to historical Day view too.
 - `dashboard_multi_mppt.spec.js` — the per-inverter / per-MPPT breakdown:
   the "Current Generation" stat card reflects the AC aggregate of every
   polled inverter (the bug where a multi-MPPT DTU showed 0 W while
