@@ -392,16 +392,20 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     // The switcher must stay visible (we're still >1 device total).
     await page.locator('#dtu-switcher button', { hasText: 'Balcony Inverter' }).click();
 
-    // Empty chart should replace the SVG. LiveView re-renders the
-    // chart panel on selection change; wait for the placeholder to
-    // appear (it can take a moment after the click).
+    // Empty chart placeholder overlays the SVG. LiveView re-renders
+    // the chart panel on selection change; wait for the placeholder
+    // to appear (it can take a moment after the click).
+    //
+    // The SVG itself keeps rendering — the cloud-cover band (and
+    // any future ambient overlays) stay visible underneath, with
+    // the empty-state sitting centred on top.
     await page.waitForFunction(
       () => document.querySelector('#empty-chart') !== null,
       null,
       { timeout: 10000 }
     );
     await expect(page.locator('#empty-chart')).toBeVisible();
-    await expect(page.locator('#solar-chart-svg')).toHaveCount(0);
+    await expect(page.locator('#solar-chart-svg')).toBeVisible();
 
     // No inverter paths to count on the empty chart.
     const breakdown = await chartSeriesBreakdown(page);
@@ -525,8 +529,9 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
     expect(balconyBreakdown.total).toBe(0);
 
     // Garage Array has no historical rows — selecting it renders
-    // the empty chart even though the dashboard still has the
-    // switcher button.
+    // the empty-state overlay even though the dashboard still has
+    // the switcher button. The chart container + SVG keep
+    // rendering so the cloud-cover band stays visible underneath.
     await page.locator('#dtu-switcher button', { hasText: 'Garage Array' }).click();
     await page.waitForFunction(
       () => document.querySelector('#empty-chart') !== null,
@@ -534,6 +539,6 @@ test.describe('Acceptance Tests: Multi-Device Dashboard (DTU Switcher)', () => {
       { timeout: 10000 }
     );
     await expect(page.locator('#empty-chart')).toBeVisible();
-    await expect(page.locator('#solar-chart-svg')).toHaveCount(0);
+    await expect(page.locator('#solar-chart-svg')).toBeVisible();
   });
 });
