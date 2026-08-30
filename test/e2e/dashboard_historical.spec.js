@@ -156,13 +156,17 @@ test.describe('Acceptance Tests: Dashboard Historical Views & DTU Switcher', () 
       if (becameEmpty) break;
     }
     await expect(page.locator('#empty-chart')).toBeVisible();
-    await expect(page.locator('#solar-chart-svg')).toHaveCount(0);
+    // The chart container + SVG keep rendering in the empty case so the
+    // cloud-cover band (and any future ambient overlays) stay visible —
+    // the empty-state is now a centred overlay ON TOP of the SVG, not
+    // a replacement.
+    await expect(page.locator('#solar-chart-svg')).toBeVisible();
 
     // Stepping back (prev) returns to a period with data.
     await page.locator('#btn-history-prev').click();
 
     // Wait for the line chart to reappear after stepping back. The empty
-    // placeholder should disappear once we land back on a seeded day.
+    // overlay disappears once we land back on a seeded day.
     await expect(page.locator('#solar-chart-svg')).toBeVisible();
     await expect(page.locator('#empty-chart')).toHaveCount(0);
   });
