@@ -27,19 +27,15 @@ defmodule DtuAppWeb.DashboardLive do
   # each for the rationale.
   alias DtuAppWeb.DashboardLive.ChartHelpers
   alias DtuAppWeb.DashboardLive.ChartPalette
+  alias DtuAppWeb.DashboardLive.Components
   alias DtuAppWeb.DashboardLive.PeriodSelectable
   alias DtuAppWeb.DashboardLive.TimeHelpers
 
-  # Template-side helpers from `PeriodSelectable` (calendar input
-  # value/min/max + historical-empty predicate) — kept as bare-name
-  # calls so the HEEx template reads naturally.
-  import PeriodSelectable,
-    only: [
-      date_input_value: 1,
-      date_min_bound: 1,
-      date_max_bound: 1,
-      historical_empty?: 5
-    ]
+  # Dashboard-specific function components (`<.dtu_switcher>`,
+  # `<.quick_range_switcher>`, `<.historical_stepper>`,
+  # `<.stat_card_row>`). Imported as bare names so the render
+  # template stays close to plain HEEx.
+  import Components
 
   require Logger
 
@@ -1368,30 +1364,6 @@ defmodule DtuAppWeb.DashboardLive do
   defp hd_or_first_key(map) when map_size(map) == 0, do: nil
   defp hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
 
-  # Human-readable label for the active period. Drives the sub-caption
-  # under the Yield card's headline ("Last 7 days", "Year to date", …)
-  # so the user can see what window the kWh figure covers at a glance.
-  # The full mapping mirrors the chart-title copy in `chart_title/2`.
-  @spec period_label(String.t() | nil, String.t()) :: String.t()
-  def period_label("1d", _time_range), do: gettext("Today")
-  def period_label("7d", _time_range), do: gettext("Last 7 days")
-  def period_label("30d", _time_range), do: gettext("Last 30 days")
-  def period_label("ytd", _time_range), do: gettext("Year to date")
-  def period_label("custom", "day"), do: gettext("Selected day")
-  def period_label("custom", "week"), do: gettext("Selected week")
-  def period_label("custom", "month"), do: gettext("Selected month")
-  def period_label("custom", "year"), do: gettext("Selected year")
-
-  def period_label(_other, time_range),
-    do: Gettext.gettext(DtuAppWeb.Gettext, period_fallback(time_range))
-
-  defp period_fallback("today"), do: "Today"
-  defp period_fallback("day"), do: "Selected day"
-  defp period_fallback("week"), do: "Selected week"
-  defp period_fallback("month"), do: "Selected month"
-  defp period_fallback("year"), do: "Selected year"
-  defp period_fallback(_), do: "Selected period"
-
   # MPPT-specific shades were used when the chart plotted per-MPPT
   # lines (`mppt_index = 0` was the AC aggregate, 1+ were per-string
   # DC). Now that the dashboard exposes one line per inverter (the
@@ -1520,16 +1492,6 @@ defmodule DtuAppWeb.DashboardLive do
   defp anchor_period(date, "year"), do: Date.new!(date.year, 1, 1)
   defp anchor_period(date, _), do: date
 
-  # Human-readable label for the stepper's current position.
-  defp stepper_label(%Date{} = date, "day"), do: Calendar.strftime(date, "%a %b %-d, %Y")
-
-  defp stepper_label(%Date{} = date, "week"),
-    do: gettext("Week of %{date}", date: Calendar.strftime(date, "%b %-d, %Y"))
-
-  defp stepper_label(%Date{} = date, "month"), do: Calendar.strftime(date, "%B %Y")
-  defp stepper_label(%Date{} = date, "year"), do: to_string(date.year)
-  defp stepper_label(year, _), do: to_string(year)
-
   # Human-readable "X ago" label for a past `DateTime`. Falls back to an
   # absolute YYYY-MM-DD HH:MM string for points in time more than a week
   # back, since minute/hour counts get unwieldy beyond that. Clamps future
@@ -1553,46 +1515,6 @@ defmodule DtuAppWeb.DashboardLive do
       true ->
         Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
     end
-  end
-
-  defp quick_range_btn(assigns) do
-    ~H"""
-    <button
-      phx-click="select_quick_range"
-      phx-value-range={@range}
-      id={@id}
-      class={[
-        "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250 cursor-pointer disabled:cursor-wait disabled:opacity-80 inline-flex items-center justify-center",
-        @active &&
-          "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-        !@active &&
-          "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-      ]}
-    >
-      <%!-- The label and the spinner are *both* in the DOM at all
-           times. LiveView's `phx-click-loading` class is added to the
-           button while the round-trip is in flight, and the project's
-           Tailwind 4 setup declares a `@custom-variant phx-click-loading`
-           (assets/css/app.css) so the label hides and the spinner shows
-           exactly for that window. We can't use `phx-disable-with` here
-           because LiveView sets its value via `el.textContent`, which
-           renders any embedded HTML markup as visible text instead of
-           parsed HTML — that was the "literal <svg>…</svg> on the page"
-           bug. Keeping both elements in the DOM and toggling them via
-           the LiveView-managed class also handles rapid clicks: the
-           class is added on click and removed when the response
-           arrives, so no leftover text accumulates. --%>
-      <span class="phx-click-loading:hidden">
-        {render_slot(@inner_block)}
-      </span>
-      <span
-        class="hidden phx-click-loading:inline-flex items-center justify-center"
-        aria-hidden="true"
-      >
-        <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
-      </span>
-    </button>
-    """
   end
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
@@ -2295,43 +2217,7 @@ defmodule DtuAppWeb.DashboardLive do
           <!-- Toolbar: Switcher & Time Ranges -->
           <div class="flex flex-col gap-4">
             <!-- DTU Switcher -->
-            <%= if length(@devices) > 1 do %>
-              <div
-                class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
-                id="dtu-switcher"
-              >
-                <button
-                  phx-click="select_dtu"
-                  phx-value-id="total"
-                  id="btn-select-total"
-                  class={[
-                    "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                    is_nil(@selected_dtu_id) &&
-                      "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                    !is_nil(@selected_dtu_id) &&
-                      "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-                  ]}
-                >
-                  {gettext("Total (All DTUs)")}
-                </button>
-                <%= for device <- @devices do %>
-                  <button
-                    phx-click="select_dtu"
-                    phx-value-id={device.id}
-                    id={"btn-select-dtu-#{device.id}"}
-                    class={[
-                      "px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all duration-250",
-                      @selected_dtu_id == device.id &&
-                        "bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/10",
-                      @selected_dtu_id != device.id &&
-                        "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50"
-                    ]}
-                  >
-                    {device.name}
-                  </button>
-                <% end %>
-              </div>
-            <% end %>
+            <.dtu_switcher devices={@devices} selected_dtu_id={@selected_dtu_id} />
 
             <!-- Time Range Tab Selector -->
             <!-- "Today" button + historical stepper share the same row so
@@ -2346,119 +2232,23 @@ defmodule DtuAppWeb.DashboardLive do
                    active preset is the one matching @range_preset; the
                    `1d` preset mirrors @live so legacy tests/clicks still
                    highlight the first button. -->
-              <div
-                class="flex flex-wrap items-center gap-2 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl max-w-max"
-                id="quick-range-switcher"
-              >
-                <.quick_range_btn
-                  id="btn-range-1d"
-                  range="1d"
-                  active={@range_preset == "1d"}
-                >
-                  {gettext("1D")}
-                </.quick_range_btn>
-                <.quick_range_btn
-                  id="btn-range-7d"
-                  range="7d"
-                  active={@range_preset == "7d"}
-                >
-                  {gettext("7D")}
-                </.quick_range_btn>
-                <.quick_range_btn
-                  id="btn-range-30d"
-                  range="30d"
-                  active={@range_preset == "30d"}
-                >
-                  {gettext("30D")}
-                </.quick_range_btn>
-                <.quick_range_btn
-                  id="btn-range-ytd"
-                  range="ytd"
-                  active={@range_preset == "ytd"}
-                >
-                  {gettext("YTD")}
-                </.quick_range_btn>
-                <.quick_range_btn
-                  id="btn-range-custom"
-                  range="custom"
-                  active={@range_preset == "custom"}
-                >
-                  {gettext("Custom")}
-                </.quick_range_btn>
-              </div>
+              <.quick_range_switcher range_preset={@range_preset} />
 
               <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › — only rendered
                    when the user picked the `Custom` preset; the
                    1D/7D/30D/YTD presets already encode their own
                    window and don't need the stepper UI. -->
               <%= if @range_preset == "custom" do %>
-                <div
-                  class="flex flex-wrap items-center gap-1.5 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/80 dark:bg-zinc-800/40 p-1.5 rounded-xl"
-                  id="history-picker"
-                >
-                  <button
-                    phx-click="navigate_period"
-                    phx-value-dir="prev"
-                    id="btn-history-prev"
-                    aria-label={gettext("Previous period")}
-                    class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
-                  >
-                    <.icon name="hero-chevron-left" class="size-4" />
-                  </button>
-
-                  <form phx-change="set_granularity" id="form-granularity" class="inline-block">
-                    <select
-                      name="granularity"
-                      id="select-granularity"
-                      class="bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white border border-zinc-300 dark:border-zinc-700 rounded-lg text-sm px-2.5 py-1.5 focus:ring-emerald-500 focus:border-emerald-500"
-                    >
-                      <%= for {label, value} <- [
-                      {gettext("Day"), "day"},
-                      {gettext("Week"), "week"},
-                      {gettext("Month"), "month"},
-                      {gettext("Year"), "year"}
-                    ] do %>
-                        <option value={value} selected={value == @granularity}>
-                          {label}
-                        </option>
-                      <% end %>
-                    </select>
-                  </form>
-
-                  <!-- Date label: clicking reveals the native calendar -->
-                  <label
-                    class="relative inline-flex items-center rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-semibold text-zinc-700 dark:text-zinc-200 cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-700 transition"
-                    title={gettext("Choose date")}
-                  >
-                    <span id="history-label">{stepper_label(@selected_period, @granularity)}</span>
-                    <.icon name="hero-calendar-days-mini" class="ml-1.5 size-4 text-zinc-400" />
-                    <input
-                      type="date"
-                      phx-change="set_date"
-                      id="history-date-input"
-                      value={date_input_value(@selected_period)}
-                      min={date_min_bound(@selectable_dates)}
-                      max={date_max_bound(@selectable_dates)}
-                      class="absolute inset-0 opacity-0 cursor-pointer"
-                    />
-                  </label>
-
-                  <button
-                    phx-click="navigate_period"
-                    phx-value-dir="next"
-                    id="btn-history-next"
-                    aria-label={gettext("Next period")}
-                    class="px-2.5 py-1.5 text-sm font-semibold rounded-lg text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-zinc-250/50 dark:hover:bg-zinc-700/50 transition"
-                  >
-                    <.icon name="hero-chevron-right" class="size-4" />
-                  </button>
-
-                  <%= if @live == false and historical_empty?(@granularity, @selectable_days, @selectable_weeks, @selectable_months, @selectable_years) do %>
-                    <span class="ml-2 text-sm text-zinc-450 dark:text-zinc-500 italic">
-                      {gettext("No historical data for this period.")}
-                    </span>
-                  <% end %>
-                </div>
+                <.historical_stepper
+                  granularity={@granularity}
+                  selected_period={@selected_period}
+                  selectable_dates={@selectable_dates}
+                  selectable_days={@selectable_days}
+                  selectable_weeks={@selectable_weeks}
+                  selectable_months={@selectable_months}
+                  selectable_years={@selectable_years}
+                  live={@live}
+                />
               <% end %>
             </div>
           </div>
@@ -2498,290 +2288,16 @@ defmodule DtuAppWeb.DashboardLive do
             empty columns.
           --%>
           <%= if @has_inverter? do %>
-            <%!-- The grid's `lg:` column count must match the actual
-                 number of cards rendered below, otherwise users without
-                 the conditional cards (savings without a configured rate,
-                 self-consumption without a Shelly, etc.) see a row of
-                 three cards with three empty grid columns. Three baseline
-                 cards (yield, peak power, peak time) plus up to four
-                 conditional cards (current power on 1D, savings when a rate
-                 is set, current consumption when a Shelly is paired,
-                 self-consumption when a Shelly is paired and the helper
-                 returned a number).
-
-                 Each possible `cols` value maps to a literal Tailwind
-                 class below — Tailwind v4's source-based JIT doesn't
-                 detect interpolated class strings, so we list them
-                 statically via `cond`. The `cond` arms map to
-                 `lg:grid-cols-3` … `lg:grid-cols-7`; a user with every
-                 card visible lands on 7. --%>
-            <% cols =
-              3 +
-                if(@range_preset == "1d" and @stats.current_power > 0,
-                  do: 1,
-                  else: 0
-                ) +
-                if(@savings, do: 1, else: 0) +
-                if(@consumption_stats.current_consumption > 0, do: 1, else: 0) +
-                if(
-                  is_number(@stats[:self_consumption_pct]) and
-                    @consumption_stats.current_consumption > 0,
-                  do: 1,
-                  else: 0
-                ) %>
-            <% cols_class =
-              cond do
-                cols <= 3 -> "lg:grid-cols-3"
-                cols == 4 -> "lg:grid-cols-4"
-                cols == 5 -> "lg:grid-cols-5"
-                cols == 6 -> "lg:grid-cols-6"
-                true -> "lg:grid-cols-7"
-              end %>
-            <div class={[
-              "grid grid-cols-1 gap-5 sm:grid-cols-2",
-              cols_class
-            ]}>
-              <%!-- Card 0: Current Power (W). 1D-only — a live
-                 "what's the inverter producing right now" signal that
-                 doesn't make sense for historical periods (7D, 30D,
-                 YTD, Custom). Hidden when the seeded value is 0 so a
-                 quiet inverter doesn't pollute the row. Sits at the
-                 start of the grid so the live signal is the first
-                 thing the user reads on the today view. --%>
-              <%= if @range_preset == "1d" and @stats.current_power > 0 do %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Current Power")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-current-power"
-                            >
-                              {Devices.format_number(@stats.current_power, 0, @locale)} W
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% end %>
-
-              <%!-- Card 1: Yield (kWh). The headline number stays the
-                 same shape — `total_yield` rounded to one decimal —
-                 whether the period is today, a week, a month, or a
-                 year. The sub-label below the headline names the
-                 period ("Today", "Last 7 days", etc.) so the user
-                 knows what window the kWh figure covers. --%>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                      <.icon name="hero-bolt" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Yield")}
-                        </dt>
-                        <dd class="flex flex-col">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-yield-kwh"
-                          >
-                            {Devices.format_number(@stats.total_yield, 1, @locale)} kWh
-                          </div>
-                          <div class="text-xs text-zinc-400 dark:text-zinc-500 mt-0.5">
-                            {period_label(@range_preset, @time_range)}
-                          </div>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <%!-- Card 2: Peak Power (W). The same headline number
-                 across all presets — `stats.peak_power` — but the
-                 underlying query changes (today's `bucket_max` vs the
-                 range-wide peak via `compute_peak_watts_in_period/4`).
-                 A user on 7D sees the highest single bucket over the
-                 last 7 days, not the daily peak. --%>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-                      <.icon name="hero-chart-bar" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Peak Power")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-peak-watts"
-                          >
-                            {Devices.format_number(@stats.peak_power, 0, @locale)} W
-                          </div>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <%!-- Card 3: Peak Time. The bucket time of the peak
-                 wattage above, formatted in the user's local timezone
-                 (the underlying DateTime is UTC; `format_peak_time/2`
-                 adds the tz offset and emits HH:MM). The card falls
-                 back to `—` when the window has no readings. --%>
-              <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                <div class="px-4 py-5 sm:p-6">
-                  <div class="flex items-center">
-                    <div class="p-3 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-400">
-                      <.icon name="hero-clock" class="h-6 w-6" />
-                    </div>
-                    <div class="ml-5 w-0 flex-1">
-                      <dl>
-                        <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                          {gettext("Peak Time")}
-                        </dt>
-                        <dd class="flex items-baseline">
-                          <div
-                            class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                            id="stat-peak-time"
-                          >
-                            {TimeHelpers.format_peak_time(@stats.peak_time, @user_tz_offset_seconds)}
-                          </div>
-                        </dd>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <%!-- Card 4: Self-consumption (%). Period-aware:
-                 `(production - exported) / production × 100`. Hidden
-                 when the user has no consumption devices (no Shelly
-                 paired) — `self_consumption_pct == nil` is the helper's
-                 "no scope" signal, the consumption card's
-                 `current_consumption > 0` is the dashboard-level
-                 guard. The card clamps at 0 % (not negative) when
-                 export exceeds production (battery edge case). --%>
-              <%= if is_number(@stats[:self_consumption_pct]) and @consumption_stats.current_consumption > 0 do %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-teal-50 dark:bg-teal-950/30 text-teal-600 dark:text-teal-400">
-                        <.icon name="hero-recycle" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Self-consumption")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-self-consumption"
-                            >
-                              {Devices.format_number(@stats.self_consumption_pct, 1, @locale)} %
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% end %>
-
-              <%!-- Card 5: Savings (€). Reads `@savings` (euro cents, an
-                 integer assigned by assign_dashboard_data/5 via
-                 `Devices.compute_savings/2`) and formats it as €X.XX.
-                 Hidden when nil so a brand-new user without a rate
-                 doesn't see a misleading "€0.00 saved" claim. --%>
-              <%= if @savings do %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400">
-                        <.icon name="hero-banknotes" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Saved this period")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-saved"
-                            >
-                              {Devices.format_savings(@savings)}
-                            </div>
-                          </dd>
-                        </dl>
-                        <p class="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
-                          {gettext("at %{rate}",
-                            rate:
-                              if(is_integer(@cents_per_kwh),
-                                do: Devices.format_savings(@cents_per_kwh),
-                                else: "—"
-                              )
-                          )}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% end %>
-
-              <%!-- Current Consumption card: only visible when the user
-                 has paired a Shelly Plus 3EM (Gen3+) energy meter.
-                 Sits in the same headline row because it's also a top-
-                 of-dashboard signal — a 5-up grid can absorb one
-                 conditional card cleanly on lg screens. --%>
-              <%= if @consumption_stats.current_consumption > 0 do %>
-                <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-                  <div class="px-4 py-5 sm:p-6">
-                    <div class="flex items-center">
-                      <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                        <.icon name="hero-bolt" class="h-6 w-6" />
-                      </div>
-                      <div class="ml-5 w-0 flex-1">
-                        <dl>
-                          <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                            {gettext("Current Consumption")}
-                          </dt>
-                          <dd class="flex items-baseline">
-                            <div
-                              class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                              id="stat-current-consumption"
-                            >
-                              {Devices.format_number(
-                                @consumption_stats.current_consumption,
-                                0,
-                                @locale
-                              )} W
-                            </div>
-                          </dd>
-                        </dl>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              <% end %>
-            </div>
+            <.stat_card_row
+              stats={@stats}
+              consumption_stats={@consumption_stats}
+              savings={@savings}
+              cents_per_kwh={@cents_per_kwh}
+              range_preset={@range_preset}
+              time_range={@time_range}
+              user_tz_offset_seconds={@user_tz_offset_seconds}
+              locale={@locale}
+            />
           <% end %>
 
           <%!-- Power consumption row: mirrors the production row's three
