@@ -127,3 +127,9 @@ config :dtu_app, :webauthn_rp_name, "dtu.app"
 # else returns the happy-path `{:ok, cred, sign_count+1}`.
 config :webauthn, :auth_response, Webauthn.AuthenticationMock.Response
 config :webauthn, :registration_response, Webauthn.RegistrationMock.Response
+
+# Route the Open-Meteo HTTP client through Req.Test in :test so calls
+# never hit the network. Tests install stubs via `Req.Test.stub/2`,
+# mirroring how `Webauthn.*Mock.Response` short-circuits the WebAuthn
+# ceremony — see `test/dtu_app/weather/open_meteo_test.exs`.
+config :dtu_app, DtuApp.Weather.OpenMeteo, plug: {Req.Test, DtuApp.Weather.OpenMeteo}

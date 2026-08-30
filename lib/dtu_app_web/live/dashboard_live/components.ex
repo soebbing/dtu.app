@@ -400,6 +400,8 @@ defmodule DtuAppWeb.DashboardLive.Components do
   attr :time_range, :string, required: true
   attr :user_tz_offset_seconds, :integer, required: true
   attr :locale, :string, required: true
+  attr :cloud_cover, :any, default: nil
+  attr :cloud_cover_pct, :any, default: nil
 
   def stat_card_row(assigns) do
     ~H"""
@@ -416,7 +418,8 @@ defmodule DtuAppWeb.DashboardLive.Components do
             @consumption_stats.current_consumption > 0,
           do: 1,
           else: 0
-        ) %>
+        ) +
+        if(@cloud_cover, do: 1, else: 0) %>
     <% cols_class =
       cond do
         cols <= 3 -> "lg:grid-cols-3"
@@ -669,9 +672,55 @@ defmodule DtuAppWeb.DashboardLive.Components do
           </div>
         </div>
       <% end %>
+
+      <%!-- Cloud cover card. Hidden when the user hasn't granted
+         geolocation (the facade returns nil) or when the upstream
+         fetch failed (graceful degradation — the chart band also
+         stays empty in that case). Sky-blue colour so it visually
+         separates from the amber yield cards, the rose consumption
+         cards, and the indigo live signal. --%>
+      <%= if @cloud_cover do %>
+        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+          <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center">
+              <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                <.icon name="hero-cloud" class="h-6 w-6" />
+              </div>
+              <div class="ml-5 w-0 flex-1">
+                <dl>
+                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                    {gettext("Cloud cover")}
+                  </dt>
+                  <dd class="flex items-baseline">
+                    <div
+                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                      id="stat-cloud-cover-pct"
+                    >
+                      {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%"}
+                    </div>
+                    <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                      {cloud_cover_label(@cloud_cover)}
+                    </p>
+                  </dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      <% end %>
     </div>
     """
   end
+
+  # Maps the bucketed condition atom from `DtuApp.Weather.bucket_condition/1`
+  # to the user-facing WMO-style label. Kept local to this module —
+  # the bucket itself is the contract; the label is a presentation
+  # detail that could be moved to gettext if we ever localise.
+  defp cloud_cover_label(:clear), do: gettext("clear")
+  defp cloud_cover_label(:partly_cloudy), do: gettext("partly cloudy")
+  defp cloud_cover_label(:mostly_cloudy), do: gettext("mostly cloudy")
+  defp cloud_cover_label(:overcast), do: gettext("overcast")
+  defp cloud_cover_label(_), do: ""
 
   # `period_label/2` lives here because it's only used by the
   # stat-card row's yield sub-label. The full mapping mirrors the

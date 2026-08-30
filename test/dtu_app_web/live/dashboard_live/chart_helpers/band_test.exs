@@ -1,0 +1,105 @@
+defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.BandTest do
+  @moduledoc """
+  Pins the contract for `ChartHelpers.cloud_cover_band/5` — the
+  pure function that prepares per-hour cloud-cover data for the
+  dashboard chart's shaded band overlay.
+
+  Contract:
+
+    * `readings == nil` → `[]` (the same "nil-through = no UI"
+      convention `sun_markers/6` uses for users who haven't granted
+      geolocation).
+    * `readings == []` → `[]`.
+    * Readings whose shifted local-seconds fall outside the chart's
+      `[x_min_seconds, x_max_seconds]` window are dropped.
+    * Each retained reading maps to a `%{x: float(), pct: integer()}`:
+      `x` is the pixel position on the 800-wide chart, `pct` is the
+      cloud-cover value clamped to `[0, 100]`.
+  """
+
+  use ExUnit.Case, async: true
+
+  alias DtuAppWeb.DashboardLive.ChartHelpers
+
+  # Build a DateTime at a specific UTC hour, useful for fixtures.
+  defp at(date, hour) do
+    {:ok, naive} = NaiveDateTime.new(date, Time.new!(hour, 0, 0))
+    {:ok, dt} = DateTime.from_naive(naive, "Etc/UTC")
+    dt
+  end
+
+  describe "cloud_cover_band/5" do
+    test "nil readings returns []" do
+      assert ChartHelpers.cloud_cover_band(nil, 0, 86_400, 0, 800) == []
+    end
+
+    test "empty readings returns []" do
+      assert ChartHelpers.cloud_cover_band([], 0, 86_400, 0, 800) == []
+    end
+
+    test "drop readings whose local-seconds fall outside the chart window" do
+      # x range is [06:00, 18:00] in seconds-from-midnight:
+      x_min = 6 * 3600
+      x_max = 18 * 3600
+
+      readings = [
+        # before window
+        %{time: at(~D[2026-08-30], 3), pct: 50},
+        # inside
+        %{time: at(~D[2026-08-30], 12), pct: 70},
+        # after window
+        %{time: at(~D[2026-08-30], 21), pct: 90}
+      ]
+
+      assert [%{pct: 70}] = ChartHelpers.cloud_cover_band(readings, x_min, x_max, 0, 800)
+    end
+
+    test "preserves pct (no transformation) for in-window readings" do
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 12), pct: 0},
+        %{time: at(~D[2026-08-30], 13), pct: 50},
+        %{time: at(~D[2026-08-30], 14), pct: 100}
+      ]
+
+      result = ChartHelpers.cloud_cover_band(readings, x_min, x_max, 0, 800)
+      assert Enum.map(result, & &1.pct) == [0, 50, 100]
+    end
+
+    test "shifts UTC times into the user's local timezone before placing them" do
+      # Berlin is UTC+2. A 14:00 UTC reading shows up at 16:00
+      # local, inside a 12:00–18:00 local-time window.
+      x_min = 12 * 3600
+      x_max = 18 * 3600
+
+      readings = [%{time: at(~D[2026-08-30], 14), pct: 60}]
+
+      result = ChartHelpers.cloud_cover_band(readings, x_min, x_max, 2 * 3600, 800)
+      assert [%{pct: 60, x: x}] = result
+      # 14:00 UTC + 2h = 16:00 local seconds = 57600. Window is
+      # [43200, 64800] (span 21600). Pixel X = (57600 - 43200) /
+      # 21600 * 800 = 533.3.
+      assert x == 533.3
+    end
+
+    test "returns pixel X in [0, 800] for in-window readings" do
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 50},
+        %{time: at(~D[2026-08-30], 12), pct: 50},
+        %{time: at(~D[2026-08-30], 23), pct: 50}
+      ]
+
+      result = ChartHelpers.cloud_cover_band(readings, x_min, x_max, 0, 800)
+
+      Enum.each(result, fn %{x: x} ->
+        assert is_float(x)
+        assert x >= 0.0 and x <= 800.0
+      end)
+    end
+  end
+end

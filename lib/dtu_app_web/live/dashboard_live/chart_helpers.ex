@@ -297,16 +297,6 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   renders nothing — silently matching the rest of the app's "no
   data = no UI" convention.
   """
-  @spec sun_markers(
-          float() | integer() | nil,
-          float() | integer() | nil,
-          Date.t(),
-          non_neg_integer(),
-          pos_integer(),
-          integer()
-        ) ::
-          {float() | String.t() | nil, float() | String.t() | nil, float() | String.t() | nil,
-           float() | String.t() | nil}
   def sun_markers(nil, _lon, _date, _x_min, _x_max, _tz), do: {nil, nil, nil, nil}
   def sun_markers(_lat, nil, _date, _x_min, _x_max, _tz), do: {nil, nil, nil, nil}
 
@@ -328,6 +318,69 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
       if(sr_x, do: format_local_label(sunrise_utc, tz_offset_seconds)),
       if(ss_x, do: format_local_label(sunset_utc, tz_offset_seconds))
     }
+  end
+
+  @doc """
+  Pixel-X positions + cloud-cover percentages for the shaded cloud
+  band overlay on the chart. Each reading is a
+  `%{time: %DateTime{}, pct: integer()}` (the shape
+  `DtuApp.Weather.OpenMeteo.decode/1` produces, with the
+  `cloud_cover` integer extracted into `:pct`); each returned entry
+  is `%{x: float(), pct: integer()}` ready for SVG `<rect>`
+  rendering.
+
+  Returns `[]` when `readings` is `nil` or empty — the "no data = no
+  UI" contract that lets the LiveView template branch on
+  `case @cloud_cover_band do [] -> ""; entries -> svg(entries) end`
+  without a separate "do we have coords?" check (the facade already
+  short-circuits on nil coords).
+
+  Readings whose local-time falls outside the chart's window
+  `[x_min_seconds, x_max_seconds]` are dropped (the chart's X-axis
+  is local-time seconds-from-midnight; the wrap-around
+  `(seconds + offset + 86_400*4) |> rem 86_400` mirrors the same
+  formula `local_seconds_to_x/5` uses for sun markers and the
+  per-series path code).
+
+  `pct` is passed through unchanged. Cloud-cover values from
+  Open-Meteo are already in `[0, 100]`, and the upstream provider
+  pins that range — no re-clamping needed here.
+  """
+  @spec cloud_cover_band(
+          [%{time: DateTime.t(), pct: integer()}] | nil,
+          non_neg_integer(),
+          pos_integer(),
+          integer(),
+          pos_integer()
+        ) :: [%{x: float(), pct: integer()}]
+  def cloud_cover_band(nil, _x_min, _x_max, _tz, _width), do: []
+  def cloud_cover_band([], _x_min, _x_max, _tz, _width), do: []
+
+  def cloud_cover_band(readings, x_min_seconds, x_max_seconds, tz_offset_seconds, chart_width)
+      when is_list(readings) do
+    span = x_max_seconds - x_min_seconds
+
+    for %{time: %DateTime{} = utc, pct: pct} <- readings,
+        x = project_x(utc, x_min_seconds, span, tz_offset_seconds, chart_width),
+        do: %{x: x, pct: pct}
+  end
+
+  # Project a UTC reading onto the chart's pixel X axis. Returns
+  # `nil` for out-of-window readings so the `for` comprehension above
+  # drops them. Kept private — only `cloud_cover_band/5` needs it;
+  # promoting `local_seconds_to_x/5` would expose more than is
+  # warranted.
+  defp project_x(%DateTime{} = utc, x_min_seconds, span, tz_offset_seconds, chart_width) do
+    utc_seconds = utc.hour * 3600 + utc.minute * 60 + utc.second
+
+    local_seconds =
+      (utc_seconds + tz_offset_seconds + @seconds_per_day * 4) |> rem(@seconds_per_day)
+
+    if local_seconds < x_min_seconds or local_seconds > x_min_seconds + span do
+      nil
+    else
+      Float.round((local_seconds - x_min_seconds) / span * chart_width, 1)
+    end
   end
 
   # "HH:MM" label for a UTC `DateTime`, shifted into the user's
