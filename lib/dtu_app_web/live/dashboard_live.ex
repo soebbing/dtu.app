@@ -2220,6 +2220,34 @@ defmodule DtuAppWeb.DashboardLive do
         hidden
       >
       </div>
+      <%!--
+        Geolocation auto-resolve hook. On mount, checks whether the
+        user has already granted browser-level geolocation
+        permission (e.g. via site settings after a previous denial,
+        or because they previously used the browser's "Allow this
+        site to always see my location" flow without going through
+        the in-app button). When `state === 'granted'` the hook
+        silently calls `getCurrentPosition` — no browser prompt
+        fires because permission is already granted — and pushes
+        the coordinates back via `set_location`, which the server
+        handler turns into `:granted` plus a DB write.
+
+        The user explicitly opted out of an unconditional
+        on-mount prompt; this hook is the strict superset of that
+        decision: it only acts when permission is *already*
+        granted, so first-time users still see the in-app button.
+
+        The card slot is gated on `@geolocation_state` (server
+        assigns), so this hook racing with the button click is
+        harmless — both paths converge on `:loading` → `:granted`.
+      --%>
+      <div
+        id="auto-fetch-location"
+        phx-hook=".AutoFetchLocation"
+        data-user-id={@current_scope.user.id}
+        hidden
+      >
+      </div>
       <div class="space-y-6 py-4">
         <!-- Title & Action -->
         <div class="flex flex-col md:flex-row md:items-center md:justify-between space-y-4 md:space-y-0">
@@ -4379,6 +4407,86 @@ defmodule DtuAppWeb.DashboardLive do
             if (this.el && this.onClick) {
               this.el.removeEventListener("click", this.onClick);
             }
+          }
+        }
+      </script>
+
+      <%!--
+        AutoFetchLocation: silently resolves an already-granted
+        browser geolocation permission on mount. Used by the
+        invisible `#auto-fetch-location` div so the dashboard picks
+        up coords that the browser holds but our DB doesn't yet
+        (typical after a user re-grants permission via site
+        settings or moves the prompt away from the in-app button).
+
+        The Permissions API is not supported in every browser —
+        when `navigator.permissions.query` is missing we fall
+        through and do nothing. Without `query` we cannot
+        distinguish "prompt" from "granted" without actually
+        triggering the browser prompt, which would violate the
+        product's "no auto-prompt on mount" rule.
+      --%>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".AutoFetchLocation">
+        export default {
+          mounted() {
+            // Old browsers / insecure contexts: bail. The
+            // `.RequestLocation` button still works for these
+            // because it calls `getCurrentPosition` directly.
+            if (
+              !navigator.permissions ||
+              !navigator.geolocation ||
+              typeof navigator.permissions.query !== "function"
+            ) {
+              return;
+            }
+
+            navigator.permissions
+              .query({ name: "geolocation" })
+              .then((result) => {
+                // "granted" → user already gave permission; calling
+                // `getCurrentPosition` now shows NO prompt, just a
+                // silent position read. Push coords back to the
+                // server so the cloud-cover card flips from
+                // `:not_asked` (button) to `:granted` (data card).
+                //
+                // "prompt" → first-visit users, no permission yet.
+                // Do nothing; the in-app "Share location" button
+                // is the only path they get to grant.
+                //
+                // "denied" → user has explicitly refused. The
+                // server already drives the slot to `:denied`
+                // based on the persisted DB coords, but the browser
+                // state could differ (e.g. just-removed block).
+                // Doing nothing here lets the user recover via the
+                // site-settings path without us re-asking.
+                if (result.state !== "granted") return;
+
+                this.pushEvent("location_loading", {});
+
+                navigator.geolocation.getCurrentPosition(
+                  (pos) => {
+                    this.pushEvent("set_location", {
+                      latitude: pos.coords.latitude,
+                      longitude: pos.coords.longitude
+                    });
+                  },
+                  () => {
+                    // A granted permission can still fail to
+                    // resolve a fix (POSITION_UNAVAILABLE / TIMEOUT).
+                    // Treat as a denial from the slot's POV — the
+                    // `:denied` state hides the card, and on next
+                    // mount the button comes back.
+                    this.pushEvent("location_denied", {});
+                  },
+                  { timeout: 10_000, maximumAge: 0 }
+                );
+              })
+              .catch(() => {
+                // Permissions API can throw (e.g. Firefox without
+                // `permissions.query` polyfill, or a user-gesture
+                // gate on some browsers). Swallow — the user can
+                // still grant via the button.
+              });
           }
         }
       </script>
