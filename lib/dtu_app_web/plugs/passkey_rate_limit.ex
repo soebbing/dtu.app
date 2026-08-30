@@ -9,6 +9,15 @@ defmodule DtuAppWeb.Plugs.PasskeyRateLimit do
 
   Returns 429 with `%{error: "too_many_attempts"}` JSON when the
   limit is exceeded.
+
+  Bypassed entirely when the application env key
+  `:dtu_app, :passkey_rate_limit_enabled` is `false` — set by
+  `config/runtime.exs` per the `DtuAppWeb.Passkeys.RateLimit` decision
+  matrix (defaults OFF in `:dev`/`:test`, defaults ON in `:prod`,
+  overridable with `PASSKEYS_RATE_LIMIT_ENABLED`). The CI Playwright
+  run uses the env override to disable it; the dedicated unit test
+  `test/dtu_app_web/plugs/passkey_rate_limit_test.exs` exercises the
+  plug directly so bypassing in CI doesn't lose coverage.
   """
 
   import Plug.Conn
@@ -20,6 +29,14 @@ defmodule DtuAppWeb.Plugs.PasskeyRateLimit do
   def init(opts), do: opts
 
   def call(conn, _opts) do
+    if Application.get_env(:dtu_app, :passkey_rate_limit_enabled, true) do
+      enforce(conn)
+    else
+      conn
+    end
+  end
+
+  defp enforce(conn) do
     action = Map.get(conn.private, :passkey_action, "default")
     ip = remote_ip(conn) || "unknown"
     key = {ip, action}
