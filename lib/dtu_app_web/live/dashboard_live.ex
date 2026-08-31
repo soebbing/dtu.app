@@ -2874,6 +2874,27 @@ defmodule DtuAppWeb.DashboardLive do
                   data-x-min-seconds={@x_min_seconds}
                   data-x-max-seconds={@x_max_seconds}
                 >
+                  <%!-- Cloud-cover band vertical-fade gradient. Defined
+                         once in `<defs>` and referenced by every cloud
+                         rect so they all share the same sky-blue tint
+                         and fade to transparent at the top + bottom of
+                         the chart, peaking at ~50% of the chart height.
+                         Object-bounding-box units mean the gradient
+                         stretches to fit each rect (y=20 → y=250),
+                         which is why every hourly band gets the same
+                         fade without needing per-rect coordinates.
+                         Without the fade the band reads as a solid
+                         backdrop; with it, it reads as atmospheric
+                         haze. --%>
+                  <defs>
+                    <linearGradient id="cloud-band-fade" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0" stop-color="rgb(125 165 220)" stop-opacity="0" />
+                      <stop offset="0.4" stop-color="rgb(125 165 220)" stop-opacity="1" />
+                      <stop offset="0.6" stop-color="rgb(125 165 220)" stop-opacity="1" />
+                      <stop offset="1" stop-color="rgb(125 165 220)" stop-opacity="0" />
+                    </linearGradient>
+                  </defs>
+
                   <!-- Grid Lines + Y-Axis Labels. The chart renders one
                          horizontal gridline + tick label per 500 W step
                          (`@y_gridlines`, computed by `chart_y_gridlines/5`).
@@ -2943,21 +2964,23 @@ defmodule DtuAppWeb.DashboardLive do
 
                   <%!-- Cloud-cover band overlay. Drawn between the gridlines
                          and the data series so it sits as a background
-                         tint and the curves render CRISP on top — when
-                         the band painted over the paths the whole chart
-                         turned into a slate-grey wash and the user
-                         couldn't read the curves (PR #209 follow-up).
-                         Each hourly reading renders a vertical `<rect>`
-                         with opacity scaled by the cloud-cover
-                         percentage (0% → 0.03, 100% → 0.22, so even a
-                         fully-overcast day stays legible). The rect
-                         width is computed per-entry in
-                         `ChartHelpers.cloud_cover_band/6` as
+                         tint and the curves render CRISP on top. Each
+                         hourly reading renders a vertical `<rect>`
+                         filled with the shared `cloud-band-fade`
+                         linearGradient (defined in `<defs>` above) so
+                         the band fades to transparent at the top +
+                         bottom of the chart and peaks at ~50% height
+                         — without that fade a 230px-tall uniform
+                         block reads as a black backdrop, not as cloud
+                         cover data (PR #210 follow-up). The per-rect
+                         `opacity` attribute (scaled 0.03–0.22 by the
+                         cloud-cover percentage) controls how dense
+                         each hour's tint is; opacity multiplies the
+                         gradient so a clear hour is invisible and an
+                         overcast hour is a soft sky-blue haze. The
+                         rect width comes from `cloud_cover_band/6` as
                          `chart_width / hours_in_span`, so it scales
-                         across every preset (1D → ~57 SVG
-                         units/hour, 7D → ~5, 30D → ~1.1) instead
-                         of the old hardcoded 16.7 that only matched
-                         a 48-hour view. Hidden entirely when
+                         across every preset. Hidden entirely when
                          `@cloud_cover_band == []` (nil coords or
                          upstream failure). --%>
                   <%= if @cloud_cover_band != [] do %>
@@ -2972,7 +2995,8 @@ defmodule DtuAppWeb.DashboardLive do
                           y="20"
                           width={entry.width}
                           height="230"
-                          fill="rgb(148 163 184 / #{Float.round(0.03 + entry.pct * 0.0019, 3)})"
+                          fill="url(#cloud-band-fade)"
+                          opacity={Float.round(0.03 + entry.pct * 0.0019, 3)}
                           pointer-events="none"
                         />
                       <% end %>
