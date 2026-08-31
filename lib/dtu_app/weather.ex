@@ -74,8 +74,17 @@ defmodule DtuApp.Weather do
             nil
         end
 
+      # Wrap the cached payload in `{:ok, ...}` so the public contract
+      # is the same shape on hit and miss. The fresh-fetch path above
+      # already returns `{:ok, decoded}`; without this wrap the cached
+      # payload would leak as a bare map and the dashboard's
+      # `build_cloud_cover_band/4` (which pattern-matches on
+      # `{:ok, %{hourly: ...}}`) would silently render no band — most
+      # visibly on the LiveView WebSocket mount, which always hits the
+      # cache because the HTTP mount has already populated it. See
+      # PR #206 / `2026-08-31-5` for the production report.
       cached ->
-        cached
+        {:ok, cached}
     end
   end
 

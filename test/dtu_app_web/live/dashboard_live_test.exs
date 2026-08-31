@@ -4156,6 +4156,123 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
+  describe "Cloud-cover chart band" do
+    # End-to-end pin for the cloud-cover chart rendering. The
+    # band relies on three layers all agreeing on the
+    # `{:ok, %{hourly: ...}}` shape:
+    #
+    #   1. `Accounts.update_user_location/2` must persist the
+    #      Decimal coords (covered here via the
+    #      `location_changeset/2` Decimal-aware validator — see
+    #      PR #208).
+    #   2. `Weather.cloud_cover_for/3` must wrap both fresh
+    #      fetches AND cache hits in `{:ok, decoded}`. The
+    #      cache-hit path was previously bare-map and silently
+    #      rendered no band on the LiveView WebSocket mount —
+    #      PR #208 wraps it.
+    #   3. `ChartHelpers.cloud_cover_band/5` must project at
+    #      least one entry onto the chart's X range.
+    #
+    # If any of these breaks, the band disappears from the chart
+    # without raising — the test pin catches the regression as a
+    # missing `data-testid="cloud-cover-band"` rather than a
+    # silent production report.
+    test "1D preset renders the cloud-cover band when user has Decimal coords",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Band Test",
+          kind: "opendtu",
+          mqtt_username: "band-test",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Seed a 1D daytime arc (06:00–19:00) so `chart_time_range/2`
+      # narrows the X axis to that window — cloud-cover readings
+      # outside the window are dropped by `project_x/5`, so this
+      # also exercises that the projection lands inside the
+      # visible range.
+      minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
+
+      for minute <- minutes do
+        hour = div(minute, 60)
+        min = rem(minute, 60)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-BAND",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, min, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      # Set coords through `Accounts.update_user_location/2` so the
+      # schema's `:decimal` storage path is exercised end-to-end
+      # (matches what `set_location` persists from the JS hook).
+      # 52.52 / 13.41 is Berlin — keeps the Open-Meteo stub
+      # response realistic.
+      :ok =
+        DtuApp.Accounts.update_user_location(user, %{
+          latitude: 52.52,
+          longitude: 13.41
+        })
+
+      # Stub Open-Meteo with 30 days of hourly readings at 12:00 UTC.
+      # The chart's X range is derived from the seeded readings
+      # (06:00–19:00 UTC), so 12:00 UTC entries project into that
+      # window and produce a non-empty `@cloud_cover_band`. Hourly
+      # granularity matches what the upstream facade fetches.
+      today = Date.utc_today()
+
+      times =
+        for days_ago <- 30..0//-1 do
+          date = Date.add(today, -days_ago)
+          DateTime.new!(date, Time.new!(12, 0, 0)) |> DateTime.to_iso8601()
+        end
+
+      body = %{
+        "latitude" => 52.52,
+        "longitude" => 13.41,
+        "hourly" => %{
+          "time" => times,
+          "cloud_cover" => Enum.map(0..30, fn i -> rem(i, 4) * 25 end)
+        }
+      }
+
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      end)
+
+      # Wipe the cache so a previous test that happened to fetch the
+      # same `(trunc(lat), trunc(lon), today)` key can't shadow the
+      # stub with a stale payload (the dashboard test suite doesn't
+      # otherwise share cache state with the Weather test suite).
+      :ets.delete_all_objects(DtuApp.Weather.Cache)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The band renders only when `@cloud_cover_band != []`, so
+      # seeing the testid proves the upstream call + projection
+      # both returned entries inside the visible X range.
+      assert html =~ ~s(data-testid="cloud-cover-band"),
+             "Cloud-cover band must render on the chart when user has Decimal coords (1D preset)"
+
+      # Sanity: also assert the granted-state data card is visible so
+      # we know the user's geolocation_state is `:granted` end-to-end,
+      # not just that coords happened to land in the band.
+      assert html =~ ~s(id="stat-cloud-cover-pct"),
+             "Cloud-cover data card must render when user has coords"
+    end
+  end
+
   describe "Preset-button spinner (no SVG-as-text regression)" do
     # Regression for the "loading animation renders its SVG markup as
     # text on the page" bug: when a user clicked a quick-range button
