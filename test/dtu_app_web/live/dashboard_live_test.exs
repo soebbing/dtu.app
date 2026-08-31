@@ -4036,6 +4036,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(id="cloud-cover-cta"),
              "Cloud-cover card slot renders the 'Share location' prompt when user has no lat/lon (1D allows 5-up)"
 
+      # The button's `phx-hook=".RequestLocation"` reference must
+      # resolve to the colocated hook defined alongside the
+      # `stat_card_row/1` template — LiveView expands the short
+      # `.X` form to the FQ module path of the calling template's
+      # module. Pin the resolved name here so a future refactor
+      # that moves the template (or the hook) doesn't silently
+      # re-introduce an "unknown hook found for
+      # DtuAppWeb.DashboardLive.Components.RequestLocation" in
+      # the browser console.
+      assert html =~
+               ~s(phx-hook="DtuAppWeb.DashboardLive.Components.RequestLocation")
+
       # Production row uses the exact class signature
       # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5`
       # (HEEx compiles the grid div's class list as one string).
