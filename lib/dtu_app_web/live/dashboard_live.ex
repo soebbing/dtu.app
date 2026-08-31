@@ -30,6 +30,7 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuAppWeb.DashboardLive.Components
   alias DtuAppWeb.DashboardLive.PeriodSelectable
   alias DtuAppWeb.DashboardLive.TimeHelpers
+  alias DtuAppWeb.DashboardLive.TodayDataCache
 
   # Dashboard-specific function components (`<.dtu_switcher>`,
   # `<.quick_range_switcher>`, `<.historical_stepper>`,
@@ -501,6 +502,16 @@ defmodule DtuAppWeb.DashboardLive do
   def handle_info({:reading, _client_id, _reading}, socket) do
     user = socket.assigns.current_scope.user
     selected_id = socket.assigns.selected_dtu_id
+
+    # Drop the cached today-window chart data so the next
+    # `assign_dashboard_data/5` re-runs the two heavy
+    # `readings` scans — without this, a freshly-arrived reading
+    # would be invisible in the chart for up to 15 s. Pairing
+    # with the `assign_dashboard_data/5` short-circuit (which
+    # only consults the cache once per call) means the next
+    # re-render is exactly one fetch + the rest of the
+    # (already-cached) work.
+    TodayDataCache.invalidate(user.id)
 
     socket = PeriodSelectable.assign_selectable_periods(socket, user, selected_id)
 
@@ -1715,15 +1726,25 @@ defmodule DtuAppWeb.DashboardLive do
     # share the same 5-minute bucket means, so deriving both from a
     # single fetch is a safe optimisation that keeps every consumer's
     # number identical.
-    consumption_chart_points =
-      Devices.list_today_consumption_chart_data(user, dtu_id)
+    #
+    # Perf #4 layer 1: the today-window chart data is read-through
+    # cached for 15 s by `TodayDataCache`, keyed by user.id (not
+    # dtu_id, because pairing-vs-not doesn't change the data shape
+    # — `list_today_consumption_chart_data/2` collapses all owned
+    # DTUs into one bucket set). Subsequent calls within the TTL
+    # skip the two big readings scans; the
+    # `handle_info({:reading, ...})` path invalidates the entry so
+    # a fresh reading lands in the chart within seconds.
+    %{consumption: consumption_chart_points, net: net_chart_points} =
+      TodayDataCache.fetch(user.id, fn ->
+        net_today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+        net_today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
 
-    {net_today_start, net_today_end} =
-      {DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC"),
-       DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")}
-
-    net_chart_points =
-      Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
+        %{
+          consumption: Devices.list_today_consumption_chart_data(user, dtu_id),
+          net: Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
+        }
+      end)
 
     # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
     # meter: current household draw (W), today's consumed energy

@@ -57,7 +57,15 @@ defmodule DtuApp.Application do
          # write so a freshly-added or removed device is picked
          # up without waiting out the TTL. See
          # `DtuApp.Devices.UserDtuIdsCache` for the design.
-         {DtuApp.Devices.UserDtuIdsCache, []}
+         {DtuApp.Devices.UserDtuIdsCache, []},
+         # 15-second TTL cache for the today-window consumption
+         # + net-flow chart data that `assign_dashboard_data/5`
+         # pre-fetches. The profile harness shows ~10 s of
+         # cumulative DB time on those two queries per mount;
+         # the 1D live branch still picks up fresh readings via
+         # `handle_info({:reading, ...})` → `invalidate/1`.
+         # See `DtuAppWeb.DashboardLive.TodayDataCache`.
+         {DtuAppWeb.DashboardLive.TodayDataCache, []}
        ] ++
          mqtt_broker_children() ++
          [
