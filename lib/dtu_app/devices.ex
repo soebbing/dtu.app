@@ -18,6 +18,7 @@ defmodule DtuApp.Devices do
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.DtuError
   alias DtuApp.Devices.Reading
+  alias DtuApp.Devices.UserDtuIdsCache
 
   @doc "List all devices owned by `user`, newest first."
   def list_devices(%User{} = user) do
@@ -2559,6 +2560,29 @@ defmodule DtuApp.Devices do
   # (the user is most likely navigating YTD or the last summer) and
   # keeps the planner in the active chunk range where the chunk
   # exclusion makes the scan cheap.
+  #
+  # Why not `readings_daily` cagg: that cagg is `materialized_only
+  # => true` (see `timescaledb_information.continuous_aggregates`)
+  # with a `start_offset` of 60 days and `end_offset` of 1 day,
+  # refreshed once per day. So a reading that landed yesterday is
+  # only in the cagg AFTER the next daily policy tick — for ~24
+  # hours the stepper would not show "today" or "yesterday", which
+  # is exactly the range the user navigates most. Querying raw
+  # `readings` here keeps the freshness guarantee the stepper
+  # needs; the `(dtu_id, inserted_at)` btree index keeps the
+  # 5-year scan cheap enough that the per-call cost is acceptable.
+  #
+  # Why this still fits in the perf plan: callers run this twice
+  # per mount (once on initial render, once after the
+  # `handle_info({:reading, ...})` PubSub broadcast re-runs
+  # `PeriodSelectable.assign_selectable_periods/3`). Perf #8's
+  # `DtuApp.Devices.UserDtuIdsCache` already reduces the query to
+  # the per-user min-cost path; the 5y bound (Perf #2, PR #213)
+  # keeps the scan O(active chunks); and the
+  # `readings_daily (dtu_id, bucket DESC)` index added in
+  # `#20260831183444` is staged for the day we drop in a
+  # `materialized_only => false` cagg or a daily-marker materialised
+  # view that can serve this query safely.
   @selectable_dates_max_lookback_days 5 * 365
 
   @doc "List selectable dates containing telemetry readings."
@@ -3104,8 +3128,21 @@ defmodule DtuApp.Devices do
 
   # Resolve the user's DTU ids for a query, scoped to either all of the user's
   # devices or one specific (owned) device. Returns [] if the device isn't owned.
+  #
+  # The `dtu_id = nil` branch is read-through cached for 30 s — a single
+  # dashboard mount calls this ~22 times (once per chart/stats helper
+  # that scopes its `WHERE dtu_id IN ^dtu_ids` clause), and the
+  # profile harness shows 18.39 s of cumulative DB time on the
+  # underlying `SELECT id FROM dtus WHERE user_id = $1`. See
+  # `DtuApp.Devices.UserDtuIdsCache` for the rationale and the
+  # invalidation hook (`DashboardLive.refresh_devices/2` calls
+  # `UserDtuIdsCache.invalidate/1` after every device write so a
+  # freshly-created or removed device is reflected in the next
+  # `owned_dtu_ids/2` call without waiting out the TTL).
   defp owned_dtu_ids(%User{} = user, nil) do
-    Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
+    UserDtuIdsCache.get(user.id, fn ->
+      Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
+    end)
   end
 
   defp owned_dtu_ids(%User{} = user, dtu_id) do

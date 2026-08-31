@@ -32,6 +32,28 @@ defmodule DtuApp.Application do
     # 1°-rounded coords + local date. Drives the cloud-cover
     # band + stat card on the dashboard; pure in-memory, so the
     # cache re-fetches after a process restart.
+    # 10-second TTL singleton for `Time.utc_now/0`'s DB-clock
+    # round trip. See `DtuApp.Time.Cache` for the rationale
+    # (a single dashboard mount calls this 40+ times; the
+    # profile harness in
+    # `test/dtu_app_web/live/dashboard_mount_profile_test.exs`
+    # shows 35 s of cumulative queue time on the
+    # `SELECT now()` query without the cache).
+    # 30-second TTL keyed cache for the user's DTU id list.
+    # Same profile harness shows 22 round trips per mount
+    # for `SELECT id FROM dtus WHERE user_id = $1`, costing
+    # 18 s of cumulative DB time. The dashboard's
+    # `refresh_devices/2` invalidates after every device
+    # write so a freshly-added or removed device is picked
+    # up without waiting out the TTL. See
+    # `DtuApp.Devices.UserDtuIdsCache` for the design.
+    # 15-second TTL cache for the today-window consumption
+    # + net-flow chart data that `assign_dashboard_data/5`
+    # pre-fetches. The profile harness shows ~10 s of
+    # cumulative DB time on those two queries per mount;
+    # the 1D live branch still picks up fresh readings via
+    # `handle_info({:reading, ...})` → `invalidate/1`.
+    # See `DtuAppWeb.DashboardLive.TodayDataCache`.
     children =
       ([
          DtuAppWeb.Telemetry,
@@ -40,7 +62,10 @@ defmodule DtuApp.Application do
          {Phoenix.PubSub, name: DtuApp.PubSub},
          {Finch, name: DtuAppWeb.WebPushFinch},
          {DtuApp.Accounts.PasskeyChallengeCache, []},
-         {DtuApp.Weather.Cache, []}
+         {DtuApp.Weather.Cache, []},
+         {DtuApp.Time.Cache, []},
+         {DtuApp.Devices.UserDtuIdsCache, []},
+         {DtuAppWeb.DashboardLive.TodayDataCache, []}
        ] ++
          mqtt_broker_children() ++
          [
