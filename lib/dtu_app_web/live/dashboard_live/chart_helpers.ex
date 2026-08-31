@@ -370,11 +370,12 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
 
     # Each bucket is one hourly reading. The chart's per-hour pixel
     # width is `chart_width / hours_in_span`, which scales correctly
-    # across every preset (1D → ~57 SVG units/hour, 7D → ~5, 30D →
-    # ~1.1). The hardcoded `16.7` previously used here only matched
-    # the 48-hour view and left gaps on the 7D/30D views and
-    # over-stacked on 1D. Width is passed back per-entry so the
-    # template can drop the hardcoded constant.
+    # across every preset (a 14h daylight window → ~57 SVG
+    # units/hour, 7D → ~5, 30D → ~1.1). The hardcoded `16.7`
+    # previously used here only matched the 48-hour view and left
+    # gaps on the 7D/30D views and over-stacked on 1D. Width is
+    # passed back per-entry so the template can drop the hardcoded
+    # constant.
     hour_width = chart_width * 3600.0 / span
 
     # Scope the band to the day the chart is showing. Without this,

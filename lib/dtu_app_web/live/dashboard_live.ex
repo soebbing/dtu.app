@@ -2941,6 +2941,44 @@ defmodule DtuAppWeb.DashboardLive do
                     </text>
                   <% end %>
 
+                  <%!-- Cloud-cover band overlay. Drawn between the gridlines
+                         and the data series so it sits as a background
+                         tint and the curves render CRISP on top — when
+                         the band painted over the paths the whole chart
+                         turned into a slate-grey wash and the user
+                         couldn't read the curves (PR #209 follow-up).
+                         Each hourly reading renders a vertical `<rect>`
+                         with opacity scaled by the cloud-cover
+                         percentage (0% → 0.03, 100% → 0.22, so even a
+                         fully-overcast day stays legible). The rect
+                         width is computed per-entry in
+                         `ChartHelpers.cloud_cover_band/6` as
+                         `chart_width / hours_in_span`, so it scales
+                         across every preset (1D → ~57 SVG
+                         units/hour, 7D → ~5, 30D → ~1.1) instead
+                         of the old hardcoded 16.7 that only matched
+                         a 48-hour view. Hidden entirely when
+                         `@cloud_cover_band == []` (nil coords or
+                         upstream failure). --%>
+                  <%= if @cloud_cover_band != [] do %>
+                    <g
+                      id="chart-cloud-cover-band"
+                      pointer-events="none"
+                      data-testid="cloud-cover-band"
+                    >
+                      <%= for entry <- @cloud_cover_band do %>
+                        <rect
+                          x={Float.round(entry.x - entry.width / 2, 1)}
+                          y="20"
+                          width={entry.width}
+                          height="230"
+                          fill="rgb(148 163 184 / #{Float.round(0.03 + entry.pct * 0.0019, 3)})"
+                          pointer-events="none"
+                        />
+                      <% end %>
+                    </g>
+                  <% end %>
+
                   <!-- Yesterday ghost overlay (1D / live view only):
                          translucent, dashed per-inverter paths that sit
                          BEHIND today's solid curves so the day-over-day
@@ -3105,46 +3143,6 @@ defmodule DtuAppWeb.DashboardLive do
                         pointer-events="none"
                       />
                     <% end %>
-                  <% end %>
-
-                  <%!-- Cloud-cover band overlay. Drawn between the
-                         data series and the cursor guide so it sits
-                         underneath the live cursor + tooltip but
-                         above the curves (it's an *ambient* signal,
-                         not data the user is interacting with).
-                         Each hourly reading renders a thin vertical
-                         `<rect>` with opacity scaled by the
-                         cloud-cover percentage (0% = transparent,
-                         100% = most visible). Cloud cover 0% is
-                         rendered as transparent — no fill, no
-                         visual footprint — so a clear sky doesn't
-                         litter the chart. The rect width is
-                         computed per-entry in
-                         `ChartHelpers.cloud_cover_band/6` as
-                         `chart_width / hours_in_span`, so it scales
-                         across every preset (1D → ~57 SVG
-                         units/hour, 7D → ~5, 30D → ~1.1) instead
-                         of the old hardcoded 16.7 that only matched
-                         a 48-hour view. Hidden entirely when
-                         `@cloud_cover_band == []` (nil coords or
-                         upstream failure). --%>
-                  <%= if @cloud_cover_band != [] do %>
-                    <g
-                      id="chart-cloud-cover-band"
-                      pointer-events="none"
-                      data-testid="cloud-cover-band"
-                    >
-                      <%= for entry <- @cloud_cover_band do %>
-                        <rect
-                          x={Float.round(entry.x - entry.width / 2, 1)}
-                          y="20"
-                          width={entry.width}
-                          height="230"
-                          fill="rgb(148 163 184 / #{Float.round(0.05 + entry.pct * 0.0035, 3)})"
-                          pointer-events="none"
-                        />
-                      <% end %>
-                    </g>
                   <% end %>
 
                   <!-- Vertical guide line drawn at the cursor's X
