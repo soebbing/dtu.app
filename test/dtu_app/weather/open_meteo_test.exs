@@ -130,6 +130,36 @@ defmodule DtuApp.Weather.OpenMeteoTest do
       })
     end
 
+    # User.latitude / User.longitude come back from Ecto as
+    # `%Decimal{}` (the schema stores `:decimal`). The HTTP client
+    # advertises Decimal.t() on its `@spec`, but the previous
+    # `is_number/1`-guarded clause would have raised
+    # FunctionClauseError. Verify Decimal coords coerce cleanly and
+    # the URL still carries the expected float string.
+    test "Decimal coords coerce to float in the URL" do
+      stub_open_meteo()
+
+      assert {:ok, _} =
+               OpenMeteo.hourly_cloud_cover(
+                 Decimal.new("52.52"),
+                 Decimal.new("13.41"),
+                 past_days: 1
+               )
+
+      assert_url_query(%{
+        "latitude" => "52.52",
+        "longitude" => "13.41",
+        "hourly" => "cloud_cover",
+        "past_days" => "1",
+        "forecast_days" => "1"
+      })
+    end
+
+    test "mixed Decimal + nil coords short-circuit to nil" do
+      assert OpenMeteo.hourly_cloud_cover(Decimal.new("52.52"), nil, past_days: 1) == nil
+      assert OpenMeteo.hourly_cloud_cover(nil, Decimal.new("13.41"), past_days: 1) == nil
+    end
+
     test "future forecast_days defaults to 1 (we don't need a deep forecast)" do
       stub_open_meteo()
 

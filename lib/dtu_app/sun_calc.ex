@@ -68,6 +68,22 @@ defmodule DtuApp.SunCalc do
   def sunrise_sunset_utc(nil, _lon, _date), do: {nil, nil}
   def sunrise_sunset_utc(_lat, nil, _date), do: {nil, nil}
 
+  # The User schema stores latitude / longitude as `:decimal`, so
+  # these are the real inputs from `ChartHelpers.sun_markers/6`. The
+  # `is_number/1` guard inside `validate!/2` would otherwise reject
+  # `%Decimal{}` and raise — crashing the dashboard render. Coerce
+  # to float and delegate; the algorithm is float-only. The
+  # `@spec` advertises `Decimal.t()` as accepted, so this is the
+  # same place to enforce that promise.
+  def sunrise_sunset_utc(%Decimal{} = lat, %Decimal{} = lon, %Date{} = date),
+    do: sunrise_sunset_utc(Decimal.to_float(lat), Decimal.to_float(lon), date)
+
+  def sunrise_sunset_utc(%Decimal{} = lat, lon, %Date{} = date) when is_number(lon),
+    do: sunrise_sunset_utc(Decimal.to_float(lat), lon, date)
+
+  def sunrise_sunset_utc(lat, %Decimal{} = lon, %Date{} = date) when is_number(lat),
+    do: sunrise_sunset_utc(lat, Decimal.to_float(lon), date)
+
   def sunrise_sunset_utc(lat, lon, %Date{} = date) do
     _ = validate!(lat, lon)
 

@@ -127,6 +127,37 @@ defmodule DtuApp.SunCalcTest do
     end
   end
 
+  describe "sunrise_sunset_utc/3 — Decimal coords" do
+    # User.latitude / User.longitude come back from Ecto as
+    # `%Decimal{}` (the schema stores `:decimal`). The
+    # `is_number/1`-guarded `validate!/2` would otherwise reject
+    # them and raise ArgumentError, crashing the dashboard render.
+    # Verify that Decimal coords coerce cleanly and the output
+    # matches the equivalent float call.
+    test "Decimal coords coerce to float and match the float-input result" do
+      assert {dec_sr, dec_ss} =
+               SunCalc.sunrise_sunset_utc(
+                 Decimal.new("52.520008"),
+                 Decimal.new("13.404954"),
+                 ~D[2026-06-21]
+               )
+
+      assert {float_sr, float_ss} =
+               SunCalc.sunrise_sunset_utc(52.520_008, 13.404_954, ~D[2026-06-21])
+
+      assert_within_tolerance(dec_sr, float_sr)
+      assert_within_tolerance(dec_ss, float_ss)
+    end
+
+    test "mixed Decimal + nil returns {nil, nil}" do
+      assert SunCalc.sunrise_sunset_utc(Decimal.new("52.52"), nil, ~D[2026-06-21]) ==
+               {nil, nil}
+
+      assert SunCalc.sunrise_sunset_utc(nil, Decimal.new("13.41"), ~D[2026-06-21]) ==
+               {nil, nil}
+    end
+  end
+
   describe "sunrise_sunset_utc/3 — invalid coords raise" do
     test "out-of-range latitude raises ArgumentError" do
       assert_raise ArgumentError, ~r/latitude/, fn ->

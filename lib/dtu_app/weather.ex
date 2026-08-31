@@ -44,6 +44,22 @@ defmodule DtuApp.Weather do
   def cloud_cover_for(nil, _lon, _opts), do: nil
   def cloud_cover_for(_lat, nil, _opts), do: nil
 
+  # The `@spec` advertises `Decimal.t()` as a valid input — the User
+  # schema stores latitude / longitude as `:decimal` and that's what
+  # comes back from the DB. `is_number/1` in a guard only checks the
+  # underlying Erlang type, so `%Decimal{}` slips past the float-only
+  # clause below and would otherwise raise FunctionClauseError,
+  # surfacing as a missing cloud-cover card. Coerce to float up front
+  # and delegate; `Cache.key/3` and `OpenMeteo` are float-only paths.
+  def cloud_cover_for(%Decimal{} = lat, %Decimal{} = lon, opts),
+    do: cloud_cover_for(Decimal.to_float(lat), Decimal.to_float(lon), opts)
+
+  def cloud_cover_for(%Decimal{} = lat, lon, opts) when is_number(lon),
+    do: cloud_cover_for(Decimal.to_float(lat), lon, opts)
+
+  def cloud_cover_for(lat, %Decimal{} = lon, opts) when is_number(lat),
+    do: cloud_cover_for(lat, Decimal.to_float(lon), opts)
+
   def cloud_cover_for(lat, lon, opts) when is_number(lat) and is_number(lon) do
     key = Cache.key(lat, lon, Date.utc_today())
 
@@ -78,6 +94,18 @@ defmodule DtuApp.Weather do
         ) :: :clear | :partly_cloudy | :mostly_cloudy | :overcast | nil
   def current_condition(nil, _lon), do: nil
   def current_condition(_lat, nil), do: nil
+
+  # Coerce `Decimal.t()` coords down to float before the
+  # `is_number/1`-guarded clause. See `cloud_cover_for/3` for the
+  # rationale and the same pattern in `Weather.OpenMeteo.hourly_cloud_cover/3`.
+  def current_condition(%Decimal{} = lat, %Decimal{} = lon),
+    do: current_condition(Decimal.to_float(lat), Decimal.to_float(lon))
+
+  def current_condition(%Decimal{} = lat, lon) when is_number(lon),
+    do: current_condition(Decimal.to_float(lat), lon)
+
+  def current_condition(lat, %Decimal{} = lon) when is_number(lat),
+    do: current_condition(lat, Decimal.to_float(lon))
 
   def current_condition(lat, lon) when is_number(lat) and is_number(lon) do
     key = Cache.key(lat, lon, Date.utc_today())
