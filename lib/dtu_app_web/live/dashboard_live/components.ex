@@ -450,11 +450,17 @@ defmodule DtuAppWeb.DashboardLive.Components do
           else: 0
         )
 
-    max_cols = if @range_preset == "1d", do: 5, else: 4
+    max_cols = if @range_preset == "1d", do: 5, else: 4 %>
 
-    show_cloud = @geolocation_state != :denied and base_cols < max_cols
+    <%!-- Promote cloud slot above the cap when not yet granted (CTA is the only entry point for browser prompt). --%>
+    <% show_cloud =
+      cond do
+        @geolocation_state == :denied -> false
+        @geolocation_state == :granted -> base_cols < max_cols
+        true -> true
+      end %>
 
-    cols = base_cols + if(show_cloud, do: 1, else: 0) %>
+    <% cols = base_cols + if(show_cloud, do: 1, else: 0) %>
     <% cols_class =
       cond do
         cols <= 3 -> "lg:grid-cols-3"

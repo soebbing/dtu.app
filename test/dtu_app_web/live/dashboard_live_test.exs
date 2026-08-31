@@ -4052,10 +4052,11 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
     end
 
-    test "1D with savings configured: production row uses lg:grid-cols-5", %{
-      conn: conn,
-      user: user
-    } do
+    test "1D with savings configured: production row uses lg:grid-cols-6 (cloud slot promoted when not granted)",
+         %{
+           conn: conn,
+           user: user
+         } do
       dtu =
         device_fixture(user, %{
           name: "1D With Rate",
@@ -4081,20 +4082,24 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(id="stat-saved"),
              "Savings card must render once a rate is configured"
 
-      # Three baseline + current_power + savings = 5 panels.
-      # The cloud-cover slot is suppressed because the row is
-      # already over the 4-up cap (it would have been 6).
-      # Sub-test: no `cloud-cover-cta` is in the markup.
-      refute html =~ ~s(id="cloud-cover-cta"),
-             "Cloud-cover slot stays hidden when the row exceeds 4 panels"
+      # Three baseline + current_power + savings + cloud = 6
+      # panels. The cloud slot is "promoted" because the test
+      # user has no lat/lon (geolocation_state == :not_asked) —
+      # the "Share location" CTA is the only entry point for the
+      # browser's permission prompt, so the slot stays visible
+      # regardless of grid-full. If this user already had coords
+      # (`:granted`), the slot would be suppressed and the grid
+      # would be `lg:grid-cols-5`.
+      assert html =~ ~s(id="cloud-cover-cta"),
+             "Cloud-cover slot stays promoted while geolocation not yet granted"
 
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
-             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + savings, cloud suppressed)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/,
+             "production row grid must use lg:grid-cols-6 (1D, current power + 3 baseline + savings + cloud-promoted)"
 
-      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
+      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-current-power"/
 
-      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-saved"/
+      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-saved"/
     end
 
     test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)",
