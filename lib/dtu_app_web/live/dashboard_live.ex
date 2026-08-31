@@ -84,6 +84,13 @@ defmodule DtuAppWeb.DashboardLive do
       # `granularity` drives the historical stepper (day/week/month/year).
       |> assign(:live, true)
       |> assign(:granularity, "day")
+      # Perf #5 — `kickoff_weather_fetch/6` reads this to decide
+      # between sync (initial mount) and async-on-WebSocket
+      # (subsequent re-renders). Flipped to `false` at the end of
+      # `assign_dashboard_data/5`'s line-chart branches so the
+      # `handle_event` / `handle_info` re-render path gets the
+      # latency win.
+      |> assign(:initial_mount?, true)
       |> assign(:time_range, "today")
       # Top-level preset chosen in the toolbar: 1D (today, live) / 7D / 30D /
       # YTD / custom (delegates to the historical stepper). Defaults to 1D
@@ -155,6 +162,23 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign_dashboard_data(user, nil, "today", nil)
 
     {:ok, socket}
+  end
+
+  # The three weather-driven assigns start as placeholders so the
+  # WebSocket mount's first render (before the async fetch returns)
+  # has something to read. On the HTTP render path `kickoff_weather_fetch/6`
+  # runs the fetch inline and overwrites them before the response ships,
+  # so the initial HTML includes the band + current-condition. On the
+  # WebSocket path the same kickoff spawns a Task that sends
+  # `{:weather_update, snapshot}` to self, and `handle_info/2` below
+  # applies the values. See `kickoff_weather_fetch/6` for the full
+  # rationale — it's the only HTTP-vs-WebSocket split in the mount path
+  # because the HTTP render is one-shot (no follow-up render).
+  defp assign_weather_placeholders(socket) do
+    socket
+    |> assign(:cloud_cover_band, [])
+    |> assign(:current_cloud_cover, nil)
+    |> assign(:current_cloud_cover_pct, nil)
   end
 
   # `phx-push` path: the JS hook's `this.pushEvent("set_timezone", ...)`
@@ -654,6 +678,22 @@ defmodule DtuAppWeb.DashboardLive do
   @impl true
   def handle_info({:notification, payload}, socket) do
     {:noreply, push_event(socket, "notify", payload)}
+  end
+
+  # Perf #5: the `Task.start/1` spawned by `kickoff_weather_fetch/6`
+  # on the WebSocket path delivers its result here. Applies the
+  # three weather-driven assigns (`:cloud_cover_band`,
+  # `:current_cloud_cover`, `:current_cloud_cover_pct`); the chart
+  # itself is already rendered, so the only thing this re-render
+  # changes is the cloud-cover band + current-condition card.
+  #
+  # If the Task crashed and never sent (which shouldn't happen — the
+  # `Weather` facade returns `nil` on every failure path), the assigns
+  # stay at their placeholder defaults (`[]` / `nil`) and the next
+  # re-render cycle (e.g. a new reading broadcast) re-fires the kickoff.
+  @impl true
+  def handle_info({:weather_update, snapshot}, socket) do
+    {:noreply, apply_weather_snapshot(socket, snapshot)}
   end
 
   # Catch-all for other messages
@@ -1451,25 +1491,20 @@ defmodule DtuAppWeb.DashboardLive do
         tz_offset_seconds
       )
     )
-    # Cloud-cover band: same nil-through contract — the
-    # `Weather.cloud_cover_for/3` facade returns `nil` for nil coords
-    # or upstream failure, so the template branches on the empty list
-    # without a separate "have we got coords?" check. `past_days` is
-    # pinned to the chart's range so the band covers the same window
-    # the user is looking at (YTD and Custom get 30 to stay within
-    # Open-Meteo's 92-day max and the 15-min cache window).
-    |> assign(
-      :cloud_cover_band,
-      build_cloud_cover_band(
-        user,
-        local_date,
-        x_min_seconds,
-        x_max_seconds,
-        tz_offset_seconds
-      )
-    )
-    |> assign(:current_cloud_cover, weather_current_condition(user))
-    |> assign(:current_cloud_cover_pct, weather_current_pct(user))
+    # Cloud-cover band + current weather condition + percentage used
+    # to live inline here, taking the Open-Meteo HTTP round trip on
+    # every render. Perf #5 moved them out of the synchronous path:
+    # `kickoff_weather_fetch/6` runs the fetch async on WebSocket
+    # callbacks (so the chart paints first) and inline on the HTTP
+    # render path (which has no follow-up render). See
+    # `kickoff_weather_fetch/6` for the full rationale.
+    |> kickoff_weather_fetch(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds)
+    # Perf #5 — flip `:initial_mount?` off so subsequent
+    # `assign_dashboard_data/5` re-renders (preset switches,
+    # `set_location`, `set_timezone`, PubSub reading broadcasts)
+    # take the async-on-WebSocket branch in
+    # `kickoff_weather_fetch/6`.
+    |> assign(:initial_mount?, false)
     # Mirrored from `user.latitude` / `user.longitude` so the cloud-
     # cover card slot can branch on "user has coords" without
     # reaching into the user struct from the template. Re-derived
@@ -1533,6 +1568,73 @@ defmodule DtuAppWeb.DashboardLive do
     pairs = Enum.zip(times, values)
     {_t, pct} = Enum.max_by(pairs, fn {t, _} -> DateTime.to_unix(t, :second) end)
     pct
+  end
+
+  # Perf #5: weather fetch dispatch. Three call sites:
+  #
+  #   1. HTTP render (the initial GET's static response). One-shot,
+  #      no follow-up render — the fetch has to run inline or the
+  #      HTML ships without the cloud-cover band + current-condition
+  #      card. `connected?/1` is `false` here, so the `else` branch
+  #      fires unconditionally.
+  #   2. WebSocket `mount/3` (the channel upgrade after the static
+  #      HTML). The HTTP render already shipped weather, so the user
+  #      has already seen the populated band before this mount even
+  #      runs. We still run synchronously here for two reasons:
+  #      (a) `LiveViewTest.live/2`'s returned `html` reflects this
+  #      connected render, and existing cloud-cover tests assert
+  #      weather is in that html; (b) the sync cost is amortised by
+  #      the 15-min `Weather.Cache`, so a cache hit lands in
+  #      microseconds. Detected via `socket.assigns[:initial_mount?]`,
+  #      which `mount/3` sets to `true` and `assign_line_chart_data/6`
+  #      flips to `false` after this function runs.
+  #   3. WebSocket callbacks (`handle_event`, `handle_info` — e.g.
+  #      preset switches, `set_location`, `set_timezone`). The chart
+  #      is already on screen; deferring weather here shaves the
+  #      re-render latency without losing the band (the
+  #      `{:weather_update, ...}` message lands a moment later and
+  #      `handle_info/2` re-renders with the populated assigns).
+  #
+  # The Task uses `send(parent, ...)` rather than `Phoenix.PubSub` so
+  # the message targets this LV process specifically — a stale fetch
+  # for a disconnected user never wakes another tab's process. Errors
+  # in the fetch fall through to the helpers' nil/empty defaults; the
+  # `Weather.cloud_cover_for/3` facade already returns `nil` on nil
+  # coords or upstream failure, so a try/rescue isn't needed (and would
+  # mask real bugs if added).
+  defp kickoff_weather_fetch(socket, user, local_date, x_min, x_max, tz) do
+    initial_mount? = socket.assigns[:initial_mount?] == true
+
+    if connected?(socket) and not initial_mount? do
+      parent = self()
+
+      Task.start(fn ->
+        snapshot = fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
+        send(parent, {:weather_update, snapshot})
+      end)
+
+      socket
+    else
+      # HTTP render, OR initial WebSocket mount (initial_mount?).
+      # Compute inline so the rendered HTML includes the band +
+      # current-condition.
+      apply_weather_snapshot(socket, fetch_weather_snapshot(user, local_date, x_min, x_max, tz))
+    end
+  end
+
+  defp fetch_weather_snapshot(user, local_date, x_min, x_max, tz) do
+    %{
+      cloud_cover_band: build_cloud_cover_band(user, local_date, x_min, x_max, tz),
+      current_cloud_cover: weather_current_condition(user),
+      current_cloud_cover_pct: weather_current_pct(user)
+    }
+  end
+
+  defp apply_weather_snapshot(socket, snapshot) do
+    socket
+    |> assign(:cloud_cover_band, Map.fetch!(snapshot, :cloud_cover_band))
+    |> assign(:current_cloud_cover, Map.fetch!(snapshot, :current_cloud_cover))
+    |> assign(:current_cloud_cover_pct, Map.fetch!(snapshot, :current_cloud_cover_pct))
   end
 
   # Chart math + Y-axis formatting helpers (`shift_local/2`,
@@ -1706,6 +1808,15 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
+    # Reset the three weather-driven assigns to placeholders before any
+    # branch runs. On the line-chart branches `kickoff_weather_fetch/6`
+    # (inside `assign_line_chart_data/6`) overwrites them — synchronously
+    # for HTTP renders, asynchronously for WebSocket. On the bar-chart
+    # branches they're never read (the template gates the cloud-cover
+    # block on `@chart_type == :line`), so leaving them as `[]` / `nil`
+    # is harmless.
+    socket = assign_weather_placeholders(socket)
+
     tz_offset_seconds = socket.assigns.user_tz_offset_seconds
     # Energy rate for the "Saved" card. `cents_per_kwh` is set in
     # `mount/3` from `user.cents_per_kwh`; if the user hasn't set a
