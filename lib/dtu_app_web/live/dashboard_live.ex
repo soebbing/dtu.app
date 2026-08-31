@@ -844,16 +844,38 @@ defmodule DtuAppWeb.DashboardLive do
     # its peak — otherwise a heavy-load evening (Shelly reporting e.g.
     # 1500 W draw on a 600 W solar day) would clip the consumption line
     # off-screen above the chart.
+    #
+    # The today branch of `assign_dashboard_data/5` pre-fetches these
+    # points once and threads them through `:consumption_chart_points`
+    # so the consumption overlay + `get_consumption_daily_stats/3` +
+    # `get_consumption_period_stats/5` all share a single `readings`
+    # scan instead of running three independent ones on a paired-user
+    # mount.
     consumption_chart_points =
-      Devices.list_today_consumption_chart_data(user, dtu_id)
+      case Keyword.get(opts, :consumption_chart_points) do
+        nil -> Devices.list_today_consumption_chart_data(user, dtu_id)
+        pts -> pts
+      end
 
     # Net-flow chart points (production minus consumption, sign-flipped
     # in the path below) — fetched up front so we can size the Y-axis
     # negative bound before computing the production/consumption paths.
     # Without this we'd render export peaks below the chart's bottom
     # edge, exactly the bug this fix targets.
-    {net_utc_start, net_utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-    net_chart_points = Devices.list_net_chart_data(user, net_utc_start, net_utc_end, dtu_id)
+    #
+    # The today branch of `assign_dashboard_data/5` pre-fetches these
+    # points once and threads them through `:net_chart_points` so the
+    # net overlay + `get_net_flow_stats/3` share a single `readings`
+    # scan instead of running two.
+    net_chart_points =
+      case Keyword.get(opts, :net_chart_points) do
+        nil ->
+          {start, end_} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
+          Devices.list_net_chart_data(user, start, end_, dtu_id)
+
+        pts ->
+          pts
+      end
 
     max_power =
       chart_points
@@ -1671,12 +1693,39 @@ defmodule DtuAppWeb.DashboardLive do
     # template (`<%= if @savings %>`).
     cents = socket.assigns.cents_per_kwh
 
+    # Pre-fetch today's consumption + net-flow bucket-mean points
+    # ONCE and share them across:
+    #   * `get_consumption_daily_stats/3` (consumption stat cards),
+    #   * `get_net_flow_stats/3` (net-flow stat cards),
+    #   * `assign_line_chart_data/6` (chart overlays).
+    # Without this dedup, a paired-user mount ran
+    # `list_consumption_chart_data/4` three times and
+    # `list_net_chart_data/4` twice on the same data, each as a
+    # separate `readings` row scan. The stats helpers and the chart
+    # share the same 5-minute bucket means, so deriving both from a
+    # single fetch is a safe optimisation that keeps every consumer's
+    # number identical.
+    consumption_chart_points =
+      Devices.list_today_consumption_chart_data(user, dtu_id)
+
+    {net_today_start, net_today_end} =
+      {DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC"),
+       DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")}
+
+    net_chart_points =
+      Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
+
     # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
     # meter: current household draw (W), today's consumed energy
     # (kWh), and peak demand. Computed once per dashboard refresh and
     # shared across all branches since consumption is independent of
     # the production time_range/granularity.
-    consumption_stats = Devices.get_consumption_daily_stats(user, dtu_id)
+    consumption_stats =
+      Devices.get_consumption_daily_stats(
+        user,
+        dtu_id,
+        consumption_chart_points: consumption_chart_points
+      )
 
     # Period-aware consumption stats — same shape as `@stats` for the
     # production side: today/day views get current/today/peak, week/
@@ -1706,7 +1755,12 @@ defmodule DtuAppWeb.DashboardLive do
     # Only meaningful when both an inverter AND a Shelly are paired;
     # otherwise the helper returns all-zeros and the dashboard's
     # `net_flow_active` guard hides the row.
-    net_flow_stats = Devices.get_net_flow_stats(user, dtu_id)
+    net_flow_stats =
+      Devices.get_net_flow_stats(
+        user,
+        dtu_id,
+        net_chart_points: net_chart_points
+      )
 
     case time_range do
       "today" ->
@@ -1775,7 +1829,9 @@ defmodule DtuAppWeb.DashboardLive do
           today_local,
           tz_offset_seconds,
           dtu_id,
-          chart_points: today_chart_points
+          chart_points: today_chart_points,
+          consumption_chart_points: consumption_chart_points,
+          net_chart_points: net_chart_points
         )
 
       "day" ->
