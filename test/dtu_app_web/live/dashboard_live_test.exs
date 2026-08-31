@@ -4223,17 +4223,23 @@ defmodule DtuAppWeb.DashboardLiveTest do
           longitude: 13.41
         })
 
-      # Stub Open-Meteo with 30 days of hourly readings at 12:00 UTC.
-      # The chart's X range is derived from the seeded readings
-      # (06:00–19:00 UTC), so 12:00 UTC entries project into that
-      # window and produce a non-empty `@cloud_cover_band`. Hourly
+      # Stub Open-Meteo with hourly readings for the past 30 days plus
+      # today. The chart's X range is derived from the seeded
+      # readings (06:00–19:00 UTC today), so today's entries at
+      # those hours project into the visible window. The 30 past
+      # days' entries are kept in the payload so the dedupe-by-
+      # local-date path is exercised (otherwise the test wouldn't
+      # notice if `cloud_cover_band/6` forgot to filter). Hourly
       # granularity matches what the upstream facade fetches.
       today = Date.utc_today()
+      day_count = 31
+      hours_per_day = 24
 
       times =
-        for days_ago <- 30..0//-1 do
+        for days_ago <- (day_count - 1)..0//-1,
+            hour <- 0..(hours_per_day - 1) do
           date = Date.add(today, -days_ago)
-          DateTime.new!(date, Time.new!(12, 0, 0)) |> DateTime.to_iso8601()
+          DateTime.new!(date, Time.new!(hour, 0, 0)) |> DateTime.to_iso8601()
         end
 
       body = %{
@@ -4241,7 +4247,8 @@ defmodule DtuAppWeb.DashboardLiveTest do
         "longitude" => 13.41,
         "hourly" => %{
           "time" => times,
-          "cloud_cover" => Enum.map(0..30, fn i -> rem(i, 4) * 25 end)
+          "cloud_cover" =>
+            Enum.map(0..(day_count * hours_per_day - 1), fn i -> rem(i, 4) * 25 end)
         }
       }
 
@@ -4270,6 +4277,53 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # not just that coords happened to land in the band.
       assert html =~ ~s(id="stat-cloud-cover-pct"),
              "Cloud-cover data card must render when user has coords"
+
+      # Stacking-pin: the band must scope to today's local date so
+      # 30 days of past Open-Meteo readings don't pile up at every
+      # hour, producing "huge black Blocks" via alpha accumulation.
+      # Count the rects inside the band group — `chart_time_range/2`
+      # rounds up to `end_hour = last_hour + 1`, so for the
+      # 06:00–19:00 reading arc the X range is [06:00, 20:00) and
+      # 15 hours (06:00–20:00 inclusive) project to the chart. Pre-fix
+      # this count was 31×15 = 465 stacked rects at the same x per
+      # hour — alpha 0.40 × 31 ≈ opaque black. With the local_date
+      # filter, today's entries project exactly once each.
+      rect_count =
+        Regex.scan(~r/<rect\s/, html)
+        |> length()
+
+      band_section =
+        case Regex.run(~r/<g[^>]*data-testid="cloud-cover-band"[^>]*>(.+?)<\/g>/, html, [
+               :dotall
+             ]) do
+          [_, body] -> body
+          _ -> ""
+        end
+
+      band_rect_count =
+        Regex.scan(~r/<rect\s/, band_section)
+        |> length()
+
+      assert band_rect_count == 15,
+             "Cloud-cover band must render one rect per in-range hour (expected 15, got #{band_rect_count}) — past_days data must not stack on today's hours"
+
+      # Sanity check that we didn't lose the chart series rendering
+      # (band count vs total rect count): the chart's data lines
+      # use `<rect>` only for the band, so the total rect count
+      # should equal the band count for this test (no inverter
+      # icons rendered as rects in this surface).
+      assert rect_count == band_rect_count,
+             "Cloud-cover band rects leaked outside the band group"
+
+      # Width pin: `chart_width / hours_in_span` = 800 / 14 = 57.1
+      # (chart range is 14 hours: 06:00 → 20:00, span 50_400s).
+      # The hardcoded 16.7 left 3.5× gaps on this preset and
+      # stacked 3.5× on 30D — see PR #208 follow-up.
+      assert [_, width_str] = Regex.run(~r/width="([\d.]+)"/, band_section),
+             "Cloud-cover band must have a width attribute"
+
+      assert String.to_float(width_str) > 50.0,
+             "1D band width should be ~57 SVG units (got #{width_str}); hardcoded 16.7 means the dedupe fix wasn't paired with the dynamic-width fix"
     end
   end
 

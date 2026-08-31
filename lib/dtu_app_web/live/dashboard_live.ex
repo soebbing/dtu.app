@@ -1417,7 +1417,13 @@ defmodule DtuAppWeb.DashboardLive do
     # Open-Meteo's 92-day max and the 15-min cache window).
     |> assign(
       :cloud_cover_band,
-      build_cloud_cover_band(user, x_min_seconds, x_max_seconds, tz_offset_seconds)
+      build_cloud_cover_band(
+        user,
+        local_date,
+        x_min_seconds,
+        x_max_seconds,
+        tz_offset_seconds
+      )
     )
     |> assign(:current_cloud_cover, weather_current_condition(user))
     |> assign(:current_cloud_cover_pct, weather_current_pct(user))
@@ -1429,7 +1435,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:user_has_geolocation, DtuApp.Accounts.user_has_geolocation?(user))
   end
 
-  defp build_cloud_cover_band(user, x_min_seconds, x_max_seconds, tz_offset_seconds) do
+  defp build_cloud_cover_band(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds) do
     case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
       nil ->
         []
@@ -1440,6 +1446,7 @@ defmodule DtuAppWeb.DashboardLive do
 
         ChartHelpers.cloud_cover_band(
           readings,
+          local_date,
           x_min_seconds,
           x_max_seconds,
           tz_offset_seconds,
@@ -3111,10 +3118,14 @@ defmodule DtuAppWeb.DashboardLive do
                          100% = most visible). Cloud cover 0% is
                          rendered as transparent — no fill, no
                          visual footprint — so a clear sky doesn't
-                         litter the chart. The band width is
-                         800 / 48 ≈ 16.7px per hourly bucket,
-                         matching the hourly sampling granularity
-                         from Open-Meteo. Hidden entirely when
+                         litter the chart. The rect width is
+                         computed per-entry in
+                         `ChartHelpers.cloud_cover_band/6` as
+                         `chart_width / hours_in_span`, so it scales
+                         across every preset (1D → ~57 SVG
+                         units/hour, 7D → ~5, 30D → ~1.1) instead
+                         of the old hardcoded 16.7 that only matched
+                         a 48-hour view. Hidden entirely when
                          `@cloud_cover_band == []` (nil coords or
                          upstream failure). --%>
                   <%= if @cloud_cover_band != [] do %>
@@ -3125,9 +3136,9 @@ defmodule DtuAppWeb.DashboardLive do
                     >
                       <%= for entry <- @cloud_cover_band do %>
                         <rect
-                          x={entry.x - 8.4}
+                          x={Float.round(entry.x - entry.width / 2, 1)}
                           y="20"
-                          width="16.7"
+                          width={entry.width}
                           height="230"
                           fill="rgb(148 163 184 / #{Float.round(0.05 + entry.pct * 0.0035, 3)})"
                           pointer-events="none"
