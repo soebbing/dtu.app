@@ -97,8 +97,10 @@ defmodule DtuAppWeb.DashboardMountProfileTest do
         Process.sleep(20)
         mount_timings = collect_query_timings()
 
-        IO.puts("\n--- Mount #{mount_idx}: #{format_us(wall_us)} wall, " <>
-                  "#{length(mount_timings)} queries ---")
+        IO.puts(
+          "\n--- Mount #{mount_idx}: #{format_us(wall_us)} wall, " <>
+            "#{length(mount_timings)} queries ---"
+        )
 
         {wall_acc + wall_us, timings_acc ++ [mount_timings], html}
       end)

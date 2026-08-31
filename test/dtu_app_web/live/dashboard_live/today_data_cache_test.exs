@@ -60,7 +60,9 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCacheTest do
       fetcher = fn -> %{consumption: [:c], net: [:n]} end
 
       assert %{consumption: [:c], net: [:n]} = TodayDataCache.fetch(user_id, fetcher)
-      assert %{consumption: [:c], net: [:n]} = TodayDataCache.fetch(user_id, fn -> flunk("cache miss") end)
+
+      assert %{consumption: [:c], net: [:n]} =
+               TodayDataCache.fetch(user_id, fn -> flunk("cache miss") end)
     end
   end
 
