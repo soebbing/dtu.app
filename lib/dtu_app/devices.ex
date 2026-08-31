@@ -1299,7 +1299,7 @@ defmodule DtuApp.Devices do
           peak_export: float(),
           peak_import: float()
         }
-  def get_net_flow_stats(%User{} = user, dtu_id \\ nil) do
+  def get_net_flow_stats(%User{} = user, dtu_id \\ nil, opts \\ []) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
@@ -1311,11 +1311,28 @@ defmodule DtuApp.Devices do
         peak_import: 0.0
       }
     else
+      # Pre-computed today net-flow chart points (already bucket-meaned
+      # into 5-min windows by `list_net_chart_data/4`). When the
+      # caller (the today branch of `assign_dashboard_data/5`) already
+      # fetched these for the net-flow chart overlay, pass them in via
+      # `:net_chart_points` so we don't re-run the same `readings` scan
+      # (production + consumption) here. On a paired-user mount that's
+      # 1 raw-row scan saved per refresh.
+      net_chart_points =
+        case Keyword.get(opts, :net_chart_points) do
+          nil -> nil
+          pts when is_list(pts) -> pts
+        end
+
       today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
       two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
 
-      points = list_net_chart_data(user, today_start, today_end, dtu_id)
+      points =
+        case net_chart_points do
+          nil -> list_net_chart_data(user, today_start, today_end, dtu_id)
+          pts -> pts
+        end
 
       if points == [] do
         %{
@@ -1785,12 +1802,28 @@ defmodule DtuApp.Devices do
   Returns the same zero defaults as `get_daily_stats/2` when the
   user has no devices.
   """
-  def get_consumption_daily_stats(%User{} = user, dtu_id \\ nil) do
+  def get_consumption_daily_stats(%User{} = user, dtu_id \\ nil, opts \\ []) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
     if dtu_ids == [] do
       %{current_consumption: 0.0, today_consumption: 0.0, peak_consumption: 0.0}
     else
+      # Pre-computed today consumption chart points (already bucket-meaned
+      # into 5-min windows by `list_consumption_chart_data/4`). When the
+      # caller (the today branch of `assign_dashboard_data/5`) already
+      # fetched these for the consumption overlay, pass them in via
+      # `:consumption_chart_points` so we don't re-run the same `readings`
+      # scan TWICE inside this helper — once via `integrate_consumption_kwh`
+      # for `today_consumption` and again via `list_today_consumption_chart_data`
+      # for `bucket_max`. On a paired-user mount that's 2 raw-row scans
+      # saved per refresh; the same query is also used by the chart code
+      # path so we cut the dashboard's consumption reads from 3 to 1.
+      consumption_chart_points =
+        case Keyword.get(opts, :consumption_chart_points) do
+          nil -> nil
+          pts when is_list(pts) -> pts
+        end
+
       two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
 
       # Latest reading per (dtu_id) — Shelly only publishes one
@@ -1833,14 +1866,40 @@ defmodule DtuApp.Devices do
       # each Shelly's ~10× per-5-min readings down to a single figure
       # per bucket, so the time integral reflects actual household
       # draw without the Shelly's per-uplink over-counting.
-      today_consumption = integrate_consumption_kwh(user, dtu_id, today_start, today_end)
+      #
+      # When the caller passed pre-computed consumption chart points
+      # (see opts above), we derive both `today_consumption` and the
+      # peak from those same points instead of re-running the underlying
+      # `readings` scan twice. Same math, same shape, one query.
+      today_consumption =
+        case consumption_chart_points do
+          nil ->
+            integrate_consumption_kwh(user, dtu_id, today_start, today_end)
+
+          points ->
+            points
+            |> Enum.reduce(0.0, fn point, acc ->
+              watts = max(point.power, 0.0)
+              acc + watts * (5.0 / 60.0)
+            end)
+            |> Kernel./(1000)
+            |> Float.round(2)
+        end
 
       # Bucket max for the peak: same convention as production —
       # the live reading wins when it exceeds the bucket max.
       bucket_max =
-        case list_today_consumption_chart_data(user, dtu_id) do
-          [] ->
-            0.0
+        case consumption_chart_points do
+          nil ->
+            case list_today_consumption_chart_data(user, dtu_id) do
+              [] ->
+                0.0
+
+              points ->
+                points
+                |> Enum.map(&max(&1.power, 0.0))
+                |> Enum.max(fn -> 0.0 end)
+            end
 
           points ->
             points
