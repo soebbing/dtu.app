@@ -2548,6 +2548,19 @@ defmodule DtuApp.Devices do
     end
   end
 
+  # The historical stepper's calendar widget lets the user pick any
+  # date with data, so this DISTINCT scan underpins the `min` /
+  # `max` bounds + every granularity dropdown. Without a date cap
+  # the planner has to scan every compressed chunk in the hypertable
+  # and de-duplicate by date — for a 3-inverter fleet with several
+  # years of history that was the dominant cost on every dashboard
+  # mount and every DTU switch (the stepper re-fetches on both).
+  # 5 years is well past any realistic solar comparison window
+  # (the user is most likely navigating YTD or the last summer) and
+  # keeps the planner in the active chunk range where the chunk
+  # exclusion makes the scan cheap.
+  @selectable_dates_max_lookback_days 5 * 365
+
   @doc "List selectable dates containing telemetry readings."
   def list_selectable_dates(%User{} = user, dtu_id \\ nil) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
@@ -2555,9 +2568,14 @@ defmodule DtuApp.Devices do
     if dtu_ids == [] do
       []
     else
+      lookback_cutoff =
+        Date.utc_today()
+        |> Date.add(-@selectable_dates_max_lookback_days)
+        |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+
       Repo.all(
         from r in Reading,
-          where: r.dtu_id in ^dtu_ids,
+          where: r.dtu_id in ^dtu_ids and r.inserted_at >= ^lookback_cutoff,
           select: fragment("(?::date)", r.inserted_at),
           distinct: true,
           order_by: [desc: fragment("(?::date)", r.inserted_at)]
