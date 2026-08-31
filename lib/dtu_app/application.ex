@@ -48,7 +48,16 @@ defmodule DtuApp.Application do
          # `test/dtu_app_web/live/dashboard_mount_profile_test.exs`
          # shows 35 s of cumulative queue time on the
          # `SELECT now()` query without the cache).
-         {DtuApp.Time.Cache, []}
+         {DtuApp.Time.Cache, []},
+         # 30-second TTL keyed cache for the user's DTU id list.
+         # Same profile harness shows 22 round trips per mount
+         # for `SELECT id FROM dtus WHERE user_id = $1`, costing
+         # 18 s of cumulative DB time. The dashboard's
+         # `refresh_devices/2` invalidates after every device
+         # write so a freshly-added or removed device is picked
+         # up without waiting out the TTL. See
+         # `DtuApp.Devices.UserDtuIdsCache` for the design.
+         {DtuApp.Devices.UserDtuIdsCache, []}
        ] ++
          mqtt_broker_children() ++
          [

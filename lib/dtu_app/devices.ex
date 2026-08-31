@@ -18,6 +18,7 @@ defmodule DtuApp.Devices do
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.DtuError
   alias DtuApp.Devices.Reading
+  alias DtuApp.Devices.UserDtuIdsCache
 
   @doc "List all devices owned by `user`, newest first."
   def list_devices(%User{} = user) do
@@ -3104,8 +3105,21 @@ defmodule DtuApp.Devices do
 
   # Resolve the user's DTU ids for a query, scoped to either all of the user's
   # devices or one specific (owned) device. Returns [] if the device isn't owned.
+  #
+  # The `dtu_id = nil` branch is read-through cached for 30 s — a single
+  # dashboard mount calls this ~22 times (once per chart/stats helper
+  # that scopes its `WHERE dtu_id IN ^dtu_ids` clause), and the
+  # profile harness shows 18.39 s of cumulative DB time on the
+  # underlying `SELECT id FROM dtus WHERE user_id = $1`. See
+  # `DtuApp.Devices.UserDtuIdsCache` for the rationale and the
+  # invalidation hook (`DashboardLive.refresh_devices/2` calls
+  # `UserDtuIdsCache.invalidate/1` after every device write so a
+  # freshly-created or removed device is reflected in the next
+  # `owned_dtu_ids/2` call without waiting out the TTL).
   defp owned_dtu_ids(%User{} = user, nil) do
-    Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
+    UserDtuIdsCache.get(user.id, fn ->
+      Repo.all(from d in Dtu, where: d.user_id == ^user.id, select: d.id)
+    end)
   end
 
   defp owned_dtu_ids(%User{} = user, dtu_id) do

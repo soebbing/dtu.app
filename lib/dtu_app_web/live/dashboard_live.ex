@@ -673,6 +673,16 @@ defmodule DtuAppWeb.DashboardLive do
   defp refresh_devices(socket, user) do
     devices = Devices.list_devices(user)
 
+    # Drop the cached `SELECT id FROM dtus WHERE user_id = $1` list
+    # for this user — `Devices.list_devices/1` is the source of
+    # truth for what the user owns, so any time we re-fetch it
+    # (initial mount, after an add/delete event) the previously
+    # cached id list is stale by definition. `invalidate/1` is a
+    # no-op if there's no entry, so this is safe to call on every
+    # refresh. See `DtuApp.Devices.UserDtuIdsCache` for the
+    # rationale (22 calls/mount, 18 s of cumulative DB time).
+    DtuApp.Devices.UserDtuIdsCache.invalidate(user.id)
+
     socket
     |> assign(:devices, devices)
     |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
