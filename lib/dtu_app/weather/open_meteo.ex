@@ -50,6 +50,21 @@ defmodule DtuApp.Weather.OpenMeteo do
   def hourly_cloud_cover(nil, _lon, _opts), do: nil
   def hourly_cloud_cover(_lat, nil, _opts), do: nil
 
+  # Coerce `Decimal.t()` coords down to float before the
+  # `is_number/1`-guarded clause. `Weather.cloud_cover_for/3` only
+  # hits this on cache miss, so the symptom of leaving this broken
+  # would be a FunctionClauseError on first-load + clear-cache —
+  # harder to repro than the always-hit facade path. Honoring the
+  # `@spec` cheaply is the right fix.
+  def hourly_cloud_cover(%Decimal{} = lat, %Decimal{} = lon, opts),
+    do: hourly_cloud_cover(Decimal.to_float(lat), Decimal.to_float(lon), opts)
+
+  def hourly_cloud_cover(%Decimal{} = lat, lon, opts) when is_number(lon),
+    do: hourly_cloud_cover(Decimal.to_float(lat), lon, opts)
+
+  def hourly_cloud_cover(lat, %Decimal{} = lon, opts) when is_number(lat),
+    do: hourly_cloud_cover(lat, Decimal.to_float(lon), opts)
+
   def hourly_cloud_cover(lat, lon, opts) when is_number(lat) and is_number(lon) do
     past_days = clamp_past_days(opts[:past_days] || 1)
 
