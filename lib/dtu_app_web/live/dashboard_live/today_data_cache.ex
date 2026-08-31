@@ -86,7 +86,9 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   """
   @spec invalidate(integer() | nil) :: :ok
   def invalidate(nil), do: :ok
-  def invalidate(user_id) when is_integer(user_id), do: GenServer.call(__MODULE__, {:invalidate, user_id})
+
+  def invalidate(user_id) when is_integer(user_id),
+    do: GenServer.call(__MODULE__, {:invalidate, user_id})
 
   defp refresh(user_id, fetcher) do
     data = fetcher.()
