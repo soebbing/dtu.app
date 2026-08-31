@@ -40,7 +40,15 @@ defmodule DtuApp.Application do
          {Phoenix.PubSub, name: DtuApp.PubSub},
          {Finch, name: DtuAppWeb.WebPushFinch},
          {DtuApp.Accounts.PasskeyChallengeCache, []},
-         {DtuApp.Weather.Cache, []}
+         {DtuApp.Weather.Cache, []},
+         # 10-second TTL singleton for `Time.utc_now/0`'s DB-clock
+         # round trip. See `DtuApp.Time.Cache` for the rationale
+         # (a single dashboard mount calls this 40+ times; the
+         # profile harness in
+         # `test/dtu_app_web/live/dashboard_mount_profile_test.exs`
+         # shows 35 s of cumulative queue time on the
+         # `SELECT now()` query without the cache).
+         {DtuApp.Time.Cache, []}
        ] ++
          mqtt_broker_children() ++
          [

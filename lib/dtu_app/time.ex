@@ -50,6 +50,7 @@ defmodule DtuApp.Time do
   """
 
   alias DtuApp.Repo
+  alias DtuApp.Time.Cache
 
   @doc """
   Return the database's current timestamp as a `%DateTime{}` in UTC,
@@ -62,10 +63,20 @@ defmodule DtuApp.Time do
   """
   @spec utc_now() :: DateTime.t()
   def utc_now do
-    Repo
-    |> query_now()
-    |> lift_to_utc_datetime()
-    |> DateTime.truncate(:second)
+    case Cache.peek() do
+      nil ->
+        value =
+          Repo
+          |> query_now()
+          |> lift_to_utc_datetime()
+          |> DateTime.truncate(:second)
+
+        Cache.put(value)
+        value
+
+      cached ->
+        cached
+    end
   end
 
   @doc """

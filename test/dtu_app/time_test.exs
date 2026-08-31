@@ -1,7 +1,8 @@
 defmodule DtuApp.TimeTest do
-  use DtuApp.DataCase, async: true
+  use DtuApp.DataCase, async: false
 
   alias DtuApp.Time
+  alias DtuApp.Time.Cache
 
   describe "utc_now/0" do
     test "returns a DateTime tagged as UTC, second-precision (matching :utc_datetime)" do
@@ -26,6 +27,21 @@ defmodule DtuApp.TimeTest do
       assert diff_ms >= 0
       assert diff_ms < 1_000
     end
+
+    test "consecutive calls within the 10s cache window return the cached value (no new DB round-trip)" do
+      # Reset cache so this test isn't sensitive to state from
+      # sibling tests running in the same VM.
+      Cache.put(DateTime.utc_now() |> DateTime.truncate(:second))
+
+      t1 = Time.utc_now()
+      t2 = Time.utc_now()
+
+      # Same DateTime struct — meaning the second call hit the
+      # cache and never round-tripped to the DB. The equality is
+      # structural, not just within-a-second: the helper returns
+      # the exact value it cached.
+      assert t1 == t2
+    end
   end
 
   describe "utc_now_usec/0" do
@@ -46,6 +62,17 @@ defmodule DtuApp.TimeTest do
       t2 = Time.utc_now_usec()
 
       assert DateTime.compare(t2, t1) in [:gt, :eq]
+    end
+
+    test "is NOT served from the cache (microsecond precision requires a fresh DB read)" do
+      # Stale by design — see `DtuApp.Time.Cache` moduledoc. If this
+      # ever returns the cached second-precision value, the readings
+      # composite PK (`inserted_at`) would silently lose its
+      # microsecond component and the `maybe_default_inserted_at`
+      # collision-avoidance path would start firing.
+      dt = Time.utc_now_usec()
+      {_usec, precision} = dt.microsecond
+      assert precision == 6
     end
   end
 end

@@ -710,6 +710,16 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
         end)
       end)
 
+      # The notifier compares `last_offline_fired_at` against
+      # `Time.utc_now() - @cooldown_seconds`. The cache for the
+      # former holds a value from earlier in this test, so by the
+      # time the second broadcast arrives the cached value is
+      # microseconds newer than `Time.utc_now_usec() - 1801s` was
+      # when this test wrote it — collapsing the 1-second backdating
+      # margin below zero. Drop the cache so the cooldown check
+      # sees a fresh DB clock.
+      DtuApp.Time.Cache.invalidate()
+
       touch_last_seen!(dtu, -60)
 
       # Second offline period — cooldown is open (>30 min since the
