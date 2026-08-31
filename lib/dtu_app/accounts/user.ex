@@ -244,6 +244,20 @@ defmodule DtuApp.Accounts.User do
         nil ->
           []
 
+        %Decimal{} = lat ->
+          # `:decimal` field — cast converts floats to `%Decimal{}`
+          # before validate_change runs, so the `is_number/1` guard
+          # alone silently rejects every legitimate write from
+          # `Accounts.update_user_location/2` (which always takes a
+          # float). Compare as float to keep the bounds check
+          # readable; `Decimal.to_float/1` is safe for already-valid
+          # ranges so a corrupt payload still fails the bounds test.
+          lat_f = Decimal.to_float(lat)
+
+          if lat_f >= elem(@lat_bounds, 0) and lat_f <= elem(@lat_bounds, 1),
+            do: [],
+            else: [latitude: "must be between -90 and 90"]
+
         lat when is_number(lat) and lat >= elem(@lat_bounds, 0) and lat <= elem(@lat_bounds, 1) ->
           []
 
@@ -255,6 +269,13 @@ defmodule DtuApp.Accounts.User do
       case value do
         nil ->
           []
+
+        %Decimal{} = lon ->
+          lon_f = Decimal.to_float(lon)
+
+          if lon_f >= elem(@lon_bounds, 0) and lon_f <= elem(@lon_bounds, 1),
+            do: [],
+            else: [longitude: "must be between -180 and 180"]
 
         lon when is_number(lon) and lon >= elem(@lon_bounds, 0) and lon <= elem(@lon_bounds, 1) ->
           []

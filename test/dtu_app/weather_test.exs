@@ -76,14 +76,20 @@ defmodule DtuApp.WeatherTest do
       assert :ets.tab2list(DtuApp.Weather.Cache) == []
     end
 
-    test "cache hit returns the cached payload without HTTP" do
+    test "cache hit returns the cached payload wrapped in {:ok, ...} without HTTP" do
       key = DtuApp.Weather.Cache.key(52.52, 13.41, Date.utc_today())
       DtuApp.Weather.Cache.put(key, {:cached, :payload})
 
       # Even if Req.Test would return fresh data, a hit must short-circuit
-      # so a flaky network doesn't replace a fresh cache.
+      # so a flaky network doesn't replace a fresh cache. The cached
+      # value is wrapped in `{:ok, ...}` so the public contract matches
+      # the fresh-fetch path — without that symmetry the dashboard's
+      # `build_cloud_cover_band/4` silently renders no band on the
+      # WebSocket mount (always a cache hit) and the cloud cover only
+      # ever appears on the HTTP mount that originally populated the
+      # cache.
       assert Weather.cloud_cover_for(52.52, 13.41, past_days: 1) ==
-               {:cached, :payload}
+               {:ok, {:cached, :payload}}
     end
 
     test "cache miss + Open-Meteo 200 fetches and caches the payload" do
