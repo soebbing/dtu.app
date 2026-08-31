@@ -348,21 +348,59 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   """
   @spec cloud_cover_band(
           [%{time: DateTime.t(), pct: integer()}] | nil,
+          Date.t() | nil,
           non_neg_integer(),
           pos_integer(),
           integer(),
           pos_integer()
-        ) :: [%{x: float(), pct: integer()}]
-  def cloud_cover_band(nil, _x_min, _x_max, _tz, _width), do: []
-  def cloud_cover_band([], _x_min, _x_max, _tz, _width), do: []
+        ) :: [%{x: float(), pct: integer(), width: float()}]
+  def cloud_cover_band(nil, _local_date, _x_min, _x_max, _tz, _width), do: []
+  def cloud_cover_band([], _local_date, _x_min, _x_max, _tz, _width), do: []
 
-  def cloud_cover_band(readings, x_min_seconds, x_max_seconds, tz_offset_seconds, chart_width)
+  def cloud_cover_band(
+        readings,
+        local_date,
+        x_min_seconds,
+        x_max_seconds,
+        tz_offset_seconds,
+        chart_width
+      )
       when is_list(readings) do
     span = x_max_seconds - x_min_seconds
 
-    for %{time: %DateTime{} = utc, pct: pct} <- readings,
+    # Each bucket is one hourly reading. The chart's per-hour pixel
+    # width is `chart_width / hours_in_span`, which scales correctly
+    # across every preset (1D → ~57 SVG units/hour, 7D → ~5, 30D →
+    # ~1.1). The hardcoded `16.7` previously used here only matched
+    # the 48-hour view and left gaps on the 7D/30D views and
+    # over-stacked on 1D. Width is passed back per-entry so the
+    # template can drop the hardcoded constant.
+    hour_width = chart_width * 3600.0 / span
+
+    # Scope the band to the day the chart is showing. Without this,
+    # Open-Meteo's `past_days: 30` payload returns 31 days × 24
+    # hourly readings; on the 1D today view those readings all
+    # project onto the same X for each hour, stacking 31
+    # translucent rects (alpha 0.05–0.40 each) at the same x and
+    # accumulating to effectively-opaque black "Blocks" — see
+    # PR #208 user follow-up. Filter to the chart's local date
+    # keeps one reading per hour for the today view; longer views
+    # (7D/30D) keep all readings because each hour is occupied by
+    # at most one day.
+    scoped =
+      case local_date do
+        %Date{} = d ->
+          Enum.filter(readings, fn %{time: %DateTime{} = utc} ->
+            DateTime.add(utc, tz_offset_seconds, :second) |> DateTime.to_date() == d
+          end)
+
+        nil ->
+          readings
+      end
+
+    for %{time: %DateTime{} = utc, pct: pct} <- scoped,
         x = project_x(utc, x_min_seconds, span, tz_offset_seconds, chart_width),
-        do: %{x: x, pct: pct}
+        do: %{x: x, pct: pct, width: hour_width}
   end
 
   # Project a UTC reading onto the chart's pixel X axis. Returns
