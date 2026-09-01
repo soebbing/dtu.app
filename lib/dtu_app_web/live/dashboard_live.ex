@@ -91,6 +91,13 @@ defmodule DtuAppWeb.DashboardLive do
       # `handle_event` / `handle_info` re-render path gets the
       # latency win.
       |> assign(:initial_mount?, true)
+      # Cloud-cover fingerprint — see `kickoff_weather_fetch/6`.
+      # Seeded to `nil` so the very first fetch always takes the
+      # "changed" branch; once populated, a steady-state PubSub
+      # `:reading` broadcast (which doesn't shift coords, date, or
+      # the visible X range) short-circuits and leaves the band
+      # alone — no flicker.
+      |> assign(:weather_input_fingerprint, nil)
       |> assign(:time_range, "today")
       # Top-level preset chosen in the toolbar: 1D (today, live) / 7D / 30D /
       # YTD / custom (delegates to the historical stepper). Defaults to 1D
@@ -179,6 +186,28 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:cloud_cover_band, [])
     |> assign(:current_cloud_cover, nil)
     |> assign(:current_cloud_cover_pct, nil)
+  end
+
+  # Cloud-cover fingerprint — see `kickoff_weather_fetch/6` for the
+  # full rationale. The five inputs that determine whether the
+  # Open-Meteo response would differ from the snapshot we already
+  # hold, packed into a single value-comparable tuple:
+  #
+  #   * `user.latitude` / `user.longitude` — different fetch bucket
+  #     (`Weather.Cache.key/3` rounds to 1°, but only when the
+  #     coords cross that integer boundary);
+  #   * `local_date` — the daily-band start anchors on the user's
+  #     local date;
+  #   * `x_min_seconds` / `x_max_seconds` — the visible X window
+  #     that `build_cloud_cover_band/5` projects into;
+  #   * `tz_offset_seconds` — re-derives local seconds-of-day from
+  #     the UTC chart points.
+  #
+  # Anything else (a fresh `:reading` broadcast, a quick-range
+  # re-click with the same args, a `refresh_devices` callback) keeps
+  # the fingerprint identical and the snapshot stays valid.
+  defp weather_fingerprint(user, local_date, x_min, x_max, tz_offset_seconds) do
+    {user.latitude, user.longitude, local_date, x_min, x_max, tz_offset_seconds}
   end
 
   # `phx-push` path: the JS hook's `this.pushEvent("set_timezone", ...)`
@@ -1604,21 +1633,52 @@ defmodule DtuAppWeb.DashboardLive do
   # mask real bugs if added).
   defp kickoff_weather_fetch(socket, user, local_date, x_min, x_max, tz) do
     initial_mount? = socket.assigns[:initial_mount?] == true
+    fingerprint = weather_fingerprint(user, local_date, x_min, x_max, tz)
 
-    if connected?(socket) and not initial_mount? do
-      parent = self()
-
-      Task.start(fn ->
-        snapshot = fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
-        send(parent, {:weather_update, snapshot})
-      end)
-
+    # Fingerprint gate. The five weather inputs (lat / lon / local
+    # date / visible X range / tz offset) determine the snapshot
+    # uniquely — if none of them changed since the last fetch, the
+    # existing `cloud_cover_band` / `current_cloud_cover` /
+    # `current_cloud_cover_pct` assigns are still valid and we must
+    # NOT reset them. Without this gate, every PubSub `:reading`
+    # broadcast ran `assign_dashboard_data/5 → assign_weather_placeholders/1`,
+    # wiping the band for one render before the async refetch
+    # re-applied it — visible as a flicker every few seconds on a
+    # connected inverter. The reset moves inside the
+    # `fingerprint_changed?` branch below so steady-state broadcasts
+    # pass through untouched.
+    #
+    # `set_location` and `set_timezone` change `user.latitude /
+    # longitude` and `tz_offset_seconds` respectively, so they
+    # naturally fall through to the changed branch and trigger a
+    # fresh fetch. Range switches change `local_date` /
+    # `x_min_seconds` / `x_max_seconds`, same path. The initial HTTP
+    # render and the very first WebSocket sync fetch land here with
+    # `weather_input_fingerprint == nil`, so the changed branch
+    # always fires on mount.
+    if socket.assigns[:weather_input_fingerprint] == fingerprint do
       socket
     else
-      # HTTP render, OR initial WebSocket mount (initial_mount?).
-      # Compute inline so the rendered HTML includes the band +
-      # current-condition.
-      apply_weather_snapshot(socket, fetch_weather_snapshot(user, local_date, x_min, x_max, tz))
+      socket =
+        socket
+        |> assign_weather_placeholders()
+        |> assign(:weather_input_fingerprint, fingerprint)
+
+      if connected?(socket) and not initial_mount? do
+        parent = self()
+
+        Task.start(fn ->
+          snapshot = fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
+          send(parent, {:weather_update, snapshot})
+        end)
+
+        socket
+      else
+        # HTTP render, OR initial WebSocket mount (initial_mount?).
+        # Compute inline so the rendered HTML includes the band +
+        # current-condition.
+        apply_weather_snapshot(socket, fetch_weather_snapshot(user, local_date, x_min, x_max, tz))
+      end
     end
   end
 
@@ -1808,14 +1868,21 @@ defmodule DtuAppWeb.DashboardLive do
   end
 
   defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
-    # Reset the three weather-driven assigns to placeholders before any
-    # branch runs. On the line-chart branches `kickoff_weather_fetch/6`
-    # (inside `assign_line_chart_data/6`) overwrites them — synchronously
-    # for HTTP renders, asynchronously for WebSocket. On the bar-chart
-    # branches they're never read (the template gates the cloud-cover
-    # block on `@chart_type == :line`), so leaving them as `[]` / `nil`
-    # is harmless.
-    socket = assign_weather_placeholders(socket)
+    # Cloud-cover / current-condition assigns are managed by
+    # `kickoff_weather_fetch/6` via the fingerprint gate — the
+    # previous unconditional `assign_weather_placeholders(socket)`
+    # here wiped them on every PubSub `:reading` broadcast and
+    # produced a one-render flicker between reset and the async
+    # refetch completing. Steady-state broadcasts now leave the
+    # snapshot untouched; only a true input change (coords, date,
+    # visible X range, tz) triggers a fresh fetch.
+    #
+    # Bar-chart branches (week / month / year) don't call
+    # `kickoff_weather_fetch/6`, but the chart SVG is gated on
+    # `@chart_type == :line` (line 3113), so the band never
+    # renders there. `current_cloud_cover` / `current_cloud_cover_pct`
+    # flow into the stat-card row independently and a snapshot
+    # carried over from a prior line-chart view stays correct.
 
     tz_offset_seconds = socket.assigns.user_tz_offset_seconds
     # Energy rate for the "Saved" card. `cents_per_kwh` is set in
