@@ -4322,9 +4322,15 @@ defmodule DtuApp.DevicesTest do
       current_month = today.month
 
       # Seed one reading per month for the current year (so we always
-      # exercise the `month <= current_month` upper bound).
+      # exercise the `month <= current_month` upper bound). Insert on
+      # the 1st of each month at noon UTC: the YTD range is
+      # `Jan 1 .. today.end` (inclusive), and day 15 of `current_month`
+      # would fall AFTER `today.end` on the 1st-of-month (e.g.
+      # 2026-09-15 is past 2026-09-01 EOD UTC), so the current month
+      # would be missing from the YTD slice and the assertion below
+      # would undercount by exactly one.
       for month <- 1..current_month do
-        date = Date.new!(today.year, month, 15)
+        date = Date.new!(today.year, month, 1)
 
         {:ok, _} =
           Devices.create_reading(%{
