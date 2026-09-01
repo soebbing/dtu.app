@@ -4375,6 +4375,119 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert String.to_float(width_str) > 50.0,
              "1D band width should be ~57 SVG units (got #{width_str}); hardcoded 16.7 means the dedupe fix wasn't paired with the dynamic-width fix"
     end
+
+    # Regression for the cloud-cover flicker: every PubSub reading
+    # broadcast used to call `assign_dashboard_data/5`, which at the
+    # top wiped the three weather assigns (`cloud_cover_band: []`,
+    # `current_cloud_cover: nil`, `current_cloud_cover_pct: nil`) and
+    # then kicked off a fresh async fetch. The user saw the band
+    # disappear for one render, then reappear ~tens of ms later when
+    # `{:weather_update, snapshot}` arrived — visible as a flicker
+    # every few seconds on a connected inverter. The fix gates the
+    # reset on a `{lat, lon, local_date, x_min, x_max, tz}` fingerprint
+    # so steady-state reading broadcasts don't re-run the fetch.
+    test "1D cloud-cover band survives a PubSub reading broadcast (no flicker)",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          name: "Flicker Pin",
+          kind: "opendtu",
+          mqtt_username: "flicker-pin",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Seed today's daytime arc so chart_time_range/2 narrows the
+      # X axis to [06:00, 20:00) — same shape as the cloud-cover
+      # chart-band test above so the projection lands inside the
+      # visible window.
+      minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
+
+      for minute <- minutes do
+        hour = div(minute, 60)
+        min = rem(minute, 60)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-FLICKER",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, min, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      :ok =
+        DtuApp.Accounts.update_user_location(user, %{
+          latitude: 52.52,
+          longitude: 13.41
+        })
+
+      today = Date.utc_today()
+      day_count = 31
+      hours_per_day = 24
+
+      times =
+        for days_ago <- (day_count - 1)..0//-1,
+            hour <- 0..(hours_per_day - 1) do
+          date = Date.add(today, -days_ago)
+          DateTime.new!(date, Time.new!(hour, 0, 0)) |> DateTime.to_iso8601()
+        end
+
+      body = %{
+        "latitude" => 52.52,
+        "longitude" => 13.41,
+        "hourly" => %{
+          "time" => times,
+          "cloud_cover" =>
+            Enum.map(0..(day_count * hours_per_day - 1), fn i -> rem(i, 4) * 25 end)
+        }
+      }
+
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      end)
+
+      :ets.delete_all_objects(DtuApp.Weather.Cache)
+
+      # Connected mount: `live/2` returns a LiveView socket, so
+      # `connected?(socket) == true` and the initial sync weather
+      # fetch populates the band in the first render. After that,
+      # `kickoff_weather_fetch/6` is in async-on-WebSocket mode and
+      # the fingerprint gate must keep the band populated.
+      {:ok, view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ ~s(data-testid="cloud-cover-band"),
+             "Pre-broadcast: cloud-cover band must render on initial connected mount"
+
+      # Broadcast a reading. On the WebSocket path this fires
+      # `handle_info({:reading, ...})` which calls
+      # `maybe_reassign_dashboard_data/3` → `assign_dashboard_data/5`.
+      # The fingerprint gate must short-circuit before the band is
+      # wiped.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        Telemetry.reading_topic(),
+        {:reading, "client_1", %{dtu_id: dtu.id}}
+      )
+
+      html_after = render(view)
+
+      assert html_after =~ ~s(data-testid="cloud-cover-band"),
+             "Post-broadcast: cloud-cover band must stay rendered (regression for the per-broadcast reset)"
+
+      # Also pin the related assigns — the cloud-cover data card
+      # only renders when `@cloud_cover_band != []`, so its
+      # `stat-cloud-cover-pct` testid disappearing would also signal
+      # the reset.
+      assert html_after =~ ~s(id="stat-cloud-cover-pct"),
+             "Post-broadcast: cloud-cover data card must stay rendered"
+    end
   end
 
   describe "Preset-button spinner (no SVG-as-text regression)" do
