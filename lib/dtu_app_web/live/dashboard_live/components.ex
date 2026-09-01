@@ -362,23 +362,27 @@ defmodule DtuAppWeb.DashboardLive.Components do
   consumption row beneath the chart still shows their household
   draw.
 
-  Cards (always rendered when row is rendered):
-    1. Yield (kWh)            — period total
-    2. Peak Power (W)         — highest 5-min bucket in window
-    3. Peak Time              — when the peak happened, local HH:MM
+  The layout is two rows on `lg:` and wider so each card has
+  more horizontal space than a single dense 5-up row would
+  allow:
 
-  Conditional cards (rendered when their predicate holds):
-    4. Current Power (W)       — 1D-only, > 0 W
-    5. Saved this period (€)   — rate configured, non-nil
-    6. Self-consumption (%)    — Shelly paired, helper returned a number
-    7. Current Consumption (W) — Shelly paired, > 0 W
+    Row 1 — headline + consumption. Always Peak Power and
+            Peak Time, plus Current Power on 1D, plus
+            Self-consumption and Current Consumption when a
+            Shelly is paired. `lg:grid-cols-{3,4,5}` depending
+            on which conditional cards render.
+    Row 2 — period total + savings + ambient. Yield is
+            always rendered; Savings joins it when a rate is
+            configured; Cloud cover joins it when geolocation
+            is not denied. `lg:grid-cols-{1,2,3}` depending on
+            which conditional cards render.
 
-  The grid's `lg:` column count is computed from the same
-  predicates so a user without, say, savings doesn't see a 6-up
-  grid with two empty columns. Tailwind v4's source-based JIT
-  doesn't detect interpolated class strings, so the `cols`
-  → `cols_class` mapping is a literal `cond` over the seven
-  possible widths.
+  On `sm:` and narrower both grids collapse to `grid-cols-1`
+  so every card stacks full-width on mobile.
+
+  Tailwind v4's source-based JIT doesn't detect interpolated
+  class strings, so each row's `lg:` column count is computed
+  via a literal `cond` over the possible widths.
 
   ## Assigns
 
@@ -422,57 +426,59 @@ defmodule DtuAppWeb.DashboardLive.Components do
 
   def stat_card_row(assigns) do
     ~H"""
-    <% # Column count is computed in two stages. `base_cols` covers
-    # every panel EXCEPT the cloud-cover slot; the slot is then
-    # added only when it keeps the row within the per-view cap.
-    # The 1D live preset allows up to 5 panels (current-power
-    # tile + 3 baseline + cloud-cover — the headline row + the
-    # ambient weather signal that PR #199 introduced alongside
-    # the chart band). Other presets cap at 4: beyond that the
-    # per-card density hurts readability of the headline numbers.
-    # Cloud cover is the lowest-priority conditional card, so
-    # it's the first to be dropped when there isn't room —
-    # `:not_asked` (button) and `:loading` (spinner) are both
-    # suppressed along with the data card, and `:denied`
-    # continues to render nothing.
-    base_cols =
-      3 +
+    <% # Two-row layout on lg+ viewports. Each row picks its own
+    # `lg:` column count via a literal `cond` so Tailwind v4's
+    # source-based JIT sees every `lg:grid-cols-N` class string.
+    #
+    # Row 1 (headline + consumption): Peak Power + Peak Time +
+    # Current Power (1D only, > 0 W) + Self-consumption (Shelly
+    # + scope) + Current Consumption (Shelly + > 0 W).
+    #
+    # Row 2 (period + ambient): Yield + Saved this period (if a
+    # rate is configured) + Cloud cover slot (if the user hasn't
+    # explicitly denied geolocation).
+    #
+    # Cloud cover no longer needs the old `show_cloud` promotion
+    # logic — it lives on its own row, so `:not_asked` (CTA) and
+    # `:loading` (spinner) always render alongside `:granted` (data
+    # card), and `:denied` continues to render nothing.
+    row1_count =
+      2 +
         if(@range_preset == "1d" and @stats.current_power > 0,
           do: 1,
           else: 0
         ) +
-        if(@savings, do: 1, else: 0) +
-        if(@consumption_stats.current_consumption > 0, do: 1, else: 0) +
         if(
           is_number(@stats[:self_consumption_pct]) and
             @consumption_stats.current_consumption > 0,
           do: 1,
           else: 0
-        )
+        ) +
+        if(@consumption_stats.current_consumption > 0, do: 1, else: 0)
 
-    max_cols = if @range_preset == "1d", do: 5, else: 4 %>
-
-    <%!-- Promote cloud slot above the cap when not yet granted (CTA is the only entry point for browser prompt). --%>
-    <% show_cloud =
+    row1_cols_class =
       cond do
-        @geolocation_state == :denied -> false
-        @geolocation_state == :granted -> base_cols < max_cols
-        true -> true
+        row1_count <= 2 -> "lg:grid-cols-2"
+        row1_count == 3 -> "lg:grid-cols-3"
+        row1_count == 4 -> "lg:grid-cols-4"
+        true -> "lg:grid-cols-5"
       end %>
 
-    <% cols = base_cols + if(show_cloud, do: 1, else: 0) %>
-    <% cols_class =
+    <% row2_count =
+      1 +
+        if(@savings, do: 1, else: 0) +
+        if(@geolocation_state != :denied, do: 1, else: 0) %>
+
+    <% row2_cols_class =
       cond do
-        cols <= 3 -> "lg:grid-cols-3"
-        cols == 4 -> "lg:grid-cols-4"
-        cols == 5 -> "lg:grid-cols-5"
-        cols == 6 -> "lg:grid-cols-6"
-        true -> "lg:grid-cols-7"
+        row2_count <= 1 -> "lg:grid-cols-1"
+        row2_count == 2 -> "lg:grid-cols-2"
+        true -> "lg:grid-cols-3"
       end %>
-    <div class={[
-      "grid grid-cols-1 gap-5 sm:grid-cols-2",
-      cols_class
-    ]}>
+
+    <%!-- Row 1: peak wattage + peak time + (optional) live signal
+         + (optional) Shelly consumption signals. --%>
+    <div class={["grid grid-cols-1 gap-5 sm:grid-cols-2", row1_cols_class]}>
       <%!-- Card 0: Current Power (W). 1D-only — a live "what's the
          inverter producing right now" signal that doesn't make sense
          for historical periods (7D, 30D, YTD, Custom). Hidden when
@@ -506,7 +512,147 @@ defmodule DtuAppWeb.DashboardLive.Components do
         </div>
       <% end %>
 
-      <%!-- Card 1: Yield (kWh). The headline number stays the same
+      <%!-- Card 1: Peak Power (W). The same headline number across
+         all presets — `stats.peak_power` — but the underlying query
+         changes (today's `bucket_max` vs the range-wide peak via
+         `compute_peak_watts_in_period/4`). A user on 7D sees the
+         highest single bucket over the last 7 days, not the daily
+         peak. --%>
+      <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+        <div class="px-4 py-5 sm:p-6">
+          <div class="flex items-center">
+            <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
+              <.icon name="hero-chart-bar" class="h-6 w-6" />
+            </div>
+            <div class="ml-5 w-0 flex-1">
+              <dl>
+                <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                  {gettext("Peak Power")}
+                </dt>
+                <dd class="flex items-baseline">
+                  <div
+                    class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                    id="stat-peak-watts"
+                  >
+                    {DtuApp.Devices.format_number(@stats.peak_power, 0, @locale)} W
+                  </div>
+                </dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Card 2: Peak Time. The bucket time of the peak wattage
+         above, formatted in the user's local timezone (the
+         underlying DateTime is UTC; `format_peak_time/2` adds the
+         tz offset and emits HH:MM). The card falls back to `—`
+         when the window has no readings. --%>
+      <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+        <div class="px-4 py-5 sm:p-6">
+          <div class="flex items-center">
+            <div class="p-3 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-400">
+              <.icon name="hero-clock" class="h-6 w-6" />
+            </div>
+            <div class="ml-5 w-0 flex-1">
+              <dl>
+                <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                  {gettext("Peak Time")}
+                </dt>
+                <dd class="flex items-baseline">
+                  <div
+                    class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                    id="stat-peak-time"
+                  >
+                    {DtuAppWeb.DashboardLive.TimeHelpers.format_peak_time(
+                      @stats.peak_time,
+                      @user_tz_offset_seconds
+                    )}
+                  </div>
+                </dd>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <%!-- Card 3: Self-consumption (%). Period-aware:
+         `(production - exported) / production × 100`. Hidden when
+         the user has no consumption devices (no Shelly paired) —
+         `self_consumption_pct == nil` is the helper's "no scope"
+         signal, the consumption card's `current_consumption > 0`
+         is the dashboard-level guard. --%>
+      <%= if is_number(@stats[:self_consumption_pct]) and @consumption_stats.current_consumption > 0 do %>
+        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+          <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center">
+              <div class="p-3 rounded-md bg-teal-50 dark:bg-teal-950/30 text-teal-600 dark:text-teal-400">
+                <.icon name="hero-recycle" class="h-6 w-6" />
+              </div>
+              <div class="ml-5 w-0 flex-1">
+                <dl>
+                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                    {gettext("Self-consumption")}
+                  </dt>
+                  <dd class="flex items-baseline">
+                    <div
+                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                      id="stat-self-consumption"
+                    >
+                      {DtuApp.Devices.format_number(@stats.self_consumption_pct, 1, @locale)} %
+                    </div>
+                  </dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      <% end %>
+
+      <%!-- Current Consumption card: only visible when the user has
+         paired a Shelly Plus 3EM (Gen3+) energy meter. Sits in the
+         same row 1 because it's a headline signal too — a
+         top-of-dashboard "what's the household drawing right now"
+         number that pairs with Peak Power and Current Power. --%>
+      <%= if @consumption_stats.current_consumption > 0 do %>
+        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+          <div class="px-4 py-5 sm:p-6">
+            <div class="flex items-center">
+              <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
+                <.icon name="hero-bolt" class="h-6 w-6" />
+              </div>
+              <div class="ml-5 w-0 flex-1">
+                <dl>
+                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                    {gettext("Current Consumption")}
+                  </dt>
+                  <dd class="flex items-baseline">
+                    <div
+                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                      id="stat-current-consumption"
+                    >
+                      {DtuApp.Devices.format_number(
+                        @consumption_stats.current_consumption,
+                        0,
+                        @locale
+                      )} W
+                    </div>
+                  </dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <%!-- Row 2: period total (Yield) + savings + cloud cover. The
+         Yield card is always rendered; the other two are gated by
+         their respective predicates. The cloud-cover slot renders
+         nothing on `:denied`, so `@geolocation_state != :denied`
+         already excludes it from `row2_count`. --%>
+    <div class={["grid grid-cols-1 gap-5 sm:grid-cols-2 mt-5", row2_cols_class]}>
+      <%!-- Card 0: Yield (kWh). The headline number stays the same
          shape — `total_yield` rounded to one decimal — whether the
          period is today, a week, a month, or a year. The sub-label
          below the headline names the period ("Today", "Last 7
@@ -540,104 +686,7 @@ defmodule DtuAppWeb.DashboardLive.Components do
         </div>
       </div>
 
-      <%!-- Card 2: Peak Power (W). The same headline number across
-         all presets — `stats.peak_power` — but the underlying query
-         changes (today's `bucket_max` vs the range-wide peak via
-         `compute_peak_watts_in_period/4`). A user on 7D sees the
-         highest single bucket over the last 7 days, not the daily
-         peak. --%>
-      <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-        <div class="px-4 py-5 sm:p-6">
-          <div class="flex items-center">
-            <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 text-blue-600 dark:text-blue-400">
-              <.icon name="hero-chart-bar" class="h-6 w-6" />
-            </div>
-            <div class="ml-5 w-0 flex-1">
-              <dl>
-                <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                  {gettext("Peak Power")}
-                </dt>
-                <dd class="flex items-baseline">
-                  <div
-                    class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                    id="stat-peak-watts"
-                  >
-                    {DtuApp.Devices.format_number(@stats.peak_power, 0, @locale)} W
-                  </div>
-                </dd>
-              </dl>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <%!-- Card 3: Peak Time. The bucket time of the peak wattage
-         above, formatted in the user's local timezone (the
-         underlying DateTime is UTC; `format_peak_time/2` adds the
-         tz offset and emits HH:MM). The card falls back to `—`
-         when the window has no readings. --%>
-      <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-        <div class="px-4 py-5 sm:p-6">
-          <div class="flex items-center">
-            <div class="p-3 rounded-md bg-violet-50 dark:bg-violet-950/30 text-violet-600 dark:text-violet-400">
-              <.icon name="hero-clock" class="h-6 w-6" />
-            </div>
-            <div class="ml-5 w-0 flex-1">
-              <dl>
-                <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                  {gettext("Peak Time")}
-                </dt>
-                <dd class="flex items-baseline">
-                  <div
-                    class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                    id="stat-peak-time"
-                  >
-                    {DtuAppWeb.DashboardLive.TimeHelpers.format_peak_time(
-                      @stats.peak_time,
-                      @user_tz_offset_seconds
-                    )}
-                  </div>
-                </dd>
-              </dl>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <%!-- Card 4: Self-consumption (%). Period-aware:
-         `(production - exported) / production × 100`. Hidden when
-         the user has no consumption devices (no Shelly paired) —
-         `self_consumption_pct == nil` is the helper's "no scope"
-         signal, the consumption card's `current_consumption > 0`
-         is the dashboard-level guard. --%>
-      <%= if is_number(@stats[:self_consumption_pct]) and @consumption_stats.current_consumption > 0 do %>
-        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-          <div class="px-4 py-5 sm:p-6">
-            <div class="flex items-center">
-              <div class="p-3 rounded-md bg-teal-50 dark:bg-teal-950/30 text-teal-600 dark:text-teal-400">
-                <.icon name="hero-recycle" class="h-6 w-6" />
-              </div>
-              <div class="ml-5 w-0 flex-1">
-                <dl>
-                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                    {gettext("Self-consumption")}
-                  </dt>
-                  <dd class="flex items-baseline">
-                    <div
-                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                      id="stat-self-consumption"
-                    >
-                      {DtuApp.Devices.format_number(@stats.self_consumption_pct, 1, @locale)} %
-                    </div>
-                  </dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-      <% end %>
-
-      <%!-- Card 5: Savings (€). Reads `@savings` (euro cents, an
+      <%!-- Card 1: Savings (€). Reads `@savings` (euro cents, an
          integer assigned by assign_dashboard_data/5 via
          `Devices.compute_savings/2`) and formats it as €X.XX.
          Hidden when nil so a brand-new user without a rate doesn't
@@ -678,48 +727,6 @@ defmodule DtuAppWeb.DashboardLive.Components do
         </div>
       <% end %>
 
-      <%!-- Current Consumption card: only visible when the user has
-         paired a Shelly Plus 3EM (Gen3+) energy meter. Sits in the
-         same headline row because it's also a top-of-dashboard
-         signal — a 5-up grid can absorb one conditional card
-         cleanly on lg screens. --%>
-      <%= if @consumption_stats.current_consumption > 0 do %>
-        <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-          <div class="px-4 py-5 sm:p-6">
-            <div class="flex items-center">
-              <div class="p-3 rounded-md bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400">
-                <.icon name="hero-bolt" class="h-6 w-6" />
-              </div>
-              <div class="ml-5 w-0 flex-1">
-                <dl>
-                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                    {gettext("Current Consumption")}
-                  </dt>
-                  <dd class="flex items-baseline">
-                    <div
-                      class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                      id="stat-current-consumption"
-                    >
-                      {DtuApp.Devices.format_number(
-                        @consumption_stats.current_consumption,
-                        0,
-                        @locale
-                      )} W
-                    </div>
-                  </dd>
-                </dl>
-              </div>
-            </div>
-          </div>
-        </div>
-      <% end %>
-
-      <%!-- Cloud cover card. Hidden when the user hasn't granted
-         geolocation (the facade returns nil) or when the upstream
-         fetch failed (graceful degradation — the chart band also
-         stays empty in that case). Sky-blue colour so it visually
-         separates from the amber yield cards, the rose consumption
-         cards, and the indigo live signal. --%>
       <%!-- Cloud-cover card slot. Renders one of four states:
              * `:granted` + `@cloud_cover` populated  → data card
                ("Cloud cover: 25% / clear").
@@ -734,104 +741,95 @@ defmodule DtuAppWeb.DashboardLive.Components do
              * `:loading`                            → the button shows
                a spinner + "Requesting…" while the browser permission
                prompt is up.
-             * `:denied`                             → renders nothing;
-               the user explicitly chose that the card hide after a
-               denial. On the next page mount the assign re-initialises
-               from the persisted coords (still nil), so the prompt
-               comes back if the user unblocks the site in their
-               browser settings and reloads. --%>
-      <%= if show_cloud do %>
-        <%= case @geolocation_state do %>
-          <% :granted -> %>
-            <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
-              <div class="px-4 py-5 sm:p-6">
-                <div class="flex items-center">
-                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                    <.icon name="hero-cloud" class="h-6 w-6" />
-                  </div>
-                  <div class="ml-5 w-0 flex-1">
-                    <dl>
-                      <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
-                        {gettext("Cloud cover")}
-                      </dt>
-                      <dd class="flex items-baseline">
-                        <div
-                          class="text-3xl font-semibold text-zinc-900 dark:text-white"
-                          id="stat-cloud-cover-pct"
-                        >
-                          {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%", else: "—"}
-                        </div>
-                        <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
-                          {if @cloud_cover,
-                            do: cloud_cover_label(@cloud_cover),
-                            else: gettext("no data")}
-                        </p>
-                      </dd>
-                    </dl>
-                  </div>
+             * `:denied`                             → renders nothing
+               and contributes 0 to `row2_count` — the explicit
+               user choice that the card hide after a denial. --%>
+      <%= case @geolocation_state do %>
+        <% :granted -> %>
+          <div class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700">
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-center">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
                 </div>
-              </div>
-            </div>
-          <% :not_asked -> %>
-            <div
-              class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700"
-              id="cloud-cover-cta"
-            >
-              <div class="px-4 py-5 sm:p-6">
-                <div class="flex items-start">
-                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                    <.icon name="hero-cloud" class="h-6 w-6" />
-                  </div>
-                  <div class="ml-5 w-0 flex-1">
-                    <dt class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                      {gettext("Cloud cover")}
-                    </dt>
-                    <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                      {gettext(
-                        "Share your location to show local cloud cover on today's chart and as a stat card."
-                      )}
-                    </p>
-                    <button
-                      type="button"
-                      id="request-location-btn"
-                      phx-hook=".RequestLocation"
-                      class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
-                    >
-                      <.icon name="hero-map-pin" class="h-4 w-4" />
-                      {gettext("Share location")}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          <% :loading -> %>
-            <div
-              class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700"
-              id="cloud-cover-loading"
-            >
-              <div class="px-4 py-5 sm:p-6">
-                <div class="flex items-center">
-                  <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
-                    <.icon name="hero-cloud" class="h-6 w-6" />
-                  </div>
-                  <div class="ml-5 w-0 flex-1">
+                <div class="ml-5 w-0 flex-1">
+                  <dl>
                     <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
                       {gettext("Cloud cover")}
                     </dt>
-                    <dd class="mt-1 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
-                      <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
-                      {gettext("Requesting…")}
+                    <dd class="flex items-baseline">
+                      <div
+                        class="text-3xl font-semibold text-zinc-900 dark:text-white"
+                        id="stat-cloud-cover-pct"
+                      >
+                        {if @cloud_cover_pct, do: "#{@cloud_cover_pct}%", else: "—"}
+                      </div>
+                      <p class="ml-2 text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                        {if @cloud_cover,
+                          do: cloud_cover_label(@cloud_cover),
+                          else: gettext("no data")}
+                      </p>
                     </dd>
-                  </div>
+                  </dl>
                 </div>
               </div>
             </div>
-          <% :denied -> %>
-            <%!-- :denied is unreachable: the outer `if show_cloud do`
-                 only enters the case when `@geolocation_state !=
-                 :denied`. Kept as a case arm for completeness so a
-                 future value lands somewhere explicit. --%>
-        <% end %>
+          </div>
+        <% :not_asked -> %>
+          <div
+            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-dashed border-zinc-300 dark:border-zinc-700"
+            id="cloud-cover-cta"
+          >
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-start">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dt class="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                    {gettext("Cloud cover")}
+                  </dt>
+                  <p class="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                    {gettext(
+                      "Share your location to show local cloud cover on today's chart and as a stat card."
+                    )}
+                  </p>
+                  <button
+                    type="button"
+                    id="request-location-btn"
+                    phx-hook=".RequestLocation"
+                    class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
+                  >
+                    <.icon name="hero-map-pin" class="h-4 w-4" />
+                    {gettext("Share location")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% :loading -> %>
+          <div
+            class="bg-white dark:bg-zinc-800 overflow-hidden shadow rounded-lg border border-zinc-200 dark:border-zinc-700"
+            id="cloud-cover-loading"
+          >
+            <div class="px-4 py-5 sm:p-6">
+              <div class="flex items-center">
+                <div class="p-3 rounded-md bg-sky-50 dark:bg-sky-950/30 text-sky-600 dark:text-sky-400">
+                  <.icon name="hero-cloud" class="h-6 w-6" />
+                </div>
+                <div class="ml-5 w-0 flex-1">
+                  <dt class="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate">
+                    {gettext("Cloud cover")}
+                  </dt>
+                  <dd class="mt-1 flex items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+                    <.icon name="hero-arrow-path" class="h-4 w-4 animate-spin" />
+                    {gettext("Requesting…")}
+                  </dd>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% :denied -> %>
       <% end %>
     </div>
 

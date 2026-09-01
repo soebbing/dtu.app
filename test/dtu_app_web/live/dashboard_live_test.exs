@@ -3987,22 +3987,28 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
-  describe "Dashboard production-row grid spacing adapts to visible panel count" do
-    # Regression for the "four/five panels with spacing for six" bug:
-    # the production-row grid used to hard-code `lg:grid-cols-6`
-    # on the 1D preset and `lg:grid-cols-5` everywhere else, which
-    # left empty grid columns for users without the savings or
-    # current-power cards. The grid now computes its `lg:` column
-    # count from the same predicates that gate the conditional
-    # cards (current_power, savings, self-consumption, current
-    # consumption), so a user without savings sees a 4-up grid on
-    # 1D (current power + 3 baseline) instead of a 6-up grid with
-    # two empty cells.
+  describe "Dashboard stat-card two-row grid spacing adapts to visible panel count" do
+    # The production stat-card row was split into two rows so each
+    # card has more horizontal space than a single dense 5-up row
+    # could give them:
+    #
+    #   Row 1 (headline + consumption): Peak Power + Peak Time +
+    #   Current Power (1D only, > 0 W) + Self-consumption (Shelly
+    #   + scope) + Current Consumption (Shelly + > 0 W).
+    #   `lg:grid-cols-{2,3,4,5}` depending on which conditional
+    #   cards render.
+    #
+    #   Row 2 (period + ambient): Yield + Saved this period +
+    #   Cloud cover slot. `lg:grid-cols-{1,2,3}`.
+    #
+    # Both rows collapse to `grid-cols-1` on mobile (sm- and
+    # narrower) so every card stacks full-width.
 
-    test "1D with no savings: production row uses lg:grid-cols-4 (current power + 3 baseline)", %{
-      conn: conn,
-      user: user
-    } do
+    test "1D with no savings: row 1 = lg:grid-cols-3 (current power + peak + peak time), row 2 = lg:grid-cols-2 (yield + cloud slot)",
+         %{
+           conn: conn,
+           user: user
+         } do
       dtu =
         device_fixture(user, %{
           name: "1D No Rate",
@@ -4013,12 +4019,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Live reading → current_power tile renders.
       insert_live_reading(dtu.id, "INV-1D-NR", 600.0)
 
-      # Default cents_per_kwh is nil → @savings is nil → savings card
-      # stays hidden. Three baseline cards (yield, peak power, peak
-      # time) + current_power = 4 base panels; the 1D live preset
-      # permits up to 5 panels, so the cloud-cover slot fits. The
-      # test user has no lat/lon, so the slot renders as the "Share
-      # location" prompt and occupies the 5th column → `lg:grid-cols-5`.
+      # Default cents_per_kwh is nil → @savings is nil → row 2
+      # holds Yield + Cloud cover slot (test user has no lat/lon,
+      # so the slot renders the "Share location" CTA).
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       assert html =~ ~s(id="stat-current-power"),
@@ -4034,7 +4037,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "Savings card must stay hidden without a configured rate"
 
       assert html =~ ~s(id="cloud-cover-cta"),
-             "Cloud-cover card slot renders the 'Share location' prompt when user has no lat/lon (1D allows 5-up)"
+             "Cloud-cover card slot renders the 'Share location' prompt when user has no lat/lon"
 
       # The button's `phx-hook=".RequestLocation"` reference must
       # resolve to the colocated hook defined alongside the
@@ -4048,23 +4051,40 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~
                ~s(phx-hook="DtuAppWeb.DashboardLive.Components.RequestLocation")
 
-      # Production row uses the exact class signature
-      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5`
+      # Row 1 uses the exact class signature
+      # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3`
       # (HEEx compiles the grid div's class list as one string).
-      # Without a Shelly, no other grid on the page carries
-      # `lg:grid-cols-5`, so the literal class match uniquely
-      # identifies the production row.
+      # No `mt-5` on row 1 — only row 2 carries the top margin.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/,
-             "production row grid must use lg:grid-cols-5 (1D, current power + 3 baseline + cloud slot, no savings)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"/,
+             "row 1 grid must use lg:grid-cols-3 (current power + peak + peak time, 1D)"
 
-      # The current-power card lives inside that grid. Allow any
-      # characters (including HEEx comments and nested wrappers)
+      # Row 2 carries `mt-5` (the gap from row 1) AND
+      # `lg:grid-cols-2` (yield + cloud slot). Note: the
+      # `class={[..., cols_class]}` attribute list appends
+      # new tokens after the existing string, so the rendered
+      # order is `… sm:grid-cols-2 mt-5 lg:grid-cols-2`, not
+      # `… lg:grid-cols-2 mt-5`.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 mt-5 lg:grid-cols-2"/,
+             "row 2 grid must use lg:grid-cols-2 with mt-5 (yield + cloud slot, no savings)"
+
+      # Row 1 must render BEFORE row 2 in DOM order. The
+      # chained `lg:grid-cols-3 ... lg:grid-cols-2` regex
+      # confirms both widths appear in that order.
+      assert html =~ ~r/lg:grid-cols-3[\s\S]*?lg:grid-cols-2/,
+             "row 1 (3-up) must render before row 2 (2-up) in DOM order"
+
+      # The current-power card lives inside the 3-up row 1 grid.
+      # Allow any characters (HEEx comments, nested wrappers)
       # between the grid div and the leaf id.
-      assert html =~ ~r/lg:grid-cols-5[\s\S]*?id="stat-current-power"/
+      assert html =~ ~r/lg:grid-cols-3[\s\S]*?id="stat-current-power"/
+
+      # The yield card lives inside the 2-up row 2 grid.
+      assert html =~ ~r/sm:grid-cols-2 mt-5 lg:grid-cols-2[\s\S]*?id="stat-yield-kwh"/
     end
 
-    test "1D with savings configured: production row uses lg:grid-cols-6 (cloud slot promoted when not granted)",
+    test "1D with savings configured: row 1 stays lg:grid-cols-3, row 2 grows to lg:grid-cols-3 (yield + saved + cloud slot)",
          %{
            conn: conn,
            user: user
@@ -4094,27 +4114,52 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(id="stat-saved"),
              "Savings card must render once a rate is configured"
 
-      # Three baseline + current_power + savings + cloud = 6
-      # panels. The cloud slot is "promoted" because the test
-      # user has no lat/lon (geolocation_state == :not_asked) —
-      # the "Share location" CTA is the only entry point for the
-      # browser's permission prompt, so the slot stays visible
-      # regardless of grid-full. If this user already had coords
-      # (`:granted`), the slot would be suppressed and the grid
-      # would be `lg:grid-cols-5`.
+      # Test user still has no lat/lon, so the cloud-cover slot
+      # renders the CTA and occupies the 3rd column of row 2.
       assert html =~ ~s(id="cloud-cover-cta"),
-             "Cloud-cover slot stays promoted while geolocation not yet granted"
+             "Cloud-cover slot stays visible while geolocation not yet granted"
 
+      # Row 1 unchanged: still current power + peak + peak time = 3-up.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/,
-             "production row grid must use lg:grid-cols-6 (1D, current power + 3 baseline + savings + cloud-promoted)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"/,
+             "row 1 must still be lg:grid-cols-3 (current power + peak + peak time)"
 
-      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-current-power"/
+      # Row 2 grew from 2-up (yield + cloud) to 3-up (yield +
+      # saved + cloud). Row 2 carries `mt-5` AND `lg:grid-cols-3`.
+      # Note: the `class={[..., cols_class]}` attribute list
+      # appends new tokens after the existing string, so the
+      # rendered order is `… sm:grid-cols-2 mt-5 lg:grid-cols-3`,
+      # not `… lg:grid-cols-3 mt-5`.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 mt-5 lg:grid-cols-3"/,
+             "row 2 must grow to lg:grid-cols-3 (yield + saved + cloud slot)"
 
-      assert html =~ ~r/lg:grid-cols-6[\s\S]*?id="stat-saved"/
+      # The current-power card lives in the FIRST `lg:grid-cols-3`
+      # grid (row 1). Anchor on the row 1 signature (no `mt-5`)
+      # so the regex doesn't also match row 2.
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3"[\s\S]*?id="stat-current-power"/,
+             "current-power tile must live inside the row 1 grid"
+
+      # Yield and saved live inside the SECOND `lg:grid-cols-3`
+      # grid (row 2). Anchor on the row 2 signature (carries
+      # `mt-5` BEFORE `lg:grid-cols-3`).
+      assert html =~ ~r/sm:grid-cols-2 mt-5 lg:grid-cols-3[\s\S]*?id="stat-yield-kwh"/,
+             "yield tile must live inside the row 2 grid"
+
+      assert html =~ ~r/sm:grid-cols-2 mt-5 lg:grid-cols-3[\s\S]*?id="stat-saved"/,
+             "savings tile must live inside the row 2 grid"
+
+      # Row 1 must NOT be the wide 5-up/6-up single grid that
+      # the previous layout used.
+      refute html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/
+
+      refute html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
     end
 
-    test "7D with no savings, no live reading: production row uses lg:grid-cols-3 (3 baseline only)",
+    test "7D with no savings, no live reading: row 1 = lg:grid-cols-2 (peak + peak time only), row 2 = lg:grid-cols-2 (yield + cloud slot)",
          %{
            conn: conn,
            user: user
@@ -4138,21 +4183,26 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ ~s(id="stat-saved"),
              "Savings card stays hidden without a configured rate"
 
-      # Three baseline cards (yield, peak power, peak time) + the
-      # cloud-cover card slot (test user has no lat/lon, slot
-      # renders the "Share location" prompt and occupies its
-      # column) = 4 → `lg:grid-cols-4`.
+      # Row 1: Peak Power + Peak Time only → 2-up. No `mt-5` on row 1.
       assert html =~
-               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4"/,
-             "production row grid must use lg:grid-cols-4 (7D, 3 baseline + cloud slot, no current power, no savings)"
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-2"/,
+             "row 1 must be lg:grid-cols-2 on 7D with no live reading"
 
-      assert html =~ ~r/lg:grid-cols-4[\s\S]*?id="stat-yield-kwh"/
+      # Row 2: Yield + Cloud slot → 2-up, with `mt-5` to separate
+      # it from row 1. Rendered order: `… sm:grid-cols-2 mt-5
+      # lg:grid-cols-2` (class-list attribute appends new tokens
+      # after the existing string).
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 mt-5 lg:grid-cols-2"/,
+             "row 2 must be lg:grid-cols-2 with mt-5 (yield + cloud slot)"
 
-      # The stale `lg:grid-cols-5` / `lg:grid-cols-6` must NOT be
-      # applied here either.
-      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5"/
+      # Peak watts lives inside row 1 (the first lg:grid-cols-2 grid).
+      assert html =~
+               ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-2"[\s\S]*?id="stat-peak-watts"/,
+             "peak power tile must live inside the row 1 grid"
 
-      refute html =~ ~r/class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-6"/
+      # Yield lives inside row 2 (the lg:grid-cols-2 mt-5 grid).
+      assert html =~ ~r/sm:grid-cols-2 mt-5 lg:grid-cols-2[\s\S]*?id="stat-yield-kwh"/
     end
   end
 
