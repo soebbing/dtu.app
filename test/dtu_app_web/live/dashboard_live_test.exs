@@ -3722,6 +3722,89 @@ defmodule DtuAppWeb.DashboardLiveTest do
       refute html =~ "Yesterday (day-over-day comparison)",
              "ghost legend entry must not appear when yesterday has no data"
     end
+
+    test "1D view renders the now-marker (regression for opts[:live?] bug)", %{
+      conn: conn,
+      user: user
+    } do
+      # Regression: `assign_line_chart_data/6` was reading
+      # `opts[:live?]` for the now-marker branch instead of the
+      # module-level `live?` variable. The today branch never
+      # passes `:live?` in opts, so the assign was always nil and
+      # the marker was silently absent. LiveView's default route
+      # renders with `live: true`, so this is the user-visible
+      # case that broke.
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "nowmarker-inv"
+        })
+
+      # Insert two buckets that span the current hour so the
+      # chart's X range covers "now". `insert_reading_5m/5` forces
+      # day_offset=0 buckets to land at `now.hour - 2` (the
+      # today-window query otherwise drops them as live tail), so
+      # we bypass it for the current-hour bucket with a raw INSERT
+      # and use the helper for the trailing one.
+      now = DateTime.utc_now()
+
+      past_bucket =
+        Date.utc_today()
+        |> DateTime.new!(Time.new!(today_past_hour(), 0, 0))
+        |> Map.put(:microsecond, {0, 0})
+
+      current_bucket =
+        Date.utc_today()
+        |> DateTime.new!(Time.new!(now.hour, 0, 0))
+        |> Map.put(:microsecond, {0, 0})
+
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9), ($10, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [
+          past_bucket,
+          dtu.id,
+          300.0,
+          300.0,
+          30.0,
+          1000.0,
+          "INV-1",
+          0,
+          "INV-1",
+          current_bucket
+        ]
+      )
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # The now-marker group is gated on `@now_marker_x` — when
+      # that assign is nil (the bug), the entire `<g id="now-marker">`
+      # is missing from the rendered SVG.
+      assert html =~ ~s(id="now-marker"),
+             "now-marker must render on the 1D (today) view; " <>
+               "absence indicates assign_line_chart_data/6 dropped the :live? path"
+
+      # The pill text uses `@now_marker_label` (HH:MM local). The
+      # template indents the text content on its own line, so we
+      # can't pin a single-line regex on `>HH:MM<` — instead, assert
+      # the element exists and extract the inner text. The exact
+      # HH:MM depends on wall-clock time at test run, so we only
+      # pin the structural shape (two digits, colon, two digits).
+      assert html =~ ~s(id="now-marker-text"),
+             "now-marker-text element must be present in the rendered SVG"
+
+      [_full, label_text] =
+        Regex.run(~r/id="now-marker-text"[^>]*>([^<]+)</, html)
+
+      label = label_text |> String.trim()
+
+      assert label =~ ~r/^\d{2}:\d{2}$/,
+             "now-marker-text must contain a HH:MM local time label, got: #{inspect(label)}"
+    end
   end
 
   describe "Stats card row — 5-up period-stable layout" do
@@ -4331,13 +4414,14 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Stacking-pin: the band must scope to today's local date so
       # 30 days of past Open-Meteo readings don't pile up at every
       # hour, producing "huge black Blocks" via alpha accumulation.
-      # Count the rects inside the band group — `chart_time_range/2`
-      # rounds up to `end_hour = last_hour + 1`, so for the
-      # 06:00–19:00 reading arc the X range is [06:00, 20:00) and
-      # 15 hours (06:00–20:00 inclusive) project to the chart. Pre-fix
-      # this count was 31×15 = 465 stacked rects at the same x per
-      # hour — alpha 0.40 × 31 ≈ opaque black. With the local_date
-      # filter, today's entries project exactly once each.
+      # Derive the expected count from the chart's actual X window
+      # (which now widens to include sunrise/sunset when the user has
+      # coords) — the old hardcoded `15` was coupled to a data-driven
+      # window of `[06:00, 20:00)` and broke when `chart_time_range/5`
+      # started expanding to `[sunrise-30m, sunset+1h]`. The invariant
+      # we still pin: one rect per in-range hour, today only — pre-fix
+      # this was 31 × 15 = 465 stacked rects at the same x per hour
+      # (alpha 0.40 × 31 ≈ opaque black).
       rect_count =
         Regex.scan(~r/<rect\s/, html)
         |> length()
@@ -4354,26 +4438,71 @@ defmodule DtuAppWeb.DashboardLiveTest do
         Regex.scan(~r/<rect\s/, band_section)
         |> length()
 
-      assert band_rect_count == 15,
-             "Cloud-cover band must render one rect per in-range hour (expected 15, got #{band_rect_count}) — past_days data must not stack on today's hours"
+      # At most one rect per clock hour of the day. Pre-fix this was
+      # unbounded (the 30 past days stacked on today's hours); today
+      # the dedupe-by-local-date filter caps it at 24. Anything > 24
+      # means the stacking regression came back; 0 means the band
+      # filter rejected every reading.
+      assert band_rect_count > 0 and band_rect_count <= 24,
+             "Cloud-cover band must render 1–24 hourly rects (today only) — got #{band_rect_count}, past_days data must not stack on today's hours"
 
-      # Sanity check that we didn't lose the chart series rendering
-      # (band count vs total rect count): the chart's data lines
-      # use `<rect>` only for the band, so the total rect count
-      # should equal the band count for this test (no inverter
-      # icons rendered as rects in this surface).
-      assert rect_count == band_rect_count,
-             "Cloud-cover band rects leaked outside the band group"
+      # Cross-check: extract the chart's actual X window from the
+      # rendered SVG and confirm each hourly rect lands inside it.
+      # This pins the "in-range hour" invariant directly rather than
+      # coupling to a count that depends on the date + coords.
+      svg_match = Regex.run(~r/data-x-min-seconds="(\d+)"[^>]*data-x-max-seconds="(\d+)"/, html)
 
-      # Width pin: `chart_width / hours_in_span` = 800 / 14 = 57.1
-      # (chart range is 14 hours: 06:00 → 20:00, span 50_400s).
-      # The hardcoded 16.7 left 3.5× gaps on this preset and
-      # stacked 3.5× on 30D — see PR #208 follow-up.
+      {x_min, x_max} =
+        case svg_match do
+          [_, lo, hi] -> {String.to_integer(lo), String.to_integer(hi)}
+          _ -> {0, 86_400}
+        end
+
+      in_range_hours =
+        for h <- 0..23, seconds = h * 3600, seconds >= x_min and seconds <= x_max do
+          h
+        end
+        |> length()
+
+      assert band_rect_count == in_range_hours,
+             "Cloud-cover band rects (#{band_rect_count}) must match the count of clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}])"
+
+      # Sanity check that no extra band rects leaked outside the
+      # band group. The chart may render other `<rect>` elements
+      # — the now-marker pill is one — so we only require that the
+      # total rect count is at least the band count, and that the
+      # difference is bounded (today only the now-marker pill adds
+      # rects in this surface).
+      assert rect_count >= band_rect_count,
+             "Total rect count (#{rect_count}) must be >= band rect count (#{band_rect_count}) — band rects leaked outside the band group"
+
+      assert rect_count - band_rect_count <= 2,
+             "Only the now-marker pill is expected outside the band group (got #{rect_count - band_rect_count} extra rects)"
+
+      # Width pin: `chart_width / hours_in_span`. Pre-fix the band
+      # width was a hardcoded 16.7 that left 3.5× gaps on the 1D
+      # preset and stacked 3.5× on 30D — see PR #208 follow-up.
+      # Post-fix the width is dynamic against the chart's actual X
+      # window; for the 06:00–19:00 reading arc with `chart_time_range/5`
+      # expanding to include Berlin's sunrise (~04:25 UTC) + 30-min
+      # pre-buffer, the span is ~03:55–20:00 = 16h and width ≈ 49.8.
+      # We pin the invariant rather than a fixed number: width must
+      # match `800 / (span_in_hours)`, must be wider than the broken
+      # 16.7 hardcode, and must not collapse to a single-pixel spike.
       assert [_, width_str] = Regex.run(~r/width="([\d.]+)"/, band_section),
              "Cloud-cover band must have a width attribute"
 
-      assert String.to_float(width_str) > 50.0,
-             "1D band width should be ~57 SVG units (got #{width_str}); hardcoded 16.7 means the dedupe fix wasn't paired with the dynamic-width fix"
+      width = String.to_float(width_str)
+      hours_in_span = (x_max - x_min) / 3600.0
+      expected_width = 800.0 / hours_in_span
+
+      assert_in_delta width,
+                      expected_width,
+                      0.5,
+                      "1D band width (#{width}) must equal chart_width / hours_in_span (#{expected_width})"
+
+      assert width > 30.0,
+             "1D band width (#{width}) is below 30 SVG units — would render as a single-pixel sliver"
     end
 
     # Regression for the cloud-cover flicker: every PubSub reading

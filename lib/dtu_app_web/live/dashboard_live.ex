@@ -1111,7 +1111,13 @@ defmodule DtuAppWeb.DashboardLive do
     # X range is dynamic: zoomed to data when present, full day (00:00–
     # 24:00) when empty. See `chart_time_range/2` below.
     {x_min_seconds, x_max_seconds} =
-      ChartHelpers.chart_time_range(chart_points, tz_offset_seconds)
+      ChartHelpers.chart_time_range(
+        chart_points,
+        tz_offset_seconds,
+        user.latitude,
+        user.longitude,
+        local_date
+      )
 
     x_span = x_max_seconds - x_min_seconds
 
@@ -1497,7 +1503,7 @@ defmodule DtuAppWeb.DashboardLive do
     |> assign(:net_palette, {"indigo", "500"})
     |> assign(
       :now_marker_x,
-      if(opts[:live?],
+      if(live?,
         do: ChartHelpers.now_marker_x(x_min_seconds, x_max_seconds, tz_offset_seconds),
         else: nil
       )
@@ -1509,7 +1515,7 @@ defmodule DtuAppWeb.DashboardLive do
     # views get `nil` and the template falls back to "now".
     |> assign(
       :now_marker_label,
-      if(opts[:live?],
+      if(live?,
         do: ChartHelpers.now_marker_label(tz_offset_seconds),
         else: nil
       )
