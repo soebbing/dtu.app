@@ -13,6 +13,36 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
       assert response =~ "Settings"
     end
 
+    test "renders the Location section with the Share-location CTA when unset", %{
+      conn: conn
+    } do
+      conn = get(conn, ~p"/users/settings")
+      response = html_response(conn, 200)
+
+      assert response =~ "Location"
+      assert response =~ ~r/id="location-share-btn"/
+      assert response =~ "Share location"
+      refute response =~ "location-display"
+    end
+
+    test "renders the stored coords as a hemisphere-suffixed display string", %{
+      conn: conn,
+      user: user
+    } do
+      :ok =
+        Accounts.update_user_location(user, %{latitude: 52.5200, longitude: 13.4050})
+
+      conn = get(conn, ~p"/users/settings")
+      response = html_response(conn, 200)
+
+      assert response =~ "52.52° N"
+      assert response =~ "13.405° E"
+      assert response =~ ~r/id="location-update-btn"/
+      assert response =~ "Update location"
+      # Clear button only present in the :set branch.
+      assert response =~ ~r/id="clear_location_form"/
+    end
+
     test "prefills the €/kWh input with the user's stored rate", %{conn: conn, user: user} do
       # Set a rate via the public API, then GET the page. The input
       # must render with the stored value (e.g. "0.32" for 32 cents).
@@ -278,6 +308,96 @@ defmodule DtuAppWeb.UserSettingsControllerTest do
       # Locale unchanged — the failed cast must NOT have written
       # anything to the row.
       assert Accounts.get_user!(user.id).locale == user.locale
+    end
+  end
+
+  describe "PUT /users/settings (location form)" do
+    # The Location section on `/users/settings` posts top-level
+    # `latitude` / `longitude` strings (rendered as hidden inputs by
+    # the inline geolocation JS) and an `action` discriminator.
+    # `update_location` routes through the existing
+    # `Accounts.update_user_location/2` so the WGS84 bounds check
+    # and atomic nil-through behaviour are not re-tested here —
+    # they're covered in the dashboard live-view tests.
+
+    test "persists valid coords and redirects with a flash", %{conn: conn, user: user} do
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_location",
+          "latitude" => "52.5200",
+          "longitude" => "13.4050"
+        })
+
+      assert redirected_to(conn) == ~p"/users/settings"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~
+               "Location updated successfully"
+
+      reloaded = Accounts.get_user!(user.id)
+      assert Decimal.equal?(reloaded.latitude, Decimal.new("52.5200"))
+      assert Decimal.equal?(reloaded.longitude, Decimal.new("13.4050"))
+    end
+
+    test "re-renders :edit with an error when latitude is out of range", %{
+      conn: conn,
+      user: user
+    } do
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_location",
+          "latitude" => "200.0",
+          "longitude" => "0.0"
+        })
+
+      # Out-of-range coords don't redirect — the form re-renders so
+      # the user can correct them. The :edit template still renders.
+      response = html_response(conn, 200)
+      assert response =~ "Settings"
+      assert response =~ "must be between -90 and 90"
+
+      # The row is untouched.
+      assert Accounts.get_user!(user.id).latitude == user.latitude
+    end
+
+    test "re-renders :edit with an error when longitude is out of range", %{
+      conn: conn,
+      user: user
+    } do
+      conn =
+        put(conn, ~p"/users/settings", %{
+          "action" => "update_location",
+          "latitude" => "0.0",
+          "longitude" => "9999.0"
+        })
+
+      response = html_response(conn, 200)
+      assert response =~ "Settings"
+      assert response =~ "must be between -180 and 180"
+
+      assert Accounts.get_user!(user.id).longitude == user.longitude
+    end
+
+    test "clear_location nils both fields and flashes", %{conn: conn, user: user} do
+      # Seed coords first so we have something to clear.
+      # `Accounts.update_user_location/2` returns `:ok` (not
+      # `{:ok, _}`) on success — see its @doc — so the
+      # underscore-binding pattern below is `:ok = ...`.
+      :ok =
+        Accounts.update_user_location(user, %{latitude: 48.8566, longitude: 2.3522})
+
+      assert Accounts.get_user!(user.id).latitude != nil
+
+      conn =
+        put(conn, ~p"/users/settings", %{"action" => "clear_location"})
+
+      assert redirected_to(conn) == ~p"/users/settings"
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :info) =~
+               "Location cleared"
+
+      cleared = Accounts.get_user!(user.id)
+      assert is_nil(cleared.latitude)
+      assert is_nil(cleared.longitude)
     end
   end
 

@@ -119,6 +119,125 @@
 
   <div class="divider" />
 
+  <%!-- Location card. When the user has a stored lat/lon we show it
+       read-only (formatted as `52.5200° N, 13.4050° E` — 4-decimal
+       precision is enough to identify a city block and matches what
+       most consumer GPS chips report), with two actions: refresh
+       (re-request the browser permission and overwrite) and clear
+       (POST through with empty coords to nil both fields
+       atomically). When unset we show the same Share-location
+       affordance the dashboard cloud-cover card uses, plus a short
+       explanation of why the app wants it.
+
+       The form is a separate dedicated form (not folded into the
+       €/kWh one) because the geolocation flow is JS-driven: the
+       inline script at the bottom of this section intercepts the
+       Share-location / Update-location click, calls
+       navigator.geolocation.getCurrentPosition, and submits the
+       form programmatically. Folding it into the existing form
+       would require either disabling that button when the user has
+       typed something into the €/kWh field, or always submitting
+       all fields together — neither is a clean UX.
+
+       On denial / unavailability / timeout we render an inline rose
+       error node and leave the rest of the page state untouched.
+       The dashboard hides the entire card on denial because the
+       user can recover on the next mount; here the user is
+       deliberately trying to manage the location, so the visible
+       error is the right surface. --%>
+  <div id="location-card" data-has-location={not is_nil(@current_scope.user.latitude)}>
+    <.header>
+      {gettext("Location")}
+      <:subtitle>
+        {gettext(
+          "Used for sunrise/sunset markers, the local cloud-cover card, and your timezone offset."
+        )}
+      </:subtitle>
+    </.header>
+
+    <%= case format_location(@current_scope.user) do %>
+      <% {:set, display} -> %>
+        <p class="mt-2 text-sm text-zinc-700 dark:text-zinc-200" data-test="location-display">
+          {display}
+        </p>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            id="location-update-btn"
+            data-request-location
+            data-loading-label={gettext("Requesting…")}
+            class="inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
+          >
+            <.icon name="hero-map-pin" class="h-4 w-4" />
+            {gettext("Update location")}
+          </button>
+
+          <.form
+            :let={_f}
+            for={@settings_changeset}
+            action={~p"/users/settings"}
+            id="clear_location_form"
+            class="inline"
+          >
+            <input type="hidden" name="action" value="clear_location" />
+            <button
+              type="submit"
+              phx-disable-with={gettext("Clearing...")}
+              class="text-sm text-rose-600 hover:text-rose-700 underline-offset-2 hover:underline"
+            >
+              {gettext("Clear")}
+            </button>
+          </.form>
+        </div>
+      <% :unset -> %>
+        <p class="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+          {gettext(
+            "No location stored. The dashboard can show local cloud cover, sunrise/sunset markers, and your timezone offset once you share it."
+          )}
+        </p>
+        <button
+          type="button"
+          id="location-share-btn"
+          data-request-location
+          data-loading-label={gettext("Requesting…")}
+          class="mt-3 inline-flex items-center gap-1.5 rounded-md bg-sky-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-1 dark:focus:ring-offset-zinc-800"
+        >
+          <.icon name="hero-map-pin" class="h-4 w-4" />
+          {gettext("Share location")}
+        </button>
+    <% end %>
+
+    <%!-- Server-side validation errors from the failed location
+         changeset. We render the field-specific message next to
+         the location card so the user sees what to fix without
+         scrolling back through the page. The browser-side denial
+         path uses the [data-location-error] node below; these two
+         are separate surfaces because the JS path doesn't reload
+         the page (the form fails client-side and the button
+         re-enables), while the server-side path returns the page
+         with the failed changeset already in the assigns. --%>
+    <%= if @location_changeset do %>
+      <%= for {field, msg} <- @location_changeset.errors do %>
+        <p class="mt-2 text-sm text-rose-600 dark:text-rose-400">
+          {humanize_field(field)}: {elem(msg, 0)}
+        </p>
+      <% end %>
+    <% end %>
+
+    <p
+      data-location-error
+      hidden
+      role="alert"
+      class="mt-2 text-sm text-rose-600 dark:text-rose-400"
+    >
+      {gettext(
+        "Couldn't read your location. Check the site's location permission in your browser settings, then try again."
+      )}
+    </p>
+  </div>
+
+  <div class="divider" />
+
   <%!-- Energy rate for the dashboard's "Saved this month" card. The
        form posts a decimal €/kWh value as a plain string; the
        User.settings_changeset/2 converts it to whole cents and casts
@@ -207,4 +326,129 @@
       {gettext("Save Settings")}
     </.button>
   </.form>
+
+  <%!-- Inline geolocation flow for the Location section above.
+       Lives here (not as a colocated hook) because this page is
+       controller-rendered, not a LiveView — `<script
+       :type={Phoenix.LiveView.ColocatedHook}>` only resolves
+       inside LV templates. The script binds to every
+       `[data-request-location]` element (Share / Update buttons),
+       reads `navigator.geolocation` on click, and submits a hidden
+       form whose `action=update_location` lands in the
+       UserSettingsController dispatch. On any failure path
+       (no API, PERMISSION_DENIED, POSITION_UNAVAILABLE, TIMEOUT)
+       we reveal the `[data-location-error]` node and leave the
+       rest of the page alone — unlike the dashboard, the user
+       is actively managing settings so they need the visible
+       error to recover. --%>
+  <script>
+    (function () {
+      function findErrorNode() {
+        return document.querySelector("[data-location-error]");
+      }
+
+      function showError() {
+        var node = findErrorNode();
+        if (node) node.hidden = false;
+      }
+
+      function buildForm(action, latitude, longitude) {
+        var form = document.createElement("form");
+        form.method = "post";
+        form.action = "/users/settings";
+        form.style.display = "none";
+
+        var fields = {
+          "_csrf_token": document.querySelector("meta[name='csrf-token']")?.getAttribute("content") || "",
+          "action": action,
+          "latitude": latitude,
+          "longitude": longitude
+        };
+
+        Object.keys(fields).forEach(function (name) {
+          var input = document.createElement("input");
+          input.type = "hidden";
+          input.name = name;
+          input.value = fields[name];
+          form.appendChild(input);
+        });
+
+        return form;
+      }
+
+      function beginLoading(button, originalLabel) {
+        button.disabled = true;
+        var loadingLabel = button.getAttribute("data-loading-label");
+        if (loadingLabel) {
+          button.setAttribute("data-original-label", originalLabel);
+          // Replace just the trailing text node so the icon stays put.
+          var textNode = Array.from(button.childNodes).find(function (n) {
+            return n.nodeType === Node.TEXT_NODE;
+          });
+          if (textNode) {
+            textNode.textContent = " " + loadingLabel;
+          } else {
+            button.appendChild(document.createTextNode(" " + loadingLabel));
+          }
+        }
+      }
+
+      document.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-request-location]");
+        if (!button) return;
+        event.preventDefault();
+
+        // Bail if a previous click is still pending — the browser
+        // would drop the second prompt anyway, but the visual state
+        // stays cleaner if we don't even try.
+        if (button.disabled) return;
+
+        if (!navigator.geolocation) {
+          showError();
+          return;
+        }
+
+        var originalLabel = button.textContent.trim();
+        beginLoading(button, originalLabel);
+
+        // Hide any prior error so the retry has a clean slate.
+        var errNode = findErrorNode();
+        if (errNode) errNode.hidden = true;
+
+        navigator.geolocation.getCurrentPosition(
+          function (pos) {
+            var form = buildForm(
+              "update_location",
+              pos.coords.latitude,
+              pos.coords.longitude
+            );
+            document.body.appendChild(form);
+            form.submit();
+          },
+          function () {
+            // PERMISSION_DENIED (1) / POSITION_UNAVAILABLE (2) /
+            // TIMEOUT (3) all collapse to "show the error node,
+            // restore the button" from the user's POV. The browser's
+            // site-settings is the recovery surface.
+            showError();
+            button.disabled = false;
+            var original = button.getAttribute("data-original-label");
+            if (original !== null) {
+              var textNode = Array.from(button.childNodes).find(function (n) {
+                return n.nodeType === Node.TEXT_NODE;
+              });
+              if (textNode) {
+                textNode.textContent = " " + original;
+              }
+            }
+          },
+          // 10s is well above the typical 1–3s fix time but well
+          // below the user's patience for a "loading" state.
+          // maximumAge: 0 forces a fresh read rather than the cached
+          // value the dashboard auto-prompt may have used.
+          { timeout: 10000, maximumAge: 0 }
+        );
+      });
+    })();
+  </script>
 </Layouts.app>

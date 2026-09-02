@@ -69,6 +69,100 @@ defmodule DtuAppWeb.UserSettingsController do
     end
   end
 
+  # The Location section on `/users/settings` posts top-level
+  # `latitude` / `longitude` strings (rendered as a `<form
+  # action="update_location">` with hidden inputs the inline JS
+  # populates from `navigator.geolocation.getCurrentPosition`).
+  # We route them through the existing `Accounts.update_user_location/2`
+  # rather than re-implementing validation here — that function
+  # already enforces the WGS84 -90..90 / -180..180 bounds and
+  # atomically nils both fields when either arrives nil, so a
+  # corrupted payload can't leave a half-position in the DB.
+  #
+  # On `:error` we re-render `:edit` with the settings_changeset so
+  # the form shows the friendly range error (the existing
+  # `settings_changeset/2` already passes through any
+  # `:latitude` / `:longitude` errors from the underlying validator).
+  # We re-build that changeset from the user so the rest of the
+  # page (€/kWh, locale) is in its initial state.
+  def update(conn, %{"action" => "update_location"} = params) do
+    user = conn.assigns.current_scope.user
+
+    # The JS payload sends raw floats (`pos.coords.latitude` is a JS
+    # Number → JSON number → Elixir float). Coerce to float here so
+    # the validator doesn't have to deal with stringly-typed input
+    # (which it would silently reject via the `is_number` guard).
+    lat =
+      case Map.get(params, "latitude") do
+        nil ->
+          nil
+
+        v when is_number(v) ->
+          v
+
+        v ->
+          case Float.parse(to_string(v)) do
+            {f, _} -> f
+            :error -> nil
+          end
+      end
+
+    lon =
+      case Map.get(params, "longitude") do
+        nil ->
+          nil
+
+        v when is_number(v) ->
+          v
+
+        v ->
+          case Float.parse(to_string(v)) do
+            {f, _} -> f
+            :error -> nil
+          end
+      end
+
+    case Accounts.update_user_location(user, %{latitude: lat, longitude: lon}) do
+      :ok ->
+        conn
+        |> put_flash(:info, gettext("Location updated successfully."))
+        |> redirect(to: ~p"/users/settings")
+
+      {:error, %Ecto.Changeset{} = location_changeset} ->
+        # The failed changeset has `:latitude` / `:longitude` errors
+        # we want the template to surface. We pass it through as a
+        # separate `location_changeset` assign so the €/kWh / locale
+        # `settings_changeset` stays in its initial state — they're
+        # independent forms with independent validation lifecycles.
+        conn = assign(conn, :location_changeset, location_changeset)
+
+        render(conn, :edit, settings_changeset: Accounts.change_user_settings(user))
+    end
+  end
+
+  # The "Clear" link posts empty coords through the same pipeline —
+  # `Accounts.update_user_location/2` already handles the
+  # nil-through case (drops both fields atomically), so we just
+  # forward without the float-coercion dance.
+  def update(conn, %{"action" => "clear_location"}) do
+    user = conn.assigns.current_scope.user
+
+    case Accounts.update_user_location(user, %{latitude: nil, longitude: nil}) do
+      :ok ->
+        conn
+        |> put_flash(:info, gettext("Location cleared."))
+        |> redirect(to: ~p"/users/settings")
+
+      {:error, %Ecto.Changeset{} = location_changeset} ->
+        # Clearing shouldn't fail (nil is always in range), but if a
+        # concurrent write corrupted the row we re-render so the user
+        # sees something rather than a 500.
+        conn = assign(conn, :location_changeset, location_changeset)
+
+        render(conn, :edit, settings_changeset: Accounts.change_user_settings(user))
+    end
+  end
+
   def confirm_email(conn, %{"token" => token}) do
     case Accounts.update_user_email(conn.assigns.current_scope.user, token) do
       {:ok, _user} ->
@@ -133,6 +227,15 @@ defmodule DtuAppWeb.UserSettingsController do
 
     conn
     |> assign(:settings_changeset, Accounts.change_user_settings(user))
+    # The Location section has its own validation lifecycle
+    # (the `update_location` / `clear_location` actions feed
+    # `Accounts.update_user_location/2`, whose changesets are NOT
+    # the same as `settings_changeset/2`). We default the assign
+    # to `nil` on every GET / re-render so the template can render
+    # without `if @location_changeset do ... end` exploding on a
+    # fresh page load — the failed-update paths in `update/2`
+    # overwrite the nil with the actual failed changeset.
+    |> assign(:location_changeset, nil)
   end
 
   # The passkey card lives on the same page as the email/password/settings
