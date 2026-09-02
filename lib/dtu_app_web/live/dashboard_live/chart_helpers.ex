@@ -64,12 +64,35 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   so we shift first/last before computing the range. `end_hour`
   adds a 1-hour buffer so the line doesn't end at the chart's right
   edge.
-  """
-  @spec chart_time_range([%{required(:time) => DateTime.t()}], integer()) ::
-          {non_neg_integer(), pos_integer()}
-  def chart_time_range([], _tz_offset_seconds), do: {0, @seconds_per_day}
 
-  def chart_time_range(points, tz_offset_seconds) do
+  When `lat` / `lon` / `date_local` are all provided AND the
+  calculated sunrise / sunset events fall outside the data-driven
+  window, the window is widened so both sun markers stay inside
+  the visible chart — otherwise a user whose first reading is at
+  08:00 local would never see the 06:25 sunrise marker because the
+  line starts after it. The window is clamped to `[0, 86_400]` so
+  polar regions still produce a sensible range (no negative hours,
+  no wrap).
+  """
+  @spec chart_time_range(
+          [%{required(:time) => DateTime.t()}],
+          integer(),
+          term() | nil,
+          term() | nil,
+          Date.t() | nil
+        ) :: {non_neg_integer(), pos_integer()}
+  def chart_time_range(
+        points,
+        tz_offset_seconds,
+        lat \\ nil,
+        lon \\ nil,
+        date_local \\ nil
+      )
+
+  def chart_time_range([], _tz_offset_seconds, _lat, _lon, _date_local),
+    do: {0, @seconds_per_day}
+
+  def chart_time_range(points, tz_offset_seconds, lat, lon, date_local) do
     first_local = shift_local(Enum.min_by(points, & &1.time).time, tz_offset_seconds)
     last_local = shift_local(Enum.max_by(points, & &1.time).time, tz_offset_seconds)
 
@@ -82,6 +105,51 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
     end_hour = max(end_hour, min(start_hour + 1, 24))
 
     {start_hour * 3600, end_hour * 3600}
+    |> expand_for_sun(lat, lon, date_local, tz_offset_seconds)
+  end
+
+  # When the user has a stored position, expand the data-driven window
+  # to include today's astronomical sunrise and sunset. Without this,
+  # a user whose first reading is at 08:00 local sees only the sunset
+  # marker (sunrise is before the chart starts). We pad 30 minutes
+  # before sunrise / 1 hour after sunset so the dashed guide lines
+  # and labels stay fully inside the SVG — `sun_markers/6` returns
+  # nil for events outside `[x_min_seconds, x_max_seconds]`, and we
+  # want both events to render even at the edges.
+  defp expand_for_sun({x_min, x_max}, nil, _lon, _date_local, _tz), do: {x_min, x_max}
+  defp expand_for_sun({x_min, x_max}, _lat, nil, _date_local, _tz), do: {x_min, x_max}
+  defp expand_for_sun({x_min, x_max}, _lat, _lon, nil, _tz), do: {x_min, x_max}
+
+  defp expand_for_sun({x_min, x_max}, lat, lon, %Date{} = date_local, tz_offset_seconds) do
+    {sunrise_utc, sunset_utc} = DtuApp.SunCalc.sunrise_sunset_utc(lat, lon, date_local)
+
+    sunrise_s = sunrise_utc && utc_to_local_seconds(sunrise_utc, tz_offset_seconds)
+    sunset_s = sunset_utc && utc_to_local_seconds(sunset_utc, tz_offset_seconds)
+
+    # 30 min before sunrise so the "↑ 06:25" label is fully visible;
+    # 1 h after sunset so the "↓ 19:53" label and its dashed line
+    # don't get clipped against the right edge.
+    new_min =
+      case sunrise_s do
+        nil -> x_min
+        s -> min(x_min, max(s - 30 * 60, 0))
+      end
+
+    new_max =
+      case sunset_s do
+        nil -> x_max
+        s -> max(x_max, min(s + 60 * 60, @seconds_per_day))
+      end
+
+    {new_min, new_max}
+  end
+
+  # Convert a UTC `DateTime` into local seconds-of-day. Same wrap-
+  # around semantics as `now_marker_x/4` — a positive `tz_offset_seconds`
+  # can push past midnight, so we mod into `[0, 86_400)` first.
+  defp utc_to_local_seconds(%DateTime{} = utc, tz_offset_seconds) do
+    utc_seconds = utc.hour * 3600 + utc.minute * 60 + utc.second
+    (utc_seconds + tz_offset_seconds + @seconds_per_day * 4) |> rem(@seconds_per_day)
   end
 
   @doc """

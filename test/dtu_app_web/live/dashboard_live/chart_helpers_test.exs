@@ -20,6 +20,15 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpersTest do
     dt
   end
 
+  # Same idea but pinned to *today*'s date — SunCalc's polar
+  # detection reads the date component, so the sun-expansion tests
+  # need a real calendar date rather than 1970-01-01. `utc/3` above
+  # is left unchanged because the now-marker tests don't care.
+  defp utc_at_today(hour, minute, second) do
+    {:ok, dt} = DateTime.new(Date.utc_today(), Time.new!(hour, minute, second))
+    dt
+  end
+
   describe "now_marker_x/4" do
     test "mid-day on a 24-hour chart lands in the middle of the canvas" do
       # Range 00:00–24:00, now 12:00, no tz offset → 50% → x = 400.
@@ -191,6 +200,129 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpersTest do
                )
 
       assert is_float(ss) and ss > 780.0 and ss < 810.0
+    end
+  end
+
+  describe "chart_time_range/5" do
+    # Two-arg backward-compat: existing callers (and tests that
+    # haven't been updated to thread coords through) still get the
+    # data-driven window. Pinning this prevents accidental
+    # regressions of the contract every other dashboard test
+    # depends on.
+    test "two-arg form returns the data-driven window unchanged" do
+      # One reading at 09:00, one at 18:30 — window rounds to
+      # [09:00, 19:00] = [32400, 68400].
+      points = [
+        %{time: utc_at_today(9, 0, 0)},
+        %{time: utc_at_today(18, 30, 0)}
+      ]
+
+      assert ChartHelpers.chart_time_range(points, 0) == {32_400, 68_400}
+    end
+
+    # The sun-expansion path is what the today-branch dashboard
+    # relies on for showing both sunrise AND sunset markers even
+    # when the data arc starts after sunrise (which is the common
+    # case for a user whose first reading is at 08:00 local — the
+    # 06:25 sunrise would otherwise fall outside the window and
+    # the sunrise marker wouldn't render).
+    test "with Berlin coords + date, window expands to cover sunrise + sunset" do
+      # Berlin Sep 2: sunrise ≈ 04:25 UTC, sunset ≈ 18:53 UTC.
+      # Data arc: 08:00 UTC → 19:00 UTC. Pre-fix data-driven window
+      # is [08:00, 20:00] = [28800, 72000]. Post-fix with coords the
+      # window widens to [sunrise - 30m, max(end, sunset + 1h)] =
+      # [03:55, 20:00] = [14100, 72000].
+      points = [
+        %{time: utc_at_today(8, 0, 0)},
+        %{time: utc_at_today(19, 0, 0)}
+      ]
+
+      {x_min, x_max} =
+        ChartHelpers.chart_time_range(
+          points,
+          0,
+          52.520_008,
+          13.404_954,
+          ~D[2026-09-02]
+        )
+
+      # xMin must shift earlier than 08:00 to cover sunrise.
+      assert x_min < 28_800,
+             "Window xMin (#{x_min}) must shift earlier than the data start (28_800) to include sunrise"
+
+      # xMin must be at most 30 minutes before the actual sunrise.
+      # Sunrise UTC ~04:25 → 4*3600 + 25*60 = 15_900. 30 min before
+      # = 14_100. We allow a ±10 min SunCalc tolerance.
+      assert x_min >= 12_600 and x_min <= 15_900,
+             "Window xMin (#{x_min}) must sit within 30min-pre-sunrise window"
+
+      # xMax stays at 20:00 because data end (19:00) is after
+      # sunset (~18:53) — sunset + 1h ≈ 19:53 < 20:00, so the
+      # data-driven window is already wide enough.
+      assert x_max == 72_000
+    end
+
+    test "with coords but nil date_local, window is NOT expanded" do
+      # Defensive: nil date → can't compute sun events → fall back
+      # to the data-driven window unchanged. (In production the
+      # dashboard always threads `local_date` through, so this
+      # branch only fires in tests that construct the args manually.)
+      points = [
+        %{time: utc_at_today(8, 0, 0)},
+        %{time: utc_at_today(19, 0, 0)}
+      ]
+
+      assert ChartHelpers.chart_time_range(points, 0, 52.52, 13.41, nil) ==
+               {28_800, 72_000}
+    end
+
+    test "with nil latitude (user hasn't granted location), window is NOT expanded" do
+      points = [
+        %{time: utc_at_today(8, 0, 0)},
+        %{time: utc_at_today(19, 0, 0)}
+      ]
+
+      assert ChartHelpers.chart_time_range(points, 0, nil, 13.41, ~D[2026-09-02]) ==
+               {28_800, 72_000}
+    end
+
+    test "with nil longitude, window is NOT expanded" do
+      points = [
+        %{time: utc_at_today(8, 0, 0)},
+        %{time: utc_at_today(19, 0, 0)}
+      ]
+
+      assert ChartHelpers.chart_time_range(points, 0, 52.52, nil, ~D[2026-09-02]) ==
+               {28_800, 72_000}
+    end
+
+    test "polar night (sun never rises) does not expand xMin" do
+      # South Pole on Jun 21: SunCalc returns {nil, ~U[2026-06-21 00:00:00Z]}
+      # (nil sunrise = "sun never rises", sunset sentinel =
+      # "previous day midnight UTC"). Sunset at midnight UTC maps
+      # to local_seconds = 0 → xMax = max(72_000, min(0 + 3600,
+      # 86_400)) = 72_000 (unchanged). xMin stays at the data start
+      # because sunrise is nil.
+      #
+      # This pins the contract that a nil SunCalc event must NOT
+      # shift the corresponding edge — SunCalc's polar logic has
+      # its own tests, so we only verify OUR wrapper's robustness
+      # to nil, not the exact lat threshold.
+      points = [
+        %{time: utc_at_today(8, 0, 0)},
+        %{time: utc_at_today(19, 0, 0)}
+      ]
+
+      assert ChartHelpers.chart_time_range(points, 0, -89.9, 0.0, ~D[2026-06-21]) ==
+               {28_800, 72_000}
+    end
+
+    test "empty points with coords still returns full day" do
+      # The early-return clause must run BEFORE the sun expansion —
+      # otherwise we'd waste a SunCalc round-trip just to return
+      # the same {0, 86400} the original code already returned.
+      assert ChartHelpers.chart_time_range([], 0, 52.52, 13.41, ~D[2026-09-02]) ==
+               {0, 86_400}
     end
   end
 end
