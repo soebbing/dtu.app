@@ -267,6 +267,41 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   end
 
   @doc """
+  Local-time-of-day label for the now-marker pill — e.g. `"14:32"`.
+
+  Same wrap-around semantics as `now_marker_x/4`: the user's
+  `tz_offset_seconds` is added to the UTC time-of-day and modded
+  into `[0, 86_400)`, then formatted as 24-hour `HH:MM`. The pill
+  on the chart shows this string instead of the static word `"now"`
+  so the user can see at a glance where the marker line lands on
+  the X axis without reading the X-axis tick labels.
+
+  `now` defaults to `DtuApp.Time.utc_now/0` for the same reason as
+  `now_marker_x/4`: production callers don't thread it through,
+  tests inject a fixed `DateTime` to pin the label without
+  depending on wall-clock time.
+  """
+  @spec now_marker_label(integer(), DateTime.t()) :: String.t()
+  def now_marker_label(tz_offset_seconds, now \\ DtuApp.Time.utc_now())
+
+  def now_marker_label(tz_offset_seconds, %DateTime{} = now) do
+    utc_seconds = now.hour * 3600 + now.minute * 60 + now.second
+
+    local_seconds =
+      (utc_seconds + tz_offset_seconds + @seconds_per_day * 4)
+      |> rem(@seconds_per_day)
+
+    # `:hour` accepts 0–23; mod the wrapped total into that band so a
+    # tz_offset that pushes past midnight still formats as a valid
+    # HH:MM (24:00 would render as `"24:00"` without this clamp).
+    hour = div(local_seconds, 3600)
+    minute = div(rem(local_seconds, 3600), 60)
+
+    :io_lib.format("~2..0B:~2..0B", [hour, minute])
+    |> List.to_string()
+  end
+
+  @doc """
   Pixel X positions + local-time labels for sunrise / sunset guide
   lines on the 1D chart. Computed via `DtuApp.SunCalc.sunrise_sunset_utc/3`
   for the given user's geographic position on the local calendar
