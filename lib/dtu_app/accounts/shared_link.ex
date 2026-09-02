@@ -51,6 +51,13 @@ defmodule DtuApp.Accounts.SharedLink do
     |> validate_length(:token_hash, is: 32)
     |> foreign_key_constraint(:user_id)
     |> unique_constraint(:token_hash)
+    # Matches `unique_index(:shared_links, [:user_id])` (added in
+    # 20260902130000_unique_index_shared_links_user_id). Ecto uses
+    # this to translate Postgres `23505 unique_violation` on the
+    # `user_id` column into a changeset error rather than a raw
+    # raise, so the caller sees a useful `:unique_user_id` key in
+    # `changeset.errors`.
+    |> unique_constraint(:user_id)
   end
 
   @doc """

@@ -391,10 +391,29 @@ defmodule DtuApp.Accounts do
 
   @doc """
   Returns the user's existing shared link, or `nil` if sharing is off.
+
+  Defensive against a legacy multi-row state (a pre-`unique_index`
+  DB with duplicates left from the pre-fix `create_shared_link/1`
+  race): uses `limit: 1` + `order_by: [desc: :inserted_at,
+  desc: :id]` and returns the newest row rather than raising
+  `Ecto.MultipleResultsError` like `Repo.one/1` would. The DB-level
+  `unique_index(:shared_links, [:user_id])` ensures this branch is
+  never hit in practice — it's only there so a stale backup or a
+  partial migration can't crash the dashboard mount.
   """
   @spec get_shared_link(User.t()) :: SharedLink.t() | nil
   def get_shared_link(%User{id: user_id}) do
-    Repo.one(from(s in SharedLink, where: s.user_id == ^user_id))
+    query =
+      from(s in SharedLink,
+        where: s.user_id == ^user_id,
+        order_by: [desc: s.inserted_at, desc: s.id],
+        limit: 1
+      )
+
+    case Repo.all(query) do
+      [link | _] -> link
+      [] -> nil
+    end
   end
 
   @doc """
@@ -423,26 +442,47 @@ defmodule DtuApp.Accounts do
   puts into the UI for the user to copy. The plaintext is **not**
   stored; only its SHA-256 hash lands in the DB.
 
-  If the user already has an active share, it is deleted first inside
-  a transaction so the new token's `unique_index(:shared_links,
-  [:token_hash])` won't collide on a re-toggled row.
+  Concurrent-safe via Postgres `INSERT ... ON CONFLICT (user_id) DO
+  UPDATE` (Ecto's `Repo.insert(on_conflict: ...)`): a single atomic
+  statement that either inserts the new row or overwrites the
+  `token_hash` of the existing one. This relies on the
+  `unique_index(:shared_links, [:user_id])` declared in the
+  migration; without that index `on_conflict` has nothing to
+  conflict against.
+
+  The earlier implementation used `delete_all` + `insert` inside a
+  transaction. That pattern is **not** safe under contention:
+  `delete_all WHERE user_id = X` matches zero rows when no share
+  exists yet, so Postgres acquires no row lock — every concurrent
+  transaction sails through its own `insert` and we end up with
+  duplicate rows. Empirically (see the
+  `accounts_test.exs: "concurrent create calls keep exactly one
+  row"` regression test), 100 concurrent calls left 10 rows for the
+  same user under the old pattern.
   """
   @spec create_shared_link(User.t()) ::
           {:ok, {String.t(), SharedLink.t()}} | {:error, Ecto.Changeset.t()}
   def create_shared_link(%User{} = user) do
+    now = DateTime.utc_now(:second)
     {plaintext, hashed} = SharedLink.generate()
 
-    Repo.transact(fn ->
-      Repo.delete_all(from(s in SharedLink, where: s.user_id == ^user.id))
+    attrs = %{user_id: user.id, token_hash: hashed}
 
-      %SharedLink{user_id: user.id, token_hash: hashed}
-      |> SharedLink.changeset(%{user_id: user.id, token_hash: hashed})
-      |> Repo.insert()
-      |> case do
-        {:ok, link} -> {:ok, {plaintext, link}}
-        other -> other
-      end
-    end)
+    insert_opts = [
+      on_conflict: [set: [token_hash: hashed, updated_at: now]],
+      conflict_target: [:user_id],
+      returning: true
+    ]
+
+    case %SharedLink{user_id: user.id, token_hash: hashed}
+         |> SharedLink.changeset(attrs)
+         |> Repo.insert(insert_opts) do
+      {:ok, link} ->
+        {:ok, {plaintext, link}}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:error, changeset}
+    end
   end
 
   @doc """
