@@ -1502,6 +1502,18 @@ defmodule DtuAppWeb.DashboardLive do
         else: nil
       )
     )
+    # Local-time label for the now-marker pill — formatted as
+    # "HH:MM" in the user's timezone so the chart shows the
+    # actual current time, not the static word "now". Gated on
+    # the same `live?` flag as `:now_marker_x`; historical-day
+    # views get `nil` and the template falls back to "now".
+    |> assign(
+      :now_marker_label,
+      if(opts[:live?],
+        do: ChartHelpers.now_marker_label(tz_offset_seconds),
+        else: nil
+      )
+    )
     # Sunrise / sunset guide-line X positions. Only computed when
     # the user has a captured geographic position (the JS hook
     # pushes it on every dashboard mount via `set_location`); the
@@ -3533,19 +3545,21 @@ defmodule DtuAppWeb.DashboardLive do
                          sets nil unless :live? is true). --%>
 
                   <%= if @now_marker_x do %>
-                    <line
-                      x1={@now_marker_x}
-                      y1="24"
-                      x2={@now_marker_x}
-                      y2="250"
-                      stroke="#6366f1"
-                      class="dark:stroke-indigo-400"
-                      stroke-width="1.5"
-                      opacity="0.65"
-                      pointer-events="none"
-                    />
-                    <g pointer-events="none">
+                    <g id="now-marker" pointer-events="none">
+                      <line
+                        id="now-marker-line"
+                        x1={@now_marker_x}
+                        y1="24"
+                        x2={@now_marker_x}
+                        y2="250"
+                        stroke="#6366f1"
+                        class="dark:stroke-indigo-400"
+                        stroke-width="1.5"
+                        opacity="0.65"
+                        pointer-events="none"
+                      />
                       <rect
+                        id="now-marker-pill"
                         x={@now_marker_x - 18}
                         y="6"
                         width="36"
@@ -3555,6 +3569,7 @@ defmodule DtuAppWeb.DashboardLive do
                         class="dark:fill-indigo-400"
                       />
                       <text
+                        id="now-marker-text"
                         x={@now_marker_x}
                         y="16"
                         text-anchor="middle"
@@ -3564,7 +3579,7 @@ defmodule DtuAppWeb.DashboardLive do
                         font-weight="600"
                         font-family="ui-sans-serif, system-ui, sans-serif"
                       >
-                        now
+                        {@now_marker_label || gettext("now")}
                       </text>
                     </g>
                   <% end %>
@@ -3843,6 +3858,41 @@ defmodule DtuAppWeb.DashboardLive do
                         this.svg.addEventListener(event, handler, { passive: true });
                       }
                     }
+
+                    // Now-marker live tick. The server-rendered X
+                    // position + HH:MM label are correct at render
+                    // time but don't advance on their own — without
+                    // this tick the line drifts stale whenever the
+                    // tab is open longer than the next reading tick
+                    // (which can be minutes on a quiet inverter).
+                    // Refresh every 15 s: cheap (one render of four
+                    // attributes + a text content write) and small
+                    // enough that the line visibly tracks the
+                    // minute. The browser's `getHours/getMinutes`
+                    // already return LOCAL time, so no TZ math is
+                    // needed here — the chart's `xMin/xMax` are
+                    // server-computed in the user's local TZ too.
+                    this.refreshNowMarkerRefs();
+                    this.tickNowMarker();
+                    this.nowMarkerInterval = setInterval(
+                      () => this.tickNowMarker(),
+                      15000
+                    );
+                  },
+
+                  updated() {
+                    // LiveView patch re-rendered the SVG (e.g. user
+                    // switched time range, or a reading tick
+                    // re-ran `assign_line_chart_data/5`). The
+                    // server-side `data-x-min-seconds` /
+                    // `data-x-max-seconds` may have shifted, and the
+                    // now-marker nodes themselves may have been
+                    // swapped for fresh ones. Re-parse the range
+                    // and re-query the now-marker refs so the next
+                    // tick hits the live DOM.
+                    this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
+                    this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+                    this.refreshNowMarkerRefs();
                   },
 
                   destroyed() {
@@ -3856,6 +3906,75 @@ defmodule DtuAppWeb.DashboardLive do
                     if (this.legendClick) {
                       this.el.removeEventListener("click", this.legendClick);
                     }
+                    if (this.nowMarkerInterval) {
+                      clearInterval(this.nowMarkerInterval);
+                      this.nowMarkerInterval = null;
+                    }
+                  },
+
+                  refreshNowMarkerRefs() {
+                    // Re-query the SVG + now-marker nodes on every
+                    // mount / update. LiveView's diffing keeps the
+                    // `phx-hook` container but may swap the inner
+                    // `<svg>` + `<g id="now-marker">` for fresh
+                    // nodes on a patch, so cached refs would point
+                    // at detached DOM the next tick. Returns nothing;
+                    // mutates `this.nowMarker{,Line,Pill,Text}` to
+                    // either real nodes or null (historical-day
+                    // views render no marker → all nulls).
+                    this.svg = this.el.querySelector("#solar-chart-svg");
+                    this.nowMarker = this.svg
+                      ? this.svg.querySelector("#now-marker")
+                      : null;
+                    this.nowMarkerLine = this.nowMarker
+                      ? this.nowMarker.querySelector("#now-marker-line")
+                      : null;
+                    this.nowMarkerPill = this.nowMarker
+                      ? this.nowMarker.querySelector("#now-marker-pill")
+                      : null;
+                    this.nowMarkerText = this.nowMarker
+                      ? this.nowMarker.querySelector("#now-marker-text")
+                      : null;
+                  },
+
+                  tickNowMarker() {
+                    if (
+                      !this.nowMarker ||
+                      !this.nowMarkerLine ||
+                      !this.nowMarkerPill ||
+                      !this.nowMarkerText
+                    ) {
+                      return;
+                    }
+
+                    const d = new Date();
+                    const seconds =
+                      d.getHours() * 3600 +
+                      d.getMinutes() * 60 +
+                      d.getSeconds();
+                    const span = this.xMax - this.xMin;
+
+                    // Out-of-range: local time falls outside the
+                    // chart's X window (e.g. 03:00 on a 06:00–22:00
+                    // historical-day view). Hide the marker rather
+                    // than draw it at a clamped edge — the same
+                    // behaviour as the server-side `now_marker_x`
+                    // returning nil.
+                    if (span <= 0 || seconds < this.xMin || seconds > this.xMax) {
+                      this.nowMarker.style.display = "none";
+                      return;
+                    }
+
+                    this.nowMarker.style.display = "";
+                    const x = ((seconds - this.xMin) / span) * 800;
+                    this.nowMarkerLine.setAttribute("x1", String(x));
+                    this.nowMarkerLine.setAttribute("x2", String(x));
+                    this.nowMarkerPill.setAttribute("x", String(x - 18));
+                    this.nowMarkerText.setAttribute("x", String(x));
+                    this.nowMarkerText.textContent =
+                      String(d.getHours()).padStart(2, "0") +
+                      ":" +
+                      String(d.getMinutes()).padStart(2, "0");
                   },
 
                   refRect() {

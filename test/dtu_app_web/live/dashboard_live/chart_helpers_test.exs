@@ -10,15 +10,17 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpersTest do
 
   alias DtuAppWeb.DashboardLive.ChartHelpers
 
-  describe "now_marker_x/4" do
-    # Helper to build a UTC `DateTime` for the injected `now` argument.
-    # The function only reads `hour/minute/second`, so the date is
-    # irrelevant — we pick 1970-01-01 to make that explicit.
-    defp utc(hour, minute, second) do
-      {:ok, dt} = DateTime.new(~D[1970-01-01], Time.new!(hour, minute, second))
-      dt
-    end
+  # Helper to build a UTC `DateTime` for the injected `now` argument.
+  # The `now_marker_x/4` + `now_marker_label/2` helpers only read
+  # `hour/minute/second`, so the date is irrelevant — we pick
+  # 1970-01-01 to make that explicit. Module-level so both describe
+  # blocks can share it (an inner defp would shadow any earlier one).
+  defp utc(hour, minute, second) do
+    {:ok, dt} = DateTime.new(~D[1970-01-01], Time.new!(hour, minute, second))
+    dt
+  end
 
+  describe "now_marker_x/4" do
     test "mid-day on a 24-hour chart lands in the middle of the canvas" do
       # Range 00:00–24:00, now 12:00, no tz offset → 50% → x = 400.
       assert ChartHelpers.now_marker_x(0, 86_400, 0, utc(12, 0, 0)) == 400.0
@@ -72,6 +74,35 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpersTest do
       # now = 05:00 UTC = 10:00 local → 2h into a 12h window = 16.7%.
       # 2/12 = 0.1666… → 133.333… → 133.3
       assert ChartHelpers.now_marker_x(8 * 3600, 20 * 3600, 5 * 3600, utc(5, 0, 0)) == 133.3
+    end
+  end
+
+  describe "now_marker_label/2" do
+    test "mid-afternoon UTC renders as 24-hour HH:MM" do
+      assert ChartHelpers.now_marker_label(0, utc(14, 32, 0)) == "14:32"
+    end
+
+    test "single-digit hour is zero-padded to 2 digits" do
+      assert ChartHelpers.now_marker_label(0, utc(5, 7, 0)) == "05:07"
+    end
+
+    test "tz offset shifts the label to local time" do
+      # 12:00 UTC + 1h = 13:00 local.
+      assert ChartHelpers.now_marker_label(3600, utc(12, 0, 0)) == "13:00"
+    end
+
+    test "tz offset wrapping past midnight renders as the next-day local time" do
+      # 23:30 UTC + 1h = 24:30 → mod 86400 = 0:30 next day → "00:30".
+      assert ChartHelpers.now_marker_label(3600, utc(23, 30, 0)) == "00:30"
+    end
+
+    test "negative tz offset shifts the label earlier" do
+      # 06:00 UTC + (-5h) = 01:00 local.
+      assert ChartHelpers.now_marker_label(-5 * 3600, utc(6, 0, 0)) == "01:00"
+    end
+
+    test "exactly midnight renders as 00:00" do
+      assert ChartHelpers.now_marker_label(0, utc(0, 0, 0)) == "00:00"
     end
   end
 
