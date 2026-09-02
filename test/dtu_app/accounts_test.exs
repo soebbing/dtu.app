@@ -4,7 +4,7 @@ defmodule DtuApp.AccountsTest do
   alias DtuApp.Accounts
 
   import DtuApp.AccountsFixtures
-  alias DtuApp.Accounts.{User, UserToken}
+  alias DtuApp.Accounts.{SharedLink, User, UserToken}
 
   describe "get_user_by_email/1" do
     test "does not return the user if the email does not exist" do
@@ -834,7 +834,6 @@ defmodule DtuApp.AccountsTest do
     #   * Revoking removes the row, so the next lookup returns nil.
     #   * Token plaintext is never stored — a hash mismatch returns nil
     #     rather than the wrong user.
-    alias DtuApp.Accounts.SharedLink
 
     test "create returns a plaintext token that round-trips to the same user" do
       %{id: user_id} = user_fixture()
@@ -926,6 +925,103 @@ defmodule DtuApp.AccountsTest do
 
       refute Repo.get_by(SharedLink, user_id: user.id)
       refute Accounts.get_user_by_share_token(plaintext)
+    end
+  end
+
+  describe "shared link concurrency" do
+    # Regression for the accumulation bug where concurrent
+    # `create_shared_link/1` calls left >1 row per user. The old
+    # implementation did `delete_all` + `insert` in a transaction;
+    # when no row existed, the `delete_all` matched zero rows and
+    # Postgres acquired no row lock, so every concurrent
+    # transaction's `insert` ran independently and committed.
+    # Empirically 100 concurrent calls left 10 rows.
+    #
+    # The fix uses Postgres `INSERT ... ON CONFLICT (user_id) DO
+    # UPDATE` (Ecto's `Repo.insert(on_conflict: ...)`) plus a
+    # `unique_index(:shared_links, [:user_id])`. The DB-level
+    # unique index is what makes the UPSERT atomic; even if a
+    # future code path forgets the `on_conflict:`, the second
+    # INSERT would fail with `23505 unique_violation` rather than
+    # silently append.
+    #
+    # These tests exercise the UPSERT end-to-end. The actual
+    # concurrent race (N processes on N connections) is implicit
+    # in `INSERT ... ON CONFLICT`'s atomicity — Postgres serialises
+    # conflicting UPSERTs on the same conflict target via an
+    # internal lock, so the last writer wins deterministically.
+
+    test "a second create replaces the first row (UPSERT, sequential)" do
+      %{id: user_id} = user = user_fixture()
+
+      assert {:ok, {first_plaintext, _}} = Accounts.create_shared_link(user)
+      assert {:ok, {second_plaintext, _}} = Accounts.create_shared_link(user)
+
+      # Exactly one row per user — the UPSERT replaced the first
+      # `token_hash` rather than appending a second row.
+      assert Repo.aggregate(from(s in SharedLink, where: s.user_id == ^user_id), :count) == 1
+
+      # Old plaintext no longer resolves; new one does.
+      refute Accounts.get_user_by_share_token(first_plaintext)
+      assert %User{id: ^user_id} = Accounts.get_user_by_share_token(second_plaintext)
+    end
+
+    test "create replaces a pre-existing row (UPSERT conflict path)" do
+      # Simulate the "row already exists" branch of the UPSERT
+      # without going through `create_shared_link/1` first: seed
+      # the row directly. The pre-existing row has a different
+      # (caller-supplied) `token_hash`. After calling
+      # `create_shared_link/1`, the row count must still be 1 and
+      # the new plaintext must resolve.
+      %{id: user_id} = user = user_fixture()
+      pre_existing_hash = :crypto.hash(:sha256, "pre-existing-token")
+
+      {:ok, _} =
+        %SharedLink{user_id: user_id, token_hash: pre_existing_hash}
+        |> SharedLink.changeset(%{user_id: user_id, token_hash: pre_existing_hash})
+        |> Repo.insert()
+
+      assert {:ok, {new_plaintext, _link}} = Accounts.create_shared_link(user)
+
+      # Still exactly one row, with the UPSERT's new `token_hash`.
+      rows = Repo.all(from(s in SharedLink, where: s.user_id == ^user_id))
+      assert length(rows) == 1
+      refute hd(rows).token_hash == pre_existing_hash
+      assert hd(rows).token_hash == :crypto.hash(:sha256, new_plaintext)
+
+      # New plaintext resolves; the pre-existing one does not (the
+      # UPSERT overwrote its `token_hash`).
+      assert %User{id: ^user_id} = Accounts.get_user_by_share_token(new_plaintext)
+      refute Accounts.get_user_by_share_token("pre-existing-token")
+    end
+
+    test "the unique_index on user_id rejects a second row outright" do
+      # The DB-level `unique_index(:shared_links, [:user_id])` is
+      # the belt to the UPSERT's suspenders: even if a future
+      # code path forgot `on_conflict:`, the second INSERT
+      # would fail at the constraint rather than silently
+      # appending a duplicate. Verify the index exists and
+      # rejects duplicates directly.
+      %{id: user_id} = user_fixture()
+
+      {:ok, _} =
+        %SharedLink{user_id: user_id, token_hash: :crypto.hash(:sha256, "first")}
+        |> SharedLink.changeset(%{user_id: user_id, token_hash: :crypto.hash(:sha256, "first")})
+        |> Repo.insert()
+
+      # A second INSERT for the same user must fail with a
+      # unique_violation — Ecto surfaces this via the changeset
+      # error key `:user_id` (set by `unique_constraint(:user_id)`
+      # in `SharedLink.changeset/2`).
+      assert {:error, changeset} =
+               %SharedLink{user_id: user_id, token_hash: :crypto.hash(:sha256, "second")}
+               |> SharedLink.changeset(%{
+                 user_id: user_id,
+                 token_hash: :crypto.hash(:sha256, "second")
+               })
+               |> Repo.insert()
+
+      assert %{user_id: ["has already been taken"]} = errors_on(changeset)
     end
   end
 end
