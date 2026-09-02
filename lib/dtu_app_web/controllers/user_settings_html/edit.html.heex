@@ -359,6 +359,16 @@
         form.style.display = "none";
 
         var fields = {
+          // The router only registers PUT (and POST) for
+          // `/users/settings`; HTML forms can only natively send GET
+          // or POST, so we POST and let `Plug.MethodOverride`
+          // (enabled in `lib/dtu_app_web/endpoint.ex`) rewrite the
+          // request method to PUT based on this hidden input.
+          // Phoenix's `<.form>` does the exact same thing — see the
+          // rendered output for any `<.form>` on this page (e.g.
+          // `update_email`). Without this, the browser POSTs to a
+          // route that doesn't exist and the user lands on a 404.
+          "_method": "put",
           "_csrf_token": document.querySelector("meta[name='csrf-token']")?.getAttribute("content") || "",
           "action": action,
           "latitude": latitude,
