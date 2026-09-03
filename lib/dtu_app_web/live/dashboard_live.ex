@@ -105,11 +105,18 @@ defmodule DtuAppWeb.DashboardLive do
       |> assign(:range_preset, "1d")
       |> assign(:selected_period, nil)
       |> assign(:has_push_subscriptions, has_push_subscriptions)
-      # Default to UTC (offset 0). The client-side `.SetTimezone`
-      # colocated hook pushes the real offset once the WebSocket is
-      # connected, and `handle_info({:set_timezone, ...})` updates this
-      # assign + re-renders.
-      |> assign(:user_tz_offset_seconds, 0)
+      # Seed from the user's stored offset (`Accounts.update_user_tz_offset/2`
+      # persists whatever the browser last reported) so the first render
+      # already uses the correct tz — without this, the dashboard paints
+      # with UTC, then jumps 1–2 hours to local time the moment the
+      # `.SetTimezone` hook's PubSub message lands in `handle_info/2`
+      # and triggers a second render. Sun-up / sun-down guide lines
+      # and the now-marker visibly teleport in that gap.
+      #
+      # Brand-new users (`user.tz_offset_seconds == 0`) still fall
+      # back to the JS push — there's no server-side way to know
+      # the browser tz without their cooperation.
+      |> assign(:user_tz_offset_seconds, user.tz_offset_seconds || 0)
       # Locale for stat-card / chart-axis number formatting. Picked up by
       # `Devices.format_number/2` and `Devices.format_savings/1` so a
       # German user sees `1.234,5 kWh` and a French user sees
