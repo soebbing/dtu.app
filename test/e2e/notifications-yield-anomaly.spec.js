@@ -7,18 +7,32 @@ require('./_setup/global-fixture');
 //
 // The new toggle mirrors the existing per-topic checkboxes
 // (`:notify_dtu_connection`, `:notify_sun_down`, `:notify_sun_up`):
-// it is a plain `<input type="checkbox">` inside a wrapping
-// `<label class="flex items-start gap-3 cursor-pointer">`. The
-// label's first child is the visible title — "Mid-day yield
-// collapse" — which we use as the accessible name for `getByLabel`.
+// a plain `<input type="checkbox">` inside a wrapping
+// `<label class="flex items-start gap-3 cursor-pointer">` that
+// also contains the title and the description spans.
 //
 // What we're proving:
-//   1. The new toggle is in the DOM (i.e. the
-//      `notify_yield_anomaly` field is wired through
+//   1. The new toggle is present and bound to
+//      `user[notify_yield_anomaly]` (i.e. the
+//      `:notify_yield_anomaly` field is in
 //      `User.notification_settings_changeset/2` and rendered by
 //      the LiveView template).
 //   2. Toggling it on, saving, and reloading persists the value
 //      on the user record.
+//
+// Why `id="#user_notify_yield_anomaly"` and not `getByLabel`:
+// the wrapping <label> has no `for=` attribute, so its
+// accessible name concatenates the title AND the description
+// span ("Mid-day yield collapse A heads-up if your fleet…").
+// `getByLabel('Mid-day yield collapse', { exact: true })` will
+// never match the whole-label text. Phoenix's `<.input field=
+// {@form[:notify_yield_anomaly]}>` renders the checkbox with
+// `id="user_notify_yield_anomaly"` — that's the stable handle we
+// use here. `notifications.spec.js` uses the legacy positional
+// selector (`page.locator('input[type="checkbox"]').first()`)
+// because no per-field `id` was needed there; the new toggle
+// rides on the form-field id so a future insert into the same
+// form doesn't reorder this test.
 //
 // Defaults:
 //   * `User.notify_yield_anomaly` ships as `false` — the migration
@@ -27,10 +41,6 @@ require('./_setup/global-fixture');
 //   * The seeded test user starts with all toggles off; if a
 //     prior spec run left this one on, we explicitly uncheck
 //     before toggling on again.
-//
-// Run alongside `notifications-channel-toggle.spec.js` (which
-// flips the channel chip for the same user) by relying on the
-// seeded email/password — no fixture changes needed.
 
 test.describe.serial('Acceptance Tests: Yield-anomaly notification toggle', () => {
   async function logIn(page) {
@@ -59,11 +69,11 @@ test.describe.serial('Acceptance Tests: Yield-anomaly notification toggle', () =
 
     await expect(page.locator('#notifications-form')).toBeVisible();
 
-    // The wrapping <label> makes the title the accessible name for
-    // the inner checkbox. `exact: true` so "Mid-day yield collapse"
-    // can't accidentally match a future "Mid-day yield" sublabel.
-    const yaToggle = page.getByLabel('Mid-day yield collapse', { exact: true });
+    // Phoenix `<.input field={@form[:notify_yield_anomaly]}>` renders
+    // `<input id="user_notify_yield_anomaly" type="checkbox">`.
+    const yaToggle = page.locator('#user_notify_yield_anomaly');
     await expect(yaToggle).toBeAttached();
+    await expect(yaToggle).not.toBeChecked();
 
     // Reset to the documented default before turning it on —
     // protects against a stale-on-disk state from a previous run.
@@ -76,13 +86,11 @@ test.describe.serial('Acceptance Tests: Yield-anomaly notification toggle', () =
       await waitForLiveSocketConnected(page);
     }
 
-    await expect(
-      page.getByLabel('Mid-day yield collapse', { exact: true })
-    ).not.toBeChecked();
+    await expect(page.locator('#user_notify_yield_anomaly')).not.toBeChecked();
 
     // Turn it on and save.
-    await yaToggle.check();
-    await expect(yaToggle).toBeChecked();
+    await page.locator('#user_notify_yield_anomaly').check();
+    await expect(page.locator('#user_notify_yield_anomaly')).toBeChecked();
     await page.click('button:has-text("Save preferences")');
 
     // Brief wait for the LiveView round-trip + flash re-render
@@ -95,8 +103,6 @@ test.describe.serial('Acceptance Tests: Yield-anomaly notification toggle', () =
     await page.reload();
     await expect(page).toHaveURL(/\/notifications/, { timeout: 10000 });
     await waitForLiveSocketConnected(page);
-    await expect(
-      page.getByLabel('Mid-day yield collapse', { exact: true })
-    ).toBeChecked();
+    await expect(page.locator('#user_notify_yield_anomaly')).toBeChecked();
   });
 });
