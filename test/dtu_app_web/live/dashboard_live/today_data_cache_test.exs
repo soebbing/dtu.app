@@ -102,9 +102,14 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCacheTest do
       now_ms = :erlang.system_time(:millisecond)
       stale_ms = now_ms - 16_000
 
-      [{^user_id, %{value: value, stored_at: _}}] = :ets.lookup(TodayDataCache, user_id)
+      # New cache-key shape: `{user_id, opts}` where `opts` is the
+      # keyword list passed to `fetch/3`. The 2-arg `fetch/2` form
+      # delegates with `opts = []`, so the on-disk key here is
+      # `{user_id, []}`.
+      [{{^user_id, []}, %{value: value, stored_at: _}}] =
+        :ets.lookup(TodayDataCache, {user_id, []})
 
-      :ets.insert(TodayDataCache, {user_id, %{value: value, stored_at: stale_ms}})
+      :ets.insert(TodayDataCache, {{user_id, []}, %{value: value, stored_at: stale_ms}})
 
       result =
         TodayDataCache.fetch(user_id, fn -> %{consumption: [2, 3, 4], net: [5, 6, 7]} end)
