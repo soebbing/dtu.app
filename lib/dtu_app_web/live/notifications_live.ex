@@ -418,6 +418,24 @@ defmodule DtuAppWeb.NotificationsLive do
             </span>
           </label>
 
+          <label class="flex items-start gap-3 cursor-pointer">
+            <.input
+              type="checkbox"
+              field={@form[:notify_yield_anomaly]}
+              class="mt-1"
+            />
+            <span>
+              <span class="block text-sm font-medium text-zinc-900 dark:text-white">
+                {gettext("Mid-day yield collapse")}
+              </span>
+              <span class="block text-sm text-zinc-500 dark:text-zinc-400">
+                {gettext(
+                  "A heads-up if your fleet stops producing for over 15 minutes while the sun is up — even when no inverter reports an outage. Fires once per local day."
+                )}
+              </span>
+            </span>
+          </label>
+
           <div class="mt-6 border-t border-zinc-200 dark:border-zinc-700 pt-4">
             <h3 class="text-sm font-semibold text-zinc-900 dark:text-white">
               {gettext("Deliver via")}

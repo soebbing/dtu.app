@@ -112,6 +112,7 @@ defmodule DtuApp.Push do
       event == "dtu_connection" -> user.notify_dtu_connection == true
       event == "sun_down" -> user.notify_sun_down == true
       event == "sun_up" -> user.notify_sun_up == true
+      event == "yield_anomaly" -> user.notify_yield_anomaly == true
       true -> true
     end
   end
@@ -121,6 +122,7 @@ defmodule DtuApp.Push do
       event == :dtu_connection -> user.notify_dtu_connection == true
       event == :sun_down -> user.notify_sun_down == true
       event == :sun_up -> user.notify_sun_up == true
+      event == :yield_anomaly -> user.notify_yield_anomaly == true
       true -> true
     end
   end

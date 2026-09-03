@@ -46,7 +46,12 @@ defmodule DtuApp.AccountsFixtures do
     # `update_notification_settings/2` so tests that want a user
     # with `notify_sun_up: true` actually get one.
     notification_attrs =
-      Map.take(attrs, [:notify_dtu_connection, :notify_sun_down, :notify_sun_up])
+      Map.take(attrs, [
+        :notify_dtu_connection,
+        :notify_sun_down,
+        :notify_sun_up,
+        :notify_yield_anomaly
+      ])
 
     case notification_attrs do
       %{} = n when map_size(n) == 0 ->
