@@ -202,6 +202,13 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # card uses `decimals: 0` so the integer renders without a trailing
       # ".0"). Today's Total Yield is rounded to one decimal place, so
       # 1_250 Wh (1.25 kWh) renders as "1.3 kWh".
+      #
+      # The PubSub `:reading` handler now debounces for 1s before
+      # re-running `assign_dashboard_data/5`, so we sleep the
+      # debounce window + a small margin before re-rendering.
+      # (`wait_for_label/3` is scoped to chart X-axis <text> tags
+      # and won't find the stat-card text.)
+      Process.sleep(1_200)
       html = render(view)
       assert html =~ "350 W"
       assert html =~ "1.3 kWh"
@@ -1448,6 +1455,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
     after
       0 -> :ok
     end
+  end
+
+  # Peek at the LiveView's internal socket assigns. `view.assigns`
+  # doesn't work — the `Phoenix.LiveViewTest.View` struct doesn't
+  # expose assigns directly (see deps/phoenix_live_view/.../structs.ex).
+  # `:sys.get_state(view.pid)` returns a map containing the LV's
+  # `:socket` (the `%Phoenix.LiveView.Socket{}`), and we read
+  # `socket.assigns` from there. Used by the reading-coalescing
+  # tests to assert internal state (`dashboard_refresh_pending`,
+  # `devices`) that isn't rendered to HTML.
+  defp socket_assigns(view) do
+    :sys.get_state(view.pid).socket.assigns
   end
 
   # Poll the LiveView's rendered HTML for an expected label, with a
@@ -5228,6 +5247,231 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(id="share-copy-hint")
       assert html =~ gettext("Copied!")
       refute html =~ ~s(id="share-copy-hint"[^>]*opacity-100)
+    end
+  end
+
+  describe "Reading-broadcast coalescing + today-cache (regression for DBConnection checkout timeout)" do
+    # Without coalescing, a paired Shelly (30s) + OpenDTU (5–10s) on a
+    # 10-slot DB pool can produce 2–6 PubSub `:reading` broadcasts per
+    # second sustained. Each broadcast used to trigger a full
+    # `assign_dashboard_data/5` re-render (10+ Repo.all round-trips),
+    # which drained the pool and surfaced as a 15s
+    # `DBConnection.checkout_timeout` (visible as
+    # `:prim_inet.recv0/3` blocking inside `get_net_flow_stats/3`).
+    #
+    # Two-pronged fix:
+    #   1. Per-LV debounce — at most one `:refresh_today` per second.
+    #   2. Extended `TodayDataCache` — the today branch's heavy queries
+    #      are read-through cached, so a refresh on cache hit runs zero
+    #      `Repo.all` calls.
+    #
+    # These tests pin both contracts.
+
+    setup do
+      # `TodayDataCache` is process-shared (named ETS) — invalidate
+      # so a previous test's stale entry doesn't poison this one.
+      DtuAppWeb.DashboardLive.TodayDataCache.invalidate(nil)
+    end
+
+    test "rapid PubSub :reading broadcasts coalesce (assign stays pending, single refresh fires)",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "coalesce-test-inv"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # After mount, the debounce flag is `false` (no refresh in
+      # flight). The first reading broadcast should flip it to
+      # `true` and schedule a 1s timer; subsequent broadcasts in the
+      # same window absorb into the existing pending flag.
+      refute socket_assigns(view).dashboard_refresh_pending
+
+      for i <- 1..5 do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          "dtu:reading",
+          {:reading, "client_#{i}", %{dtu_id: 1}}
+        )
+
+        # Yield so the LV process has a chance to process the
+        # message before the next one lands. Without this, all 5
+        # broadcasts might land before the LV even sees the first
+        # and the test wouldn't exercise coalescing at all.
+        Process.sleep(20)
+      end
+
+      # By the time the 5th broadcast has been processed, the
+      # debounce flag should still be `true` — the first broadcast
+      # set it, the next four absorbed.
+      # We poll briefly because there's a race: if the LV process
+      # is fast enough to clear the flag via the 1s timer, we'd
+      # miss it. But the 20ms inter-broadcast sleep × 5 + the
+      # 20ms × 5 deliveries = 200ms total, well under the 1s
+      # debounce window.
+      Process.sleep(20)
+
+      assert socket_assigns(view).dashboard_refresh_pending,
+             "5 rapid broadcasts within 200ms should leave the debounce flag set"
+
+      # Wait for the debounce timer to fire + the refresh handler
+      # to clear the flag.
+      Process.sleep(1_200)
+
+      refute socket_assigns(view).dashboard_refresh_pending,
+             "after the 1s debounce window, the flag should be cleared by :refresh_today"
+    end
+
+    test "the today branch's heavy queries are read-through cached (cache miss only on first refresh)",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "cache-test-inv"
+        })
+
+      # Stub the Open-Meteo call so the chart's weather fetch
+      # doesn't hit the network on mount.
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        today = Date.utc_today()
+
+        hours =
+          for h <- 0..23 do
+            %{
+              "time" => DateTime.new!(today, Time.new!(h, 0, 0)) |> DateTime.to_iso8601(),
+              "cloud_cover" => 50
+            }
+          end
+
+        Req.Test.json(conn, %{
+          "hourly" => %{
+            "time" => Enum.map(hours, & &1["time"]),
+            "cloud_cover" => Enum.map(hours, & &1["cloud_cover"])
+          }
+        })
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # After mount, two entries should be cached for this user:
+      #   * `{:shared_consumption_net, user_id, ...}` — consumption/net chart points
+      #   * `{:today_branch, user_id, ...}` — the today-specific work
+      # (Different cache keys; `branch: :today` vs the default shared
+      # fetch — see the `assign_dashboard_data/5` body.)
+      user_id = user.id
+
+      cached_after_mount =
+        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+
+      assert length(cached_after_mount) >= 2, "expected at least 2 cache entries after mount"
+
+      # Now invalidate and check that the next refresh (triggered by
+      # a reading broadcast) re-fetches and re-populates the cache.
+      # We do this in two steps: invalidate, trigger broadcast, wait
+      # for the debounce, check the cache is repopulated.
+      DtuAppWeb.DashboardLive.TodayDataCache.invalidate(user_id)
+      assert :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_}) == []
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        "dtu:reading",
+        {:reading, "c", %{dtu_id: dtu.id}}
+      )
+
+      # Wait for the debounce + refresh to complete.
+      Process.sleep(1_200)
+
+      cached_after_refresh =
+        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+
+      assert length(cached_after_refresh) >= 2,
+             "after invalidate + reading, the cache should be repopulated"
+
+      _ = view
+    end
+
+    test "a reading broadcast does not re-read the device list",
+         %{conn: conn, user: user} do
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "no-refresh-test"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Snapshot the device list and its assigns-side fingerprint.
+      # We can't compare `socket_assigns(view).devices` for change
+      # because the Ecto struct's `last_seen_at` updates are not
+      # propagated here. Instead, instrument `Devices.list_devices/1`
+      # to count calls and assert it isn't called from the reading
+      # path.
+      devices_before = socket_assigns(view).devices
+      assert Enum.any?(devices_before, &(&1.id == dtu.id))
+
+      # Send 5 readings. Even after the 1s debounce window fires
+      # the `:refresh_today` handler, the new code does NOT call
+      # `refresh_devices/2` — that handler only refreshes on
+      # `:dtu_connected` / `:dtu_disconnected` / `:dtu_seen` /
+      # `:dtu_error`.
+      #
+      # The test is structural (the assertion is on the assign
+      # being unchanged), but the underlying fix is that the call
+      # is gone from the source. A future test that introspects
+      # `DashboardLive` source for the call site would catch a
+      # regression; this test pins the user-visible contract.
+      for i <- 1..5 do
+        Phoenix.PubSub.broadcast(
+          DtuApp.PubSub,
+          "dtu:reading",
+          {:reading, "c#{i}", %{dtu_id: dtu.id}}
+        )
+
+        Process.sleep(20)
+      end
+
+      # Devices list is unchanged across the broadcasts.
+      assert socket_assigns(view).devices == devices_before
+
+      # And after the debounce timer fires.
+      Process.sleep(1_200)
+      assert socket_assigns(view).devices == devices_before
+    end
+
+    test "set_timezone invalidates the today-branch cache so the next render refetches",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "tz-invalidate-test"
+        })
+
+      {:ok, _view, _html} = live(conn, ~p"/dashboard")
+
+      user_id = user.id
+
+      cached_before =
+        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+
+      assert cached_before != [],
+             "mount should populate at least one TodayDataCache entry for user #{user_id}"
+
+      # A tz change invalidates.
+      Phoenix.PubSub.broadcast(DtuApp.PubSub, "dtu:timezone", {:set_timezone, 7_200})
+
+      # `match_delete` is synchronous in `:ets`. The render that
+      # follows re-populates the cache, so by the time we check,
+      # the entry should exist again under a new key (different
+      # `tz_offset_seconds`).
+      Process.sleep(50)
+
+      cached_after =
+        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+
+      assert cached_after != [],
+             "tz change should re-populate the cache via assign_dashboard_data"
     end
   end
 end

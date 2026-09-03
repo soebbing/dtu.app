@@ -42,6 +42,15 @@ defmodule DtuAppWeb.DashboardLive do
 
   @timezone_topic "dtu:timezone"
 
+  # Per-LV-process debounce window for `{:reading, ...}` broadcasts.
+  # A Shelly Plus 3EM publishes every ~30s, an OpenDTU inverter every
+  # 5–10s, and a paired setup produces 2–6 broadcasts/sec sustained.
+  # Collapsing the live-today refresh to at most one per second
+  # eliminates the per-broadcast ~10 `Repo.all` round-trips that
+  # exhausted the 10-slot DB pool (the 15s
+  # `DBConnection.checkout_timeout`).
+  @reading_refresh_debounce_ms 1_000
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -117,6 +126,14 @@ defmodule DtuAppWeb.DashboardLive do
       # back to the JS push — there's no server-side way to know
       # the browser tz without their cooperation.
       |> assign(:user_tz_offset_seconds, user.tz_offset_seconds || 0)
+      # `true` while a debounced `{:reading, ...}` refresh is in flight
+      # (1s after the first broadcast, the actual refresh fires as
+      # `:refresh_today`). Subsequent broadcasts in the same window
+      # absorb into the existing timer instead of stacking new
+      # refreshes. Set on the reading handler; cleared on the
+      # `:refresh_today` handler. See `handle_info({:reading, ...})`
+      # for the rationale (pool-exhaustion fix).
+      |> assign(:dashboard_refresh_pending, false)
       # Locale for stat-card / chart-axis number formatting. Picked up by
       # `Devices.format_number/2` and `Devices.format_savings/1` so a
       # German user sees `1.234,5 kWh` and a French user sees
@@ -272,6 +289,11 @@ defmodule DtuAppWeb.DashboardLive do
     user = socket.assigns.current_scope.user
 
     socket = PeriodSelectable.assign_selectable_periods(socket, user, selected_id)
+
+    # Drop the previous-dtu today-branch cache (same reasoning as
+    # `set_timezone` above — the new `dtu_id` produces a new cache
+    # key, but the stale entry would sit in ETS until TTL).
+    TodayDataCache.invalidate(user.id)
 
     socket =
       socket
@@ -560,30 +582,66 @@ defmodule DtuAppWeb.DashboardLive do
 
   @impl true
   def handle_info({:reading, _client_id, _reading}, socket) do
+    # A paired Shelly (every 30s) + an OpenDTU inverter (every 5–10s)
+    # produces 2–6 PubSub `:reading` broadcasts per second sustained.
+    # Each one used to trigger a full `assign_dashboard_data/5` today-
+    # branch refresh — ~10 separate `Repo.all` round-trips per call,
+    # which on a 10-slot DB pool starves the connection pool under any
+    # moderate load and produces a 15 s `DBConnection.checkout_timeout`
+    # (visible as `:prim_inet.recv0/3` blocking inside
+    # `get_net_flow_stats/3`'s DISTINCT ON).
+    #
+    # Coalesce: at most one debounced refresh per debounce window per
+    # LV process. 1 s is comfortably below human-perception latency
+    # (Shelly's 30s cadence and OpenDTU's 5–10s cadence both sit
+    # inside it), and the today-branch cache is invalidated immediately
+    # so the debounced refresh re-fetches fresh data.
+    #
+    # If a refresh is already pending, the in-flight one absorbs this
+    # broadcast — no new timer, no new invalidation (the existing
+    # timer's :refresh_today will re-invalidate and re-fetch).
+    if socket.assigns.dashboard_refresh_pending do
+      {:noreply, socket}
+    else
+      user = socket.assigns.current_scope.user
+
+      # Drop the cached today-window data immediately so the
+      # debounced refresh re-runs the heavy `readings` scans —
+      # without this, a freshly-arrived reading would be invisible
+      # in the chart for up to 15 s. The cache layer (extended to
+      # cover the whole today branch — see `TodayDataCache`) picks
+      # this up on the next `fetch/2`.
+      TodayDataCache.invalidate(user.id)
+
+      Process.send_after(self(), :refresh_today, @reading_refresh_debounce_ms)
+
+      {:noreply, assign(socket, :dashboard_refresh_pending, true)}
+    end
+  end
+
+  # Fires `reading_refresh_debounce_ms` after the first
+  # `{:reading, ...}` broadcast in a debounce window. The actual
+  # refresh work — re-running the today branch — runs here, not in
+  # the broadcast handler, so 10 readings in 1 s collapse to a
+  # single refresh.
+  @impl true
+  def handle_info(:refresh_today, socket) do
     user = socket.assigns.current_scope.user
     selected_id = socket.assigns.selected_dtu_id
 
-    # Drop the cached today-window chart data so the next
-    # `assign_dashboard_data/5` re-runs the two heavy
-    # `readings` scans — without this, a freshly-arrived reading
-    # would be invisible in the chart for up to 15 s. Pairing
-    # with the `assign_dashboard_data/5` short-circuit (which
-    # only consults the cache once per call) means the next
-    # re-render is exactly one fetch + the rest of the
-    # (already-cached) work.
-    TodayDataCache.invalidate(user.id)
-
     socket = PeriodSelectable.assign_selectable_periods(socket, user, selected_id)
 
-    # Every reading also touches the DTU's `last_seen_at` (see
-    # `DtuApp.MqttBroker.Telemetry`), so re-read the device list here
-    # to refresh the derived online badge — without this refresh the
-    # badge would only update on a CONNECT / DISCONNECT, which means
-    # a DTU that wakes up but stays MQTT-connected wouldn't flip from
-    # offline to online until the next reconnect.
+    # Note: we deliberately do NOT call `refresh_devices/2` here. The
+    # device list itself doesn't change on a reading — only
+    # `dtus.last_seen_at` does, and that's already reflected by the
+    # `:dtu_seen` broadcast (`handle_info({:dtu_seen, ...})` below)
+    # which keeps the online badge fresh. Re-listing devices on
+    # every reading was an unconditional `SELECT ... FROM dtus WHERE
+    # user_id = $1` round-trip that contributed to the pool-exhaust
+    # path this fix targets.
     socket =
       socket
-      |> refresh_devices(user)
+      |> assign(:dashboard_refresh_pending, false)
       |> maybe_reassign_dashboard_data(user, selected_id)
 
     {:noreply, socket}
@@ -642,6 +700,13 @@ defmodule DtuAppWeb.DashboardLive do
     if user.tz_offset_seconds != offset_seconds do
       _ = DtuApp.Accounts.update_user_tz_offset(user, offset_seconds)
     end
+
+    # Drop the previous-tz today-branch cache so the new tz doesn't
+    # have to wait for the 15s TTL. The cache key already changes
+    # automatically on tz change, but the stale entry would sit in
+    # ETS until the TTL expires — `invalidate/1` is a one-line
+    # `match_delete` that clears every variant for this user.
+    TodayDataCache.invalidate(user.id)
 
     {:noreply,
      socket
@@ -1186,15 +1251,28 @@ defmodule DtuAppWeb.DashboardLive do
     # translucent + dashed in the template). Empty when there's no
     # yesterday data — e.g. a brand-new install — so the template can
     # render nothing instead of a misleading zero line.
+    #
+    # The today branch of `assign_dashboard_data/5` pre-fetches
+    # these points via `TodayDataCache` (the closure captures the
+    # work to avoid running the `readings_5m` continuous-aggregate
+    # query per reading broadcast). Older callers — historical day /
+    # week / month / year — pass nothing for this opt and fall
+    # through to the direct fetch.
     yesterday_paths =
       if live? do
         yesterday_chart_points =
-          user
-          |> Devices.list_yesterday_chart_data_for_dashboard(utc_start, utc_end, dtu_id)
-          |> Enum.filter(fn pt ->
-            pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
-          end)
-          |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
+          case Keyword.get(opts, :yesterday_chart_points) do
+            nil ->
+              user
+              |> Devices.list_yesterday_chart_data_for_dashboard(utc_start, utc_end, dtu_id)
+              |> Enum.filter(fn pt ->
+                pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+              end)
+              |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
+
+            pts ->
+              pts
+          end
 
         yesterday_chart_points
         |> Enum.group_by(& &1.series)
@@ -1931,23 +2009,26 @@ defmodule DtuAppWeb.DashboardLive do
     # number identical.
     #
     # Perf #4 layer 1: the today-window chart data is read-through
-    # cached for 15 s by `TodayDataCache`, keyed by user.id (not
-    # dtu_id, because pairing-vs-not doesn't change the data shape
-    # — `list_today_consumption_chart_data/2` collapses all owned
-    # DTUs into one bucket set). Subsequent calls within the TTL
-    # skip the two big readings scans; the
-    # `handle_info({:reading, ...})` path invalidates the entry so
-    # a fresh reading lands in the chart within seconds.
+    # cached for 15 s by `TodayDataCache`. The cache key is
+    # `{user_id, opts}` where `opts` carries `tz_offset_seconds` and
+    # `dtu_id` (a tz change or DTU switch automatically produces a new
+    # key, so no extra invalidation is needed). The reading-broadcast
+    # handler calls `invalidate/1` to drop the entry; the next
+    # `assign_dashboard_data/5` re-fetches.
     %{consumption: consumption_chart_points, net: net_chart_points} =
-      TodayDataCache.fetch(user.id, fn ->
-        net_today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
-        net_today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
+      TodayDataCache.fetch(
+        user.id,
+        [tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
+        fn ->
+          net_today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+          net_today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
 
-        %{
-          consumption: Devices.list_today_consumption_chart_data(user, dtu_id),
-          net: Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
-        }
-      end)
+          %{
+            consumption: Devices.list_today_consumption_chart_data(user, dtu_id),
+            net: Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
+          }
+        end
+      )
 
     # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
     # meter: current household draw (W), today's consumed energy
@@ -1998,29 +2079,89 @@ defmodule DtuAppWeb.DashboardLive do
 
     case time_range do
       "today" ->
-        # Fetch the day-chart points once and thread them into both
-        # `get_daily_stats/4`'s `bucket_max` (for the peak-power stat)
-        # and `assign_line_chart_data/6` (for the SVG render). Without
-        # threading each helper re-runs the exact same
-        # `list_day_chart_data_for_dashboard/4` query in series, so a
-        # noon-today mount had to eat two identical day-chart round
-        # trips back-to-back. The `today_local` is computed from the
-        # user's tz offset so the bucket boundaries line up with the
-        # rest of the dashboard's local-day window.
+        # The today branch needs 4 heavy queries on top of the
+        # consumption + net chart points already cached above:
+        #   * `list_day_chart_data_for_dashboard/4` (Repo.all + 5m agg)
+        #   * `get_daily_stats/4` (4× DISTINCT ON Repo.all)
+        #   * `compute_self_consumption_pct/5` (2× Repo.all)
+        #   * `list_yesterday_chart_data_for_dashboard/4` (called from
+        #     `assign_line_chart_data/6` on the live view)
+        # On a paired-user mount that's ~8 more round-trips per
+        # refresh — multiplied by a 2–6 Hz PubSub `:reading` stream
+        # (Shelly 30s + OpenDTU 5–10s), the connection pool
+        # (`POOL_SIZE=10` per `config/runtime.exs:39`) drains and the
+        # 8th call's `DBConnection.checkout_timeout` (15 s) fires.
+        #
+        # A second `TodayDataCache.fetch/3` call with a different
+        # cache key (`branch: :today`) covers the today-specific work
+        # in a single closure. On cache hit, the dashboard re-render
+        # runs **zero** DB queries for the today branch.
         today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {today_utc_start, today_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
 
-        today_chart_points =
-          Devices.list_day_chart_data_for_dashboard(
-            user,
-            today_utc_start,
-            today_utc_end,
-            dtu_id
+        today_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :today, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
+            fn ->
+              # Cache miss — run the four heavy queries that drive
+              # the today branch. The closure captures `user` /
+              # `dtu_id` / `today_utc_start` / `today_utc_end` from
+              # the call site.
+              today_chart_points =
+                Devices.list_day_chart_data_for_dashboard(
+                  user,
+                  today_utc_start,
+                  today_utc_end,
+                  dtu_id
+                )
+
+              raw_daily_stats =
+                Devices.get_daily_stats(user, dtu_id, Date.utc_today(), today_chart_points)
+
+              today_self_consumption_pct =
+                Devices.compute_self_consumption_pct(
+                  user,
+                  dtu_id,
+                  today_utc_start,
+                  today_utc_end
+                )
+
+              yesterday_chart_points =
+                user
+                |> Devices.list_yesterday_chart_data_for_dashboard(
+                  today_utc_start,
+                  today_utc_end,
+                  dtu_id
+                )
+                |> Enum.filter(fn pt ->
+                  pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+                end)
+                |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
+
+              %{
+                today_chart_points: today_chart_points,
+                daily_stats: raw_daily_stats,
+                self_consumption_pct: today_self_consumption_pct,
+                yesterday_chart_points: yesterday_chart_points
+              }
+            end
           )
 
-        stats = Devices.get_daily_stats(user, dtu_id, Date.utc_today(), today_chart_points)
+        # The destructured keys come from the closure's return map.
+        # The post-processing (`:total_yield` overwrite,
+        # `Map.put :self_consumption_pct`) stays at the call site so
+        # the cached value is the cheapest raw form.
+        %{
+          today_chart_points: today_chart_points,
+          daily_stats: raw_daily_stats,
+          self_consumption_pct: today_self_consumption_pct,
+          yesterday_chart_points: yesterday_chart_points
+        } = today_specific
+
+        stats = raw_daily_stats
 
         # The 5-up stat-card row's "Yield" tile reads `@stats.total_yield`
         # uniformly across all 8 time_range branches. For the day / week
@@ -2033,26 +2174,19 @@ defmodule DtuAppWeb.DashboardLive do
         # the 1D view matches the period semantics the other branches
         # use — otherwise the Yield card on 1D would show the lifetime
         # number instead of today's kWh.
+        #
+        # `self_consumption_pct` is computed by the same closure and
+        # applied here. The cache stores the raw `get_daily_stats/4`
+        # map (without these Map.puts) so the same cached value can
+        # serve both today and any future caller that needs the
+        # unmodified shape.
         stats =
-          Map.put(stats, :total_yield, stats.today_yield)
-
-        # Self-consumption is a single-period value: today's export
-        # divided by today's production. Compute alongside the rest
-        # of the today branch so the stat card row's "self-consumption
-        # %" tile renders without a second mount round-trip.
-        today_self_consumption_pct =
-          Devices.compute_self_consumption_pct(
-            user,
-            dtu_id,
-            today_utc_start,
-            today_utc_end
-          )
-
-        stats_with_self_consumption =
-          Map.put(stats, :self_consumption_pct, today_self_consumption_pct)
+          stats
+          |> Map.put(:total_yield, stats.today_yield)
+          |> Map.put(:self_consumption_pct, today_self_consumption_pct)
 
         socket
-        |> assign(:stats, stats_with_self_consumption)
+        |> assign(:stats, stats)
         |> assign(:consumption_stats, consumption_stats)
         |> assign(:consumption_period_stats, consumption_period_stats)
         |> assign(:net_flow_stats, net_flow_stats)
@@ -2065,7 +2199,8 @@ defmodule DtuAppWeb.DashboardLive do
           dtu_id,
           chart_points: today_chart_points,
           consumption_chart_points: consumption_chart_points,
-          net_chart_points: net_chart_points
+          net_chart_points: net_chart_points,
+          yesterday_chart_points: yesterday_chart_points
         )
 
       "day" ->
