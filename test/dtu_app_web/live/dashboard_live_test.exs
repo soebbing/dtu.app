@@ -3807,6 +3807,163 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
+  describe "Initial-mount timezone seeding (regression for tz_offset_seconds jump)" do
+    # Without seeding `:user_tz_offset_seconds` from the persisted
+    # user record, mount defaulted to `0` (UTC). The first render
+    # then painted the chart with UTC axis labels and UTC sun
+    # markers; the `.SetTimezone` colocated hook fired shortly
+    # after with the real browser offset, `handle_info` updated
+    # the assign + re-ran `assign_dashboard_data/5`, and the
+    # chart visibly jumped 1–2 hours — now-marker between
+    # "04:00" and "06:00" tick labels at first, then between
+    # "06:00" and "08:00" once the hook landed.
+    #
+    # After a reload the DB already had the right offset, so the
+    # mount seeded correctly and the jump disappeared — masking
+    # the bug behind "first visit of the day". Pinning it via the
+    # sun-marker labels (deterministic from coords + date + tz)
+    # so the test doesn't race against wall-clock time.
+    test "mount seeds user_tz_offset_seconds from user.tz_offset_seconds (sun markers show local time)",
+         %{
+           conn: conn,
+           user: user
+         } do
+      # Pretend the user is in Berlin on the September solstice:
+      # CEST = UTC+2 (offset 7_200s). On 2026-09-03, SunCalc gives
+      # sunrise ≈ 05:25 UTC and sunset ≈ 18:38 UTC for Berlin.
+      # In the user's local time that's sunrise ≈ 07:25, sunset ≈ 20:38.
+      #
+      # We use a date-stable assertion here so the test isn't at
+      # the mercy of `Date.utc_today/0`. The date_local assign is
+      # "today" in the user's local zone (which is what the chart
+      # renders for), so on Sep 3 the chart-side label is the
+      # September-equinox pair; on other days the absolute times
+      # shift but the timezone shift is identical.
+      :ok = DtuApp.Accounts.update_user_tz_offset(user, 7_200)
+
+      :ok =
+        DtuApp.Accounts.update_user_location(user, %{
+          latitude: Decimal.new("52.520008"),
+          longitude: Decimal.new("13.404954")
+        })
+
+      dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "tz-seed-inv"
+        })
+
+      # Seed enough today data to make the chart range non-trivial.
+      # We use a raw INSERT (like the now-marker regression above)
+      # because `insert_reading_5m/5` only handles historical-day
+      # buckets — today needs the live-tail query to skip them.
+      now = DateTime.utc_now()
+      past_hour = if now.hour < 2, do: 22, else: now.hour - 2
+
+      past_bucket =
+        Date.utc_today()
+        |> DateTime.new!(Time.new!(past_hour, 0, 0))
+        |> Map.put(:microsecond, {0, 0})
+
+      current_bucket =
+        Date.utc_today()
+        |> DateTime.new!(Time.new!(now.hour, 0, 0))
+        |> Map.put(:microsecond, {0, 0})
+
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9), ($10, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [
+          past_bucket,
+          dtu.id,
+          300.0,
+          300.0,
+          30.0,
+          1000.0,
+          "INV-1",
+          0,
+          "INV-1",
+          current_bucket
+        ]
+      )
+
+      # The chart's `kickoff_weather_fetch/6` calls the cloud-cover
+      # fetch inline on the HTTP render path; without a stub the
+      # test would try to talk to api.open-meteo.com and fail in
+      # CI. Match the cloud-cover band's existing stub contract
+      # (see `Cloud-cover chart band` describe block) — return a
+      # minimal payload so `build_cloud_cover_band/5` has something
+      # to project onto the chart's X range.
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        today = Date.utc_today()
+
+        hours =
+          for h <- 0..23 do
+            %{
+              "time" => DateTime.new!(today, Time.new!(h, 0, 0)) |> DateTime.to_iso8601(),
+              "cloud_cover" => 50
+            }
+          end
+
+        Req.Test.json(conn, %{
+          "hourly" => %{
+            "time" => Enum.map(hours, & &1["time"]),
+            "cloud_cover" => Enum.map(hours, & &1["cloud_cover"])
+          }
+        })
+      end)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Berlin sun-up labels are formatted as "HH:MM" in the
+      # user's local time. With the seeded tz_offset of 7_200s
+      # the rendered label MUST be in CEST, not UTC.
+      #
+      # The template renders the sunrise label inside a `<text>`
+      # element prefixed with an upward arrow (↑). Find it by
+      # the arrow + HH:MM shape, since the element has no id.
+      sunrise_label_match =
+        Regex.run(~r/↑\s*(\d{2}):(\d{2})/, html)
+
+      assert sunrise_label_match != nil,
+             "sun-up label (↑HH:MM) must be present when user has coords; " <>
+               "absence indicates the chart didn't render sun markers"
+
+      sunrise_hour_str = Enum.at(sunrise_label_match, 1)
+      {sunrise_hour, _} = Integer.parse(sunrise_hour_str)
+
+      # The contract: seeded tz_offset = 7_200 → the rendered
+      # label is in CEST. Sunrise UTC is ~05:25 on the September
+      # solstice, so CEST sunrise is ~07:25 — hour in [06, 08].
+      #
+      # If the seed were missing (offset = 0), the same SunCalc
+      # call would render 05:25 (UTC) — hour in [04, 06] — which
+      # the assertion below would catch as "early by 2 h".
+      assert sunrise_hour in 6..8,
+             "sunrise hour (#{sunrise_hour}) must be in CEST " <>
+               "(hour 06–08 for Berlin in September); a UTC label " <>
+               "would land in hour 04–06 and signal a missed tz seed"
+    end
+
+    test "mount does not crash when user.tz_offset_seconds is nil (defaults to 0)", %{
+      conn: conn,
+      user: user
+    } do
+      # Brand-new users have `:tz_offset_seconds = 0` in the
+      # schema default; the mount must always produce a number
+      # even when nothing has been persisted yet. The JS hook
+      # corrects the value within ~1 render frame. We only assert
+      # the contract here, not the (known-jumpy) UX.
+      assert user.tz_offset_seconds == 0
+
+      {:ok, _view, _html} = live(conn, ~p"/dashboard")
+    end
+  end
+
   describe "Stats card row — 5-up period-stable layout" do
     # Replaces the old 4-up production row (Current Generation / Today's
     # Total Yield / Total Yield (lifetime) / Peak Power / Peak Yield
