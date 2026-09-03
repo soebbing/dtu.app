@@ -29,7 +29,7 @@ defmodule DtuApp.Notifications.Dispatcher do
   require Logger
 
   alias DtuApp.Accounts.User
-  alias DtuApp.Emails.{ConnectionEmail, Layout, SunDownEmail, SunUpEmail}
+  alias DtuApp.Emails.{ConnectionEmail, Layout, SunDownEmail, SunUpEmail, YieldAnomalyEmail}
   alias DtuApp.Mailer
   alias DtuApp.Notifications.Notification
   alias DtuApp.Push
@@ -264,6 +264,7 @@ defmodule DtuApp.Notifications.Dispatcher do
   defp render_email(user, "sun_down", p), do: SunDownEmail.render(user, p)
   defp render_email(user, "sun_up", p), do: SunUpEmail.render(user, p)
   defp render_email(user, "dtu_connection", p), do: ConnectionEmail.render(user, p)
+  defp render_email(user, "yield_anomaly", p), do: YieldAnomalyEmail.render(user, p)
 
   # Synthetic "test" event fired from the `/notifications` LiveView
   # "Send test notification" button. Renders a minimal brand-styled

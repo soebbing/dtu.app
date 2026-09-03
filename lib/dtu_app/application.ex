@@ -167,7 +167,8 @@ defmodule DtuApp.Application do
       [
         DtuApp.Notifications.DtuConnection,
         DtuApp.Notifications.SunDown,
-        DtuApp.Notifications.SunUp
+        DtuApp.Notifications.SunUp,
+        DtuApp.Notifications.YieldAnomaly
       ]
     end
   end

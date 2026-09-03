@@ -17,6 +17,11 @@ defmodule DtuApp.Accounts.User do
     # from 0 W to > 0 W (the array waking up for the day). Producer:
     # `DtuApp.Notifications.SunUp`.
     field :notify_sun_up, :boolean, default: false
+    # Fires once per local day when the user's fleet output collapses
+    # mid-day for longer than `YieldAnomaly.collapse_seconds` (caught
+    # even when no inverter went offline — pure yield drop with no
+    # state change). Producer: `DtuApp.Notifications.YieldAnomaly`.
+    field :notify_yield_anomaly, :boolean, default: false
 
     # User's local UTC offset in seconds (positive east of UTC;
     # e.g. 7200 for CEST). Persisted from the dashboard JS's
@@ -206,6 +211,7 @@ defmodule DtuApp.Accounts.User do
       :notify_dtu_connection,
       :notify_sun_down,
       :notify_sun_up,
+      :notify_yield_anomaly,
       :notification_channel
     ])
     |> validate_inclusion(:notification_channel, @valid_channels,
