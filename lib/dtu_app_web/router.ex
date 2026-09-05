@@ -213,6 +213,22 @@ defmodule DtuAppWeb.Router do
     post "/users/settings/passkeys/:id/delete", UserSettingsController, :delete_passkey
   end
 
+  # CSV export of historical readings for a single DTU. Auth-gated so
+  # only the device owner can pull raw data; ownership is re-checked
+  # inside `DtuApp.Devices.stream_readings_for_export/4` so a probe
+  # for someone else's dtu_id returns a header-only CSV rather than
+  # leaking data (or a 404 with a side-channel observable). The
+  # `:browser` pipeline (vs. `:push_api`'s JSON-accepting one) keeps
+  # the controller on the same content-negotiation path as the rest
+  # of the device pages; the browser sends `Accept: text/html, ...`
+  # which `Plug.Conn.send_chunked/2` happily serves the
+  # `text/csv` content-type through.
+  scope "/", DtuAppWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    get "/devices/:id/export.csv", DeviceExportController, :csv
+  end
+
   scope "/", DtuAppWeb do
     pipe_through [:browser]
 

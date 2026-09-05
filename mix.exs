@@ -88,7 +88,11 @@ defmodule DtuApp.MixProject do
       {:bandit, "~> 1.5"},
       # Embedded MQTT broker (we own our device connections). See AGENTS.md in deps/mqttx.
       {:mqttx, "~> 0.10.0"},
-      {:thousand_island, "~> 1.4"}
+      {:thousand_island, "~> 1.4"},
+      # RFC 4180 CSV encoder. Used by `DtuAppWeb.DeviceExportController`
+      # to stream historical readings as a downloaded CSV file —
+      # see `test/dtu_app_web/controllers/device_export_controller_test.exs`.
+      {:nimble_csv, "~> 1.2"}
     ]
   end
 

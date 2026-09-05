@@ -49,6 +49,27 @@
         · <code class="font-mono">{@device.base_topic}</code>
       </p>
     </div>
+    <%!-- "Download CSV" — exports the last 30 days of raw readings for
+         this DTU as an RFC 4180 CSV file. Lives on a regular
+         `<.link>` / `navigate`-style anchor (NOT a `phx-click`) so the
+         browser handles the download natively: the server returns
+         `content-disposition: attachment; filename="..."` and the
+         page stays put. Phoenix's verified route `~p"/devices/#{id}/export.csv"`
+         resolves through the router and the controller streams the
+         body via `Plug.Conn.send_chunked/2`. A `download` attribute
+         hints Chrome to save rather than navigate, but the
+         content-disposition header is the authoritative trigger. --%>
+    <.link
+      href={~p"/devices/#{@device}/export.csv"}
+      download
+      id="btn-download-csv"
+      class="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-2.5 py-1.5 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition"
+      title={gettext("Download the last 30 days of raw readings as CSV")}
+      aria-label={gettext("Download the last 30 days of raw readings as CSV")}
+    >
+      <.icon name="hero-arrow-down-tray" class="size-4" />
+      {gettext("Download CSV")}
+    </.link>
   </div>
 
   <%!-- Two-column layout: errors panel (top) + topics tree (main).
