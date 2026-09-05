@@ -3301,22 +3301,21 @@ defmodule DtuAppWeb.DashboardLive do
                 >
                   <%!-- Cloud-cover band vertical-fade gradient. Defined
                          once in `<defs>` and referenced by every cloud
-                         rect so they all share the same sky-blue tint
-                         and fade to transparent at the top + bottom of
-                         the chart, peaking at ~50% of the chart height.
+                         rect so they share the same grey tint and a
+                         single-direction fade: translucent at the
+                         rect's bottom (0% coverage = clear sky) and
+                         progressively less translucent toward its top
+                         (100% coverage = full overcast).
                          Object-bounding-box units mean the gradient
-                         stretches to fit each rect (y=20 → y=250),
-                         which is why every hourly band gets the same
-                         fade without needing per-rect coordinates.
-                         Without the fade the band reads as a solid
-                         backdrop; with it, it reads as atmospheric
-                         haze. --%>
+                         stretches to fit each rect, so the fade always
+                         anchors to the rect's own bottom edge regardless
+                         of its height — a 25% band gets the same
+                         "translucent at bottom, opaque at top" feel as
+                         a 100% band, just shorter. --%>
                   <defs>
-                    <linearGradient id="cloud-band-fade" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0" stop-color="rgb(125 165 220)" stop-opacity="0" />
-                      <stop offset="0.4" stop-color="rgb(125 165 220)" stop-opacity="1" />
-                      <stop offset="0.6" stop-color="rgb(125 165 220)" stop-opacity="1" />
-                      <stop offset="1" stop-color="rgb(125 165 220)" stop-opacity="0" />
+                    <linearGradient id="cloud-band-fade" x1="0" y1="1" x2="0" y2="0">
+                      <stop offset="0" stop-color="rgb(120 120 120)" stop-opacity="0.15" />
+                      <stop offset="1" stop-color="rgb(120 120 120)" stop-opacity="0.55" />
                     </linearGradient>
                   </defs>
 
@@ -3391,19 +3390,20 @@ defmodule DtuAppWeb.DashboardLive do
                          and the data series so it sits as a background
                          tint and the curves render CRISP on top. Each
                          hourly reading renders a vertical `<rect>`
-                         filled with the shared `cloud-band-fade`
-                         linearGradient (defined in `<defs>` above) so
-                         the band fades to transparent at the top +
-                         bottom of the chart and peaks at ~50% height
-                         — without that fade a 230px-tall uniform
-                         block reads as a black backdrop, not as cloud
-                         cover data (PR #210 follow-up). The per-rect
-                         `opacity` attribute (scaled 0.03–0.22 by the
-                         cloud-cover percentage) controls how dense
-                         each hour's tint is; opacity multiplies the
-                         gradient so a clear hour is invisible and an
-                         overcast hour is a soft sky-blue haze. The
-                         rect width comes from `cloud_cover_band/6` as
+                         whose `y` and `height` come from
+                         `cloud_cover_band/6`: the rect starts at the
+                         chart baseline and grows upward in proportion
+                         to the cloud-cover percentage, so 0% coverage
+                         = invisible (rect of height 0) and 100%
+                         coverage = a full-chart-top rect. The fill is
+                         the shared `cloud-band-fade` linearGradient
+                         (defined in `<defs>` above): a grey tint that
+                         fades from translucent at the rect's bottom
+                         (0% coverage / clear sky) to less translucent
+                         at the rect's top (100% coverage / full
+                         overcast), so dense cloud reads as denser
+                         grey regardless of the band height. Rect width
+                         comes from `cloud_cover_band/6` as
                          `chart_width / hours_in_span`, so it scales
                          across every preset. Hidden entirely when
                          `@cloud_cover_band == []` (nil coords or
@@ -3417,11 +3417,10 @@ defmodule DtuAppWeb.DashboardLive do
                       <%= for entry <- @cloud_cover_band do %>
                         <rect
                           x={Float.round(entry.x - entry.width / 2, 1)}
-                          y="20"
+                          y={Float.round(entry.y, 1)}
                           width={entry.width}
-                          height="230"
+                          height={Float.round(entry.height, 1)}
                           fill="url(#cloud-band-fade)"
-                          opacity={Float.round(0.03 + entry.pct * 0.0019, 3)}
                           pointer-events="none"
                         />
                       <% end %>
