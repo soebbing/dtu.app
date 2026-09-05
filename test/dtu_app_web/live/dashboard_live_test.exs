@@ -4676,7 +4676,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # other `<rect>` element) is still present — a regression
       # that wiped ALL rects would break that, even if the line
       # path still rendered.
-      assert (Regex.scan(~r/<rect\s/, html) |> length()) >= 1,
+      assert Regex.scan(~r/<rect\s/, html) |> length() >= 1,
              "Now-marker rect must still render alongside the cloud-cover line"
     end
 

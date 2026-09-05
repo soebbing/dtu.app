@@ -207,7 +207,12 @@ defmodule DtuAppWeb.DashboardLive do
   # because the HTTP render is one-shot (no follow-up render).
   defp assign_weather_placeholders(socket) do
     socket
-    |> assign(:cloud_cover_line, %{path: "", has_data: false, points: [], ticks: [0, 25, 50, 75, 100]})
+    |> assign(:cloud_cover_line, %{
+      path: "",
+      has_data: false,
+      points: [],
+      ticks: [0, 25, 50, 75, 100]
+    })
     |> assign(:current_cloud_cover, nil)
     |> assign(:current_cloud_cover_pct, nil)
   end
@@ -1648,7 +1653,14 @@ defmodule DtuAppWeb.DashboardLive do
   defp build_cloud_cover_band(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds) do
     case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
       nil ->
-        ChartHelpers.cloud_cover_line([], local_date, x_min_seconds, x_max_seconds, tz_offset_seconds, 800)
+        ChartHelpers.cloud_cover_line(
+          [],
+          local_date,
+          x_min_seconds,
+          x_max_seconds,
+          tz_offset_seconds,
+          800
+        )
 
       {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
         readings =
@@ -1664,7 +1676,14 @@ defmodule DtuAppWeb.DashboardLive do
         )
 
       _ ->
-        ChartHelpers.cloud_cover_line([], local_date, x_min_seconds, x_max_seconds, tz_offset_seconds, 800)
+        ChartHelpers.cloud_cover_line(
+          [],
+          local_date,
+          x_min_seconds,
+          x_max_seconds,
+          tz_offset_seconds,
+          800
+        )
     end
   end
 

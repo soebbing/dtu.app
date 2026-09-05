@@ -489,11 +489,11 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
           integer(),
           pos_integer()
         ) :: %{
-            path: String.t(),
-            has_data: boolean(),
-            points: [%{x: float(), pct: integer(), y: float()}],
-            ticks: [integer()]
-          }
+          path: String.t(),
+          has_data: boolean(),
+          points: [%{x: float(), pct: integer(), y: float()}],
+          ticks: [integer()]
+        }
   def cloud_cover_line(nil, _local_date, _x_min, _x_max, _tz, _width) do
     %{path: "", has_data: false, points: [], ticks: @cloud_cover_ticks}
   end
