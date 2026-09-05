@@ -69,10 +69,13 @@ defmodule DtuAppWeb.FlashJsTest do
       # bindings must invoke the matching helpers.
       assert source =~ ~r/mouseenter["'],\s*this\.boundPause/,
              "mouseenter should call pause()"
+
       assert source =~ ~r/mouseleave["'],\s*this\.boundResume/,
              "mouseleave should call resume()"
+
       assert source =~ ~r/focusin["'],\s*this\.boundPause/,
              "focusin should call pause()"
+
       assert source =~ ~r/focusout["'],\s*this\.boundResume/,
              "focusout should call resume()"
     end
@@ -82,7 +85,8 @@ defmodule DtuAppWeb.FlashJsTest do
       # otherwise re-entering the toast while a timer is mid-fire
       # would queue a *second* dismiss. The original draft called
       # startTimer() unconditionally, double-firing.
-      assert source =~ ~r/resume\(\)\s*\{[\s\S]*?if\s*\(\s*!?this\.timer\s*\)\s*this\.startTimer\(\)/,
+      assert source =~
+               ~r/resume\(\)\s*\{[\s\S]*?if\s*\(\s*!?this\.timer\s*\)\s*this\.startTimer\(\)/,
              "resume() should only restart the timer if no timer is currently armed"
     end
   end
@@ -92,6 +96,7 @@ defmodule DtuAppWeb.FlashJsTest do
       assert source =~ ~r/pushEvent\(\s*["']lv:clear-flash["']/,
              "dismiss() must pushEvent(\"lv:clear-flash\", ...) so " <>
                "the server-side flash entry is cleared"
+
       assert source =~ ~r/dataset\.kind/,
              "the hook must read the kind from data-kind (so callers can use a custom id)"
     end
@@ -110,6 +115,7 @@ defmodule DtuAppWeb.FlashJsTest do
       # the flash on the next render anyway.
       assert source =~ ~r/try\s*\{[\s\S]*?pushEvent\(\s*["']lv:clear-flash["']/,
              "pushEvent must be wrapped in try/catch"
+
       assert source =~ ~r/}\s*catch\s*\(_err\)/,
              "pushEvent catch must swallow the throw"
     end
@@ -177,10 +183,13 @@ defmodule DtuAppWeb.FlashJsTest do
       # these, the hook is mounted nowhere and auto-dismiss
       # never fires.
       source = File.read!("lib/dtu_app_web/components/core_components.ex")
+
       assert source =~ ~r/phx-hook="Flash"/,
              "CoreComponents.flash/1 must add phx-hook=\"Flash\" to its container div"
+
       assert source =~ ~r/data-kind=\{@kind\}/,
              "CoreComponents.flash/1 must pass data-kind={@kind} so the hook can clear the right flash key"
+
       assert source =~ ~r/data-timeout-ms="10000"/,
              "CoreComponents.flash/1 must declare a 10 s timeout"
     end
