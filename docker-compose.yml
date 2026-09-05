@@ -24,8 +24,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-dtu_app_prod}
-    ports:
-      - "5432:5432"
+    # Internal-only: no host port mapping. The `app` container reaches the
+    # DB over the compose network as `db:5432`, so binding to the host's
+    # 5432 is unnecessary — and was actively inconvenient when sibling
+    # stacks (e.g. comics-postgres-1) also wanted 5432. To inspect the DB
+    # from the host, exec in: `docker compose exec db psql ...` (or
+    # `docker compose run --service-ports db` for one-off port publishing).
+    expose:
+      - "5432"
     volumes:
       - dtu_app_pgdata:/var/lib/postgresql/data
     healthcheck:
