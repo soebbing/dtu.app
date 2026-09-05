@@ -4465,9 +4465,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
-  describe "Cloud-cover chart band" do
+  describe "Cloud-cover chart line" do
     # End-to-end pin for the cloud-cover chart rendering. The
-    # band relies on three layers all agreeing on the
+    # line relies on three layers all agreeing on the
     # `{:ok, %{hourly: ...}}` shape:
     #
     #   1. `Accounts.update_user_location/2` must persist the
@@ -4477,22 +4477,30 @@ defmodule DtuAppWeb.DashboardLiveTest do
     #   2. `Weather.cloud_cover_for/3` must wrap both fresh
     #      fetches AND cache hits in `{:ok, decoded}`. The
     #      cache-hit path was previously bare-map and silently
-    #      rendered no band on the LiveView WebSocket mount —
+    #      rendered no line on the LiveView WebSocket mount —
     #      PR #208 wraps it.
-    #   3. `ChartHelpers.cloud_cover_band/5` must project at
-    #      least one entry onto the chart's X range.
+    #   3. `ChartHelpers.cloud_cover_line/6` must project at
+    #      least one entry onto the chart's X range and emit a
+    #      non-empty `d` attribute.
     #
-    # If any of these breaks, the band disappears from the chart
+    # If any of these breaks, the line disappears from the chart
     # without raising — the test pin catches the regression as a
-    # missing `data-testid="cloud-cover-band"` rather than a
+    # missing `data-testid="cloud-cover-line"` rather than a
     # silent production report.
-    test "1D preset renders the cloud-cover band when user has Decimal coords",
+    #
+    # Why a line instead of the previous rect band: a stack of
+    # translucent grey rects going back from a high past hour
+    # (97%) fills the chart top even when the current hour is 3%,
+    # which read as "near-full overcast right now". A thin line on
+    # its own right-side axis lets the user see "clearing right
+    # now" as a real slope — same data, much clearer signal.
+    test "1D preset renders the cloud-cover line when user has Decimal coords",
          %{conn: conn, user: user} do
       dtu =
         device_fixture(user, %{
-          name: "Band Test",
+          name: "Line Test",
           kind: "opendtu",
-          mqtt_username: "band-test",
+          mqtt_username: "line-test",
           base_topic: "solar"
         })
 
@@ -4500,7 +4508,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # Seed a 1D daytime arc (06:00–19:00) so `chart_time_range/2`
       # narrows the X axis to that window — cloud-cover readings
-      # outside the window are dropped by `project_x/5`, so this
+      # outside the window are dropped by `project_x/6`, so this
       # also exercises that the projection lands inside the
       # visible range.
       minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
@@ -4512,7 +4520,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
         {:ok, _} =
           Devices.create_reading(%{
             dtu_id: dtu.id,
-            inverter_serial: "INV-BAND",
+            inverter_serial: "INV-LINE",
             mppt_index: 0,
             ac_power: 200.0,
             inserted_at:
@@ -4538,7 +4546,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # those hours project into the visible window. The 30 past
       # days' entries are kept in the payload so the dedupe-by-
       # local-date path is exercised (otherwise the test wouldn't
-      # notice if `cloud_cover_band/6` forgot to filter). Hourly
+      # notice if `cloud_cover_line/6` forgot to filter). Hourly
       # granularity matches what the upstream facade fetches.
       today = Date.utc_today()
       day_count = 31
@@ -4575,58 +4583,76 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
-      # The band renders only when `@cloud_cover_band != []`, so
-      # seeing the testid proves the upstream call + projection
-      # both returned entries inside the visible X range.
-      assert html =~ ~s(data-testid="cloud-cover-band"),
-             "Cloud-cover band must render on the chart when user has Decimal coords (1D preset)"
+      # The line renders only when `@cloud_cover_line.has_data` is
+      # true, so seeing the testid proves the upstream call +
+      # projection both returned entries inside the visible X
+      # range.
+      assert html =~ ~s(data-testid="cloud-cover-line"),
+             "Cloud-cover line must render on the chart when user has Decimal coords (1D preset)"
 
       # Sanity: also assert the granted-state data card is visible so
       # we know the user's geolocation_state is `:granted` end-to-end,
-      # not just that coords happened to land in the band.
+      # not just that coords happened to land in the line.
       assert html =~ ~s(id="stat-cloud-cover-pct"),
              "Cloud-cover data card must render when user has coords"
 
-      # Stacking-pin: the band must scope to today's local date so
-      # 30 days of past Open-Meteo readings don't pile up at every
-      # hour, producing "huge black Blocks" via alpha accumulation.
-      # Derive the expected count from the chart's actual X window
-      # (which now widens to include sunrise/sunset when the user has
-      # coords) — the old hardcoded `15` was coupled to a data-driven
-      # window of `[06:00, 20:00)` and broke when `chart_time_range/5`
-      # started expanding to `[sunrise-30m, sunset+1h]`. The invariant
-      # we still pin: one rect per in-range hour, today only — pre-fix
-      # this was 31 × 15 = 465 stacked rects at the same x per hour
-      # (alpha 0.40 × 31 ≈ opaque black).
-      rect_count =
-        Regex.scan(~r/<rect\s/, html)
-        |> length()
+      # Right-side axis labels must render regardless of whether
+      # the line has data — they're the readouts that tell the user
+      # what the y-axis means on this chart (0% / 25% / 50% / 75% /
+      # 100% cloud cover, in contrast to the left axis which is W).
+      for tick <- [0, 25, 50, 75, 100] do
+        assert html =~ ~s(data-testid="cloud-cover-axis-tick-#{tick}"),
+               "Right-axis tick label for #{tick}% must render on the chart"
+      end
 
-      band_section =
-        case Regex.run(~r/<g[^>]*data-testid="cloud-cover-band"[^>]*>(.+?)<\/g>/, html, [
-               :dotall
-             ]) do
-          [_, body] -> body
+      # Path-shape pin: the rendered `<path d="…">` must start with
+      # `M` (move) and contain at least one `L` (line) command —
+      # exactly the polyline shape the inverter power curves use.
+      # The numeric command count varies by chart preset (a narrow
+      # 1D window shows fewer hours than a 30D window), so we only
+      # pin the structural invariants here.
+      # HEEx may emit `d=` either before or after `data-testid=`, so
+      # extract the entire `<path …>` element first and then pluck
+      # `d=` from it.
+      path_tag =
+        case Regex.run(~r/<path[^>]*data-testid="cloud-cover-line"[^>]*>/, html) do
+          [tag] -> tag
           _ -> ""
         end
 
-      band_rect_count =
-        Regex.scan(~r/<rect\s/, band_section)
+      path_match =
+        case Regex.run(~r/\sd="([^"]+)"/, path_tag) do
+          [_, d] -> [d, d]
+          _ -> nil
+        end
+
+      assert path_match != nil,
+             "Cloud-cover line must have a `d` attribute"
+
+      [_, d_attr] = path_match
+
+      assert String.starts_with?(d_attr, "M "),
+             "Cloud-cover path must start with an `M` (move) command — got: #{d_attr}"
+
+      assert d_attr =~ " L ",
+             "Cloud-cover path must chain at least one `L` (line) command — got: #{d_attr}"
+
+      # Stacking-pin: the local-date filter must cap the line at
+      # 24 in-range hours. Pre-line (the rect band) the same filter
+      # capped it at 24 rects; the line carries the same filter
+      # forward, so the same invariant holds — extracting the
+      # command count from `d` (subtract 1 for the initial M) gives
+      # us the line's point count.
+      point_count =
+        d_attr
+        |> String.split(" L ")
         |> length()
 
-      # At most one rect per clock hour of the day. Pre-fix this was
-      # unbounded (the 30 past days stacked on today's hours); today
-      # the dedupe-by-local-date filter caps it at 24. Anything > 24
-      # means the stacking regression came back; 0 means the band
-      # filter rejected every reading.
-      assert band_rect_count > 0 and band_rect_count <= 24,
-             "Cloud-cover band must render 1–24 hourly rects (today only) — got #{band_rect_count}, past_days data must not stack on today's hours"
-
       # Cross-check: extract the chart's actual X window from the
-      # rendered SVG and confirm each hourly rect lands inside it.
-      # This pins the "in-range hour" invariant directly rather than
-      # coupling to a count that depends on the date + coords.
-      svg_match = Regex.run(~r/data-x-min-seconds="(\d+)"[^>]*data-x-max-seconds="(\d+)"/, html)
+      # rendered SVG and confirm the line has exactly one point per
+      # in-range clock hour of today.
+      svg_match =
+        Regex.run(~r/data-x-min-seconds="(\d+)"[^>]*data-x-max-seconds="(\d+)"/, html)
 
       {x_min, x_max} =
         case svg_match do
@@ -4640,58 +4666,31 @@ defmodule DtuAppWeb.DashboardLiveTest do
         end
         |> length()
 
-      assert band_rect_count == in_range_hours,
-             "Cloud-cover band rects (#{band_rect_count}) must match the count of clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}])"
+      assert point_count == in_range_hours,
+             "Cloud-cover line point count (#{point_count}) must match the count of clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}]) — past_days data must not stack on today's hours"
 
-      # Sanity check that no extra band rects leaked outside the
-      # band group. The chart may render other `<rect>` elements
-      # — the now-marker pill is one — so we only require that the
-      # total rect count is at least the band count, and that the
-      # difference is bounded (today only the now-marker pill adds
-      # rects in this surface).
-      assert rect_count >= band_rect_count,
-             "Total rect count (#{rect_count}) must be >= band rect count (#{band_rect_count}) — band rects leaked outside the band group"
+      assert point_count > 0 and point_count <= 24,
+             "Cloud-cover line must render 1–24 hourly points (today only) — got #{point_count}"
 
-      assert rect_count - band_rect_count <= 2,
-             "Only the now-marker pill is expected outside the band group (got #{rect_count - band_rect_count} extra rects)"
-
-      # Width pin: `chart_width / hours_in_span`. Pre-fix the band
-      # width was a hardcoded 16.7 that left 3.5× gaps on the 1D
-      # preset and stacked 3.5× on 30D — see PR #208 follow-up.
-      # Post-fix the width is dynamic against the chart's actual X
-      # window; for the 06:00–19:00 reading arc with `chart_time_range/5`
-      # expanding to include Berlin's sunrise (~04:25 UTC) + 30-min
-      # pre-buffer, the span is ~03:55–20:00 = 16h and width ≈ 49.8.
-      # We pin the invariant rather than a fixed number: width must
-      # match `800 / (span_in_hours)`, must be wider than the broken
-      # 16.7 hardcode, and must not collapse to a single-pixel spike.
-      assert [_, width_str] = Regex.run(~r/width="([\d.]+)"/, band_section),
-             "Cloud-cover band must have a width attribute"
-
-      width = String.to_float(width_str)
-      hours_in_span = (x_max - x_min) / 3600.0
-      expected_width = 800.0 / hours_in_span
-
-      assert_in_delta width,
-                      expected_width,
-                      0.5,
-                      "1D band width (#{width}) must equal chart_width / hours_in_span (#{expected_width})"
-
-      assert width > 30.0,
-             "1D band width (#{width}) is below 30 SVG units — would render as a single-pixel sliver"
+      # Sanity check that the now-marker pill rect (the chart's
+      # other `<rect>` element) is still present — a regression
+      # that wiped ALL rects would break that, even if the line
+      # path still rendered.
+      assert (Regex.scan(~r/<rect\s/, html) |> length()) >= 1,
+             "Now-marker rect must still render alongside the cloud-cover line"
     end
 
     # Regression for the cloud-cover flicker: every PubSub reading
     # broadcast used to call `assign_dashboard_data/5`, which at the
-    # top wiped the three weather assigns (`cloud_cover_band: []`,
+    # top wiped the three weather assigns (`cloud_cover_line: %{...}`,
     # `current_cloud_cover: nil`, `current_cloud_cover_pct: nil`) and
-    # then kicked off a fresh async fetch. The user saw the band
+    # then kicked off a fresh async fetch. The user saw the line
     # disappear for one render, then reappear ~tens of ms later when
     # `{:weather_update, snapshot}` arrived — visible as a flicker
     # every few seconds on a connected inverter. The fix gates the
     # reset on a `{lat, lon, local_date, x_min, x_max, tz}` fingerprint
     # so steady-state reading broadcasts don't re-run the fetch.
-    test "1D cloud-cover band survives a PubSub reading broadcast (no flicker)",
+    test "1D cloud-cover line survives a PubSub reading broadcast (no flicker)",
          %{conn: conn, user: user} do
       dtu =
         device_fixture(user, %{
@@ -4705,7 +4704,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # Seed today's daytime arc so chart_time_range/2 narrows the
       # X axis to [06:00, 20:00) — same shape as the cloud-cover
-      # chart-band test above so the projection lands inside the
+      # chart-line test above so the projection lands inside the
       # visible window.
       minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
 
@@ -4762,18 +4761,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       # Connected mount: `live/2` returns a LiveView socket, so
       # `connected?(socket) == true` and the initial sync weather
-      # fetch populates the band in the first render. After that,
+      # fetch populates the line in the first render. After that,
       # `kickoff_weather_fetch/6` is in async-on-WebSocket mode and
-      # the fingerprint gate must keep the band populated.
+      # the fingerprint gate must keep the line populated.
       {:ok, view, html} = live(conn, ~p"/dashboard")
 
-      assert html =~ ~s(data-testid="cloud-cover-band"),
-             "Pre-broadcast: cloud-cover band must render on initial connected mount"
+      assert html =~ ~s(data-testid="cloud-cover-line"),
+             "Pre-broadcast: cloud-cover line must render on initial connected mount"
 
       # Broadcast a reading. On the WebSocket path this fires
       # `handle_info({:reading, ...})` which calls
       # `maybe_reassign_dashboard_data/3` → `assign_dashboard_data/5`.
-      # The fingerprint gate must short-circuit before the band is
+      # The fingerprint gate must short-circuit before the line is
       # wiped.
       Phoenix.PubSub.broadcast(
         DtuApp.PubSub,
@@ -4783,13 +4782,13 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       html_after = render(view)
 
-      assert html_after =~ ~s(data-testid="cloud-cover-band"),
-             "Post-broadcast: cloud-cover band must stay rendered (regression for the per-broadcast reset)"
+      assert html_after =~ ~s(data-testid="cloud-cover-line"),
+             "Post-broadcast: cloud-cover line must stay rendered (regression for the per-broadcast reset)"
 
       # Also pin the related assigns — the cloud-cover data card
-      # only renders when `@cloud_cover_band != []`, so its
-      # `stat-cloud-cover-pct` testid disappearing would also signal
-      # the reset.
+      # only renders when the geolocation_state is `:granted`, so
+      # its `stat-cloud-cover-pct` testid disappearing would also
+      # signal the reset.
       assert html_after =~ ~s(id="stat-cloud-cover-pct"),
              "Post-broadcast: cloud-cover data card must stay rendered"
     end
