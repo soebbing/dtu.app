@@ -59,6 +59,9 @@ defmodule DtuAppWeb.CoreComponents do
       :if={msg = render_slot(@inner_block) || Phoenix.Flash.get(@flash, @kind)}
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
+      phx-hook="Flash"
+      data-kind={@kind}
+      data-timeout-ms="10000"
       role="alert"
       class="fixed top-4 right-4 z-50"
       {@rest}

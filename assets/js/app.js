@@ -32,6 +32,7 @@ import topbar from "../vendor/topbar"
 // modules, so they must be imported here — without these imports the
 // named hooks resolve to `undefined` in the bundle and the LiveView
 // never receives the permission state (or fires notifications).
+import {Flash} from "./flash.js"
 import {NotificationPermission} from "./notification_permission.js"
 import {Notifications} from "./notifications.js"
 import {OfflineBanner} from "./offline_banner.js"
@@ -183,6 +184,7 @@ const NetworkStatus = {
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const Hooks = {
   ...colocatedHooks,
+  Flash,
   NetworkStatus,
   NotificationPermission,
   Notifications,
