@@ -20,6 +20,14 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   # `shift_local/2` and `now_marker_x/4`.
   @seconds_per_day 86_400
 
+  # Cloud-cover band geometry — the SVG plot area's Y bounds in the
+  # dashboard chart's 800×280 viewBox. Top = 100% overcast; baseline
+  # = 0% clear sky. Duplicated in `dashboard_live.ex` as
+  # `chart_top_y` / `chart_bottom_y`; change both if either changes.
+  @cloud_chart_top_y 20.0
+  @cloud_chart_bottom_y 250.0
+  @cloud_chart_height @cloud_chart_bottom_y - @cloud_chart_top_y
+
   # Chart canvas width in pixels. Matches the `viewBox` width on the
   # dashboard's SVG. Centralised here so a future template change can
   # update it once instead of hunting through every coordinate calc.
@@ -424,13 +432,23 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   end
 
   @doc """
-  Pixel-X positions + cloud-cover percentages for the shaded cloud
-  band overlay on the chart. Each reading is a
-  `%{time: %DateTime{}, pct: integer()}` (the shape
-  `DtuApp.Weather.OpenMeteo.decode/1` produces, with the
-  `cloud_cover` integer extracted into `:pct`); each returned entry
-  is `%{x: float(), pct: integer()}` ready for SVG `<rect>`
-  rendering.
+  Pixel geometry for the cloud-cover band overlay on the chart.
+  Each reading is a `%{time: %DateTime{}, pct: integer()}` (the
+  shape `DtuApp.Weather.OpenMeteo.decode/1` produces, with the
+  `cloud_cover` integer extracted into `:pct`); each returned
+  entry is `%{x: float(), pct: integer(), width: float(), y: float(),
+  height: float()}` ready for SVG `<rect>` rendering.
+
+  Y is mapped onto cloud-cover: the chart's top (`chart_top_y`)
+  represents 100% coverage (full overcast), the chart's baseline
+  (`chart_bottom_y`) represents 0% (clear sky). `height` is
+  proportional to `pct`, and `y` is `chart_bottom_y - height`.
+  At `pct = 0` the rect has zero height (invisible — equivalent
+  to "clear sky"); at `pct = 100` the rect fills the full chart.
+  The fill is a vertical grey gradient defined in the template
+  (`#cloud-band-fade`), translucent at the rect's bottom
+  (0% coverage) and progressively less translucent toward its
+  top (100% coverage).
 
   Returns `[]` when `readings` is `nil` or empty — the "no data = no
   UI" contract that lets the LiveView template branch on
@@ -456,7 +474,7 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
           pos_integer(),
           integer(),
           pos_integer()
-        ) :: [%{x: float(), pct: integer(), width: float()}]
+        ) :: [%{x: float(), pct: integer(), width: float(), y: float(), height: float()}]
   def cloud_cover_band(nil, _local_date, _x_min, _x_max, _tz, _width), do: []
   def cloud_cover_band([], _local_date, _x_min, _x_max, _tz, _width), do: []
 
@@ -504,7 +522,9 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
 
     for %{time: %DateTime{} = utc, pct: pct} <- scoped,
         x = project_x(utc, x_min_seconds, span, tz_offset_seconds, chart_width),
-        do: %{x: x, pct: pct, width: hour_width}
+        height = @cloud_chart_height * pct / 100.0,
+        y = @cloud_chart_bottom_y - height,
+        do: %{x: x, pct: pct, width: hour_width, y: y, height: height}
   end
 
   # Project a UTC reading onto the chart's pixel X axis. Returns

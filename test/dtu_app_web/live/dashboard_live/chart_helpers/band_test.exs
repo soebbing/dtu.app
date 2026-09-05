@@ -18,10 +18,12 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.BandTest do
     * Readings whose shifted local-seconds fall outside the chart's
       `[x_min_seconds, x_max_seconds]` window are dropped.
     * Each retained reading maps to a
-      `%{x: float(), pct: integer(), width: float()}`: `x` is the
-      pixel position on the 800-wide chart, `pct` is the cloud-cover
-      value, `width` is the per-hour bucket width scaled to the
-      chart's actual span.
+      `%{x: float(), pct: integer(), width: float(), y: float(),
+      height: float()}`: `x` is the pixel position on the 800-wide
+      chart, `pct` is the cloud-cover value, `width` is the per-hour
+      bucket width scaled to the chart's actual span, and `y` /
+      `height` are the rect geometry mapped onto the cloud-cover
+      percentage (top of chart = 100% overcast, baseline = 0% clear).
   """
 
   use ExUnit.Case, async: true
@@ -153,6 +155,53 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.BandTest do
         ChartHelpers.cloud_cover_band(readings, nil, 0, 6 * 3600, 0, 800)
 
       assert Enum.all?(narrow, &(&1.width == 800 * 3600.0 / (6 * 3600)))
+    end
+
+    test "maps cloud-cover pct to rect height (0% invisible, 100% full chart)" do
+      # Cloud-cover band geometry: top of chart (y=20) = 100% overcast,
+      # baseline (y=250) = 0% clear sky. Rect height grows upward from
+      # the baseline in proportion to pct.
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 0},
+        %{time: at(~D[2026-08-30], 6), pct: 25},
+        %{time: at(~D[2026-08-30], 12), pct: 50},
+        %{time: at(~D[2026-08-30], 18), pct: 100}
+      ]
+
+      result = ChartHelpers.cloud_cover_band(readings, nil, x_min, x_max, 0, 800)
+
+      # Plot area height is 250 - 20 = 230 SVG units.
+      assert Enum.map(result, & &1.pct) == [0, 25, 50, 100]
+
+      assert [
+               %{pct: 0, height: +0.0, y: 250.0},
+               %{pct: 25, height: 57.5, y: 192.5},
+               %{pct: 50, height: 115.0, y: 135.0},
+               %{pct: 100, height: 230.0, y: 20.0}
+             ] = result
+    end
+
+    test "y + height sums to 250 (chart baseline) for every rect" do
+      # Invariant that pins the rect's bottom edge to the chart's
+      # baseline regardless of pct — so the cloud band always sits
+      # flush against the X axis even when partially overcast.
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 33},
+        %{time: at(~D[2026-08-30], 12), pct: 67},
+        %{time: at(~D[2026-08-30], 23), pct: 100}
+      ]
+
+      result = ChartHelpers.cloud_cover_band(readings, nil, x_min, x_max, 0, 800)
+
+      assert Enum.all?(result, fn %{y: y, height: height} ->
+               y + height == 250.0
+             end)
     end
   end
 end
