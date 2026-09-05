@@ -1,141 +1,89 @@
 defmodule DtuAppWeb.GettextCatalogTest do
   @moduledoc """
-  Regression test for the user-facing i18n bug fixed in PR #158:
-  every `gettext/1` call on the dashboard, device-details page,
-  notifications, sun-up/sun-down emails, and the locale switcher
-  used to fall back to the English msgid under the de / fr locales,
-  because the corresponding `msgstr` entries in the German and
-  French .po files were empty.
+  Guards against user-facing i18n leaks: a `gettext/1` call whose
+  `msgstr` is empty in a translated locale silently falls back to
+  the English msgid at runtime, so the string ships untranslated
+  with no compile-time or test-time signal.
 
-  This test reads each locale's .po file directly and asserts the
-  msgstr is non-empty for every msgid that was leaking. We assert
-  on the catalog directly (not via `Gettext.gettext/2`) because
-  some leaked strings — `YTD`, `Français`, `Deutsch` — are valid
-  self-translations (`msgstr == msgid`), and the only way to
-  distinguish "translator deliberately left msgstr = msgid" from
-  "empty msgstr → runtime fallback to msgid" is to inspect the
-  catalog.
+  Originally (PR #158) this was a hardcoded list of the 59 msgids
+  known to be leaking on the dashboard, device-details page,
+  notifications and emails. That list could only catch regressions
+  in strings someone had already noticed by hand — it went stale
+  the moment a feature added new `gettext/1` calls, which is
+  exactly what happened with the passkeys, location/weather and
+  empty-state work (40 de / 39 fr strings leaked past it).
 
-  It's also a guard against anyone stripping translations again
-  (e.g. by running `mix gettext.extract` without `--merge` after
-  the source file regenerates the .pot).
+  It is now a blanket check: **every** entry in every translated
+  locale's catalog must have a non-empty msgstr. Adding a new
+  `gettext/1` call and running `mix gettext.extract --merge`
+  therefore fails this test until the string is actually
+  translated in de and fr.
+
+  Two things this deliberately does *not* flag:
+
+    * `msgstr == msgid` — a legitimate self-translation. "Passkeys",
+      "YTD", "Deutsch", "online" and "0 W" are correct as-is in
+      German, and the runtime cannot distinguish these from a
+      fallback, which is why we assert on the catalog rather than
+      via `Gettext.gettext/2`.
+
+    * `fuzzy`-flagged entries — `mix gettext.merge` sets this when
+      it auto-matches a translation to a changed msgid. Elixir's
+      Gettext still serves the translation at runtime (verified:
+      "Peak power" -> "Spitzenleistung" under a fuzzy flag), so
+      these render translated. They mean "a human should review
+      this", not "this is missing".
   """
 
   use ExUnit.Case, async: true
 
   @catalog_path "priv/gettext"
 
-  # The 59 msgids that were empty in both de and fr at the time this
-  # test was written. Verified manually against
-  # `priv/gettext/{de,fr}/LC_MESSAGES/default.po` before being
-  # committed. Keep this list in sync with the catalog — if you add
-  # a new gettext() call, either translate it everywhere or extend
-  # this list and provide translations.
-  @leaked_msgids [
-    # Device details page (PR #102, #104, #107)
-    "%{distinct} distinct, %{occurrences} total",
-    "%{n} topic(s)",
-    "Back to devices",
-    "Copied!",
-    "Copy as JSON",
-    "Copy failed",
-    "Copy the live topic tree as JSON",
-    "Details",
-    "DTU details — %{name}",
-    "Errors",
-    "Live MQTT topics",
-    "Waiting for live data…",
-    "none in the last 48 hours",
-    "payload",
-    "payload (%{n} chars)",
-    "topic:",
-    "Topics appear here as soon as the device publishes.",
+  # Locales we ship translations for. "en" is the source locale —
+  # its msgstrs are empty by design and fall back to the msgid,
+  # which *is* the English text. Mirrors `@supported_locales` in
+  # `DtuAppWeb.Plugs.Locale` minus "en".
+  @translated_locales ~w(de fr)
 
-    # Dashboard quick-range + 5-up stat card row (PR #154)
-    "1D",
-    "30D",
-    "7D",
-    "Custom",
-    "Daily Yields — Last 30 days (kWh)",
-    "Daily Yields — Last 7 days (kWh)",
-    "Last 30 days",
-    "Last 7 days",
-    "Peak Time",
-    "Selected day",
-    "Selected month",
-    "Selected week",
-    "Selected year",
-    "YTD",
-    "Year to date",
-    "Yield",
+  # Gettext domains, one .po per (locale, domain).
+  @domains ~w(default errors)
 
-    # Dashboard yesterday ghost (PR #153)
-    "Yesterday",
-    "Yesterday (day-over-day comparison)",
+  describe "catalog completeness" do
+    for locale <- @translated_locales, domain <- @domains do
+      test "#{locale}/#{domain}.po has a non-empty msgstr for every entry" do
+        locale = unquote(locale)
+        domain = unquote(domain)
+        path = po_path(locale, domain)
 
-    # Sun-down notifier (PR #144)
-    " (same as yesterday)",
-    " (%{sign}%{diff} W vs yesterday)",
-    " (%{sign}%{diff} kWh vs yesterday)",
-    "Sun's down — daily summary",
+        untranslated =
+          path
+          |> parse_po!()
+          |> Enum.filter(&untranslated?/1)
+          |> Enum.map(& &1.msgid)
 
-    # Sun-up notifier (PR #144)
-    "Morning sun-up ping",
-    "sink",
+        assert untranslated == [],
+               """
+               #{length(untranslated)} untranslated msgid(s) in #{path}.
 
-    # Email templates (lib/dtu_app/accounts/user_notifier.ex)
-    "A cheerful one-off when your panels start producing for the day. Fires once per day, in your local timezone, the moment your fleet wakes up.",
-    "Click the button below to log in to your account. This link can only be used once and expires shortly.",
-    "Click the button below; your browser will ask whether to allow notifications for this site. Desktop browsers do not require a PWA install — you can install later for background (closed-tab) delivery if you want it.",
-    "Hi %{email},",
-    "If the button doesn't work, copy and paste this link into your browser:",
-    "If you didn't create an account with us, you can safely ignore this email.",
-    "If you didn't request this change, you can safely ignore this email.",
-    "If you didn't try to log in, you can safely ignore this email — no one else can access your account without this link.",
-    "Keep this tab open to receive notifications. For background delivery when the tab is closed, install this site as a PWA.",
-    "Read-only MQTT sink — receives a real-time feed of this account's other devices",
-    "Today: %{today_kwh} kWh%{yield_diff}, peak %{peak_w} W%{peak_diff}.",
-    "Update email instructions",
-    "Welcome to dtu.app! Confirm your email address to activate your account by clicking the button below.",
-    "You can change your email address by clicking the button below. This link expires shortly.",
+               An empty msgstr makes Gettext fall back to the English msgid at
+               runtime, so these ship untranslated to #{locale} users:
 
-    # Auth/session flash + offline banner
-    "You must log in to access this page.",
-    "You must re-authenticate to access this page.",
-    "You're offline. Showing the latest data we have.",
+               #{Enum.map_join(untranslated, "\n", &"  - #{inspect(&1)}")}
 
-    # Locale switcher labels
-    "Deutsch",
-    "Français"
-  ]
-
-  describe "de catalog has a non-empty msgstr for every previously-leaked msgid" do
-    for {msgid, idx} <- Enum.with_index(@leaked_msgids) do
-      test "DE ##{idx}" do
-        msgstr = lookup_msgstr!("de", unquote(msgid))
-
-        refute msgstr == "",
-               "DE catalog has empty msgstr for #{inspect(unquote(msgid))} — runtime would fall back to English"
-      end
-    end
-  end
-
-  describe "fr catalog has a non-empty msgstr for every previously-leaked msgid" do
-    for {msgid, idx} <- Enum.with_index(@leaked_msgids) do
-      test "FR ##{idx}" do
-        msgstr = lookup_msgstr!("fr", unquote(msgid))
-
-        refute msgstr == "",
-               "FR catalog has empty msgstr for #{inspect(unquote(msgid))} — runtime would fall back to English"
+               Translate them in #{path}. If a string is genuinely identical in
+               #{locale} (a product name, a unit like "0 W"), set msgstr to the
+               same text as msgid rather than leaving it empty.
+               """
       end
     end
   end
 
   describe "runtime lookups for a sample of previously-leaked strings" do
-    # The catalog-level checks above already cover every leaked
-    # msgid; these runtime checks confirm Gettext loads the
-    # catalogs and substitutes translations into a few high-traffic
-    # UI strings — the strings users reported as leaking.
+    # The catalog check above proves no msgstr is empty; these
+    # confirm Gettext actually loads the catalogs and substitutes
+    # translations into high-traffic UI strings — covering the
+    # wiring (backend config, locale switching) that a pure
+    # file-parsing test cannot.
     for {msgid, expected_de, expected_fr} <- [
           {"Yield", "Ertrag", "Rendement"},
           {"Peak Time", "Spitzenzeit", "Heure de pointe"},
@@ -143,13 +91,34 @@ defmodule DtuAppWeb.GettextCatalogTest do
           {"Custom", "Eigen", "Personnalisé"},
           {"Last 7 days", "Letzte 7 Tage", "7 derniers jours"},
           {"Year to date", "Jahr bis heute", "Année en cours"},
-          {"Yesterday", "Gestern", "Hier"}
+          {"Yesterday", "Gestern", "Hier"},
+          # Location / weather + passkeys — the features whose
+          # strings the old hardcoded list could not have caught.
+          {"Cloud cover", "Bewölkung", "Couverture nuageuse"},
+          {"partly cloudy", "teilweise bewölkt", "partiellement nuageux"},
+          {"Share location", "Standort freigeben", "Partager la position"},
+          {"Use a passkey", "Passkey verwenden", "Utiliser une clé d'accès"},
+          {"Never used", "Nie verwendet", "Jamais utilisée"}
         ] do
       test "DE/FR: #{msgid}" do
         Gettext.put_locale(DtuAppWeb.Gettext, "de")
         assert Gettext.gettext(DtuAppWeb.Gettext, unquote(msgid)) == unquote(expected_de)
         Gettext.put_locale(DtuAppWeb.Gettext, "fr")
         assert Gettext.gettext(DtuAppWeb.Gettext, unquote(msgid)) == unquote(expected_fr)
+      end
+    end
+  end
+
+  describe "interpolation placeholders survive translation" do
+    # A translation that drops or renames a %{binding} raises
+    # Gettext.Error (or renders a stray literal) only when that
+    # exact branch runs in production. Assert here instead.
+    for {locale, expected} <- [{"de", "vor 5 Stunden"}, {"fr", "il y a 5 heures"}] do
+      test "#{locale} keeps %{hours}" do
+        Gettext.put_locale(DtuAppWeb.Gettext, unquote(locale))
+
+        assert Gettext.gettext(DtuAppWeb.Gettext, "%{hours} hours ago", hours: 5) ==
+                 unquote(expected)
       end
     end
   end
@@ -170,64 +139,105 @@ defmodule DtuAppWeb.GettextCatalogTest do
     end
   end
 
-  # Reads priv/gettext/<locale>/LC_MESSAGES/default.po and returns
-  # the msgstr for the given msgid. Raises on missing entries so
-  # the test fails with a clear "msgid vanished" message rather than
-  # silently passing on the wrong file.
-  defp lookup_msgstr!(locale, target_msgid) do
-    path = Path.join([@catalog_path, locale, "LC_MESSAGES", "default.po"])
-    content = File.read!(path)
+  defp po_path(locale, domain),
+    do: Path.join([@catalog_path, locale, "LC_MESSAGES", "#{domain}.po"])
 
-    case find_entry(content, target_msgid) do
-      nil ->
-        raise "msgid #{inspect(target_msgid)} not found in #{path} — the catalog has drifted; update @leaked_msgids or restore the missing entry"
+  # An entry is untranslated when any of its msgstr forms is empty.
+  # Plural entries (errors.po carries 9) have msgstr[0], msgstr[1],
+  # …; a half-filled plural set is just as broken as an empty
+  # singular, so we require all of them.
+  defp untranslated?(%{msgstrs: msgstrs}), do: Enum.any?(msgstrs, &(&1 == ""))
 
-      msgstr ->
-        msgstr
-    end
+  # Minimal .po parser. Entries are separated by blank lines; the
+  # first entry (empty msgid) is the header and is dropped. Handles
+  # the two shapes present in this catalog that a naive
+  # line-at-a-time reader gets wrong:
+  #
+  #   * multi-line values, where a `msgid`/`msgstr` is continued by
+  #     bare quoted lines beneath it (errors.po has these)
+  #   * plural forms, `msgid_plural` + indexed `msgstr[N]`
+  #
+  # Obsolete entries (`#~`) are skipped along with all other
+  # comments — they are not live translations.
+  defp parse_po!(path) do
+    path
+    |> File.read!()
+    |> String.split(~r/\n[ \t]*\n/, trim: true)
+    |> Enum.map(&parse_entry/1)
+    |> Enum.reject(&(&1 == nil or &1.msgid == ""))
   end
 
-  defp find_entry(content, target_msgid) do
-    content
-    # Split on msgid "..." boundaries so each chunk is one entry.
-    # The header entry starts at line 1 and has empty msgid; we
-    # drop it by checking for non-empty msgid.
-    |> String.split(~r/^msgid /m, trim: true)
-    |> Enum.find_value(fn chunk ->
-      [msgid_raw, msgstr_raw | _] = String.split(chunk, ["\nmsgstr "], parts: 2)
+  defp parse_entry(block) do
+    fields =
+      block
+      |> String.split("\n", trim: true)
+      |> Enum.reject(&String.starts_with?(&1, "#"))
+      |> Enum.reduce({%{}, nil}, &collect_line/2)
+      |> elem(0)
 
-      msgid = unquote_string(msgid_raw)
+    case fields do
+      %{msgid: msgid} ->
+        msgstrs =
+          fields
+          |> Enum.filter(fn {k, _} -> match?({:msgstr, _}, k) end)
+          |> Enum.sort_by(fn {{:msgstr, n}, _} -> n end)
+          |> Enum.map(fn {_, v} -> v end)
 
-      if msgid == target_msgid do
-        # msgstr_raw may end with `\n\n#: next entry...`. Trim to
-        # the first newline so we keep only the actual msgstr.
-        msgstr = msgstr_raw |> String.split("\n", parts: 2) |> List.first() |> unquote_string()
-        msgstr
-      else
-        nil
-      end
-    end)
-  end
-
-  defp unquote_string(quoted) do
-    # Strip the outer double quotes and unescape per .po conventions.
-    # Input looks like: `"foo \"bar\""` or `"foo\nbar"`.
-    case quoted do
-      <<"\"", rest::binary>> ->
-        case String.split(rest, "\"", parts: 2) do
-          [inner, _after] ->
-            inner
-            |> String.replace(~s{\\}, "\\")
-            |> String.replace(~s{\"}, "\"")
-            |> String.replace(~s{\n}, "\n")
-
-          _ ->
-            # Unterminated — return raw for diagnostics.
-            rest
-        end
+        %{msgid: msgid, msgstrs: msgstrs}
 
       _ ->
-        quoted
+        nil
     end
+  end
+
+  defp collect_line(line, {acc, current}) do
+    cond do
+      String.starts_with?(line, "msgid_plural ") ->
+        put_field(acc, :msgid_plural, value_of(line, "msgid_plural "))
+
+      String.starts_with?(line, "msgid ") ->
+        put_field(acc, :msgid, value_of(line, "msgid "))
+
+      captures = Regex.run(~r/^msgstr\[(\d+)\] /, line) ->
+        [prefix, n] = captures
+        put_field(acc, {:msgstr, String.to_integer(n)}, value_of(line, prefix))
+
+      String.starts_with?(line, "msgstr ") ->
+        put_field(acc, {:msgstr, 0}, value_of(line, "msgstr "))
+
+      # Continuation of whichever key we saw last.
+      String.starts_with?(line, "\"") and current != nil ->
+        {Map.update!(acc, current, &(&1 <> unquote_po(line))), current}
+
+      true ->
+        {acc, current}
+    end
+  end
+
+  defp put_field(acc, key, value), do: {Map.put(acc, key, value), key}
+
+  defp value_of(line, prefix),
+    do: line |> String.replace_prefix(prefix, "") |> unquote_po()
+
+  # Strips the surrounding quotes and unescapes .po escape
+  # sequences in one pass, so `\\n` and `\\"` do not corrupt the
+  # emptiness check or the failure message.
+  defp unquote_po(<<?", rest::binary>>) do
+    rest
+    |> String.replace_suffix("\"", "")
+    |> unescape()
+  end
+
+  defp unquote_po(other), do: other
+
+  defp unescape(string) do
+    Regex.replace(~r/\\(.)/, string, fn _full, char ->
+      case char do
+        "n" -> "\n"
+        "t" -> "\t"
+        "r" -> "\r"
+        other -> other
+      end
+    end)
   end
 end

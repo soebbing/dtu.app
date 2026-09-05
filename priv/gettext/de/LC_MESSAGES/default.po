@@ -1672,7 +1672,7 @@ msgstr "Ertrag"
 #: lib/dtu_app_web/live/dashboard_live/components.ex:498
 #, elixir-autogen, elixir-format
 msgid "Current Power"
-msgstr ""
+msgstr "Aktuelle Leistung"
 
 #: lib/dtu_app_web/live/notifications_live.ex:526
 #, elixir-autogen, elixir-format
@@ -1920,7 +1920,7 @@ msgstr "seit Mitternacht (Ortszeit)"
 #: lib/dtu_app_web/controllers/user_settings_html.ex:18
 #, elixir-autogen, elixir-format
 msgid "%{hours} hours ago"
-msgstr ""
+msgstr "vor %{hours} Stunden"
 
 #: lib/dtu_app_web/controllers/user_settings_html.ex:17
 #, elixir-autogen, elixir-format, fuzzy
@@ -1930,22 +1930,22 @@ msgstr "vor %{n} Minuten"
 #: lib/dtu_app_web/live/shared_dashboard_live.ex:315
 #, elixir-autogen, elixir-format
 msgid "0 W"
-msgstr ""
+msgstr "0 W"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:68
 #, elixir-autogen, elixir-format
 msgid "Add a passkey"
-msgstr ""
+msgstr "Passkey hinzufügen"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2776
 #, elixir-autogen, elixir-format
 msgid "Add your DTU on the Devices page."
-msgstr ""
+msgstr "Fügen Sie Ihre DTU auf der Geräte-Seite hinzu."
 
 #: lib/dtu_app_web/live/dashboard_live.ex:4514
 #, elixir-autogen, elixir-format
 msgid "Anyone with this link can view today's dashboard. The link stays valid until you turn sharing off."
-msgstr ""
+msgstr "Jeder mit diesem Link kann das heutige Dashboard ansehen. Der Link bleibt gültig, bis Sie die Freigabe deaktivieren."
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2789
 #, elixir-autogen, elixir-format, fuzzy
@@ -1960,17 +1960,17 @@ msgstr "Aktuell laufende Version"
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:59
 #, elixir-autogen, elixir-format
 msgid "Friendly name (e.g. MacBook Touch ID)"
-msgstr ""
+msgstr "Anzeigename (z. B. MacBook Touch ID)"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:4470
 #, elixir-autogen, elixir-format
 msgid "Generating link…"
-msgstr ""
+msgstr "Link wird erstellt…"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2758
 #, elixir-autogen, elixir-format
 msgid "How it works"
-msgstr ""
+msgstr "So funktioniert es"
 
 #: lib/dtu_app_web/controllers/user_settings_html.ex:16
 #, elixir-autogen, elixir-format, fuzzy
@@ -1980,68 +1980,68 @@ msgstr "gerade eben"
 #: lib/dtu_app_web/controllers/user_settings_html.ex:10
 #, elixir-autogen, elixir-format
 msgid "Never used"
-msgstr ""
+msgstr "Nie verwendet"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:28
 #, elixir-autogen, elixir-format
 msgid "No passkeys yet — add one to skip the password next time."
-msgstr ""
+msgstr "Noch keine Passkeys — fügen Sie einen hinzu, um das Passwort beim nächsten Mal zu überspringen."
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:199
 #, elixir-autogen, elixir-format
 msgid "Passkey removed."
-msgstr ""
+msgstr "Passkey entfernt."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:23
 #, elixir-autogen, elixir-format
 msgid "Passkeys"
-msgstr ""
+msgstr "Passkeys"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2792
 #, elixir-autogen, elixir-format
 msgid "Point your DTU at our broker with the credentials we show you."
-msgstr ""
+msgstr "Richten Sie Ihre DTU mit den angezeigten Zugangsdaten auf unseren Broker aus."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:47
 #, elixir-autogen, elixir-format
 msgid "Remove this passkey? You won't be able to sign in with it."
-msgstr ""
+msgstr "Diesen Passkey entfernen? Sie können sich damit nicht mehr anmelden."
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2805
 #, elixir-autogen, elixir-format
 msgid "See live data"
-msgstr ""
+msgstr "Live-Daten ansehen"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:24
 #, elixir-autogen, elixir-format
 msgid "Sign in faster on this device and others."
-msgstr ""
+msgstr "Melden Sie sich auf diesem und anderen Geräten schneller an."
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2761
 #, elixir-autogen, elixir-format
 msgid "Three steps from sign-up to a live chart. Each step takes about a minute."
-msgstr ""
+msgstr "Drei Schritte von der Registrierung bis zum Live-Diagramm. Jeder Schritt dauert etwa eine Minute."
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:47
 #, elixir-autogen, elixir-format
 msgid "Use a passkey"
-msgstr ""
+msgstr "Passkey verwenden"
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:44
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:65
 #, elixir-autogen, elixir-format
 msgid "Waiting for authenticator…"
-msgstr ""
+msgstr "Warten auf Authentifikator…"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:2808
 #, elixir-autogen, elixir-format
 msgid "Watch watts appear on this chart as soon as the sun is up."
-msgstr ""
+msgstr "Beobachten Sie, wie die Watt in diesem Diagramm erscheinen, sobald die Sonne aufgeht."
 
 #: lib/dtu_app_web/controllers/user_session_html/new.html.heex:56
 #, elixir-autogen, elixir-format
 msgid "or use email + password"
-msgstr ""
+msgstr "oder E-Mail + Passwort verwenden"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:188
 #, elixir-autogen, elixir-format, fuzzy
@@ -2058,27 +2058,27 @@ msgstr "Wird gespeichert..."
 #: lib/dtu_app_web/live/dashboard_live/components.ex:822
 #, elixir-autogen, elixir-format
 msgid "Cloud cover"
-msgstr ""
+msgstr "Bewölkung"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:233
 #, elixir-autogen, elixir-format
 msgid "Couldn't read your location. Check the site's location permission in your browser settings, then try again."
-msgstr ""
+msgstr "Ihr Standort konnte nicht ermittelt werden. Prüfen Sie die Standortberechtigung für diese Seite in Ihren Browser-Einstellungen und versuchen Sie es erneut."
 
 #: lib/dtu_app_web/controllers/user_settings_html.ex:64
 #, elixir-autogen, elixir-format
 msgid "Latitude"
-msgstr ""
+msgstr "Breitengrad"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:150
 #, elixir-autogen, elixir-format
 msgid "Location"
-msgstr ""
+msgstr "Standort"
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:153
 #, elixir-autogen, elixir-format
 msgid "Location cleared."
-msgstr ""
+msgstr "Standort gelöscht."
 
 #: lib/dtu_app_web/controllers/user_settings_controller.ex:128
 #, elixir-autogen, elixir-format, fuzzy
@@ -2088,67 +2088,67 @@ msgstr "Erfolgreich abgemeldet."
 #: lib/dtu_app_web/controllers/user_settings_html.ex:65
 #, elixir-autogen, elixir-format
 msgid "Longitude"
-msgstr ""
+msgstr "Längengrad"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:194
 #, elixir-autogen, elixir-format
 msgid "No location stored. The dashboard can show local cloud cover, sunrise/sunset markers, and your timezone offset once you share it."
-msgstr ""
+msgstr "Kein Standort gespeichert. Sobald Sie ihn freigeben, kann das Dashboard die lokale Bewölkung, Sonnenauf- und -untergangsmarkierungen sowie Ihre Zeitzonenverschiebung anzeigen."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:168
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:202
 #: lib/dtu_app_web/live/dashboard_live/components.ex:826
 #, elixir-autogen, elixir-format
 msgid "Requesting…"
-msgstr ""
+msgstr "Wird angefragt…"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:206
 #: lib/dtu_app_web/live/dashboard_live/components.ex:804
 #, elixir-autogen, elixir-format
 msgid "Share location"
-msgstr ""
+msgstr "Standort freigeben"
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:793
 #, elixir-autogen, elixir-format
 msgid "Share your location to show local cloud cover on today's chart and as a stat card."
-msgstr ""
+msgstr "Geben Sie Ihren Standort frei, um die lokale Bewölkung im heutigen Diagramm und als Statistik-Karte anzuzeigen."
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:172
 #, elixir-autogen, elixir-format
 msgid "Update location"
-msgstr ""
+msgstr "Standort aktualisieren"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:152
 #, elixir-autogen, elixir-format
 msgid "Used for sunrise/sunset markers, the local cloud-cover card, and your timezone offset."
-msgstr ""
+msgstr "Wird für Sonnenauf- und -untergangsmarkierungen, die lokale Bewölkungskarte und Ihre Zeitzonenverschiebung verwendet."
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:918
 #, elixir-autogen, elixir-format
 msgid "clear"
-msgstr ""
+msgstr "klar"
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:920
 #, elixir-autogen, elixir-format
 msgid "mostly cloudy"
-msgstr ""
+msgstr "überwiegend bewölkt"
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:770
 #, elixir-autogen, elixir-format
 msgid "no data"
-msgstr ""
+msgstr "keine Daten"
 
 #: lib/dtu_app_web/live/dashboard_live.ex:3730
 #, elixir-autogen, elixir-format
 msgid "now"
-msgstr ""
+msgstr "jetzt"
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:921
 #, elixir-autogen, elixir-format
 msgid "overcast"
-msgstr ""
+msgstr "bedeckt"
 
 #: lib/dtu_app_web/live/dashboard_live/components.ex:919
 #, elixir-autogen, elixir-format
 msgid "partly cloudy"
-msgstr ""
+msgstr "teilweise bewölkt"
