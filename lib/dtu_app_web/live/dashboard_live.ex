@@ -207,7 +207,12 @@ defmodule DtuAppWeb.DashboardLive do
   # because the HTTP render is one-shot (no follow-up render).
   defp assign_weather_placeholders(socket) do
     socket
-    |> assign(:cloud_cover_band, [])
+    |> assign(:cloud_cover_line, %{
+      path: "",
+      has_data: false,
+      points: [],
+      ticks: [0, 25, 50, 75, 100]
+    })
     |> assign(:current_cloud_cover, nil)
     |> assign(:current_cloud_cover_pct, nil)
   end
@@ -783,10 +788,10 @@ defmodule DtuAppWeb.DashboardLive do
 
   # Perf #5: the `Task.start/1` spawned by `kickoff_weather_fetch/6`
   # on the WebSocket path delivers its result here. Applies the
-  # three weather-driven assigns (`:cloud_cover_band`,
+  # three weather-driven assigns (`:cloud_cover_line`,
   # `:current_cloud_cover`, `:current_cloud_cover_pct`); the chart
   # itself is already rendered, so the only thing this re-render
-  # changes is the cloud-cover band + current-condition card.
+  # changes is the cloud-cover line + current-condition card.
   #
   # If the Task crashed and never sent (which shouldn't happen — the
   # `Weather` facade returns `nil` on every failure path), the assigns
@@ -1648,13 +1653,20 @@ defmodule DtuAppWeb.DashboardLive do
   defp build_cloud_cover_band(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds) do
     case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
       nil ->
-        []
+        ChartHelpers.cloud_cover_line(
+          [],
+          local_date,
+          x_min_seconds,
+          x_max_seconds,
+          tz_offset_seconds,
+          800
+        )
 
       {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
         readings =
           Enum.zip(times, values) |> Enum.map(fn {time, pct} -> %{time: time, pct: pct} end)
 
-        ChartHelpers.cloud_cover_band(
+        ChartHelpers.cloud_cover_line(
           readings,
           local_date,
           x_min_seconds,
@@ -1664,7 +1676,14 @@ defmodule DtuAppWeb.DashboardLive do
         )
 
       _ ->
-        []
+        ChartHelpers.cloud_cover_line(
+          [],
+          local_date,
+          x_min_seconds,
+          x_max_seconds,
+          tz_offset_seconds,
+          800
+        )
     end
   end
 
@@ -1741,11 +1760,11 @@ defmodule DtuAppWeb.DashboardLive do
     # Fingerprint gate. The five weather inputs (lat / lon / local
     # date / visible X range / tz offset) determine the snapshot
     # uniquely — if none of them changed since the last fetch, the
-    # existing `cloud_cover_band` / `current_cloud_cover` /
+    # existing `cloud_cover_line` / `current_cloud_cover` /
     # `current_cloud_cover_pct` assigns are still valid and we must
     # NOT reset them. Without this gate, every PubSub `:reading`
     # broadcast ran `assign_dashboard_data/5 → assign_weather_placeholders/1`,
-    # wiping the band for one render before the async refetch
+    # wiping the line for one render before the async refetch
     # re-applied it — visible as a flicker every few seconds on a
     # connected inverter. The reset moves inside the
     # `fingerprint_changed?` branch below so steady-state broadcasts
@@ -1787,7 +1806,7 @@ defmodule DtuAppWeb.DashboardLive do
 
   defp fetch_weather_snapshot(user, local_date, x_min, x_max, tz) do
     %{
-      cloud_cover_band: build_cloud_cover_band(user, local_date, x_min, x_max, tz),
+      cloud_cover_line: build_cloud_cover_band(user, local_date, x_min, x_max, tz),
       current_cloud_cover: weather_current_condition(user),
       current_cloud_cover_pct: weather_current_pct(user)
     }
@@ -1795,7 +1814,7 @@ defmodule DtuAppWeb.DashboardLive do
 
   defp apply_weather_snapshot(socket, snapshot) do
     socket
-    |> assign(:cloud_cover_band, Map.fetch!(snapshot, :cloud_cover_band))
+    |> assign(:cloud_cover_line, Map.fetch!(snapshot, :cloud_cover_line))
     |> assign(:current_cloud_cover, Map.fetch!(snapshot, :current_cloud_cover))
     |> assign(:current_cloud_cover_pct, Map.fetch!(snapshot, :current_cloud_cover_pct))
   end
@@ -3299,26 +3318,6 @@ defmodule DtuAppWeb.DashboardLive do
                   data-x-min-seconds={@x_min_seconds}
                   data-x-max-seconds={@x_max_seconds}
                 >
-                  <%!-- Cloud-cover band vertical-fade gradient. Defined
-                         once in `<defs>` and referenced by every cloud
-                         rect so they share the same grey tint and a
-                         single-direction fade: translucent at the
-                         rect's bottom (0% coverage = clear sky) and
-                         progressively less translucent toward its top
-                         (100% coverage = full overcast).
-                         Object-bounding-box units mean the gradient
-                         stretches to fit each rect, so the fade always
-                         anchors to the rect's own bottom edge regardless
-                         of its height — a 25% band gets the same
-                         "translucent at bottom, opaque at top" feel as
-                         a 100% band, just shorter. --%>
-                  <defs>
-                    <linearGradient id="cloud-band-fade" x1="0" y1="1" x2="0" y2="0">
-                      <stop offset="0" stop-color="rgb(120 120 120)" stop-opacity="0.15" />
-                      <stop offset="1" stop-color="rgb(120 120 120)" stop-opacity="0.55" />
-                    </linearGradient>
-                  </defs>
-
                   <!-- Grid Lines + Y-Axis Labels. The chart renders one
                          horizontal gridline + tick label per 500 W step
                          (`@y_gridlines`, computed by `chart_y_gridlines/5`).
@@ -3365,6 +3364,31 @@ defmodule DtuAppWeb.DashboardLive do
                     stroke-width="1.5"
                   />
 
+                  <%!-- Right-side Y-Axis Labels for the cloud-cover
+                         line. Same 800×230 plot area as the power
+                         curves, but mapped onto 0–100% coverage.
+                         The y-position for each tick is computed as
+                         `250 - pct/100 * 230`, so 0% sits on the
+                         chart baseline (y=250) and 100% on the top
+                         (y=20). Labels are right-anchored at x=795 so
+                         they hug the chart's right edge; muted
+                         zinc-400 fill matches the left-axis "W"
+                         labels. The line itself (when present) sits
+                         at the same y-pixel, so the labels double as
+                         coverage readouts. --%>
+                  <%= for pct <- @cloud_cover_line.ticks do %>
+                    <% tick_y = 250.0 - pct / 100.0 * 230.0 %>
+                    <text
+                      x="795"
+                      y={tick_y + 3}
+                      class="text-[10px] font-medium fill-zinc-400"
+                      text-anchor="end"
+                      data-testid={"cloud-cover-axis-tick-#{pct}"}
+                    >
+                      {pct}%
+                    </text>
+                  <% end %>
+
                   <!-- X-Axis Labels (Time slots). Dynamically positioned to
                          fit the chart's X-axis range — full day (00:00–
                          24:00) when no data, or zoomed to data when
@@ -3386,45 +3410,53 @@ defmodule DtuAppWeb.DashboardLive do
                     </text>
                   <% end %>
 
-                  <%!-- Cloud-cover band overlay. Drawn between the gridlines
-                         and the data series so it sits as a background
-                         tint and the curves render CRISP on top. Each
-                         hourly reading renders a vertical `<rect>`
-                         whose `y` and `height` come from
-                         `cloud_cover_band/6`: the rect starts at the
-                         chart baseline and grows upward in proportion
-                         to the cloud-cover percentage, so 0% coverage
-                         = invisible (rect of height 0) and 100%
-                         coverage = a full-chart-top rect. The fill is
-                         the shared `cloud-band-fade` linearGradient
-                         (defined in `<defs>` above): a grey tint that
-                         fades from translucent at the rect's bottom
-                         (0% coverage / clear sky) to less translucent
-                         at the rect's top (100% coverage / full
-                         overcast), so dense cloud reads as denser
-                         grey regardless of the band height. Rect width
-                         comes from `cloud_cover_band/6` as
-                         `chart_width / hours_in_span`, so it scales
-                         across every preset. Hidden entirely when
-                         `@cloud_cover_band == []` (nil coords or
-                         upstream failure). --%>
-                  <%= if @cloud_cover_band != [] do %>
-                    <g
-                      id="chart-cloud-cover-band"
+                  <%!-- Cloud-cover line overlay. Renders cloud-cover the
+                         same way the inverter power curves do — one
+                         thin grey polyline traversing the chart, with
+                         `y` mapped onto the 0–100% coverage scale
+                         (chart top = 100% overcast, chart bottom = 0%
+                         clear sky). The `d` attribute comes from
+                         `cloud_cover_line/6` and is sorted by X, so
+                         the line connects each hour's coverage in
+                         chronological order. Stroke is slate-500 on
+                         light backgrounds, slate-400 in dark mode —
+                         the same muted grey used by the cloud icon
+                         so it reads as "weather metadata" rather
+                         than competing with the power curves for
+                         attention. Drawn AFTER the inverter paths
+                         (so it sits on top) but with `pointer-events=
+                         "none"` so it doesn't block cursor hit-tests
+                         on the underlying power series. Hidden
+                         entirely when `@cloud_cover_line.has_data ==
+                         false` (nil coords, no readings in window, or
+                         upstream failure).
+
+                         Why a line and not the previous bar/rect
+                         overlay: a stack of grey rects going back
+                         from a high past hour (e.g. 97%) fills the
+                         whole chart even when the *current* hour is
+                         3% — visually indistinguishable from "near-
+                         full overcast right now". A thin line on
+                         its own axis lets a user see "clearing right
+                         now" as a real slope, the same way the
+                         power curves show generation shape. The
+                         right-side `0/25/50/75/100%` axis labels
+                         make the scale explicit so the values
+                         aren't ambiguous next to the watt labels on
+                         the left. --%>
+                  <%= if @cloud_cover_line.has_data do %>
+                    <path
+                      d={@cloud_cover_line.path}
+                      fill="none"
+                      stroke="#64748b"
+                      class="dark:stroke-zinc-400"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
                       pointer-events="none"
-                      data-testid="cloud-cover-band"
-                    >
-                      <%= for entry <- @cloud_cover_band do %>
-                        <rect
-                          x={Float.round(entry.x - entry.width / 2, 1)}
-                          y={Float.round(entry.y, 1)}
-                          width={entry.width}
-                          height={Float.round(entry.height, 1)}
-                          fill="url(#cloud-band-fade)"
-                          pointer-events="none"
-                        />
-                      <% end %>
-                    </g>
+                      data-testid="cloud-cover-line"
+                      id="chart-cloud-cover-line"
+                    />
                   <% end %>
 
                   <!-- Yesterday ghost overlay (1D / live view only):
