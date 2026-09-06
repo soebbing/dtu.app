@@ -4590,6 +4590,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(data-testid="cloud-cover-line"),
              "Cloud-cover line must render on the chart when user has Decimal coords (1D preset)"
 
+      # Area fill: the gradient-tinted region below the line must
+      # also render when data is present. It's the visual cue that
+      # dense cloud = denser sky below the curve, not just a stroke.
+      assert html =~ ~s(data-testid="cloud-cover-area"),
+             "Cloud-cover area fill must render on the chart when user has Decimal coords (1D preset)"
+
       # Sanity: also assert the granted-state data card is visible so
       # we know the user's geolocation_state is `:granted` end-to-end,
       # not just that coords happened to land in the line.
@@ -4606,11 +4612,12 @@ defmodule DtuAppWeb.DashboardLiveTest do
       end
 
       # Path-shape pin: the rendered `<path d="…">` must start with
-      # `M` (move) and contain at least one `L` (line) command —
-      # exactly the polyline shape the inverter power curves use.
-      # The numeric command count varies by chart preset (a narrow
-      # 1D window shows fewer hours than a 30D window), so we only
-      # pin the structural invariants here.
+      # `M` (move) and contain at least one `C` (cubic Bezier)
+      # command — the line is rendered as a Catmull-Rom-to-Bezier
+      # smoothed curve, not a straight polyline. The numeric
+      # command count varies by chart preset (a narrow 1D window
+      # shows fewer hours than a 30D window), so we only pin the
+      # structural invariants here.
       # HEEx may emit `d=` either before or after `data-testid=`, so
       # extract the entire `<path …>` element first and then pluck
       # `d=` from it.
@@ -4634,19 +4641,53 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert String.starts_with?(d_attr, "M "),
              "Cloud-cover path must start with an `M` (move) command — got: #{d_attr}"
 
-      assert d_attr =~ " L ",
-             "Cloud-cover path must chain at least one `L` (line) command — got: #{d_attr}"
+      assert d_attr =~ ~r/ C [\d.\-]+ [\d.\-]+, [\d.\-]+ [\d.\-]+, [\d.\-]+ [\d.\-]+/,
+             "Cloud-cover path must chain at least one `C` (cubic-Bezier) command — got: #{d_attr}"
+
+      # Area-fill pin: the area path must end with `Z` (closed
+      # shape) so the gradient fill stays inside the line/bottom
+      # rectangle. Pull `d=` from the area path the same way.
+      area_tag =
+        case Regex.run(~r/<path[^>]*data-testid="cloud-cover-area"[^>]*>/, html) do
+          [tag] -> tag
+          _ -> ""
+        end
+
+      area_match =
+        case Regex.run(~r/\sd="([^"]+)"/, area_tag) do
+          [_, d] -> [d, d]
+          _ -> nil
+        end
+
+      assert area_match != nil, "Cloud-cover area path must have a `d` attribute"
+
+      [_, area_d] = area_match
+
+      assert String.ends_with?(area_d, " Z"),
+             "Cloud-cover area path must close with `Z` so the gradient fill stays bounded — got: #{area_d}"
+
+      assert area_d =~ ~r/ L [\d.\-]+ 250\.00/,
+             "Cloud-cover area path must drop to the chart bottom (y=250) on both ends — got: #{area_d}"
+
+      # Gradient pin: the area path must use the cloud-area
+      # gradient so the fill reads as soft sky haze, not a flat
+      # tint. The `<linearGradient id="cloud-area-gradient">`
+      # lives in the chart's `<defs>`.
+      assert html =~ ~s(fill="url\(#cloud-area-gradient\)"),
+             "Cloud-cover area path must be filled with url(#cloud-area-gradient)"
 
       # Stacking-pin: the local-date filter must cap the line at
       # 24 in-range hours. Pre-line (the rect band) the same filter
       # capped it at 24 rects; the line carries the same filter
       # forward, so the same invariant holds — extracting the
-      # command count from `d` (subtract 1 for the initial M) gives
-      # us the line's point count.
-      point_count =
+      # command count from `d` (count of `C` segments, since each
+      # pair of points yields one segment) gives us the line's
+      # effective point count minus one.
+      c_segment_count =
         d_attr
-        |> String.split(" L ")
+        |> String.split(" C ")
         |> length()
+        |> Kernel.-(1)
 
       # Cross-check: extract the chart's actual X window from the
       # rendered SVG and confirm the line has exactly one point per
@@ -4666,11 +4707,35 @@ defmodule DtuAppWeb.DashboardLiveTest do
         end
         |> length()
 
-      assert point_count == in_range_hours,
-             "Cloud-cover line point count (#{point_count}) must match the count of clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}]) — past_days data must not stack on today's hours"
+      assert c_segment_count == in_range_hours - 1,
+             "Cloud-cover line C-segment count (#{c_segment_count}) must be one less than the clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}]) — past_days data must not stack on today's hours"
 
-      assert point_count > 0 and point_count <= 24,
-             "Cloud-cover line must render 1–24 hourly points (today only) — got #{point_count}"
+      assert c_segment_count >= 0 and c_segment_count <= 23,
+             "Cloud-cover line must render 0–23 cubic-Bezier segments (today only, 1–24 hourly points) — got #{c_segment_count}"
+
+      # Cross-check: extract the chart's actual X window from the
+      # rendered SVG and confirm the line has exactly one point per
+      # in-range clock hour of today.
+      svg_match =
+        Regex.run(~r/data-x-min-seconds="(\d+)"[^>]*data-x-max-seconds="(\d+)"/, html)
+
+      {x_min, x_max} =
+        case svg_match do
+          [_, lo, hi] -> {String.to_integer(lo), String.to_integer(hi)}
+          _ -> {0, 86_400}
+        end
+
+      in_range_hours =
+        for h <- 0..23, seconds = h * 3600, seconds >= x_min and seconds <= x_max do
+          h
+        end
+        |> length()
+
+      assert c_segment_count == in_range_hours - 1,
+             "Cloud-cover line C-segment count (#{c_segment_count}) must be one less than the clock hours in the chart X window (#{in_range_hours}: [#{x_min}, #{x_max}]) — past_days data must not stack on today's hours"
+
+      assert c_segment_count >= 0 and c_segment_count <= 23,
+             "Cloud-cover line must render 0–23 cubic-Bezier segments (today only, 1–24 hourly points) — got #{c_segment_count}"
 
       # Sanity check that the now-marker pill rect (the chart's
       # other `<rect>` element) is still present — a regression

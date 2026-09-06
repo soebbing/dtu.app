@@ -209,6 +209,7 @@ defmodule DtuAppWeb.DashboardLive do
     socket
     |> assign(:cloud_cover_line, %{
       path: "",
+      area_path: "",
       has_data: false,
       points: [],
       ticks: [0, 25, 50, 75, 100]
@@ -3443,8 +3444,26 @@ defmodule DtuAppWeb.DashboardLive do
                          right-side `0/25/50/75/100%` axis labels
                          make the scale explicit so the values
                          aren't ambiguous next to the watt labels on
-                         the left. --%>
+                         the left.
+
+                         Two paths are emitted: `area_path` (closed
+                         shape from the smoothed line down to the
+                         chart bottom, filled with the cloud-area
+                         gradient so dense cloud reads as a soft
+                         "sky haze" below the curve) and `path`
+                         (the line itself). The area renders first so
+                         the stroke sits cleanly on top of its own
+                         fill. --%>
                   <%= if @cloud_cover_line.has_data do %>
+                    <path
+                      d={@cloud_cover_line.area_path}
+                      fill="url(#cloud-area-gradient)"
+                      stroke="none"
+                      pointer-events="none"
+                      aria-hidden="true"
+                      data-testid="cloud-cover-area"
+                      id="chart-cloud-cover-area"
+                    />
                     <path
                       d={@cloud_cover_line.path}
                       fill="none"
@@ -4350,6 +4369,31 @@ defmodule DtuAppWeb.DashboardLive do
                       <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stop-color="#10b981" stop-opacity="0.85" />
                         <stop offset="100%" stop-color="#047857" stop-opacity="0.95" />
+                      </linearGradient>
+                      <!-- Cloud-cover area fill. Anchored in user-space
+                           to chart y=20 (top) → y=250 (bottom) so the
+                           gradient reads as a soft sky haze regardless
+                           of where the line sits: dense grey near the
+                           line, fading to near-transparent at the chart
+                           baseline. Colors and opacity match the gradient
+                           the previous bar overlay used
+                           (`<linearGradient id="cloud-band-fade">` in
+                           commit 99439c7) so the visual feel carries
+                           over. userSpaceOnUse is required — with
+                           objectBoundingBox the gradient would warp
+                           with the line's height (a low-coverage day
+                           would render the line area as solid grey
+                           instead of nearly clear). -->
+                      <linearGradient
+                        id="cloud-area-gradient"
+                        gradientUnits="userSpaceOnUse"
+                        x1="0"
+                        y1="20"
+                        x2="0"
+                        y2="250"
+                      >
+                        <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.55" />
+                        <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.15" />
                       </linearGradient>
                     </defs>
 
