@@ -213,7 +213,7 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.LineTest do
       assert xs == Enum.sort(xs)
     end
 
-    test "path is \"M x y L x y ...\" starting with M and chaining L commands" do
+    test "path is \"M x y C ... C ...\" — smoothed cubic-Bezier through every point" do
       x_min = 0
       x_max = 86_400
 
@@ -226,9 +226,95 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.LineTest do
       result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
 
       assert result.has_data == true
-      # SVG path shape: starts with M, then one or more L commands.
+      # SVG path shape: starts with M, then chained cubic-Bezier
+      # segments. Three readings → one C segment per pair, so two
+      # C segments (the curve from point 0→1 and 1→2). Each segment
+      # has the form "C cp1x cp1y, cp2x cp2y, x y" — two control
+      # points + the destination anchor.
       assert String.starts_with?(result.path, "M ")
-      assert length(String.split(result.path, " L ")) == 3
+      assert length(String.split(result.path, " C ")) == 3
+      # Both segments end at one of our three input points: the
+      # first segment's anchor is the middle reading's (x, y), the
+      # second segment's anchor is the last reading's (x, y).
+      [_, c1, c2] = String.split(result.path, " C ", parts: 3)
+
+      assert String.ends_with?(
+               c1,
+               ", #{Enum.at(result.points, 1).x} #{Enum.at(result.points, 1).y}"
+             )
+
+      assert String.ends_with?(
+               c2,
+               ", #{Enum.at(result.points, 2).x} #{Enum.at(result.points, 2).y}"
+             )
+    end
+
+    test "two-point path falls back to plain M…L segment (no smoothing math from two anchors alone)" do
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 6), pct: 25},
+        %{time: at(~D[2026-08-30], 18), pct: 75}
+      ]
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
+
+      assert result.has_data == true
+      # Two points can't produce a Catmull-Rom curve (no neighbouring
+      # anchors to derive control points from), so the helper falls
+      # back to a single straight segment. Still useful visually.
+      assert String.starts_with?(result.path, "M ")
+      assert result.path =~ ~r/ L [\d.]+ [\d.]+$/
+      refute result.path =~ ~r/ C /
+    end
+
+    test "area_path closes the smoothed line down to the chart bottom and back" do
+      x_min = 0
+      _x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 0},
+        %{time: at(~D[2026-08-30], 12), pct: 50},
+        %{time: at(~D[2026-08-30], 23), pct: 100}
+      ]
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, 86_400, 0, 800)
+
+      assert result.has_data == true
+
+      first = List.first(result.points)
+      last = List.last(result.points)
+
+      # The area path starts with the same M anchor as the line, ends
+      # with Z (closed shape), and contains two L commands that drop
+      # down to the chart bottom (y=250) at the line's last/first X.
+      assert String.starts_with?(result.area_path, "M ")
+      assert String.ends_with?(result.area_path, " Z")
+
+      # The closing segment must drop to y=250 at the line's last
+      # point's X, then travel across to the line's first point's X,
+      # then Z. Float formatting goes through `ChartHelpers.fmt/1`
+      # (two-decimal fixed width) so the tail is stable.
+      closing =
+        " L #{:erlang.float_to_binary(last.x, decimals: 2)} 250.00 L #{:erlang.float_to_binary(first.x, decimals: 2)} 250.00 Z"
+
+      assert String.ends_with?(result.area_path, closing)
+    end
+
+    test "area_path is empty when only one reading falls in window" do
+      x_min = 0
+      x_max = 86_400
+
+      readings = [%{time: at(~D[2026-08-30], 12), pct: 50}]
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
+
+      # A 1-vertex "area" is a degenerate point — no fill region
+      # exists. The line path is also empty (nothing to draw with
+      # one anchor); has_data stays true so the placeholder doesn't
+      # render and neither does the path/area fill.
+      assert result.area_path == ""
     end
 
     test "path is empty string when no readings fall in window" do

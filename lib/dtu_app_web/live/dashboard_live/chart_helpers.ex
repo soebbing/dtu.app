@@ -480,6 +480,16 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   On 7D/30D views `local_date == nil` keeps every reading — each
   hour is occupied by at most one day, so the line still has one
   point per hour.
+
+  Returns a map with two path strings — `path` is the line itself
+  (a smooth cubic-Bezier curve through every point, used as the
+  stroke), and `area_path` is the same curve closed down to the
+  chart bottom (`y = 250`) so it can be filled with the cloud-area
+  gradient. With 0–1 points both are empty strings (no stroke, no
+  fill); with 2 points both are straight M…L segments (no smoothing
+  possible from two anchors alone); 3+ points get Catmull-Rom-to-
+  Bezier smoothing with tension 0.5 (the canonical "gentle round"
+  preset — passes through every point, no overshoot, C1 continuous).
   """
   @spec cloud_cover_line(
           [%{time: DateTime.t(), pct: integer()}] | nil,
@@ -490,16 +500,17 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
           pos_integer()
         ) :: %{
           path: String.t(),
+          area_path: String.t(),
           has_data: boolean(),
           points: [%{x: float(), pct: integer(), y: float()}],
           ticks: [integer()]
         }
   def cloud_cover_line(nil, _local_date, _x_min, _x_max, _tz, _width) do
-    %{path: "", has_data: false, points: [], ticks: @cloud_cover_ticks}
+    %{path: "", area_path: "", has_data: false, points: [], ticks: @cloud_cover_ticks}
   end
 
   def cloud_cover_line([], _local_date, _x_min, _x_max, _tz, _width) do
-    %{path: "", has_data: false, points: [], ticks: @cloud_cover_ticks}
+    %{path: "", area_path: "", has_data: false, points: [], ticks: @cloud_cover_ticks}
   end
 
   def cloud_cover_line(
@@ -547,23 +558,82 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
       end)
       |> Enum.sort_by(& &1.x)
 
-    path =
-      case points do
-        [] ->
-          ""
-
-        [%{x: fx, y: fy} | rest] ->
-          "M #{fx} #{fy} " <>
-            (rest |> Enum.map_join(" ", fn %{x: x, y: y} -> "L #{x} #{y}" end))
-      end
+    path = smooth_line_path(points)
+    area_path = smooth_area_path(points, @cloud_chart_bottom_y)
 
     %{
       path: path,
+      area_path: area_path,
       has_data: points != [],
       points: points,
       ticks: @cloud_cover_ticks
     }
   end
+
+  # Catmull-Rom-to-Bezier cubic-curve path through `points`. Empty /
+  # one-point inputs return an empty string or single M-anchor
+  # (nothing to draw); two-point input falls back to a plain M…L
+  # segment (no neighbours means no smoothing math); 3+ points get
+  # the full curve. The end-control points for the first/last
+  # segment are clamped to the endpoint itself (mirroring the segment
+  # on each side) so the curve approaches the boundary tangents
+  # naturally without overshoot at the chart edges.
+  @spec smooth_line_path([%{x: number(), y: number()}]) :: String.t()
+  defp smooth_line_path([]), do: ""
+  defp smooth_line_path([_]), do: ""
+
+  defp smooth_line_path([%{x: x1, y: y1}, %{x: x2, y: y2}]) do
+    "M #{x1} #{y1} L #{x2} #{y2}"
+  end
+
+  defp smooth_line_path([first | _] = pts) do
+    initial = "M #{first.x} #{first.y}"
+
+    segments =
+      pts
+      |> Enum.drop(-1)
+      |> Enum.with_index()
+      |> Enum.map(fn {p1, i} ->
+        p2 = Enum.at(pts, i + 1)
+        p0 = Enum.at(pts, i - 1) || p1
+        p3 = Enum.at(pts, i + 2) || p2
+
+        # Standard Catmull-Rom tension 0.5 → cubic Bezier control
+        # points. The 1/6 factor comes from the standard α=0.5
+        # formulation; lower tension → smoother (more curve), higher
+        # → closer to the raw polyline.
+        cp1x = p1.x + (p2.x - p0.x) / 6.0
+        cp1y = p1.y + (p2.y - p0.y) / 6.0
+        cp2x = p2.x - (p3.x - p1.x) / 6.0
+        cp2y = p2.y - (p3.y - p1.y) / 6.0
+
+        "C #{fmt(cp1x)} #{fmt(cp1y)}, #{fmt(cp2x)} #{fmt(cp2y)}, #{p2.x} #{p2.y}"
+      end)
+
+    Enum.join([initial | segments], " ")
+  end
+
+  # Closed area path: the smoothed line followed by two straight
+  # edges down to the chart bottom and back to the line's start,
+  # then `Z`. Empty / single-point inputs return an empty string
+  # (a 1-vertex "area" is a degenerate point with no fill region);
+  # 2+ points get a real closed shape.
+  @spec smooth_area_path([%{x: number(), y: number()}], number()) :: String.t()
+  defp smooth_area_path([], _bottom_y), do: ""
+  defp smooth_area_path([_], _bottom_y), do: ""
+
+  defp smooth_area_path(pts, bottom_y) do
+    line = smooth_line_path(pts)
+    last = List.last(pts)
+    first = List.first(pts)
+    line <> " L #{fmt(last.x)} #{fmt(bottom_y)} L #{fmt(first.x)} #{fmt(bottom_y)} Z"
+  end
+
+  # Compact float formatting for SVG path coordinates. Two decimals
+  # is plenty for pixel-resolution charts and keeps the path string
+  # readable in rendered HTML / test diffs.
+  defp fmt(x) when is_float(x), do: :erlang.float_to_binary(x, decimals: 2)
+  defp fmt(x) when is_integer(x), do: Integer.to_string(x)
 
   # Project a UTC reading onto the chart's pixel X axis. Returns
   # `nil` for out-of-window readings so the `for` comprehension above
