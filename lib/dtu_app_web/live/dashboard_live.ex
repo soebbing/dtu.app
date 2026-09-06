@@ -4374,16 +4374,20 @@ defmodule DtuAppWeb.DashboardLive do
                            to chart y=20 (top) → y=250 (bottom) so the
                            gradient reads as a soft sky haze regardless
                            of where the line sits: dense grey near the
-                           line, fading to near-transparent at the chart
-                           baseline. Colors and opacity match the gradient
-                           the previous bar overlay used
-                           (`<linearGradient id="cloud-band-fade">` in
-                           commit 99439c7) so the visual feel carries
-                           over. userSpaceOnUse is required — with
-                           objectBoundingBox the gradient would warp
-                           with the line's height (a low-coverage day
-                           would render the line area as solid grey
-                           instead of nearly clear). -->
+                           line, fading to a still-visible tint at the
+                           chart baseline. userSpaceOnUse is required —
+                           with objectBoundingBox the gradient would
+                           warp with the line's height (a low-coverage
+                           day would render the line area as solid
+                           grey instead of nearly clear). The opacity
+                           range (0.75 → 0.35) is bumped from the
+                           previous bar overlay's (0.55 → 0.15) so the
+                           gradient is actually visible on the area
+                           path: bars span the full chart height so a
+                           subtle range reads as "haze", but a partial-
+                           height area path compresses the visible
+                           gradient into a thin band, where 0.15 grey
+                           on white is indistinguishable from blank. -->
                       <linearGradient
                         id="cloud-area-gradient"
                         gradientUnits="userSpaceOnUse"
@@ -4392,8 +4396,8 @@ defmodule DtuAppWeb.DashboardLive do
                         x2="0"
                         y2="250"
                       >
-                        <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.55" />
-                        <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.15" />
+                        <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.75" />
+                        <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.35" />
                       </linearGradient>
                     </defs>
 

@@ -603,9 +603,20 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
         # formulation; lower tension → smoother (more curve), higher
         # → closer to the raw polyline.
         cp1x = p1.x + (p2.x - p0.x) / 6.0
-        cp1y = p1.y + (p2.y - p0.y) / 6.0
         cp2x = p2.x - (p3.x - p1.x) / 6.0
-        cp2y = p2.y - (p3.y - p1.y) / 6.0
+
+        # Clamp control-point Y to the segment's Y range. Without
+        # this, a segment climbing out of 0% (y=250) can have its
+        # first control point below 250 — the rendered curve dips
+        # under the chart baseline, which reads as "negative
+        # coverage". A cubic Bezier lies within the convex hull of
+        # its 4 control points, so clamping CP1.y and CP2.y to
+        # [min(p1.y, p2.y), max(p1.y, p2.y)] keeps the entire
+        # segment inside the chart's Y range.
+        y_lo = min(p1.y, p2.y)
+        y_hi = max(p1.y, p2.y)
+        cp1y = (p1.y + (p2.y - p0.y) / 6.0) |> clamp(y_lo, y_hi)
+        cp2y = (p2.y - (p3.y - p1.y) / 6.0) |> clamp(y_lo, y_hi)
 
         "C #{fmt(cp1x)} #{fmt(cp1y)}, #{fmt(cp2x)} #{fmt(cp2y)}, #{p2.x} #{p2.y}"
       end)
@@ -634,6 +645,10 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
   # readable in rendered HTML / test diffs.
   defp fmt(x) when is_float(x), do: :erlang.float_to_binary(x, decimals: 2)
   defp fmt(x) when is_integer(x), do: Integer.to_string(x)
+
+  # Clamp a number to `[lo, hi]`. Used by `smooth_line_path/1` to
+  # keep Catmull-Rom control points inside the segment's Y range.
+  defp clamp(x, lo, hi), do: x |> max(lo) |> min(hi)
 
   # Project a UTC reading onto the chart's pixel X axis. Returns
   # `nil` for out-of-window readings so the `for` comprehension above
