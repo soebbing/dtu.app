@@ -4676,6 +4676,25 @@ defmodule DtuAppWeb.DashboardLiveTest do
       assert html =~ ~s(fill="url\(#cloud-area-gradient\)"),
              "Cloud-cover area path must be filled with url(#cloud-area-gradient)"
 
+      # Gradient-location pin: the gradient `<defs>` block must
+      # live inside the live-data SVG (viewBox="0 0 800 280"), not
+      # the empty-state SVG (viewBox="0 0 800 250"). Both SVGs
+      # share the same `id="solar-chart-svg"`, so a `url(#…)`
+      # reference would still resolve in either case — but the
+      # empty-state SVG is conditionally rendered (only when no
+      # readings are present), so its `<defs>` disappears on a
+      # populated dashboard and the area path loses its fill. The
+      # cloud-cover line + area only render when readings exist, so
+      # the gradient must live in the same `<svg>` branch as the
+      # line itself. Regression for the bug where the gradient
+      # defs had been planted in the empty-state SVG's `<defs>`
+      # block (visible as "area path renders but fill is invisible"
+      # in the browser even though `url(#cloud-area-gradient)`
+      # matches in the HTML).
+      assert html =~
+               ~r/<svg[^>]*viewBox="0 0 800 280"[^>]*>.*?<defs>.*?<linearGradient\s+id="cloud-area-gradient"/s,
+             "cloud-area-gradient must be defined inside the live-data SVG (viewBox 0 0 800 280), not the empty-state SVG (0 0 800 250) — otherwise the gradient goes missing when the chart has data"
+
       # Stacking-pin: the local-date filter must cap the line at
       # 24 in-range hours. Pre-line (the rect band) the same filter
       # capped it at 24 rects; the line carries the same filter
