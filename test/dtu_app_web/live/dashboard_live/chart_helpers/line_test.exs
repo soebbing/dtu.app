@@ -335,5 +335,47 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.LineTest do
       assert result.has_data == false
       assert result.points == []
     end
+
+    test "no control-point Y falls outside the chart's [20, 250] range" do
+      # Regression for the Catmull-Rom overshoot: a 0% reading
+      # followed by a 25% reading produces a control point whose
+      # raw Y is below 250 (i.e. past the chart baseline, "negative
+      # coverage"). The curve was visibly dipping under the chart
+      # bottom edge on segments climbing out of 0%. The fix clamps
+      # CP1.y and CP2.y to the segment's Y range — a cubic Bezier
+      # lies within the convex hull of its 4 control points, so the
+      # entire curve stays inside the chart.
+      x_min = 0
+      x_max = 86_400
+
+      # Alternating 0/25/50/75/100 readings — the same shape the
+      # Open-Meteo stub fixture uses in dashboard_live_test.exs.
+      readings =
+        Enum.map(0..23, fn hour ->
+          pct = rem(hour, 4) * 25
+          %{time: at(~D[2026-08-30], hour), pct: pct}
+        end)
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
+
+      assert result.has_data == true
+      assert length(result.points) == 24
+
+      # Pull every Y from the rendered path string. Tokens are
+      # `M x y` then `C x y x y x y` per segment, so the sequence
+      # is X₀ Y₀ X₁ Y₁ X₂ Y₂ X₃ Y₃ … (alternating, with the
+      # M/C command letters excluded by the split regex).
+      ys =
+        result.path
+        |> String.split(~r/[\s,MC]+/, trim: true)
+        |> Enum.drop_every(2)
+
+      Enum.each(ys, fn y_str ->
+        y = String.to_float(y_str)
+
+        assert y >= 20.0 and y <= 250.0,
+               "Control point or anchor Y (#{y}) must stay inside the chart's [20, 250] range — got path: #{result.path}"
+      end)
+    end
   end
 end
