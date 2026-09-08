@@ -143,6 +143,39 @@ defmodule DtuAppWeb.DashboardMountProfileTest do
 
     IO.puts("===========================================\n")
 
+    # Tier 2 / Perf #15 contract — the four cacheable mount-time
+    # fetches (`list_devices`, `error_counts_by_dtu_id`,
+    # `PushSubscriptions.list_for_user`, `Accounts.get_shared_link`)
+    # collapse to a single shared call across the HTTP-render and
+    # WebSocket-upgrade `mount/3` pair. With `DashboardMountCache`
+    # (60 s TTL) each of these four query fingerprints should
+    # appear at most once across ALL mounts, not once per mount
+    # pair. If any of them appears more than once, the cache isn't
+    # hitting — check `mount_seed/2` for a fetch that bypasses the
+    # cache, or that `DashboardMountCache` is supervised in
+    # `application.ex`.
+    #
+    # The other per-mount caches (`owned_dtu_ids`, `selectable_dates`,
+    # `Time.utc_now`, `TodayDataCache.fetch`) already collapsed
+    # before Perf #15 — this contract specifically guards against
+    # regressions in the new cache.
+    cacheable_fingerprints = [
+      ~s|SELECT d0."id", d0."name", d0."kind", d0."mqtt_username", d0."mqtt_p|,
+      ~s|SELECT d0."dtu_id", count(DISTINCT d0."message") FROM "dtu_errors"|,
+      ~s|SELECT p0."id", p0."user_id", p0."endpoint", p0."p256dh", p0."aut|,
+      ~s|SELECT s0."id", s0."user_id", s0."token_hash", s0."inserted_at", s0|
+    ]
+
+    for fp <- cacheable_fingerprints do
+      occurrences =
+        timings
+        |> Enum.count(fn {_, _, _, src} -> String.starts_with?(query_fingerprint(src), fp) end)
+
+      assert occurrences <= 1,
+             "Cacheable fingerprint appeared #{occurrences}× across #{n_mounts} mounts: #{fp}. " <>
+               "DashboardMountCache should collapse this to a single call."
+    end
+
     # Sanity: page must render the dashboard heading. Anything else
     # here is a side-effect of the seeding step, not a real check.
     assert last_html =~ "PV Power Dashboard"
