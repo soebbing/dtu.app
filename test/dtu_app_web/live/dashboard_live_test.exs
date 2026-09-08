@@ -3983,6 +3983,65 @@ defmodule DtuAppWeb.DashboardLiveTest do
     end
   end
 
+  describe "kickoff_weather_fetch inline-branch resilience" do
+    # Regression for the post-PR-#242 disconnect-flash (see
+    # docs/POST_MOUNT_RECONNECT_2026-09-08.md). Before the fix, the
+    # inline `apply_weather_snapshot/2` call on the HTTP / first-WS
+    # mount was unprotected: any exception from
+    # `OpenMeteo.hourly_cloud_cover/3` → `decode/1` (`Jason.decode!`)
+    # walked up through `mount/3`, killed the LiveView process, the
+    # WebSocket closed, and Phoenix fired `phx-disconnected` 500 ms
+    # later — surfacing the "Etwas ist schiefgelaufen / Attempting to
+    # reconnect" flash right after the page rendered.
+    #
+    # Open-Meteo reaching 200 OK with a non-JSON body is unusual but
+    # not impossible — captive-portal HTML, regional mirror glitches,
+    # an HTTP reverse-proxy returning a generic error page. The fix
+    # wraps the inline `apply_weather_snapshot/2` call in
+    # `try/catch`, so the placeholder chart and `:current_cloud_cover
+    # = nil` assigns survive a weather-side raise. This test stubs
+    # the API to return exactly that shape.
+    test "inline cloud-cover snapshot survives a non-JSON 200 from Open-Meteo", %{
+      conn: conn,
+      user: user
+    } do
+      :ok =
+        DtuApp.Accounts.update_user_location(user, %{
+          latitude: Decimal.new("52.52"),
+          longitude: Decimal.new("13.405")
+        })
+
+      _dtu = device_fixture(user, %{kind: "opendtu", mqtt_username: "weather-catch"})
+
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        # 200 status, but the body is HTML — `Jason.decode!` raises
+        # `Jason.DecodeError`. Without the `try/catch` around the
+        # inline snapshot this propagated back through `mount/3`.
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/html")
+        |> Plug.Conn.send_resp(200, "<html>captive portal</html>")
+      end)
+
+      # If the mount weren't protected, this call would crash the
+      # LiveView process (`{:error, {:live_view_process_exit, _,
+      # {Jason.DecodeError, _}}}` or a render-time failure). With
+      # the protection, the placeholder renders and `live/2` returns
+      # the page.
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # Placeholder cloud-cover card. The user has granted geolocation
+      # (we just set lat/lng), so `:geolocation_state == :granted` and
+      # the card renders with `gettext("Cloud cover")` and a "—"
+      # percent (because the upstream fetch failed). Without the
+      # try/catch this markup would never reach the page — the mount
+      # would have raised first. The test session locale is `en`
+      # (see line 1040 — "the dashboard's default locale in test
+      # mode is en"), so the English string is the right hook.
+      assert html =~ "Cloud cover"
+      assert html =~ ~s(id="stat-cloud-cover-pct")
+    end
+  end
+
   describe "Stats card row — 5-up period-stable layout" do
     # Replaces the old 4-up production row (Current Generation / Today's
     # Total Yield / Total Yield (lifetime) / Peak Power / Peak Yield
