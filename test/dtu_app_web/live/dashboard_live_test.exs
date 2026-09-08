@@ -4692,8 +4692,8 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # in the browser even though `url(#cloud-area-gradient)`
       # matches in the HTML).
       assert html =~
-               ~r/<svg[^>]*viewBox="0 0 800 280"[^>]*>.*?<defs>.*?<linearGradient\s+id="cloud-area-gradient"/s,
-             "cloud-area-gradient must be defined inside the live-data SVG (viewBox 0 0 800 280), not the empty-state SVG (0 0 800 250) — otherwise the gradient goes missing when the chart has data"
+               ~r/<svg[^>]*viewBox="-30 0 860 280"[^>]*>.*?<defs>.*?<linearGradient\s+id="cloud-area-gradient"/s,
+             "cloud-area-gradient must be defined inside the live-data SVG (viewBox -30 0 860 280), not the empty-state SVG (0 0 800 250) — otherwise the gradient goes missing when the chart has data"
 
       # Stacking-pin: the local-date filter must cap the line at
       # 24 in-range hours. Pre-line (the rect band) the same filter
@@ -4875,6 +4875,109 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # signal the reset.
       assert html_after =~ ~s(id="stat-cloud-cover-pct"),
              "Post-broadcast: cloud-cover data card must stay rendered"
+    end
+
+    test "Y-axis titles render on both axes (Power on left, Cloud cover on right)",
+         %{conn: conn, user: user} do
+      # Each Y-axis gets a rotated title that names the scale and its
+      # unit (`Power (W)` on the left, `Cloud cover (%)` on the right),
+      # so the per-tick numbers on either side don't read as two
+      # ambiguous scales. The titles live in the 30 px of padding the
+      # SVG `viewBox` reserves on each side (viewBox `-30 0 860 280`
+      # vs the previous `0 0 800 280`) and are rotated -90° so they
+      # read bottom-to-top.
+      dtu =
+        device_fixture(user, %{
+          name: "Axis Title Test",
+          kind: "opendtu",
+          mqtt_username: "axis-title-test",
+          base_topic: "solar"
+        })
+
+      today = Date.utc_today()
+
+      # Seed a 1D daytime arc (06:00–19:00) so the chart has a
+      # populated X window — the titles render regardless of
+      # `has_data`, but seeding data also exercises the live-data
+      # SVG branch (the same branch the cloud-cover line lives in).
+      minutes = Enum.filter((6 * 60)..(19 * 60), &(rem(&1, 30) == 0))
+
+      for minute <- minutes do
+        hour = div(minute, 60)
+        min = rem(minute, 60)
+
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-AXIS",
+            mppt_index: 0,
+            ac_power: 200.0,
+            inserted_at:
+              DateTime.new!(today, Time.new!(hour, min, 0))
+              |> Map.put(:microsecond, {0, 6})
+          })
+      end
+
+      :ok =
+        DtuApp.Accounts.update_user_location(user, %{
+          latitude: 52.52,
+          longitude: 13.41
+        })
+
+      times =
+        for hour <- 0..23 do
+          date = today
+          DateTime.new!(date, Time.new!(hour, 0, 0)) |> DateTime.to_iso8601()
+        end
+
+      body = %{
+        "latitude" => 52.52,
+        "longitude" => 13.41,
+        "hourly" => %{
+          "time" => times,
+          "cloud_cover" => Enum.map(0..23, fn i -> rem(i, 4) * 25 end)
+        }
+      }
+
+      Req.Test.stub(DtuApp.Weather.OpenMeteo, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(body))
+      end)
+
+      :ets.delete_all_objects(DtuApp.Weather.Cache)
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      # viewBox-pin: the live-data SVG must reserve room on both
+      # sides for the rotated axis titles. The empty-state SVG keeps
+      # the original `0 0 800 250` viewBox, so any match for the new
+      # `viewBox` proves the live-data SVG was rendered.
+      assert html =~ ~s(viewBox="-30 0 860 280"),
+             "Live-data SVG must extend viewBox to `-30 0 860 280` to make room for rotated axis titles on each side"
+
+      # Left-axis title pin: a `<text>` element with the power-axis
+      # `data-testid`, rotated -90° around the (-15, 135) pivot, with
+      # `Power (W)` as its text. The negative x is inside the new
+      # viewBox padding (the SVG starts at x = -30); without the
+      # viewBox extension the title would either render off-canvas
+      # or collide with the existing tick labels at x = 5.
+      #
+      # Split into two pins (HEEx renders attribute order without
+      # guaranteeing a specific sequence, so we don't try to match
+      # all attributes at once):
+      #   1. The opening `<text …>` tag carries both the data-testid
+      #      and the rotate transform (in either order).
+      #   2. The text content between the tags is "Power (W)".
+      assert html =~
+               ~r/<text(?:[^>]*data-testid="power-axis-title"|[^>]*transform="rotate\(-90, -15, 135\)"){2}[^>]*>.*?Power\s*\(W\).*?<\/text>/s,
+             "Left Y-axis title `Power (W)` must render as a -90°-rotated text element with data-testid=\"power-axis-title\""
+
+      # Right-axis title pin: same shape as the left, mirrored at
+      # x = 815 (inside the new right-side viewBox padding of 30 px).
+      assert html =~
+               ~r/<text(?:[^>]*data-testid="cloud-cover-axis-title"|[^>]*transform="rotate\(-90, 815, 135\)"){2}[^>]*>.*?Cloud cover\s*\(%\).*?<\/text>/s,
+             "Right Y-axis title `Cloud cover (%)` must render as a -90°-rotated text element with data-testid=\"cloud-cover-axis-title\""
     end
   end
 
