@@ -128,9 +128,7 @@ defmodule DtuApp.TimeTest do
 
       result =
         Cache.fetch(fn ->
-          flunk(
-            "waiter must not run the fetcher; the first claim's value should land in time"
-          )
+          flunk("waiter must not run the fetcher; the first claim's value should land in time")
         end)
 
       elapsed_ms = System.monotonic_time(:millisecond) - start_ms
