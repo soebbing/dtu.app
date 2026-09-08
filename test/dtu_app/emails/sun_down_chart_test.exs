@@ -13,7 +13,18 @@ defmodule DtuApp.Emails.SunDownChartTest do
       in the brand emerald `#10b981`.
   """
 
-  use DtuApp.DataCase, async: true
+  # `async: false` — the populated-state describe block inserts
+  # `users` + `dtus` + `readings` during setup. Concurrent tests in
+  # other `async: true` modules that touch the same tables acquire
+  # `ShareRowExclusiveLock` on the FK-referenced rows; the two
+  # transactions can deadlock when they reference parents in opposite
+  # orders. Both of the previous ExUnit-PostgreSQL 40P01/57P03 CI
+  # deadlocks landed on this file (sun_down_chart_test:90) and on
+  # devices_test.exs:49 (`shelly_consumption_row/4`). See
+  # `docs/dtu-app-exunit-recovery-mode-flake` memory note — wait-step
+  # fixes made things worse (PRs #118/#122); `async: false` is the
+  # only durable fix without rewriting the fixtures.
+  use DtuApp.DataCase, async: false
 
   alias DtuApp.Accounts.User
   alias DtuApp.DevicesFixtures
