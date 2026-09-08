@@ -4762,4 +4762,96 @@ defmodule DtuApp.DevicesTest do
                "(production 4_000 Wh, real export ~8 Wh → expect ≥90 %, got #{pct})"
     end
   end
+
+  describe "list_selectable_dates/2 (readings_5m-backed)" do
+    # Perf fix: `list_selectable_dates/2` reads from the
+    # `readings_5m` continuous aggregate instead of the raw
+    # `readings` hypertable. The raw-row path walked every
+    # compressed chunk in a 5-year lookback — ~5 s on the
+    # production DB, the single largest query on the dashboard
+    # mount. The cagg stores one row per (dtu_id, 5-min bucket),
+    # and the `(dtu_id, bucket DESC)` index added in
+    # `20260818195333_add_readings_5m_dtu_bucket_index` makes
+    # the distinct-date walk an index-only range scan.
+
+    test "returns [] when the user has no DTUs" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      assert Devices.list_selectable_dates(user) == []
+    end
+
+    test "returns [] when the user has DTUs but no readings_5m rows" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      _dtu = DevicesFixtures.device_fixture(user)
+      assert Devices.list_selectable_dates(user) == []
+    end
+
+    test "returns distinct dates newest-first from readings_5m" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      dtu = DevicesFixtures.device_fixture(user)
+
+      today = Date.utc_today()
+
+      # Three distinct UTC dates, each with one bucket. The
+      # function should return one Date per distinct UTC day,
+      # sorted descending (newest first) — exactly what the
+      # dashboard's historical stepper iterates.
+      [
+        {Date.add(today, -3), ~T[10:00:00]},
+        {Date.add(today, -1), ~T[08:00:00]},
+        {Date.add(today, -1), ~T[14:00:00]},
+        {Date.add(today, -7), ~T[12:00:00]}
+      ]
+      |> Enum.each(fn {date, time} ->
+        bucket = DateTime.new!(date, time, "Etc/UTC")
+
+        DtuApp.Repo.query!(
+          """
+          INSERT INTO readings_5m
+            (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+             inverter_serial, mppt_index, inverter_name)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          """,
+          [bucket, dtu.id, 100.0, 200.0, 500.0, 5000.0, "INV-1", 0, "INV-1"]
+        )
+      end)
+
+      assert Devices.list_selectable_dates(user) == [
+               Date.add(today, -1),
+               Date.add(today, -3),
+               Date.add(today, -7)
+             ]
+    end
+
+    test "excludes readings_5m rows for DTUs the user does not own" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      other_user = DtuApp.AccountsFixtures.user_fixture()
+      own_dtu = DevicesFixtures.device_fixture(user)
+      other_dtu = DevicesFixtures.device_fixture(other_user)
+
+      today = Date.utc_today()
+      bucket_today = DateTime.new!(today, ~T[10:00:00], "Etc/UTC")
+      bucket_yesterday = DateTime.new!(Date.add(today, -1), ~T[10:00:00], "Etc/UTC")
+
+      for {dtu, bucket} <- [
+            {own_dtu, bucket_today},
+            {own_dtu, bucket_yesterday},
+            {other_dtu, bucket_today}
+          ] do
+        DtuApp.Repo.query!(
+          """
+          INSERT INTO readings_5m
+            (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+             inverter_serial, mppt_index, inverter_name)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          """,
+          [bucket, dtu.id, 100.0, 200.0, 500.0, 5000.0, "INV-1", 0, "INV-1"]
+        )
+      end
+
+      # `user` only owns `own_dtu`. The row on `other_dtu` for
+      # today must not leak in, so `user` sees today + yesterday
+      # but not the other user's today row as a "duplicate".
+      assert Devices.list_selectable_dates(user) == [today, Date.add(today, -1)]
+    end
+  end
 end

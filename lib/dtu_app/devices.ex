@@ -1572,82 +1572,37 @@ defmodule DtuApp.Devices do
       today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
       today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
 
-      # Current power: only the AC aggregate row carries `ac_power`. A DTU
-      # can publish many per-MPPT rows in between (and they're the most
-      # recent rows for any given inverter), so we filter to mppt_index = 0
-      # before picking the latest reading per inverter. Without this filter,
-      # a per-MPPT row whose `ac_power` is nil would zero out the whole
-      # `current_power` sum.
+      # Perf #12: a single DISTINCT ON returns the per-inverter "latest
+      # reading of the day" row (one per (dtu, serial), filtered to
+      # `mppt_index = 0` so multi-MPPT inverters don't double-count
+      # sub-totals). That single row carries `ac_power` (current_power
+      # input), `yield_day` (today's per-inverter yield — monotonic
+      # Wh counter so the day's total IS the last reading of the day,
+      # summing across inverters gives the fleet's daily total), and
+      # `inverter_name` (for the chart legend).
       #
       # The `inserted_at >= ^today_start` bound turns the unbounded
-      # `DISTINCT ON` into a single-chunk range scan via the `(dtu_id,
-      # inverter_serial, mppt_index, inserted_at)` primary key. The
-      # oldest-fresh-filter for `current_power` is `two_minutes_ago`;
-      # the oldest "latest reading" we need is from today. Bounding to
-      # the today chunk keeps the planner inside the active chunk even
-      # on multi-year installs where the whole-table DISTINCT ON would
+      # DISTINCT ON into a single-chunk range scan via the
+      # `(dtu_id, inverter_serial, mppt_index, inserted_at)` primary
+      # key, keeping the planner inside the active chunk even on
+      # multi-year installs where the whole-table DISTINCT ON would
       # touch every compressed chunk.
-      latest_ac_readings =
-        Repo.all(
-          from r in Reading,
-            where:
-              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
-                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            distinct: [r.dtu_id, r.inverter_serial],
-            order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at]
-        )
-
-      # Latest reading per (dtu_id, inverter_serial, mppt_index) for the
-      # per-series peak computation. The chart's per-series power uses the
-      # same `chart_power_for_mppt/1` selection as the rest of this module
-      # (ac_power for mppt_index = 0, dc_power for >= 1). Same today-chunk
-      # bound as `latest_ac_readings/1` above so the DISTINCT ON walks the
-      # today chunk only.
-      latest_per_series_readings =
-        Repo.all(
-          from r in Reading,
-            where:
-              r.dtu_id in ^dtu_ids and
-                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            distinct: [r.dtu_id, r.inverter_serial, r.mppt_index],
-            order_by: [r.dtu_id, r.inverter_serial, r.mppt_index, desc: r.inserted_at]
-        )
-
-      current_power =
-        latest_ac_readings
-        |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
-        |> Enum.map(&(&1.ac_power || 0.0))
-        |> Enum.sum()
-
-      # Today's total yield.
-      #
-      # Sum each inverter's **last reading of the day** (its
-      # `yield_day` value at the day's most recent uplink). The
-      # firmware's per-inverter `yield_day` is a monotonic Wh
-      # counter that resets at midnight and climbs through the day,
-      # so the day's per-inverter total IS its last reading —
-      # summing that across inverters (and across the user's DTUs)
-      # gives the fleet's daily total without depending on the
-      # AhoyDTU `{base}/total` MQTT topic, which the parser now
-      # drops.
-      #
-      # `SELECT DISTINCT ON (dtu_id, inverter_serial)` with
-      # `ORDER BY ..., inserted_at DESC` picks the latest row per
-      # inverter within the day. Restricted to `mppt_index = 0`
-      # so multi-MPPT AhoyDTU inverters don't double-count ch0 +
-      # ch1 + ch2 yields (OpenDTU only persists `yield_day` on
-      # `mppt_index = 0`, so the restriction is a no-op for
-      # OpenDTU). `yield_day` is uniformly Wh across all firmwares
-      # — `cast_ahoy_yield/1` only normalises the *lifetime*
-      # counter.
       #
       # `inverter_serial != "_fleet"` is a defensive filter against
-      # any legacy `_fleet` rows that older parser versions
-      # persisted; the current parser never creates them (see
-      # `telemetry.ex`'s `[binary_base, "total"]` ignored-topic
-      # clauses).
-
-      today_yield_per_inverter =
+      # any legacy `_fleet` rows that older parser versions persisted
+      # — the current parser never creates them (see `telemetry.ex`'s
+      # `[binary_base, "total"]` ignored-topic clauses).
+      #
+      # Replaces the previous five-`Repo.all` shape: `latest_ac_readings`
+      # (current_power), `today_yield_per_inverter` (today_yield),
+      # `latest_per_series_readings` (per_series_peak — only its
+      # `mppt_index = 0` slice was ever read), and `per_series_rows`
+      # (legend breakdown). All four collapse into this one query.
+      # The fifth query (`total_yield_per_inverter`) stays separate —
+      # it walks a 30-day `lifetime_cutoff` window for the
+      # MAX(yield_total) aggregation, which neither shares the today
+      # window nor the DISTINCT ON shape.
+      ac_latest_per_inverter =
         Repo.all(
           from r in Reading,
             where:
@@ -1656,12 +1611,31 @@ defmodule DtuApp.Devices do
                 r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
             distinct: [r.dtu_id, r.inverter_serial],
             order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
-            select: %{yield_day: r.yield_day}
+            select: %{
+              ac_power: r.ac_power,
+              yield_day: r.yield_day,
+              inserted_at: r.inserted_at,
+              dtu_id: r.dtu_id,
+              inverter_serial: r.inverter_serial,
+              inverter_name: r.inverter_name
+            }
         )
 
+      current_power =
+        ac_latest_per_inverter
+        |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
+        |> Enum.map(&(&1.ac_power || 0.0))
+        |> Enum.sum()
+
+      # Today's total yield: sum each inverter's last reading of the
+      # day. Per-inverter `yield_day` is monotonic Wh that resets at
+      # midnight, so the day's per-inverter total IS its last
+      # reading — summing across inverters (and across the user's
+      # DTUs) gives the fleet's daily total without depending on the
+      # AhoyDTU `{base}/total` MQTT topic (which the parser drops).
       today_yield =
-        today_yield_per_inverter
-        |> Enum.map(fn row -> row.yield_day || 0.0 end)
+        ac_latest_per_inverter
+        |> Enum.map(fn r -> r.yield_day || 0.0 end)
         |> Enum.sum()
 
       # Lifetime total yield.
@@ -1758,50 +1732,35 @@ defmodule DtuApp.Devices do
             end
         end
 
-      # Per-(inverter, MPPT) peak so the dashboard can show, e.g., "MPPT 1
-      # peaked at 580 W". The "right" power field depends on the MPPT index:
-      #   mppt_index = 0 → ac_power (the AC aggregate the firmware emits
-      #     via `realtime/data` / AhoyDTU ch0)
-      #   mppt_index >= 1 → dc_power (per-string DC input the firmware emits
-      #     via `[serial]/[1-4]/...` / AhoyDTU ch1..N)
-      # Using `chart_power_for_mppt/1` keeps this consistent with the chart
-      # bucketing above so the legend's per-series peaks match what the
-      # lines actually plot.
+      # Per-(inverter) peak so the dashboard can show, e.g., "INV-1 peaked
+      # at 580 W" in the legend. The chart legend only ever looks up
+      # the `mppt_index = 0` slice (each legend entry's `series` key
+      # forces mppt_index to 0), so this map is now sourced from the
+      # same DISTINCT ON query that feeds `current_power` /
+      # `today_yield` — no separate per-MPPT scan needed. Per-MPPT
+      # peak data (dc_power for ch1+) is dropped here; it's surfaced
+      # on the chart SVG itself via `assign_line_chart_data/5`
+      # (per-MPPT DC lines), not the stat-card legend.
       per_series_peak =
-        latest_per_series_readings
+        ac_latest_per_inverter
         |> Enum.filter(fn r -> DateTime.after?(r.inserted_at, two_minutes_ago) end)
         |> Enum.reduce(%{}, fn r, acc ->
-          series = {r.dtu_id, r.inverter_serial, r.mppt_index, r.inverter_name}
-          power = chart_power_for_mppt(r)
+          series = {r.dtu_id, r.inverter_serial, 0, r.inverter_name}
 
-          Map.update(acc, series, power, fn cur ->
-            max(cur, power)
-          end)
+          Map.put(acc, series, r.ac_power || 0.0)
         end)
 
-      # Per-inverter breakdown for the chart legend. Computed
-      # independently of the headline `today_yield` /
-      # `total_yield` aggregation above — `per_series` is about
-      # showing the user "which inverter produced what" on the chart,
-      # so each row is per-(inverter) rather than a fleet sum.
-      # The `_fleet` row is excluded so the legend shows per-inverter
-      # entries only; the parser no longer creates `_fleet` rows so
-      # the filter is defensive against legacy data.
-      per_series_rows =
-        Repo.all(
-          from r in Reading,
-            where:
-              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
-                r.inverter_serial != "_fleet" and
-                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
-            group_by: [r.dtu_id, r.inverter_serial, r.inverter_name],
-            select: %{
-              dtu_id: r.dtu_id,
-              inverter_serial: r.inverter_serial,
-              inverter_name: r.inverter_name,
-              max_yield: max(r.yield_day)
-            }
-        )
+      # Per-inverter breakdown for the chart legend. Now sourced from
+      # the same DISTINCT ON query as `current_power` / `today_yield`
+      # — the row's `yield_day` IS the day's per-inverter total
+      # (monotonic counter, last reading of the day = total for that
+      # day), so no separate MAX(yield_day) GROUP BY is needed.
+      # `per_series` is about showing the user "which inverter
+      # produced what" on the chart, so each row is per-(inverter)
+      # rather than a fleet sum. The `_fleet` row is excluded
+      # (DISTINCT ON `inverter_serial` already skips it; the explicit
+      # WHERE filter is defensive against legacy data the parser no
+      # longer creates).
 
       %{
         current_power: Float.round(current_power * 1.0, 1),
@@ -1826,7 +1785,7 @@ defmodule DtuApp.Devices do
         # aggregation is restricted to `mppt_index = 0` (the AC aggregate
         # row), each entry is per-inverter, not per-MPPT.
         per_series:
-          Enum.map(per_series_rows, fn row ->
+          Enum.map(ac_latest_per_inverter, fn row ->
             series = {row.dtu_id, row.inverter_serial, 0, row.inverter_name}
 
             %{
@@ -1835,7 +1794,7 @@ defmodule DtuApp.Devices do
               inverter_name: row.inverter_name,
               mppt_index: 0,
               # nil can leak in if every reading for a series has yield_day: nil.
-              today_yield: Float.round((row.max_yield || 0.0) / 1000, 3),
+              today_yield: Float.round((row.yield_day || 0.0) / 1000, 3),
               peak_power: Float.round(Map.get(per_series_peak, series, 0.0), 1)
             }
           end)
@@ -2675,12 +2634,27 @@ defmodule DtuApp.Devices do
         |> Date.add(-@selectable_dates_max_lookback_days)
         |> DateTime.new!(~T[00:00:00], "Etc/UTC")
 
+      # Read distinct dates from `readings_5m` instead of the raw
+      # `readings` hypertable. The raw-row path walked every
+      # compressed chunk in the 5-year lookback — ~5 s on the
+      # production DB, the single largest query on the dashboard
+      # mount per the 2026-09-01 perf profile. The cagg stores one
+      # row per (dtu_id, 5-min bucket), and the `(dtu_id, bucket
+      # DESC)` index added in
+      # `20260818195333_add_readings_5m_dtu_bucket_index` makes the
+      # distinct-date walk an index-only range scan — typically
+      # sub-second even on multi-year installs.
+      #
+      # The cagg's `materialized_only => false` default means the
+      # view unions recent raw rows in, so freshly-arrived readings
+      # show up in the result without waiting for the next policy
+      # refresh.
       Repo.all(
-        from r in Reading,
-          where: r.dtu_id in ^dtu_ids and r.inserted_at >= ^lookback_cutoff,
-          select: fragment("(?::date)", r.inserted_at),
+        from a in "readings_5m",
+          where: a.dtu_id in ^dtu_ids and a.bucket >= ^lookback_cutoff,
+          select: fragment("(?::date)", a.bucket),
           distinct: true,
-          order_by: [desc: fragment("(?::date)", r.inserted_at)]
+          order_by: [desc: fragment("(?::date)", a.bucket)]
       )
       |> Enum.map(fn
         %Date{} = d -> d

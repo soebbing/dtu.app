@@ -64,6 +64,22 @@ defmodule DtuAppWeb.DashboardHistoricalTest do
           inserted_at: dt
         })
 
+      # The dashboard's selectable-period stepper reads from the
+      # `readings_5m` continuous aggregate (Perf #13 / Tier 1 #1
+      # refactor). The raw insert above doesn't populate the cagg
+      # — the cagg policy doesn't run inside a sandbox test — so
+      # mirror the bucket here directly into `readings_5m` so
+      # `list_selectable_dates/2` returns the seeded day.
+      DtuApp.Repo.query!(
+        """
+        INSERT INTO readings_5m
+          (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+           inverter_serial, mppt_index, inverter_name)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        """,
+        [dt, dtu.id, 450.0, 450.0, 3_500.0, 0.0, "123456", 0, "123456"]
+      )
+
       {:ok, view, _html} = live(conn, ~p"/dashboard")
 
       # Reveal the stepper (hidden until the Custom preset is active).
