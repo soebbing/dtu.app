@@ -150,7 +150,12 @@ defmodule DtuApp.Devices.SelectableDatesCache do
   defp run_and_publish(key, fetcher) do
     try do
       dates = fetcher.()
-      :ets.insert(__MODULE__, {key, %{value: dates, stored_at: :erlang.system_time(:millisecond)}})
+
+      :ets.insert(
+        __MODULE__,
+        {key, %{value: dates, stored_at: :erlang.system_time(:millisecond)}}
+      )
+
       dates
     catch
       kind, reason ->
@@ -162,7 +167,8 @@ defmodule DtuApp.Devices.SelectableDatesCache do
     end
   end
 
-  defp poll_for_value(_key, _fetcher, 0), do: raise "DtuApp.Devices.SelectableDatesCache contention timeout"
+  defp poll_for_value(_key, _fetcher, 0),
+    do: raise("DtuApp.Devices.SelectableDatesCache contention timeout")
 
   defp poll_for_value(key, fetcher, attempts_left) do
     case :ets.lookup(__MODULE__, key) do

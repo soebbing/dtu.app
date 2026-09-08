@@ -150,7 +150,12 @@ defmodule DtuApp.Time.Cache do
   defp run_and_publish(compute_fn) do
     try do
       value = compute_fn.()
-      :ets.insert(__MODULE__, {:now, %{value: value, stored_at: :erlang.system_time(:millisecond)}})
+
+      :ets.insert(
+        __MODULE__,
+        {:now, %{value: value, stored_at: :erlang.system_time(:millisecond)}}
+      )
+
       value
     catch
       kind, reason ->
@@ -162,7 +167,7 @@ defmodule DtuApp.Time.Cache do
     end
   end
 
-  defp poll_for_value(_compute_fn, 0), do: raise "DtuApp.Time.Cache contention timeout"
+  defp poll_for_value(_compute_fn, 0), do: raise("DtuApp.Time.Cache contention timeout")
 
   defp poll_for_value(compute_fn, attempts_left) do
     case :ets.lookup(__MODULE__, :now) do

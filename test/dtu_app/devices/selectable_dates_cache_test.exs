@@ -38,7 +38,10 @@ defmodule DtuApp.Devices.SelectableDatesCacheTest do
       user_id = System.unique_integer([:positive])
       SelectableDatesCache.invalidate(user_id)
 
-      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-01]] end) == [~D[2026-09-01]]
+      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-01]] end) == [
+               ~D[2026-09-01]
+             ]
+
       # Same user_id, different dtu_id — must miss the cache and run
       # the fetcher (the cached nil-slot is not reused).
       assert SelectableDatesCache.get(user_id, 42, fn -> [~D[2026-09-02]] end) == [~D[2026-09-02]]
@@ -57,7 +60,10 @@ defmodule DtuApp.Devices.SelectableDatesCacheTest do
       # re-runs the fetcher for each.
       SelectableDatesCache.invalidate(user_id)
 
-      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-03]] end) == [~D[2026-09-03]]
+      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-03]] end) == [
+               ~D[2026-09-03]
+             ]
+
       assert SelectableDatesCache.get(user_id, 42, fn -> [~D[2026-09-04]] end) == [~D[2026-09-04]]
     end
 
@@ -109,7 +115,9 @@ defmodule DtuApp.Devices.SelectableDatesCacheTest do
 
       # Next read must re-run the fetcher because the row is now
       # older than the 30 s TTL.
-      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-09]] end) == [~D[2026-09-09]]
+      assert SelectableDatesCache.get(user_id, nil, fn -> [~D[2026-09-09]] end) == [
+               ~D[2026-09-09]
+             ]
     end
   end
 

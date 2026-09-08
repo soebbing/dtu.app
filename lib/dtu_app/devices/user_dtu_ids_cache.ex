@@ -148,7 +148,12 @@ defmodule DtuApp.Devices.UserDtuIdsCache do
   defp run_and_publish(user_id, fetcher) do
     try do
       ids = fetcher.()
-      :ets.insert(__MODULE__, {user_id, %{value: ids, stored_at: :erlang.system_time(:millisecond)}})
+
+      :ets.insert(
+        __MODULE__,
+        {user_id, %{value: ids, stored_at: :erlang.system_time(:millisecond)}}
+      )
+
       ids
     catch
       kind, reason ->
@@ -160,7 +165,8 @@ defmodule DtuApp.Devices.UserDtuIdsCache do
     end
   end
 
-  defp poll_for_value(_user_id, _fetcher, 0), do: raise "DtuApp.Devices.UserDtuIdsCache contention timeout"
+  defp poll_for_value(_user_id, _fetcher, 0),
+    do: raise("DtuApp.Devices.UserDtuIdsCache contention timeout")
 
   defp poll_for_value(user_id, fetcher, attempts_left) do
     case :ets.lookup(__MODULE__, user_id) do
