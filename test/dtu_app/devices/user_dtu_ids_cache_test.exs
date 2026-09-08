@@ -37,6 +37,10 @@ defmodule DtuApp.Devices.UserDtuIdsCacheTest do
 
       calls =
         fn ->
+          # `self()` here is the caller (the test process) — the
+          # race-safe fetch path runs the fetcher in the caller's
+          # process, not in a GenServer process, so we can use
+          # `self()` directly without capturing the test pid.
           send(self(), {:fetch, System.monotonic_time()})
           [42, 43]
         end
@@ -97,6 +101,54 @@ defmodule DtuApp.Devices.UserDtuIdsCacheTest do
       # older than the 30 s TTL.
       result = UserDtuIdsCache.get(user_id, fn -> [2, 3, 4] end)
       assert result == [2, 3, 4]
+    end
+  end
+
+  describe "concurrent miss path (Tier 2 / Perf #11 race fix)" do
+    test "parallel misses for the same user collapse to a single fetcher run" do
+      # The race that motivated the refactor: a
+      # `Phoenix.LiveViewTest.live/2` call invokes `mount/3` twice
+      # (HTTP render + WebSocket upgrade) on different processes,
+      # both racing through `owned_dtu_ids/2`. The naive "peek then
+      # put" pattern lets both peekers see the cache row is
+      # missing and both fire `SELECT id FROM dtus`. The race-safe
+      # `get/2` collapses concurrent misses via `:ets.insert_new/2`
+      # — the second arrival sees the first writer's value and
+      # polls instead of re-fetching.
+      user_id = System.unique_integer([:positive])
+      UserDtuIdsCache.invalidate(user_id)
+
+      call_counter = :counters.new(1, [])
+
+      task_fun = fn ->
+        ids =
+          UserDtuIdsCache.get(user_id, fn ->
+            :counters.add(call_counter, 1, 1)
+            send(self(), {:fetcher_ran, self()})
+
+            [user_id]
+            # Tiny sleep so a second concurrent caller has time
+            # to also peek-and-fetch in the naive implementation.
+            |> tap(fn _ -> Process.sleep(20) end)
+          end)
+
+        # Return `ids` so `Task.await/1` gives it back — the
+        # `send/2` call's return value is the message tuple, not
+        # the ids we want to assert on.
+        ids
+      end
+
+      task_a = Task.async(task_fun)
+      task_b = Task.async(task_fun)
+      task_c = Task.async(task_fun)
+
+      results = [Task.await(task_a), Task.await(task_b), Task.await(task_c)]
+
+      # All three callers saw the same id list.
+      assert length(Enum.uniq(results)) == 1
+      assert hd(results) == [user_id]
+      # The fetcher ran at most once — concurrent misses serialised.
+      assert :counters.get(call_counter, 1) <= 1
     end
   end
 end

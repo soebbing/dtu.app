@@ -60,23 +60,21 @@ defmodule DtuApp.Time do
   token issuance, `last_seen_at` writes, `confirm_changeset`, the
   dashboard's "today" / "X minutes ago" helpers, and the cutoffs fed
   into time-windowed queries.
+
+  Served from `DtuApp.Time.Cache`'s race-safe read-through — a
+  fresh cache hit avoids the `SELECT now()` round trip entirely,
+  and a miss is collapsed via `:ets.insert_new/2` so the HTTP+WS
+  mount pair (which both call this on `mount/3`) results in a
+  single DB query instead of two.
   """
   @spec utc_now() :: DateTime.t()
   def utc_now do
-    case Cache.peek() do
-      nil ->
-        value =
-          Repo
-          |> query_now()
-          |> lift_to_utc_datetime()
-          |> DateTime.truncate(:second)
-
-        Cache.put(value)
-        value
-
-      cached ->
-        cached
-    end
+    Cache.fetch(fn ->
+      Repo
+      |> query_now()
+      |> lift_to_utc_datetime()
+      |> DateTime.truncate(:second)
+    end)
   end
 
   @doc """

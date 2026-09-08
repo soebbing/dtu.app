@@ -831,16 +831,17 @@ defmodule DtuAppWeb.DashboardLive do
   defp refresh_devices(socket, user) do
     devices = Devices.list_devices(user)
 
-    # Drop the cached `SELECT id FROM dtus WHERE user_id = $1` list
-    # for this user — `Devices.list_devices/1` is the source of
-    # truth for what the user owns, so any time we re-fetch it
-    # (initial mount, after an add/delete event) the previously
-    # cached id list is stale by definition. `invalidate/1` is a
-    # no-op if there's no entry, so this is safe to call on every
-    # refresh. See `DtuApp.Devices.UserDtuIdsCache` for the
-    # rationale (22 calls/mount, 18 s of cumulative DB time).
-    DtuApp.Devices.UserDtuIdsCache.invalidate(user.id)
-
+    # Tier 2 / Perf #11: previously this invalidated
+    # `UserDtuIdsCache` on every call. But `refresh_devices/2` runs
+    # on every mount AND on every `:dtu_seen` PubSub broadcast
+    # (one per MQTT uplink, so 2–6 Hz on a paired user). With a
+    # 30 s TTL the eager invalidate defeated the cache entirely —
+    # every refresh started with a cache miss. The fix is to leave
+    # the cache alone here: this function reads the device list,
+    # it doesn't mutate it. The mutation entry points
+    # (`Devices.create_device/2`, `Devices.delete_device/1`) now
+    # invalidate explicitly, so the cache stays correct without
+    # paying the invalidate cost on every refresh.
     socket
     |> assign(:devices, devices)
     |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
