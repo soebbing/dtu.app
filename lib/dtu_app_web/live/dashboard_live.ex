@@ -28,6 +28,7 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuAppWeb.DashboardLive.ChartHelpers
   alias DtuAppWeb.DashboardLive.ChartPalette
   alias DtuAppWeb.DashboardLive.Components
+  alias DtuAppWeb.DashboardLive.DashboardMountCache
   alias DtuAppWeb.DashboardLive.PeriodSelectable
   alias DtuAppWeb.DashboardLive.TimeHelpers
   alias DtuAppWeb.DashboardLive.TodayDataCache
@@ -75,19 +76,23 @@ defmodule DtuAppWeb.DashboardLive do
 
     user = socket.assigns.current_scope.user
 
-    # True when this user has at least one row in `push_subscriptions`
-    # — i.e. the `PushSubscribe` hook has already POSTed a
-    # `PushSubscription` JSON to the server. Drives a small "Native
-    # push is on" indicator on the page; we read it server-side at
-    # mount rather than waiting for the JS hook to round-trip so the
-    # badge appears immediately on page load (the hook still fires
-    # `push_subscribed` afterwards, which is what the in-page badge
-    # listens for in turn).
-    has_push_subscriptions = PushSubscriptions.list_for_user(user) != []
-
     socket =
       socket
-      |> refresh_devices(user)
+      # Tier 2 / Perf #15 — `mount_seed/2` wraps the four cacheable
+      # mount-time fetches (`list_devices`, `error_counts_by_dtu_id`,
+      # `PushSubscriptions.list_for_user`, `Accounts.get_shared_link`)
+      # in a single `DashboardMountCache.fetch/4` closure. The HTTP
+      # render and the WebSocket upgrade both call `mount/3` in
+      # separate processes; without the cache, both processes
+      # independently fire the same four queries — 8 round-trips per
+      # page load against a 10-slot connection pool. The cache is a
+      # lock-free `:ets` table with race-safe `:ets.insert_new/2`
+      # (see `DtuAppWeb.DashboardLive.DashboardMountCache` for the
+      # rationale); concurrent misses collapse to a single fetcher
+      # run. `refresh_devices/2` (used by the `:dtu_seen` /
+      # `:dtu_added` / `:dtu_removed` PubSub handlers) is unchanged —
+      # those are single-process calls with no race to dedupe.
+      |> mount_seed(user)
       |> assign(:selected_dtu_id, nil)
       # `live` is true for the auto-refreshing Today view.
       # `granularity` drives the historical stepper (day/week/month/year).
@@ -113,7 +118,6 @@ defmodule DtuAppWeb.DashboardLive do
       # so a fresh mount lands on the auto-refreshing view.
       |> assign(:range_preset, "1d")
       |> assign(:selected_period, nil)
-      |> assign(:has_push_subscriptions, has_push_subscriptions)
       # Seed from the user's stored offset (`Accounts.update_user_tz_offset/2`
       # persists whatever the browser last reported) so the first render
       # already uses the correct tz — without this, the dashboard paints
@@ -163,20 +167,13 @@ defmodule DtuAppWeb.DashboardLive do
       # from the user schema here so the LiveView re-render on every
       # reading picks up the same value without a re-read.
       |> assign(:cents_per_kwh, user.cents_per_kwh)
-      # Anonymous share toggle for the current-day dashboard. The
-      # plaintext URL token is never persisted, so a returning user
-      # (page reload while sharing is on) would otherwise land on a
-      # confusing "toggle on, no URL" state — the toggle is checked,
-      # but the input below is empty and the only hint is the
-      # generic "anyone with this link" copy.
-      #
-      # Pass `mint: true` so `assign_share_state/3` schedules the
-      # same mint flow `toggle_share` uses; ~200ms after mount the
-      # spinner resolves into the URL input + copy button. This
-      # silently invalidates the prior row, which matches the
-      # toggle-on behavior the user already accepts (the same flow
-      # runs when they re-enable sharing).
-      |> assign_share_state(user, mint: true)
+      # `:consumption_stats` / `:net_flow_stats` start as
+      # zero-placeholders. `assign_dashboard_data/5` below overwrites
+      # them with the real numbers (today's kWh, peak, net flow) on
+      # the today branch; the placeholders only matter for any path
+      # that returns the render before `assign_dashboard_data/5`
+      # completes, which in practice never happens (the call is
+      # synchronous in `mount/3`).
       |> assign(:consumption_stats, %{
         current_consumption: 0.0,
         today_consumption: 0.0,
@@ -902,32 +899,54 @@ defmodule DtuAppWeb.DashboardLive do
   defp ro_sink_kind?(%Devices.Dtu{kind: :mqtt_ro_sink}), do: true
   defp ro_sink_kind?(_), do: false
 
-  # Read the user's existing share row (if any) and surface three
-  # socket assigns:
-  #   * `:share_active?` — toggle's on/off state (persisted row exists?)
-  #   * `:share_url`     — the plaintext URL the UI displays (only set
-  #     after a fresh `create_shared_link/1` call within this session)
-  #   * `:share_loading?` — true while a token mint is in flight, so the
-  #     toolbar can show a spinner instead of a stale (or empty) URL row.
+  # Tier 2 / Perf #15 — wrap the four cacheable mount-time fetches
+  # in a single `DashboardMountCache.fetch/4` closure. The HTTP render
+  # and the WebSocket upgrade both call `mount/3` in separate
+  # processes; without the cache, both processes independently fire
+  # the same four queries (`list_devices`, `error_counts_by_dtu_id`,
+  # `PushSubscriptions.list_for_user`, `Accounts.get_shared_link`).
+  # The cache dedupes the second call to a 0-query ETS lookup.
   #
-  # Options:
-  #   * `:mint` (default `false`) — when the share row already exists,
-  #     schedule the same delayed-mint flow `toggle_share` uses, so a
-  #     returning user (page reload while sharing is on) lands on a
-  #     populated URL field instead of the "toggle on, no URL" state.
-  #     The mint invalidates the prior row (same behavior as toggling
-  #     sharing off-and-on), and the 200ms loading-spinner render keeps
-  #     the UI honest about the in-flight work.
-  defp assign_share_state(socket, user, opts) do
-    active? = Accounts.get_shared_link(user) != nil
+  # The share-link mint timer stays per-process (it targets `self()`,
+  # and `self()` is different on the HTTP-render vs WebSocket-upgrade
+  # processes) — only the boolean `share_active?` is cached; the
+  # scheduling happens after the cache read.
+  defp mount_seed(socket, user) do
+    tz_offset_seconds = user.tz_offset_seconds || 0
+
+    seed =
+      DashboardMountCache.fetch(user.id, nil, tz_offset_seconds, fn ->
+        devices = Devices.list_devices(user)
+
+        %{
+          devices: devices,
+          has_inverter?: Enum.any?(devices, &inverter_kind?/1),
+          has_shelly?: Enum.any?(devices, &shelly_kind?/1),
+          has_ro_sink?: Enum.any?(devices, &ro_sink_kind?/1),
+          error_counts: error_counts_by_dtu_id(devices),
+          has_push_subscriptions: PushSubscriptions.list_for_user(user) != [],
+          share_active?: Accounts.get_shared_link(user) != nil
+        }
+      end)
 
     socket =
       socket
-      |> assign(:share_active?, active?)
+      |> assign(:devices, seed.devices)
+      |> assign(:has_inverter?, seed.has_inverter?)
+      |> assign(:has_shelly?, seed.has_shelly?)
+      |> assign(:has_ro_sink?, seed.has_ro_sink?)
+      |> assign(:error_counts, seed.error_counts)
+      |> assign(:has_push_subscriptions, seed.has_push_subscriptions)
+      |> assign(:share_active?, seed.share_active?)
       |> assign(:share_url, nil)
       |> assign(:share_loading?, false)
 
-    if active? and Keyword.get(opts, :mint, false) do
+    # When the share row already exists (returning user with sharing
+    # on), schedule the delayed-mint flow that `toggle_share` uses —
+    # ~200ms after mount the spinner resolves into the URL input +
+    # copy button. This silently invalidates the prior row, which
+    # matches the toggle-on behavior the user already accepts.
+    if seed.share_active? do
       Process.send_after(self(), {:mint_shared_link, user.id}, @share_load_delay_ms)
       assign(socket, :share_loading?, true)
     else

@@ -1,5 +1,19 @@
 defmodule DtuApp.DevicesTest do
-  use DtuApp.DataCase, async: true
+  # `async: false` — every test here inserts `users` + `dtus` +
+  # `readings` (and a few inserts into `dtu_errors`,
+  # `inverter_names`, `shared_links`) via the shared fixtures.
+  # Concurrent tests in other `async: true` modules that touch the
+  # same tables acquire `ShareRowExclusiveLock` on the FK-referenced
+  # rows; the two transactions can deadlock when they reference
+  # parents in opposite orders. Both of the recent ExUnit-PostgreSQL
+  # 40P01/57P03 CI deadlocks landed on this file
+  # (devices_test.exs:49 — `shelly_consumption_row/4` inside the
+  # `list_net_chart_data/4` describe). See the
+  # `dtu-app-exunit-recovery-mode-flake` memory note — wait-step
+  # fixes made things worse (PRs #118/#122); `async: false` is the
+  # only durable fix without rewriting the fixtures. Cost: ~175
+  # tests serialized, ~9 s added wall-clock in CI.
+  use DtuApp.DataCase, async: false
 
   alias DtuApp.Devices
   alias DtuApp.DevicesFixtures
