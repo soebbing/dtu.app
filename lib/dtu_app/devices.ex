@@ -19,6 +19,7 @@ defmodule DtuApp.Devices do
   alias DtuApp.Devices.DtuError
   alias DtuApp.Devices.Reading
   alias DtuApp.Devices.UserDtuIdsCache
+  alias DtuApp.Devices.SelectableDatesCache
 
   @doc "List all devices owned by `user`, newest first."
   def list_devices(%User{} = user) do
@@ -57,7 +58,11 @@ defmodule DtuApp.Devices do
   def create_device(%User{} = user, attrs) do
     Dtu.create_changeset(user, attrs)
     |> Repo.insert()
-    |> tap_on_success(&refresh_credentials/1)
+    |> tap_on_success(fn created ->
+      UserDtuIdsCache.invalidate(user.id)
+      SelectableDatesCache.invalidate(user.id)
+      refresh_credentials(created)
+    end)
   end
 
   @doc "Update a device from `attrs`."
@@ -71,7 +76,11 @@ defmodule DtuApp.Devices do
   @doc "Delete a device."
   def delete_device(%Dtu{} = dtu) do
     Repo.delete(dtu)
-    |> tap_on_success(fn _ -> drop_credentials(dtu.mqtt_username) end)
+    |> tap_on_success(fn _ ->
+      UserDtuIdsCache.invalidate(dtu.user_id)
+      SelectableDatesCache.invalidate(dtu.user_id)
+      drop_credentials(dtu.mqtt_username)
+    end)
   end
 
   @doc "Build a changeset for rendering a form (create)."
@@ -2624,43 +2633,53 @@ defmodule DtuApp.Devices do
 
   @doc "List selectable dates containing telemetry readings."
   def list_selectable_dates(%User{} = user, dtu_id \\ nil) do
-    dtu_ids = owned_dtu_ids(user, dtu_id)
+    # The whole DB-backed body is wrapped in a per-(user_id, dtu_id)
+    # TTL cache. `assign_selectable_periods/3` calls this on every
+    # mount (HTTP+WS = 2×/mount) and on every DTU switch; even after
+    # the readings_5m cagg move the DISTINCT scan across 5 years is
+    # the single largest remaining query on the dashboard mount. The
+    # cache collapses the HTTP+WS mount pair to a single round trip
+    # and the per-DTU-switch storm (every toolbar change) to a single
+    # round trip per `(user_id, dtu_id)` per 30 s window.
+    SelectableDatesCache.get(user.id, dtu_id, fn ->
+      dtu_ids = owned_dtu_ids(user, dtu_id)
 
-    if dtu_ids == [] do
-      []
-    else
-      lookback_cutoff =
-        Date.utc_today()
-        |> Date.add(-@selectable_dates_max_lookback_days)
-        |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+      if dtu_ids == [] do
+        []
+      else
+        lookback_cutoff =
+          Date.utc_today()
+          |> Date.add(-@selectable_dates_max_lookback_days)
+          |> DateTime.new!(~T[00:00:00], "Etc/UTC")
 
-      # Read distinct dates from `readings_5m` instead of the raw
-      # `readings` hypertable. The raw-row path walked every
-      # compressed chunk in the 5-year lookback — ~5 s on the
-      # production DB, the single largest query on the dashboard
-      # mount per the 2026-09-01 perf profile. The cagg stores one
-      # row per (dtu_id, 5-min bucket), and the `(dtu_id, bucket
-      # DESC)` index added in
-      # `20260818195333_add_readings_5m_dtu_bucket_index` makes the
-      # distinct-date walk an index-only range scan — typically
-      # sub-second even on multi-year installs.
-      #
-      # The cagg's `materialized_only => false` default means the
-      # view unions recent raw rows in, so freshly-arrived readings
-      # show up in the result without waiting for the next policy
-      # refresh.
-      Repo.all(
-        from a in "readings_5m",
-          where: a.dtu_id in ^dtu_ids and a.bucket >= ^lookback_cutoff,
-          select: fragment("(?::date)", a.bucket),
-          distinct: true,
-          order_by: [desc: fragment("(?::date)", a.bucket)]
-      )
-      |> Enum.map(fn
-        %Date{} = d -> d
-        str when is_binary(str) -> Date.from_iso8601!(str)
-      end)
-    end
+        # Read distinct dates from `readings_5m` instead of the raw
+        # `readings` hypertable. The raw-row path walked every
+        # compressed chunk in the 5-year lookback — ~5 s on the
+        # production DB, the single largest query on the dashboard
+        # mount per the 2026-09-01 perf profile. The cagg stores one
+        # row per (dtu_id, 5-min bucket), and the `(dtu_id, bucket
+        # DESC)` index added in
+        # `20260818195333_add_readings_5m_dtu_bucket_index` makes the
+        # distinct-date walk an index-only range scan — typically
+        # sub-second even on multi-year installs.
+        #
+        # The cagg's `materialized_only => false` default means the
+        # view unions recent raw rows in, so freshly-arrived readings
+        # show up in the result without waiting for the next policy
+        # refresh.
+        Repo.all(
+          from a in "readings_5m",
+            where: a.dtu_id in ^dtu_ids and a.bucket >= ^lookback_cutoff,
+            select: fragment("(?::date)", a.bucket),
+            distinct: true,
+            order_by: [desc: fragment("(?::date)", a.bucket)]
+        )
+        |> Enum.map(fn
+          %Date{} = d -> d
+          str when is_binary(str) -> Date.from_iso8601!(str)
+        end)
+      end
+    end)
   end
 
   @doc "Fetch daily yield totals over a date range."

@@ -65,6 +65,7 @@ defmodule DtuApp.Application do
          {DtuApp.Weather.Cache, []},
          {DtuApp.Time.Cache, []},
          {DtuApp.Devices.UserDtuIdsCache, []},
+         {DtuApp.Devices.SelectableDatesCache, []},
          {DtuAppWeb.DashboardLive.TodayDataCache, []}
        ] ++
          mqtt_broker_children() ++
