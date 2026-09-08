@@ -18,7 +18,29 @@ defmodule DtuAppWeb.Endpoint do
       # In production with proper domains, Phoenix validates origins automatically
       check_origin: false
     ],
-    longpoll: [connect_info: [session: @session_options]]
+    longpoll: [
+      # PR #244 / 2026-09-08: Phoenix's default `window_ms: 10_000`
+      # is too tight for the dashboard's ~12 s mount (post-PR-#242).
+      # The JS client's `connectWithFallback(fallbackThreshold = 2500)`
+      # in `deps/phoenix/assets/js/phoenix/socket.js:414` gives up on
+      # WebSocket after 2.5 s and switches to longpoll; the longpoll
+      # GET then waits in `Phoenix.Transports.LongPoll.listen/4` for
+      # a LiveView message before returning. With the 10 s default,
+      # the longpoll returns 204 No Content before the mount finishes
+      # at ~12 s, the client retries, and the cycle repeats for the
+      # whole mount — by the time WS would have connected,
+      # `phx:fallback:longpoll` has been memorised in sessionStorage
+      # and the user is permanently stuck on longpoll for that
+      # session. Bumping to 30 s gives the mount 2.5× headroom so a
+      # single longpoll GET survives the mount and returns the first
+      # LiveView message as soon as it's pushed. The LongPoll.Server
+      # process's own `:shutdown_if_inactive` timer is `1.5 ×
+      # window_ms` (see `long_poll_server.ex:29`), so the per-conn
+      # ceiling rises to 45 s — fine at dashboard scale, worth
+      # revisiting if longpoll usage ever spikes.
+      window_ms: 30_000,
+      connect_info: [session: @session_options]
+    ]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
