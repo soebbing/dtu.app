@@ -3329,15 +3329,14 @@ defmodule DtuAppWeb.DashboardLive do
                        warp with the line's height (a low-coverage
                        day would render the line area as solid
                        grey instead of nearly clear). The opacity
-                       range (0.50 → 0.20) is a midpoint between
-                       the previous bar overlay's (0.55 → 0.15)
-                       and the post-#236 bumped (0.75 → 0.35): 0.75
-                       at the line makes the dotted-green
-                       yesterday-power curve barely legible on top
-                       of the haze (the gradient compresses into a
-                       thin band where dense grey buries faint
-                       strokes), but 0.50 keeps the haze readable
-                       as a coverage cue without crowding out the
+                       range (0.30 → 0.10) is the third step down
+                       from the bar overlay's original (0.55 → 0.15):
+                       the post-#236 bump to (0.75 → 0.35) made the
+                       dotted-green yesterday-power curve barely
+                       legible through the haze; the (0.50 → 0.20)
+                       midpoint (#238) only partially recovered it;
+                       0.30 → 0.10 is the smallest range that still
+                       reads as a coverage cue without burying the
                        underlying series. -->
                   <defs>
                     <linearGradient
@@ -3348,8 +3347,8 @@ defmodule DtuAppWeb.DashboardLive do
                       x2="0"
                       y2="250"
                     >
-                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.50" />
-                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.20" />
+                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.30" />
+                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.10" />
                     </linearGradient>
                   </defs>
                   <!-- Grid Lines + Y-Axis Labels. The chart renders one
