@@ -1801,7 +1801,30 @@ defmodule DtuAppWeb.DashboardLive do
         # HTTP render, OR initial WebSocket mount (initial_mount?).
         # Compute inline so the rendered HTML includes the band +
         # current-condition.
-        apply_weather_snapshot(socket, fetch_weather_snapshot(user, local_date, x_min, x_max, tz))
+        #
+        # Defensive: wrap the inline snapshot in try/catch so a
+        # weather-side failure (e.g. Open-Meteo returning a 200 with
+        # non-JSON body — captive portal, regional outage) leaves
+        # the placeholder chart visible (`assign_weather_placeholders/1`
+        # already ran above) instead of crashing the LV. The
+        # `Task.start` branch above already fails quietly; this
+        # brings the inline branch in line with that contract.
+        try do
+          apply_weather_snapshot(
+            socket,
+            fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
+          )
+        catch
+          kind, reason ->
+            require Logger
+
+            Logger.warning(
+              "[dashboard] inline weather snapshot failed (#{kind}: " <>
+                "#{Exception.message(reason)}) — continuing with placeholders"
+            )
+
+            socket
+        end
       end
     end
   end

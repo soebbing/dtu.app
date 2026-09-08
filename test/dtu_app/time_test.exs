@@ -89,6 +89,62 @@ defmodule DtuApp.TimeTest do
       # concurrent misses.
       assert :counters.get(call_counter, 1) <= 1
     end
+
+    test "polling waiter picks up the value from a slow fetcher (> 100 ms, < 1 s)" do
+      # Regression for the post-PR-#242 disconnect-flash (see
+      # docs/POST_MOUNT_RECONNECT_2026-09-08.md). Before this fix,
+      # the `@wait_max_attempts × @wait_sleep_ms` budget was 50 ×
+      # 2 ms = 100 ms — too tight for any DB stall longer than
+      # ~80 ms. The racing waiter's `poll_for_value/2` raised
+      # "DtuApp.Time.Cache contention timeout" mid-mount, which
+      # crashed the LiveView. Bumping the budget to 500 × 2 ms =
+      # 1 s gives the mount 10× more headroom.
+      #
+      # The 500 ms slow-fetcher here is fast enough that the
+      # waiter's loop sees the publish in time, slow enough that a
+      # regression to the 100 ms budget would fire the raise. We
+      # also assert the wall-clock — anything between 200 ms and
+      # 900 ms is the new budget; <200 ms means the test isn't
+      # actually exercising the slow-fetcher path.
+      :ok = Cache.invalidate()
+
+      # First call: claim the slot and run a deliberately slow
+      # fetcher (500 ms ≫ the old 100 ms budget). If the polling
+      # path raises, this `Cache.fetch` itself crashes.
+      DateTime.utc_now() |> DateTime.truncate(:second)
+
+      _ =
+        Cache.fetch(fn ->
+          Process.sleep(500)
+          DateTime.utc_now() |> DateTime.truncate(:second)
+        end)
+
+      # Concurrent waiter racing the slow fetcher. With the
+      # 100 ms budget this raised "DtuApp.Time.Cache contention
+      # timeout" mid-mount; with the 1 s budget the publish
+      # arrives within the polling window and the call returns
+      # the first caller's value.
+      start_ms = System.monotonic_time(:millisecond)
+
+      result =
+        Cache.fetch(fn ->
+          flunk(
+            "waiter must not run the fetcher; the first claim's value should land in time"
+          )
+        end)
+
+      elapsed_ms = System.monotonic_time(:millisecond) - start_ms
+
+      assert is_struct(result, DateTime)
+
+      # Sanity: the wait wall-clock fell inside the new 1 s
+      # budget. A regression that left the budget at 100 ms
+      # would have raised instead, but a regression that lowered
+      # @wait_sleep_ms to 0 would still pass the structural
+      # assert — this guards against the latter.
+      assert elapsed_ms >= 0
+      assert elapsed_ms < 1_000
+    end
   end
 
   describe "utc_now_usec/0" do

@@ -52,9 +52,21 @@ defmodule DtuApp.Devices.SelectableDatesCache do
 
   @ttl_ms 30 * 1000
   # Worst-case wait before falling back to a direct fetch. The
-  # polling loop sleeps `@wait_sleep_ms` per iteration; 50 × 2 ms
-  # = 100 ms total.
-  @wait_max_attempts 50
+  # polling loop sleeps `@wait_sleep_ms` per iteration; 500 × 2 ms
+  # = 1000 ms (1 s) total.
+  #
+  # The 1 s ceiling matters: the HTTP-render-then-WebSocket-upgrade
+  # double-mount races a single fetcher. On a slow DB the first
+  # caller's fetcher can take longer than the second caller's
+  # polling window. If the window is too tight, the second arrival
+  # raises "DtuApp.Devices.SelectableDatesCache contention timeout"
+  # mid-mount, which propagates up through `mount/3` and crashes the
+  # LiveView process — the WebSocket then closes and Phoenix fires
+  # `phx-disconnected`, surfacing the "Etwas ist schiefgelaufen /
+  # Attempting to reconnect" flash right after the page renders.
+  # 1 s is enough headroom for any reasonable DB stall without
+  # leaving the polling path hung during a real deadlock.
+  @wait_max_attempts 500
   @wait_sleep_ms 2
 
   @doc """
