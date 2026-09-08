@@ -442,6 +442,206 @@ defmodule DtuApp.Notifications.SunDownTest do
     end
   end
 
+  describe "periodic sweep (silent inverter → no reading event → producer must self-discover)" do
+    # The reported production bug: inverters that stop emitting AC
+    # readings at sunset never trigger `maybe_arm_timer/2`, because
+    # `handle_info({:reading, ...})` is the only path that runs the
+    # arming check. With no new reading, the cached `power_w` from
+    # the last daytime frame eventually goes stale (past the 5-min
+    # freshness window), but no one re-runs the arming check.
+    #
+    # The fix: a periodic `:sun_down_sweep` message re-walks every
+    # user's cached state on a timer (default every 5 min, overridable
+    # via `:sun_down_sweep_interval_ms`). When the freshness filter
+    # makes the active fleet sum 0 W for a user whose timer isn't
+    # already armed, the sweep arms it — exactly the same code path
+    # `maybe_arm_timer/2` would have run if a reading had arrived.
+
+    test "sweep arms the idle timer for a user whose devices all have stale cached readings" do
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Silent Inverter"})
+
+      # Seed an AC-aggregate reading so `build_payload/2` returns a
+      # non-nil payload at fire time. Without this, the dispatcher's
+      # "no devices / no readings" guard at `build_payload/2:135`
+      # silently no-ops the fire — which would be a *separate*
+      # contract violation we don't want to assert here. The
+      # fixture mirrors the "inverter emitted power earlier today"
+      # state described in the user's report.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Seed state directly with a stale cached reading. No
+      # `:reading` event will fire — the inverter stopped emitting
+      # at sunset. The sweep is the only path that can arm the
+      # timer.
+      :sys.replace_state(SunDown, fn state ->
+        now = Time.utc_now()
+        aged = DateTime.add(now, -360, :second)
+
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{
+              dtu.id => %{power_w: 250.0, last_reading_at: aged}
+            },
+            zero_since: nil,
+            timer: nil
+          })
+
+        device_to_user = Map.put(state.device_to_user, dtu.id, user.id)
+
+        %{state | users: users, device_to_user: device_to_user}
+      end)
+
+      send(SunDown, :sun_down_sweep)
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_down"
+    end
+
+    test "sweep is a no-op for a user whose fleet is actively producing" do
+      # The sweep must not arm a timer while the fleet is still
+      # producing — that would be a false sunset. Mirror the
+      # "freshness window" test above: cached at 250 W within the
+      # 5-min window, so the active fleet sum is non-zero and
+      # `arm_if_idle/2` (the extracted helper) hits the
+      # `fleet_w > 0.0` branch and clears `zero_since` without
+      # arming.
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Active Inverter"})
+
+      :ok = Notifications.subscribe(user.id)
+
+      :sys.replace_state(SunDown, fn state ->
+        now = Time.utc_now()
+
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{
+              dtu.id => %{power_w: 250.0, last_reading_at: now}
+            },
+            zero_since: Time.utc_now(),
+            timer: nil
+          })
+
+        device_to_user = Map.put(state.device_to_user, dtu.id, user.id)
+
+        %{state | users: users, device_to_user: device_to_user}
+      end)
+
+      send(SunDown, :sun_down_sweep)
+
+      refute_receive {:notification, _}, 500
+
+      # The sweep's `fleet_w > 0.0` branch clears `zero_since`.
+      :sys.get_state(SunDown)
+      |> then(fn state ->
+        user_state = state.users[user.id]
+        assert user_state.zero_since == nil
+      end)
+    end
+
+    test "sweep is a no-op for an empty state (no users cached yet)" do
+      # Defensive: a freshly-restarted SunDown whose seed query
+      # returned no rows must not crash on the sweep. The handler
+      # just walks an empty map and returns the state.
+      :sys.replace_state(SunDown, fn state ->
+        %{state | users: %{}, device_to_user: %{}}
+      end)
+
+      send(SunDown, :sun_down_sweep)
+
+      refute_receive {:notification, _}, 200
+    end
+  end
+
+  describe "init seeds state from existing readings (restart recovery)" do
+    # The other half of the bug: if SunDown was restarted (deploy,
+    # OOM, host swap) AFTER sunset but BEFORE the idle window
+    # fired, the in-memory timer reference is in the dead PID's
+    # mailbox — the new process never sees `{:fire_sun_down, _}`.
+    # Without a state seed, the new process has an empty
+    # `state.users` and the sweep has nothing to arm.
+    #
+    # `seed_users_from_db/0` runs in `init/1` and rebuilds the
+    # per-user / per-device fleet-power cache from the most recent
+    # AC-aggregate reading in the database. After that, the very
+    # first sweep arming has the cached `last_reading_at` it needs
+    # to fire the idle window correctly.
+
+    test "seed_users_from_db returns per-user cached state for users with recent readings" do
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "Seed DTU"})
+
+      now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 100.0,
+          inserted_at: now
+        })
+
+      seeded = SunDown.seed_users_from_db()
+
+      assert Map.has_key?(seeded, user.id)
+      user_state = seeded[user.id]
+      assert Map.has_key?(user_state.devices, dtu.id)
+
+      device_state = user_state.devices[dtu.id]
+      assert device_state.power_w == 100.0
+      assert %DateTime{} = device_state.last_reading_at
+    end
+
+    test "seed_users_from_db omits users with no recent AC readings" do
+      # A user whose only AC reading is older than the seed window
+      # is not cached — the seed function bounds the scan so the
+      # bootstrap query doesn't walk the whole hypertable.
+      user = user_fixture()
+
+      seeded = SunDown.seed_users_from_db()
+
+      refute Map.has_key?(seeded, user.id)
+    end
+
+    test "seed_users_from_db scopes to mppt_index = 0 (AC aggregate only)" do
+      # Per-MPPT rows (mppt_index >= 1) carry `dc_power`, not
+      # `ac_power`, and are explicitly ignored by the in-page
+      # arming path. The seed query must mirror that filter or the
+      # sweep would arm timers based on DC-side data that doesn't
+      # match `reading_ac_power/1`'s contract. A user whose devices
+      # have only per-MPPT rows is therefore NOT in the seeded
+      # map — there's nothing for the sweep to arm on, and
+      # including them would just add empty entries the sweep
+      # walks for no reason.
+      user = user_fixture()
+      dtu = device_fixture(user, %{name: "MPPT Seed DTU"})
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 1,
+          ac_power: 0.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      seeded = SunDown.seed_users_from_db()
+
+      refute Map.has_key?(seeded, user.id)
+    end
+  end
+
   describe "build_payload/2" do
     test "returns nil for a user with no devices" do
       user = user_fixture()

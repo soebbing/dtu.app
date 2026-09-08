@@ -80,8 +80,12 @@ defmodule DtuApp.Notifications.SunDown do
 
   require Logger
 
+  import Ecto.Query
+
   alias DtuApp.Accounts.User
   alias DtuApp.Devices
+  alias DtuApp.Devices.Dtu
+  alias DtuApp.Devices.Reading
   alias DtuApp.Emails.SunDownChart
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
@@ -94,6 +98,28 @@ defmodule DtuApp.Notifications.SunDown do
   # Lazy-resolved on every timer arm so tests can swap the value at
   # runtime via `Application.put_env` without recompiling.
   @default_idle_seconds 15 * 60
+
+  # How often the producer re-walks every user's cached fleet-power
+  # state. The default reactive arming (driven by `:reading` events)
+  # only fires `maybe_arm_timer/2` when a fresh uplink arrives — so a
+  # user whose inverter stops emitting AC readings at sunset never
+  # triggers the idle window, and never sees the daily summary. The
+  # sweep re-runs the arming check on a timer so the
+  # `fleet_w == 0.0` / `all_devices_silent?` condition is detected
+  # even without new readings.
+  #
+  # 5 minutes = worst-case 5 min extra delay on top of the 15-min
+  # idle window. Trivially cheap (in-memory walk over `state.users`).
+  # Overridable via `Application.put_env(:dtu_app,
+  # :sun_down_sweep_interval_ms, N)` for tests.
+  @default_sweep_interval_ms 5 * 60 * 1000
+
+  # How far back the seed query looks for the "latest AC reading
+  # per device" when bootstrapping `state.users` at `init/1`. Bounds
+  # the bootstrap scan so a multi-year install's hypertable isn't
+  # scanned at every restart. 24 hours covers a sunset-to-sunset
+  # window with margin for slow / sporadic inverters.
+  @seed_window_seconds 24 * 60 * 60
 
   # A device's `power_w` is considered stale — and therefore excluded
   # from the active fleet sum — when no AC-aggregate reading has
@@ -161,7 +187,21 @@ defmodule DtuApp.Notifications.SunDown do
   def init(_arg) do
     Phoenix.PubSub.subscribe(DtuApp.PubSub, @reading_topic)
     Logger.info("[Notifications.SunDown] subscribed to #{@reading_topic}")
-    {:ok, %{users: %{}, device_to_user: %{}}}
+
+    # Seed the per-user fleet-power cache from the most recent AC
+    # readings in the DB. Recovers state lost on the previous
+    # process exit — without this, a restart at night leaves
+    # `state.users` empty and the periodic sweep has nothing to
+    # arm. See `seed_users_from_db/0` for the bounded query.
+    users = seed_users_from_db()
+    device_to_user = build_device_to_user(users)
+
+    # Schedule the first periodic sweep. The sweep itself re-arms
+    # itself (see `handle_sweep/1`), so this is the only explicit
+    # `schedule_sweep/0` call.
+    schedule_sweep()
+
+    {:ok, %{users: users, device_to_user: device_to_user}}
   end
 
   @impl true
@@ -189,6 +229,13 @@ defmodule DtuApp.Notifications.SunDown do
   def handle_info({:fire_sun_down, user_id}, state) when is_integer(user_id) do
     state = fire_for_user(state, user_id)
     {:noreply, state}
+  end
+
+  def handle_info(:sun_down_sweep, state) do
+    # Re-walk every user's cached state. See `handle_sweep/1` for
+    # why this exists — without it, an inverter that stops emitting
+    # AC readings at sunset never triggers the idle window.
+    {:noreply, handle_sweep(state)}
   end
 
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
@@ -285,49 +332,152 @@ defmodule DtuApp.Notifications.SunDown do
   end
 
   defp maybe_arm_timer(state, device_id) do
+    # The reactive arming path: a fresh `:reading` event arrived for
+    # `device_id`, look up the owning user, and re-run the arming
+    # check. The sweep (`handle_info(:sun_down_sweep, ...)`) calls
+    # `arm_if_idle/2` directly with the user_id since it doesn't have
+    # a device event.
     user_id = Map.get(state.device_to_user, device_id)
+    if is_nil(user_id), do: state, else: arm_if_idle(state, user_id)
+  end
 
-    if is_nil(user_id) do
-      state
-    else
-      case Map.get(state.users, user_id) do
-        nil ->
-          state
+  defp arm_if_idle(state, user_id) do
+    case Map.get(state.users, user_id) do
+      nil ->
+        state
 
-        %{devices: devices, zero_since: zero_since, timer: timer} = user_state ->
-          now = Time.utc_now()
-          fleet_w = active_fleet_w(devices, now)
-          silent? = all_devices_silent?(user_state, now)
+      %{devices: devices, zero_since: zero_since, timer: timer} = user_state ->
+        now = Time.utc_now()
+        fleet_w = active_fleet_w(devices, now)
+        silent? = all_devices_silent?(user_state, now)
 
-          cond do
-            # Fleet is producing power and a timer is running — cancel it.
-            fleet_w > 0.0 and timer != nil ->
-              Process.cancel_timer(timer)
-              put_in(state.users[user_id], %{user_state | zero_since: nil, timer: nil})
+        cond do
+          # Fleet is producing power and a timer is running — cancel it.
+          fleet_w > 0.0 and timer != nil ->
+            Process.cancel_timer(timer)
+            put_in(state.users[user_id], %{user_state | zero_since: nil, timer: nil})
 
-            # Fleet is producing power, no timer running — reset `zero_since`.
-            fleet_w > 0.0 ->
-              put_in(state.users[user_id], %{user_state | zero_since: nil})
+          # Fleet is producing power, no timer running — reset `zero_since`.
+          fleet_w > 0.0 ->
+            put_in(state.users[user_id], %{user_state | zero_since: nil})
 
-            # Fleet is at 0 W (active fleet sum) and we haven't started the
-            # countdown yet — arm the idle timer. Also covers the case
-            # where the entire fleet has gone silent (no fresh AC readings
-            # in the last @fleet_reading_stale_seconds); we still want a
-            # summary at the end of a silent day.
-            (fleet_w == 0.0 or silent?) and zero_since == nil ->
-              zero_since = Time.utc_now()
+          # Fleet is at 0 W (active fleet sum) and we haven't started the
+          # countdown yet — arm the idle timer. Also covers the case
+          # where the entire fleet has gone silent (no fresh AC readings
+          # in the last @fleet_reading_stale_seconds); we still want a
+          # summary at the end of a silent day.
+          (fleet_w == 0.0 or silent?) and zero_since == nil ->
+            zero_since = Time.utc_now()
 
-              idle_seconds = idle_seconds()
-              ref = Process.send_after(self(), {:fire_sun_down, user_id}, idle_seconds * 1000)
+            idle_seconds = idle_seconds()
+            ref = Process.send_after(self(), {:fire_sun_down, user_id}, idle_seconds * 1000)
 
-              put_in(state.users[user_id], %{user_state | zero_since: zero_since, timer: ref})
+            put_in(state.users[user_id], %{user_state | zero_since: zero_since, timer: ref})
 
-            true ->
-              # Fleet is at 0 W and a timer is already running — leave it.
-              state
-          end
-      end
+          true ->
+            # Fleet is at 0 W and a timer is already running — leave it.
+            state
+        end
     end
+  end
+
+  # Re-walk every cached user's fleet-power state on a timer. Without
+  # this, the producer is purely reactive — a user whose inverter
+  # stops emitting AC readings at sunset never triggers the
+  # reactive arming path (no `:reading` event arrives), so the idle
+  # timer never arms and the daily summary never fires. The sweep
+  # is the only mechanism that re-checks `fleet_w` and
+  # `all_devices_silent?` for users already in `state.users`.
+  #
+  # For users NOT in `state.users` (e.g. after a deploy at night
+  # wiped the in-memory cache), the seed in `init/1` is what gets
+  # them into the cache so this sweep can find them — see
+  # `seed_users_from_db/0` below.
+  #
+  # Walks `state.users` in a `reduce` so a `Map.put` on one user's
+  # state is visible to the next user's check (state is the
+  # accumulator). The walk is O(N users), all in-memory — no DB.
+  defp handle_sweep(state) do
+    state =
+      Enum.reduce(state.users, state, fn {user_id, _user_state}, acc ->
+        arm_if_idle(acc, user_id)
+      end)
+
+    schedule_sweep()
+    state
+  end
+
+  defp schedule_sweep do
+    Process.send_after(self(), :sun_down_sweep, sweep_interval_ms())
+  end
+
+  defp sweep_interval_ms do
+    Application.get_env(
+      :dtu_app,
+      :sun_down_sweep_interval_ms,
+      @default_sweep_interval_ms
+    )
+  end
+
+  @doc """
+  Rebuild the per-user / per-device fleet-power cache from the most
+  recent AC-aggregate reading in the database.
+
+  Used by `init/1` to recover state lost on the previous process
+  exit (deploy, OOM, host swap). After a restart at night the
+  producer's `state.users` is empty — without the seed, the
+  periodic sweep would have nothing to arm and the user would miss
+  today's daily summary.
+
+  Scoped to `mppt_index = 0` rows (AC aggregate only — per-MPPT
+  rows carry `dc_power`, not `ac_power`, and the in-page arming
+  path ignores them via `reading_ac_power/1`) and to readings newer
+  than `@seed_window_seconds` (bounds the bootstrap scan on
+  multi-year installs).
+
+  Exposed publicly so the seed query can be tested in isolation
+  without restarting the GenServer.
+  """
+  @spec seed_users_from_db() :: map()
+  def seed_users_from_db do
+    cutoff = DateTime.add(Time.utc_now(), -@seed_window_seconds, :second)
+
+    rows =
+      Repo.all(
+        from r in Reading,
+          join: d in Dtu,
+          on: d.id == r.dtu_id,
+          where: r.mppt_index == 0 and r.inserted_at >= ^cutoff,
+          order_by: [asc: r.dtu_id, desc: r.inserted_at],
+          distinct: [asc: r.dtu_id],
+          select: %{
+            user_id: d.user_id,
+            dtu_id: r.dtu_id,
+            ac_power: r.ac_power,
+            inserted_at: r.inserted_at
+          }
+      )
+
+    Enum.reduce(rows, %{}, fn row, acc ->
+      user_state =
+        Map.get(acc, row.user_id, %{devices: %{}, zero_since: nil, timer: nil})
+
+      devices =
+        Map.put(user_state.devices, row.dtu_id, %{
+          power_w: (row.ac_power || 0) * 1.0,
+          last_reading_at: row.inserted_at
+        })
+
+      Map.put(acc, row.user_id, %{user_state | devices: devices})
+    end)
+  end
+
+  defp build_device_to_user(users) do
+    Enum.reduce(users, %{}, fn {user_id, user_state}, acc ->
+      Enum.reduce(user_state.devices, acc, fn {device_id, _}, acc2 ->
+        Map.put(acc2, device_id, user_id)
+      end)
+    end)
   end
 
   defp fire_for_user(state, user_id) do
