@@ -3313,7 +3313,7 @@ defmodule DtuAppWeb.DashboardLive do
               >
                 <!-- Chart SVG -->
                 <svg
-                  viewBox="0 0 800 280"
+                  viewBox="-30 0 860 280"
                   class="w-full h-auto overflow-visible"
                   id="solar-chart-svg"
                   data-x-min-seconds={@x_min_seconds}
@@ -3329,14 +3329,16 @@ defmodule DtuAppWeb.DashboardLive do
                        warp with the line's height (a low-coverage
                        day would render the line area as solid
                        grey instead of nearly clear). The opacity
-                       range (0.75 → 0.35) is bumped from the
-                       previous bar overlay's (0.55 → 0.15) so the
-                       gradient is actually visible on the area
-                       path: bars span the full chart height so a
-                       subtle range reads as "haze", but a partial-
-                       height area path compresses the visible
-                       gradient into a thin band, where 0.15 grey
-                       on white is indistinguishable from blank. -->
+                       range (0.50 → 0.20) is a midpoint between
+                       the previous bar overlay's (0.55 → 0.15)
+                       and the post-#236 bumped (0.75 → 0.35): 0.75
+                       at the line makes the dotted-green
+                       yesterday-power curve barely legible on top
+                       of the haze (the gradient compresses into a
+                       thin band where dense grey buries faint
+                       strokes), but 0.50 keeps the haze readable
+                       as a coverage cue without crowding out the
+                       underlying series. -->
                   <defs>
                     <linearGradient
                       id="cloud-area-gradient"
@@ -3346,8 +3348,8 @@ defmodule DtuAppWeb.DashboardLive do
                       x2="0"
                       y2="250"
                     >
-                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.75" />
-                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.35" />
+                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.50" />
+                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.20" />
                     </linearGradient>
                   </defs>
                   <!-- Grid Lines + Y-Axis Labels. The chart renders one
@@ -3386,6 +3388,29 @@ defmodule DtuAppWeb.DashboardLive do
                       {Devices.format_number(watts, 0, @locale)} W
                     </text>
                   <% end %>
+
+                  <%!-- Left Y-axis title. Rotated -90° so it reads
+                         bottom-to-top, sitting in the 30 px of padding
+                         the SVG's viewBox reserves on the left
+                         (viewBox="-30 0 860 280"). `text-anchor="middle"`
+                         + `dominant-baseline="central"` centers the
+                         label on the chart's vertical mid-line
+                         (y=135) so it visually anchors the axis.
+                         Uppercase + tracking-wider is one notch more
+                         prominent than the per-tick `W` numbers, so it
+                         reads as the *title* of the scale, not as
+                         another tick. --%>
+                  <text
+                    x="-15"
+                    y="135"
+                    transform="rotate(-90, -15, 135)"
+                    text-anchor="middle"
+                    dominant-baseline="central"
+                    class="text-[10px] font-medium fill-zinc-400 uppercase tracking-wider"
+                    data-testid="power-axis-title"
+                  >
+                    {gettext("Power (W)")}
+                  </text>
                   <line
                     x1="0"
                     y1={chart_grid_bottom}
@@ -3420,6 +3445,26 @@ defmodule DtuAppWeb.DashboardLive do
                       {pct}%
                     </text>
                   <% end %>
+
+                  <%!-- Right Y-axis title (cloud cover, %). Mirror
+                         of the left title: rotated -90° in the 30 px
+                         of padding the SVG's viewBox reserves on the
+                         right (x=815 sits in the -30..860 window).
+                         Same style as the left title so the two
+                         axes read as a matched pair, with the
+                         units (`(W)` vs `(%)`) disambiguating which
+                         is which. --%>
+                  <text
+                    x="815"
+                    y="135"
+                    transform="rotate(-90, 815, 135)"
+                    text-anchor="middle"
+                    dominant-baseline="central"
+                    class="text-[10px] font-medium fill-zinc-400 uppercase tracking-wider"
+                    data-testid="cloud-cover-axis-title"
+                  >
+                    {gettext("Cloud cover (%)")}
+                  </text>
 
                   <!-- X-Axis Labels (Time slots). Dynamically positioned to
                          fit the chart's X-axis range — full day (00:00–
