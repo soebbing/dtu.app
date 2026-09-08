@@ -3329,15 +3329,16 @@ defmodule DtuAppWeb.DashboardLive do
                        warp with the line's height (a low-coverage
                        day would render the line area as solid
                        grey instead of nearly clear). The opacity
-                       range (0.30 → 0.10) is the third step down
+                       range (0.18 → 0.06) is the fourth step down
                        from the bar overlay's original (0.55 → 0.15):
                        the post-#236 bump to (0.75 → 0.35) made the
                        dotted-green yesterday-power curve barely
                        legible through the haze; the (0.50 → 0.20)
                        midpoint (#238) only partially recovered it;
-                       0.30 → 0.10 is the smallest range that still
-                       reads as a coverage cue without burying the
-                       underlying series. -->
+                       (0.30 → 0.10, #239) made it readable but the
+                       haze still drew the eye; 0.18 → 0.06 keeps
+                       enough coverage to read as a cloud-cue
+                       without competing with the power curve. -->
                   <defs>
                     <linearGradient
                       id="cloud-area-gradient"
@@ -3347,8 +3348,8 @@ defmodule DtuAppWeb.DashboardLive do
                       x2="0"
                       y2="250"
                     >
-                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.30" />
-                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.10" />
+                      <stop offset="0%" stop-color="rgb(120 120 120)" stop-opacity="0.18" />
+                      <stop offset="100%" stop-color="rgb(120 120 120)" stop-opacity="0.06" />
                     </linearGradient>
                   </defs>
                   <!-- Grid Lines + Y-Axis Labels. The chart renders one
