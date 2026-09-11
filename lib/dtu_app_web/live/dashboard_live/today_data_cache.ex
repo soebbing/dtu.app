@@ -43,10 +43,11 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   per branch, so a 2–6 Hz PubSub `:reading` stream collapses to a
   single ~10-round-trip work pass per 15 s window instead of one
   per broadcast. The reading-broadcast handler in `DashboardLive`
-  calls `invalidate/1` to drop the entry; the next
-  `assign_dashboard_data/5` re-fetches. Historical branches don't
-  receive a `:reading`-driven invalidation — their data is fixed
-  at render time, so the 15 s TTL handles staleness on its own.
+  calls `invalidate_today/1` to drop just the live-today entry;
+  the next `assign_dashboard_data/5` re-fetches only that branch.
+  Historical branches don't receive a `:reading`-driven
+  invalidation — their data is fixed at render time, so the 15 s
+  TTL handles staleness on its own.
 
   ## Cache key
 
@@ -54,7 +55,9 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   passed to `fetch/3`. Every caller passes at least
   `tz_offset_seconds:` and `dtu_id:` (a tz change or DTU switch
   produces a new key automatically — no extra `invalidate/1` calls
-  needed). The today branch additionally passes `branch: :today`,
+  needed; `select_dtu` and `:set_timezone` do call it as a belt-
+  and-braces safety net, but the new key alone would suffice).
+  The today branch additionally passes `branch: :today`,
   and the historical branches pass `branch: :day | :week | :month
   | :year | :"7d" | :"30d" | :ytd` plus the period identifier
   (`:date`, `:monday`, `:first_day`, `:year`) where applicable —
@@ -68,7 +71,7 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   enough that a user who opens the dashboard, walks away for a
   minute, and reloads sees readings that landed in the interim
   within the same window. The reading handler's explicit
-  `invalidate/1` is what makes the today view pick up fresh
+  `invalidate_today/1` is what makes the today view pick up fresh
   readings within the broadcast coalesce window. Historical
   branches don't strictly need the invalidate (their data is
   fixed), but the same TTL covers a user clicking between
@@ -136,10 +139,13 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
 
   @doc """
   Drop every cached entry for `user_id`, regardless of `opts`.
-  Called by `DashboardLive`'s `handle_info({:reading, ...})` so
-  the next `assign_dashboard_data/5` call after a reading lands
-  refetches the today window and the live chart updates within
-  seconds.
+  Called by `DashboardLive.handle_event("select_dtu", ...)` and
+  `handle_info({:set_timezone, ...})` — both change a key
+  component (`dtu_id` / `tz_offset_seconds`) that participates in
+  the cache key, but the stale entry would still sit in ETS under
+  the OLD key until TTL. The narrow `invalidate_today/1` is what
+  the `:reading` broadcast handler uses; this broad variant is
+  for the two callers that legitimately need every branch wiped.
 
   Safe to call on missing / `nil` entries.
   """
@@ -152,6 +158,44 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
     # clears every variant. Without this we'd need to know the
     # caller's exact opts to delete one row.
     :ets.match_delete(__MODULE__, {{user_id, :_}, :_})
+    :ok
+  end
+
+  @doc """
+  Drop only the `branch: :today` cached entry for `user_id`. The
+  historical branches (day / week / month / year / 7d / 30d / ytd)
+  keep their entries under the 15 s TTL — the user's last 15 s of
+  work on a historical view is preserved across live-reading refresh
+  bursts. Called by `DashboardLive.handle_info({:reading, ...})`
+  because live readings invalidate the live today view, not
+  historical ones.
+  """
+  @spec invalidate_today(integer() | nil) :: :ok
+  def invalidate_today(nil), do: :ok
+
+  def invalidate_today(user_id) when is_integer(user_id) do
+    # The keyword-list opts always start with `{:branch, :today}` for
+    # live-today entries; match against that exact head and discard the
+    # tail. Non-today entries (`{:branch, :day}`, `{:branch, :week}`,
+    # …) have a different head, so their rows don't match this pattern.
+    #
+    # Note 1 — `:_` (the atom underscore, the canonical ETS wildcard)
+    # is used in the cons tail where Erlang would write bare `_`. In
+    # an ETS match spec `[_|_]` and `[_|:_]` are equivalent — both
+    # match any list with the given head — but Elixir's parser rejects
+    # bare `_` outside pattern position, so the atom form is used.
+    #
+    # Note 2 — the pattern is a 2-tuple `{key, value}` matching the
+    # full ETS row (key = `{user_id, opts}`, value = the
+    # `%{value: ..., stored_at: ...}` map inserted by `handle_call/3`).
+    # `:ets.match_delete/2` takes a *pattern*, not a *match spec* — a
+    # match-spec-shaped `[pat, [], [true]]` wrapper would match
+    # nothing because the row's value is a map, not `[]`.
+    :ets.match_delete(
+      __MODULE__,
+      {{user_id, [{:branch, :today} | :_]}, :_}
+    )
+
     :ok
   end
 

@@ -52,6 +52,17 @@ defmodule DtuAppWeb.DashboardLive do
   # `DBConnection.checkout_timeout`).
   @reading_refresh_debounce_ms 1_000
 
+  # Per-LV-process debounce window for `{:dtu_seen, ...}` broadcasts
+  # (analogous to the `:reading` debounce above). Every successful
+  # MQTT uplink fires a `:dtu_seen`; a 6-inverter + 1 Shelly setup
+  # produces ~1–4 per second sustained. Without this, each one was
+  # running an uncached `list_devices/1` + `error_counts_by_dtu_id/1`
+  # pair against `dtus` / `dtu_errors`, exhausting the 10-slot DB
+  # pool alongside the reading-driven traffic. 1 s matches the
+  # `:reading` debounce so the two refresh passes fit inside the
+  # same checkout budget.
+  @devices_refresh_debounce_ms 1_000
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -138,6 +149,12 @@ defmodule DtuAppWeb.DashboardLive do
       # `:refresh_today` handler. See `handle_info({:reading, ...})`
       # for the rationale (pool-exhaustion fix).
       |> assign(:dashboard_refresh_pending, false)
+      # See `handle_info({:dtu_seen, ...})` for the rationale
+      # (per-uplink `refresh_devices/2` exhausts the DB pool on a
+      # paired Shelly + 6-inverter install). Set on the first
+      # `:dtu_seen` in a window; cleared on the `:refresh_devices`
+      # handler.
+      |> assign(:devices_refresh_pending, false)
       # Locale for stat-card / chart-axis number formatting. Picked up by
       # `Devices.format_number/2` and `Devices.format_savings/1` so a
       # German user sees `1.234,5 kWh` and a French user sees
@@ -614,7 +631,14 @@ defmodule DtuAppWeb.DashboardLive do
       # in the chart for up to 15 s. The cache layer (extended to
       # cover the whole today branch — see `TodayDataCache`) picks
       # this up on the next `fetch/2`.
-      TodayDataCache.invalidate(user.id)
+      #
+      # Use the narrow `invalidate_today/1` rather than the broad
+      # `invalidate/1` so the historical branches (day / week /
+      # month / year / 7d / 30d / ytd) keep their 15 s TTL across
+      # a reading broadcast — under hot `:reading` traffic, the
+      # broad wipe was re-fetching all 8 branches on every
+      # broadcast even though only the today view changed.
+      TodayDataCache.invalidate_today(user.id)
 
       Process.send_after(self(), :refresh_today, @reading_refresh_debounce_ms)
 
@@ -650,6 +674,28 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply, socket}
   end
 
+  # Fires `devices_refresh_debounce_ms` after the first
+  # `{:dtu_seen, ...}` broadcast in a debounce window. The actual
+  # refresh work — re-listing devices + their error counts — runs
+  # here, not in the broadcast handler, so 10 uplinks in 1 s
+  # collapse to a single `refresh_devices/2` call.
+  #
+  # Unlike `:refresh_today` above, this handler does NOT touch
+  # `TodayDataCache.invalidate/1`: `:dtu_seen` only updates
+  # `dtus.last_seen_at` (the online badge), not the chart's
+  # today-window data.
+  @impl true
+  def handle_info(:refresh_devices, socket) do
+    user = socket.assigns.current_scope.user
+
+    socket =
+      socket
+      |> assign(:devices_refresh_pending, false)
+      |> refresh_devices(user)
+
+    {:noreply, socket}
+  end
+
   @impl true
   def handle_info({:dtu_connected, _client_id, _device_id}, socket) do
     # Connection-state *notifications* are fired by
@@ -676,10 +722,22 @@ defmodule DtuAppWeb.DashboardLive do
   # the device list so the badge flips on the next render. The
   # historical-view path is left alone — only the live view's stats
   # chart is refreshed on every reading.
+  #
+  # Coalesce: at most one debounced refresh per debounce window per
+  # LV process. Mirrors the `:reading` debounce above — the per-
+  # uplink `refresh_devices/2` (uncached `list_devices/1` +
+  # `error_counts_by_dtu_id/1`) was the second-largest contributor
+  # to the 10-slot DB-pool exhaustion documented in
+  # `docs/PERF_FINDINGS_2026-09-08.md` finding #4.
   @impl true
   def handle_info({:dtu_seen, _device_id}, socket) do
-    user = socket.assigns.current_scope.user
-    {:noreply, refresh_devices(socket, user)}
+    if socket.assigns.devices_refresh_pending do
+      {:noreply, socket}
+    else
+      Process.send_after(self(), :refresh_devices, @devices_refresh_debounce_ms)
+
+      {:noreply, assign(socket, :devices_refresh_pending, true)}
+    end
   end
 
   # `:dtu_error` is broadcast by `Telemetry.record_dtu_error/2` whenever
