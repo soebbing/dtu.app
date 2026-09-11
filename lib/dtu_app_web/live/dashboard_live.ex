@@ -29,6 +29,7 @@ defmodule DtuAppWeb.DashboardLive do
   alias DtuAppWeb.DashboardLive.ChartPalette
   alias DtuAppWeb.DashboardLive.Components
   alias DtuAppWeb.DashboardLive.DashboardMountCache
+  alias DtuAppWeb.DashboardLive.MountTiming
   alias DtuAppWeb.DashboardLive.PeriodSelectable
   alias DtuAppWeb.DashboardLive.TimeHelpers
   alias DtuAppWeb.DashboardLive.TodayDataCache
@@ -87,23 +88,36 @@ defmodule DtuAppWeb.DashboardLive do
 
     user = socket.assigns.current_scope.user
 
+    # Mount-stage timing probe — captures wall-clock of the two main
+    # work blocks (`:mount_seed` + `:dashboard_data`) so a 6-inverter
+    # cold-mount on prod can be diagnosed from a single log line. Off
+    # by default; flip `DASHBOARD_MOUNT_TIMING_LOG=true` in the env to
+    # enable. See `DtuAppWeb.DashboardLive.MountTiming` for the field
+    # contract and why this isn't a telemetry event.
+    mount_start = System.monotonic_time(:native)
+    mount_stages = []
+
+    # Tier 2 / Perf #15 — `mount_seed/2` wraps the four cacheable
+    # mount-time fetches (`list_devices`, `error_counts_by_dtu_id`,
+    # `PushSubscriptions.list_for_user`, `Accounts.get_shared_link`)
+    # in a single `DashboardMountCache.fetch/4` closure. The HTTP
+    # render and the WebSocket upgrade both call `mount/3` in
+    # separate processes; without the cache, both processes
+    # independently fire the same four queries — 8 round-trips per
+    # page load against a 10-slot connection pool. The cache is a
+    # lock-free `:ets` table with race-safe `:ets.insert_new/2`
+    # (see `DtuAppWeb.DashboardLive.DashboardMountCache` for the
+    # rationale); concurrent misses collapse to a single fetcher
+    # run. `refresh_devices/2` (used by the `:dtu_seen` /
+    # `:dtu_added` / `:dtu_removed` PubSub handlers) is unchanged —
+    # those are single-process calls with no race to dedupe.
+    {mount_stages, socket} =
+      MountTiming.measure(:mount_seed, mount_stages, fn ->
+        mount_seed(socket, user)
+      end)
+
     socket =
       socket
-      # Tier 2 / Perf #15 — `mount_seed/2` wraps the four cacheable
-      # mount-time fetches (`list_devices`, `error_counts_by_dtu_id`,
-      # `PushSubscriptions.list_for_user`, `Accounts.get_shared_link`)
-      # in a single `DashboardMountCache.fetch/4` closure. The HTTP
-      # render and the WebSocket upgrade both call `mount/3` in
-      # separate processes; without the cache, both processes
-      # independently fire the same four queries — 8 round-trips per
-      # page load against a 10-slot connection pool. The cache is a
-      # lock-free `:ets` table with race-safe `:ets.insert_new/2`
-      # (see `DtuAppWeb.DashboardLive.DashboardMountCache` for the
-      # rationale); concurrent misses collapse to a single fetcher
-      # run. `refresh_devices/2` (used by the `:dtu_seen` /
-      # `:dtu_added` / `:dtu_removed` PubSub handlers) is unchanged —
-      # those are single-process calls with no race to dedupe.
-      |> mount_seed(user)
       |> assign(:selected_dtu_id, nil)
       # `live` is true for the auto-refreshing Today view.
       # `granularity` drives the historical stepper (day/week/month/year).
@@ -204,7 +218,17 @@ defmodule DtuAppWeb.DashboardLive do
         peak_import: 0.0
       })
       |> PeriodSelectable.assign_selectable_periods(user, nil)
-      |> assign_dashboard_data(user, nil, "today", nil)
+
+    # Main per-branch work: today's chart points, consumption/net stats,
+    # line-chart SVG, peak computations. The dominant cost on a
+    # 6-inverter cold mount (where the cache doesn't fully absorb
+    # because the Shelly's reading-side queries aren't all cached).
+    {mount_stages, socket} =
+      MountTiming.measure(:dashboard_data, mount_stages, fn ->
+        assign_dashboard_data(socket, user, nil, "today", nil)
+      end)
+
+    MountTiming.emit(mount_start, mount_stages, user_id: user.id)
 
     {:ok, socket}
   end

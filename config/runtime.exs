@@ -213,6 +213,17 @@ config :dtu_app,
          config_env()
        )
 
+# ── Dashboard mount-stage timing probe ──────────────────────────────────────
+# Defaults OFF everywhere. Flip to `true` on a single prod instance (or
+# a debug-fleet one) to capture one `Logger.info` line per cold mount
+# with per-stage wall-clock measurements. The volume is low (one line
+# per cold mount, only on the enabled instance) and the log format is
+# grep-able (`mount_timing=true`). See
+# `DtuAppWeb.DashboardLive.MountTiming` for the field contract.
+config :dtu_app,
+       :dashboard_mount_timing_log,
+       System.get_env("DASHBOARD_MOUNT_TIMING_LOG", "false") in ~w(true 1)
+
 # ── Web Push (VAPID) ───────────────────────────────────────────────────────
 # Required for native browser notifications delivered by the service
 # worker when no tab is open. All three VAPID_* vars come from the
