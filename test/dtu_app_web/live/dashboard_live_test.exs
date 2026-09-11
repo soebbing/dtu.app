@@ -5719,4 +5719,98 @@ defmodule DtuAppWeb.DashboardLiveTest do
              "tz change should re-populate the cache via assign_dashboard_data"
     end
   end
+
+  describe "DTU-seen debounce (regression for per-uplink refresh_devices/2 calls)" do
+    # Spec: docs/PERF_FINDINGS_2026-09-08.md finding #4. A 6-inverter
+    # + 1 Shelly Plus 3EM install fires ~1–4 PubSub `:dtu_seen`
+    # broadcasts per second sustained (one per MQTT uplink). Without
+    # coalescing, every `:dtu_seen` triggered an uncached
+    # `refresh_devices/2` call (`Devices.list_devices/1` +
+    # `error_counts_by_dtu_id/1`), which exhausted the 10-slot DB
+    # pool alongside the reading-driven traffic. Mirror the proven
+    # `:reading` debounce (1 s window) so at most one
+    # `refresh_devices/2` runs per second.
+    #
+    # We observe the `devices_refresh_pending` flag via
+    # `socket_assigns(view)` — the same idiom the `:reading`
+    # coalesce test uses above. The flag flips `false → true` on
+    # the first broadcast, stays `true` for additional broadcasts
+    # inside the window, and flips back to `false` after the
+    # scheduled `:refresh_devices` message lands and the handler
+    # runs `refresh_devices/2`.
+
+    test "rapid :dtu_seen broadcasts coalesce (flag stays pending, single refresh fires)",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-seen-coalesce-test"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Mount completes with no pending refresh.
+      refute socket_assigns(view).devices_refresh_pending
+
+      # Burst: 10 :dtu_seen with the same `device_id` in <50 ms.
+      # Direct `send/2` works because `handle_info/2` is
+      # transport-agnostic; we're exercising the handler, not the
+      # PubSub fanout (covered by `mqtt_broker_test.exs`).
+      pid = view.pid
+
+      for _ <- 1..10 do
+        send(pid, {:dtu_seen, 42})
+      end
+
+      # Yield so the LV process has a chance to process the burst
+      # before we observe the flag.
+      Process.sleep(50)
+
+      # The first broadcast set the flag and scheduled the 1 s
+      # debounce timer; the next nine absorbed into the existing
+      # pending window.
+      assert socket_assigns(view).devices_refresh_pending,
+             "10 rapid :dtu_seen broadcasts within 50 ms should leave the debounce flag set"
+
+      # Wait for the debounce timer to fire + the :refresh_devices
+      # handler to clear the flag.
+      Process.sleep(1_200)
+
+      refute socket_assigns(view).devices_refresh_pending,
+             "after the 1 s debounce window, the flag should be cleared by :refresh_devices"
+    end
+
+    test "a second :dtu_seen after the window schedules a fresh refresh",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-seen-second-window"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+      pid = view.pid
+
+      # First window: 1 broadcast → flag set → wait → flag cleared.
+      send(pid, {:dtu_seen, 42})
+      Process.sleep(50)
+
+      assert socket_assigns(view).devices_refresh_pending
+
+      Process.sleep(1_200)
+
+      refute socket_assigns(view).devices_refresh_pending,
+             "first :refresh_devices should have cleared the flag"
+
+      # Second window: a new :dtu_seen fires a fresh debounce.
+      send(pid, {:dtu_seen, 42})
+      Process.sleep(50)
+
+      assert socket_assigns(view).devices_refresh_pending,
+             "a :dtu_seen after the window should start a fresh debounce window"
+
+      Process.sleep(1_200)
+      refute socket_assigns(view).devices_refresh_pending
+    end
+  end
 end
