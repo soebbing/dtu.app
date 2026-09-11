@@ -206,5 +206,58 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCacheTest do
                  fn -> flunk("date-partitioned cache miss") end
                )
     end
+
+    test "invalidate_today/1 drops only the :today branch entry; :day and :week survive" do
+      user_id = System.unique_integer([:positive])
+      TodayDataCache.invalidate(user_id)
+
+      # Seed three branches for the same user. The :day and :week
+      # seeds include the period identifier (`date:` / `monday:`)
+      # that the production callers pass — see `dashboard_live.ex`
+      # ~L2351 for :day's production key shape — so the seed and
+      # the assertion below hash to the same cache key.
+      TodayDataCache.fetch(user_id, [branch: :today], fn -> %{which: :today} end)
+
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :day, date: ~D[2026-09-10]],
+        fn -> %{which: :day} end
+      )
+
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :week, monday: ~D[2026-09-07]],
+        fn -> %{which: :week} end
+      )
+
+      # Drop only :today.
+      assert :ok = TodayDataCache.invalidate_today(user_id)
+
+      # :today was wiped — the fetcher must run again.
+      assert %{which: :today} =
+               TodayDataCache.fetch(user_id, [branch: :today], fn -> %{which: :today, rerun: true} end)
+
+      # The historical branches still hit their original cache entries
+      # (the cached fetcher returns :flunk — using flunk-bound fetchers
+      # to prove the cached value came back rather than re-running).
+      assert %{which: :day} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, date: ~D[2026-09-10]],
+                 fn -> flunk(":day cache miss after invalidate_today") end
+               )
+
+      assert %{which: :week} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :week, monday: ~D[2026-09-07]],
+                 fn -> flunk(":week cache miss after invalidate_today") end
+               )
+    end
+
+    test "invalidate_today/1 is a no-op on nil and on missing user_id" do
+      assert :ok = TodayDataCache.invalidate_today(nil)
+      assert :ok = TodayDataCache.invalidate_today(999_999_999)
+    end
   end
 end

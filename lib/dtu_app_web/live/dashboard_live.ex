@@ -631,7 +631,14 @@ defmodule DtuAppWeb.DashboardLive do
       # in the chart for up to 15 s. The cache layer (extended to
       # cover the whole today branch — see `TodayDataCache`) picks
       # this up on the next `fetch/2`.
-      TodayDataCache.invalidate(user.id)
+      #
+      # Use the narrow `invalidate_today/1` rather than the broad
+      # `invalidate/1` so the historical branches (day / week /
+      # month / year / 7d / 30d / ytd) keep their 15 s TTL across
+      # a reading broadcast — under hot `:reading` traffic, the
+      # broad wipe was re-fetching all 8 branches on every
+      # broadcast even though only the today view changed.
+      TodayDataCache.invalidate_today(user.id)
 
       Process.send_after(self(), :refresh_today, @reading_refresh_debounce_ms)
 

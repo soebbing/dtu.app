@@ -155,6 +155,43 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
     :ok
   end
 
+  @doc """
+  Drop only the `branch: :today` cached entry for `user_id`. The
+  historical branches (day / week / month / year / 7d / 30d / ytd)
+  keep their entries under the 15 s TTL — the user's last 15 s of
+  work on a historical view is preserved across live-reading refresh
+  bursts. Called by `DashboardLive.handle_info({:reading, ...})`
+  because live readings invalidate the live today view, not
+  historical ones.
+  """
+  @spec invalidate_today(integer() | nil) :: :ok
+  def invalidate_today(nil), do: :ok
+
+  def invalidate_today(user_id) when is_integer(user_id) do
+    # The keyword-list opts always start with `{:branch, :today}` for
+    # live-today entries; match against that exact head and discard the
+    # tail. Non-today entries (`{:branch, :day}`, `{:branch, :week}`,
+    # …) have a different head, so their rows don't match this pattern.
+    #
+    # Note 1 — `:_` (the atom underscore, the canonical ETS wildcard)
+    # is used in the cons tail where Erlang would write bare `_`. In
+    # an ETS match spec `[_|_]` and `[_|:_]` are equivalent — both
+    # match any list with the given head — but Elixir's parser rejects
+    # bare `_` outside pattern position, so the atom form is used.
+    #
+    # Note 2 — the pattern is a 2-tuple `{key, value}` matching the
+    # full ETS row (key = `{user_id, opts}`, value = the
+    # `%{value: ..., stored_at: ...}` map inserted by `handle_call/3`).
+    # `:ets.match_delete/2` takes a *pattern*, not a *match spec* — a
+    # match-spec-shaped `[pat, [], [true]]` wrapper would match
+    # nothing because the row's value is a map, not `[]`.
+    :ets.match_delete(
+      __MODULE__,
+      {{user_id, [{:branch, :today} | :_]}, :_}
+    )
+    :ok
+  end
+
   defp refresh(key, fetcher) do
     data = fetcher.()
     GenServer.call(__MODULE__, {:put, key, data})
