@@ -63,22 +63,38 @@ defmodule DtuApp.Push do
   before passing them to `showNotification`. See the moduledoc on
   the SW for the full contract.
 
-  Returns `:ok` once every subscription has been attempted. Per-row
-  errors are logged and do not abort the fan-out — one dead
-  subscription (a phone whose push service revoked the handle)
-  must not stop notifications reaching the user's other devices.
+  Returns `{:ok, %{attempted: N, delivered: M}}` once every
+  subscription has been attempted. Per-row errors are logged and
+  do not abort the fan-out — one dead subscription (a phone whose
+  push service revoked the handle) must not stop notifications
+  reaching the user's other devices.
+
+  The `delivered` count lets the dispatcher distinguish "VAPID not
+  configured", "no subscriptions yet", and "all subscriptions are
+  gone" from a real "k banners sent" outcome — the first three
+  should fall through to the email fallback when the user has
+  `notification_channel == "push"` (the schema default), so they
+  never silently lose a notification.
+
+  VAPID not configured or `deliver_many/2` given an empty list
+  returns `{:ok, %{attempted: 0, delivered: 0}}` — the
+  "no live subscription row" case the fallback path keys on.
   """
-  @spec deliver(DtuApp.Accounts.User.t(), map()) :: :ok
+  @spec deliver(DtuApp.Accounts.User.t(), map()) ::
+          {:ok, %{attempted: non_neg_integer(), delivered: non_neg_integer()}}
   def deliver(%DtuApp.Accounts.User{} = user, payload) when is_map(payload) do
     if public_key() == nil do
       # VAPID not configured — silently skip. The caller is the
-      # in-page PubSub broadcast which keeps working; we just don't
-      # add native delivery on top.
-      :ok
+      # in-page PubSub broadcast which keeps working; we just
+      # don't add native delivery on top. This branch must run
+      # BEFORE any DB call so the no-sandbox `ExUnit.Case` tests
+      # in `push_test.exs` (which pass a `%User{id: 0}`) don't
+      # trip a sandbox-ownership error.
+      {:ok, %{attempted: 0, delivered: 0}}
     else
       user
       |> PushSubscriptions.list_for_user()
-      |> Enum.each(&send_to(&1, payload))
+      |> deliver_many(payload)
     end
   end
 
@@ -86,12 +102,18 @@ defmodule DtuApp.Push do
   Variant that takes an explicit list of subscriptions — used by
   the test suite to fan out without seeding Ecto rows.
   """
-  @spec deliver_many([PushSubscription.t()], map()) :: :ok
+  @spec deliver_many([PushSubscription.t()], map()) ::
+          {:ok, %{attempted: non_neg_integer(), delivered: non_neg_integer()}}
   def deliver_many(subs, payload) when is_list(subs) and is_map(payload) do
     if public_key() == nil do
-      :ok
+      # VAPID not configured — silently skip. The caller is the
+      # in-page PubSub broadcast which keeps working; we just don't
+      # add native delivery on top.
+      {:ok, %{attempted: 0, delivered: 0}}
     else
-      Enum.each(subs, &send_to(&1, payload))
+      results = Enum.map(subs, &send_to(&1, payload))
+      delivered = Enum.count(results, &(&1 == :ok))
+      {:ok, %{attempted: length(subs), delivered: delivered}}
     end
   end
 
@@ -131,6 +153,14 @@ defmodule DtuApp.Push do
 
   # Send one payload to one subscription; delete the row on :gone,
   # log + move on for any other error.
+  #
+  # Returns `:ok` on a successful HTTP 2xx response (a banner
+  # actually showed), `:gone` after pruning a 404/410 handle, or
+  # `:error` on transport / non-2xx. The caller (`deliver_many/2`)
+  # counts `:ok` results into the `delivered` field so the
+  # dispatcher can decide whether the push fan-out actually reached
+  # at least one device — purely `:ok`-returning callers (the old
+  # contract) couldn't tell "delivered" from "all subs were dead".
   defp send_to(%PushSubscription{} = sub, payload) do
     case WebPush.send(PushSubscription.to_web_push(sub), payload) do
       :ok ->
@@ -151,6 +181,7 @@ defmodule DtuApp.Push do
         )
 
         PushSubscriptions.delete_by_endpoint(sub.endpoint)
+        :gone
 
       {:error, reason} ->
         # Transport or unexpected status — log + move on. We
@@ -164,6 +195,7 @@ defmodule DtuApp.Push do
         Logger.warning(
           "[push] failed event=#{payload[:event] || payload["event"]} user_id=#{sub.user_id} endpoint_host=#{endpoint_host(sub.endpoint)} reason=#{inspect(reason)}"
         )
+        :error
     end
   end
 

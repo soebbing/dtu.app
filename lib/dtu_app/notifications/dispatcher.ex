@@ -54,6 +54,26 @@ defmodule DtuApp.Notifications.Dispatcher do
 
   Returns `:ok` once both paths have been attempted. Per-channel
   failures are logged and swallowed.
+
+  ## Push → email fallback
+
+  `user.notification_channel` defaults to `"push"` (the schema
+  default) and `Push.deliver/2` reports `delivered: 0` whenever
+  no live banner was actually shown — VAPID not configured, the
+  user has zero `PushSubscriptions` rows, or every live row got a
+  404/410 mid-fleet-revoke. The user's chosen channel is `push`,
+  so the cond-clause that would otherwise fire email never runs,
+  and the notification evaporates.
+
+  To stop that, when `channel == "push"` and the push fan-out
+  delivered zero banners we additionally fire the email path —
+  gated by the same `user.confirmed_at != nil` check `try_email/3`
+  already enforces for explicit `"email"` / `"both"` channels
+  (so a typo'd signup address still can't be mailed). The
+  `try_email/3` `try/rescue` swallows any template-render or
+  Swoosh-transport failure, so the fallback is strictly best-
+  effort; the user with no confirmed email sees the same one-row
+  push history either way.
   """
   @spec fire(User.t(), String.t(), map()) :: :ok
   def fire(%User{} = user, event, payload) when is_map(payload) do
@@ -69,21 +89,38 @@ defmodule DtuApp.Notifications.Dispatcher do
     # notification).
     push_enabled? = Push.native_enabled?(user, %{"event" => event})
 
-    cond do
-      channel in ["push", "both"] and push_enabled? ->
+    push_should_fire? = channel in ["push", "both"] and push_enabled?
+
+    push_delivered =
+      if push_should_fire? do
         try_push(user, event, payload)
+      else
+        0
+      end
 
-      true ->
-        :ok
-    end
+    # Email routing. Three reasons to send:
+    #   1. The user picked `channel in ["email", "both"]` and the
+    #      event is enabled (explicit email path).
+    #   2. The user picked `channel == "push"` but the push fan-out
+    #      delivered zero banners — fall back to email so the
+    #      notification doesn't silently disappear (the case that
+    #      caused the missing-connection-notifications report).
+    # `try_email/3` enforces `user.confirmed_at != nil`, so case 2
+    # never emails a typo'd signup address — a user with no
+    # confirmed email still gets the one-row history and no banner.
+    email? =
+      cond do
+        channel in ["email", "both"] and push_enabled? ->
+          true
 
-    cond do
-      channel in ["email", "both"] and push_enabled? ->
-        try_email(user, event, payload)
+        channel == "push" and push_should_fire? and push_delivered == 0 ->
+          true
 
-      true ->
-        :ok
-    end
+        true ->
+          false
+      end
+
+    if email?, do: try_email(user, event, payload)
 
     # Record the history row (with `channel` = user's chosen
     # channel at fire time). Skipped when the per-event gate is
@@ -155,12 +192,24 @@ defmodule DtuApp.Notifications.Dispatcher do
   # (today_yield_kwh, chart_svg, dashboard_path, …) would be
   # silently dropped by the SW but cost wire bytes and are a tiny
   # info-leak vector, so we trim eagerly. Date is the push fire time.
+  #
+  # Returns the number of banners the push fan-out actually
+  # delivered (0 when VAPID isn't configured, the user has zero
+  # `PushSubscriptions` rows, every live row got a 404/410 mid-
+  # fan-out, or the dispatch raised). `fire/3` reads this to
+  # decide whether to fall through to the email path when the
+  # user's chosen channel is `"push"` and we don't want them to
+  # silently lose a notification — see the "Push → email fallback"
+  # section on `fire/3`'s moduledoc.
   defp try_push(%User{} = user, event, payload) do
     wire = push_payload(event, payload)
 
     try do
       Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-        Push.deliver(user, wire)
+        case Push.deliver(user, wire) do
+          {:ok, %{delivered: delivered}} -> delivered
+          _ -> 0
+        end
       end)
     rescue
       e ->
@@ -168,7 +217,7 @@ defmodule DtuApp.Notifications.Dispatcher do
           "[dispatcher] push failed event=#{event} user=#{user.id} reason=#{Exception.message(e)}"
         )
 
-        :ok
+        0
     end
   end
 

@@ -275,6 +275,120 @@ defmodule DtuApp.Notifications.DispatcherTest do
     end
   end
 
+  describe "fire/3 push→email fallback" do
+    # Regression suite for the missing-connection-notifications
+    # report. `user.notification_channel` defaults to `"push"`
+    # (the schema default), and the in-page PubSub path doesn't
+    # fan out to email. A user with no live `PushSubscriptions`
+    # rows — fresh sign-up, expired certificates, every device
+    # revoked — would otherwise see the dtu_connection event
+    # silently disappear.
+    #
+    # The fix: when `channel == "push"` and the push fan-out
+    # reports `delivered: 0`, fire the email path too. Gated by
+    # `user.confirmed_at != nil` (existing `try_email/3` guard) and
+    # `Push.native_enabled?/2` (existing per-event preference gate).
+    #
+    # We do NOT clear VAPID here. With VAPID unset, `Push.deliver/2`
+    # short-circuits to `delivered: 0` BEFORE touching the DB, which
+    # is the same outcome the fallback cares about (no banners
+    # shown), but it bypasses the actual `list_for_user/1` lookup
+    # the production path takes. Exercising the no-subscription
+    # branch with VAPID configured is what proves the fallback
+    # works in the real prod shape.
+
+    test "push-only channel with zero subscriptions falls through to email (confirmed)" do
+      # The regression test. `notification_channel = "push"` (the
+      # schema default for fresh sign-ups). `confirmed_at` is set
+      # (login magic link), `notify_dtu_connection = true`. No
+      # PushSubscription rows exist for this fresh user → push
+      # fan-out returns `delivered: 0` → dispatcher must fire email.
+      u = user_with("push", dtu: true)
+
+      # Guard against future fixture changes shadow-seeding
+      # subscriptions (e.g. a future test helper that auto-subscribes
+      # fresh users). The fallback's whole reason for existing is
+      # "no live rows", so the test must assert that precondition
+      # explicitly.
+      assert DtuApp.PushSubscriptions.list_for_user(u) == []
+
+      Dispatcher.fire(u, "dtu_connection", %{
+        event: "dtu_connection",
+        title: "DTU offline",
+        body: ["Your inverter went offline"],
+        tag: "dtu_1",
+        dtu_name: "Garage",
+        status: :disconnected,
+        since: DateTime.utc_now()
+      })
+
+      # Email landed — that's the whole point. Subject comes from
+      # `payload.title` (already localized by the producer).
+      assert_email_sent(subject: "DTU offline")
+
+      # History row recorded the user's chosen channel ("push"),
+      # not the fallback channel. The column reflects the user's
+      # preference at fire time — a follow-up UI that says "show me
+      # notifications that went via email" must NOT see this row.
+      assert [%{channel: "push", event: "dtu_connection"}] =
+               Notifications.list_user_notifications(u, 1)
+    end
+
+    test "push-only channel with zero subscriptions does NOT fall back when email is unconfirmed" do
+      # The fallback inherits `try_email/3`'s `confirmed_at != nil`
+      # guard. A user who signed up with a typo'd address must NOT
+      # get the missing-connection event bounced to that address —
+      # silently losing it is strictly better than sending email to
+      # a typo'd signup address.
+      u = user_with("push", dtu: true, confirmed: false)
+      assert DtuApp.PushSubscriptions.list_for_user(u) == []
+
+      Dispatcher.fire(u, "dtu_connection", %{
+        event: "dtu_connection",
+        title: "DTU offline",
+        body: ["Your inverter went offline"],
+        tag: "dtu_1",
+        dtu_name: "Garage",
+        status: :disconnected,
+        since: DateTime.utc_now()
+      })
+
+      refute_email_sent()
+
+      # History row still records the fire — the user opted into
+      # dtu_connection notifications, the dispatcher tried to
+      # deliver them, only the email leg was suppressed by the
+      # `confirmed_at` guard.
+      assert [%{channel: "push", event: "dtu_connection"}] =
+               Notifications.list_user_notifications(u, 1)
+    end
+
+    test "push-only channel with zero subscriptions does NOT fall back when per-event toggle is off" do
+      # The fallback must not bypass the per-event preference gate.
+      # `notify_dtu_connection = false` means the user explicitly
+      # opted out — sending the fallback email would be sending an
+      # unsolicited email to a user who said "no thanks" to this
+      # event type.
+      u = user_with("push", dtu: false)
+      assert DtuApp.PushSubscriptions.list_for_user(u) == []
+
+      Dispatcher.fire(u, "dtu_connection", %{
+        event: "dtu_connection",
+        title: "DTU offline",
+        body: ["Your inverter went offline"],
+        tag: "dtu_1",
+        dtu_name: "Garage",
+        status: :disconnected,
+        since: DateTime.utc_now()
+      })
+
+      refute_email_sent()
+      # Toggle-off means no history row either — the user opted
+      # out of the entire event.
+      assert Notifications.list_user_notifications(u, 1) == []
+    end
+  end
+
   describe "push_payload/2 service-worker contract" do
     # Regression suite for the Task 7 / Task 7-fix bug: producers
     # emit `body` as a list of paragraphs, but the service worker's

@@ -108,6 +108,14 @@ defmodule DtuApp.PushTest do
       # in-page notification path working and silently skip the
       # web-push fan-out. Otherwise a freshly-deployed server would
       # log noisy errors every time a DTU went offline.
+      #
+      # Return contract: `deliver/2` reports
+      # `{:ok, %{attempted: N, delivered: M}}` even when short-
+      # circuiting. The zero-stats shape is what the dispatcher
+      # keys on for the push→email fallback (`channel: "push"` user
+      # with no live subscriptions) — it must look identical to
+      # "no banners shown because no VAPID keys" so the fallback
+      # path can't distinguish them.
       original = Application.get_env(:web_push, :vapid)
       Application.delete_env(:web_push, :vapid)
 
@@ -117,7 +125,8 @@ defmodule DtuApp.PushTest do
         # user isn't even looked up.
         fake_user = %DtuApp.Accounts.User{id: 0}
 
-        assert :ok = Push.deliver(fake_user, %{event: "test", title: "x", body: "y"})
+        assert {:ok, %{attempted: 0, delivered: 0}} =
+                 Push.deliver(fake_user, %{event: "test", title: "x", body: "y"})
       after
         if original do
           Application.put_env(:web_push, :vapid, original)
@@ -126,11 +135,16 @@ defmodule DtuApp.PushTest do
     end
 
     test "deliver_many/2 is also a no-op when VAPID isn't configured" do
+      # Same return contract as `deliver/2` — even with an empty
+      # list and VAPID unset, the caller gets a zero-stats tuple so
+      # the dispatcher's "channel=push + delivered=0 → fall back to
+      # email" logic stays uniform.
       original = Application.get_env(:web_push, :vapid)
       Application.delete_env(:web_push, :vapid)
 
       try do
-        assert :ok = Push.deliver_many([], %{event: "test"})
+        assert {:ok, %{attempted: 0, delivered: 0}} =
+                 Push.deliver_many([], %{event: "test"})
       after
         if original do
           Application.put_env(:web_push, :vapid, original)
