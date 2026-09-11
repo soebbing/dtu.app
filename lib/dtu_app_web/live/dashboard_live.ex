@@ -2281,16 +2281,37 @@ defmodule DtuAppWeb.DashboardLive do
         # contains the readings for that local day.
         {utc_start, utc_end} = Devices.local_day_utc_range(date, tz_offset_seconds)
 
-        points = Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id)
-        yields = Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id)
-        stats = Devices.compute_day_period_stats(yields, points)
+        # Perf #16: wrap the 4-query historical-day work
+        # (`list_day_chart_data` + `list_range_yield_data` +
+        # `compute_self_consumption_pct`) in a single
+        # `TodayDataCache.fetch/3` call. Mirrors the today branch —
+        # a 15 s TTL covers the PubSub `:reading` broadcast flood
+        # (2–6 Hz on a paired user), so a user who's navigated to
+        # "last Tuesday" and is sitting on that view doesn't pay
+        # 4 round-trips per reading.
+        #
+        # Cache key includes the user's tz_offset (different tz →
+        # different utc window), dtu_id (per-device view vs
+        # fleet), and the picked `date` (clicking through the
+        # calendar invalidates by changing the key).
+        day_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :day, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, date: date],
+            fn ->
+              %{
+                points: Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id),
+                yields: Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id),
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(user, dtu_id, utc_start, utc_end)
+              }
+            end
+          )
 
-        # Self-consumption % for the historical day. Same
-        # computation as the today branch — `(production - exported)
-        # / production × 100` — so a user drilling back into "last
-        # Tuesday" gets the same headline number for that day.
-        day_self_consumption_pct =
-          Devices.compute_self_consumption_pct(user, dtu_id, utc_start, utc_end)
+        %{points: points, yields: yields, self_consumption_pct: day_self_consumption_pct} =
+          day_specific
+
+        stats = Devices.compute_day_period_stats(yields, points)
 
         stats_with_self_consumption =
           Map.put(stats, :self_consumption_pct, day_self_consumption_pct)
@@ -2323,18 +2344,40 @@ defmodule DtuAppWeb.DashboardLive do
           {elem(Devices.local_day_utc_range(monday, tz_offset_seconds), 0),
            elem(Devices.local_day_utc_range(sunday, tz_offset_seconds), 1)}
 
-        yields = Devices.list_range_yield_data(user, monday_utc, sunday_utc_end, dtu_id)
+        # Perf #16: wrap the 3-query week-branch work
+        # (`list_range_yield_data` + `compute_peak_watts_in_period` +
+        # `compute_self_consumption_pct`) in a single
+        # `TodayDataCache.fetch/3` call. Same 15 s TTL + same
+        # PubSub-flood rationale as the `day` branch above.
+        # Cache key includes `monday` so clicking between adjacent
+        # weeks invalidates by changing the key (no separate
+        # invalidate needed).
+        week_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :week, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, monday: monday],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(user, dtu_id, monday_utc, sunday_utc_end)
+
+              %{
+                yields: Devices.list_range_yield_data(user, monday_utc, sunday_utc_end, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(user, dtu_id, monday_utc, sunday_utc_end)
+              }
+            end
+          )
+
+        %{
+          yields: yields,
+          peak_w: week_peak_w,
+          peak_time: week_peak_time,
+          self_consumption_pct: week_self_consumption_pct
+        } = week_specific
+
         stats = Devices.compute_range_period_stats(yields, 7)
-
-        # Peak watts + time across the week, plus self-consumption %.
-        # `compute_peak_watts_in_period/4` reads from readings_5m and
-        # the live tail — same source as the chart, so the dashboard's
-        # peak wattage matches what the chart shows for the same window.
-        {week_peak_w, week_peak_time} =
-          Devices.compute_peak_watts_in_period(user, dtu_id, monday_utc, sunday_utc_end)
-
-        week_self_consumption_pct =
-          Devices.compute_self_consumption_pct(user, dtu_id, monday_utc, sunday_utc_end)
 
         stats =
           stats
@@ -2380,15 +2423,43 @@ defmodule DtuAppWeb.DashboardLive do
           {elem(Devices.local_day_utc_range(first_day, tz_offset_seconds), 0),
            elem(Devices.local_day_utc_range(last_day, tz_offset_seconds), 1)}
 
-        yields = Devices.list_range_yield_data(user, first_utc, last_utc_end, dtu_id)
         total_days = Date.diff(last_day, first_day) + 1
+
+        # Perf #16: wrap the 3-query month-branch work in a single
+        # `TodayDataCache.fetch/3` call. Same shape as the `week`
+        # branch above. Cache key includes `first_day` so clicking
+        # between months invalidates by changing the key.
+        month_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [
+              branch: :month,
+              tz_offset_seconds: tz_offset_seconds,
+              dtu_id: dtu_id,
+              first_day: first_day
+            ],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(user, dtu_id, first_utc, last_utc_end)
+
+              %{
+                yields: Devices.list_range_yield_data(user, first_utc, last_utc_end, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(user, dtu_id, first_utc, last_utc_end)
+              }
+            end
+          )
+
+        %{
+          yields: yields,
+          peak_w: month_peak_w,
+          peak_time: month_peak_time,
+          self_consumption_pct: month_self_consumption_pct
+        } = month_specific
+
         stats = Devices.compute_range_period_stats(yields, total_days)
-
-        {month_peak_w, month_peak_time} =
-          Devices.compute_peak_watts_in_period(user, dtu_id, first_utc, last_utc_end)
-
-        month_self_consumption_pct =
-          Devices.compute_self_consumption_pct(user, dtu_id, first_utc, last_utc_end)
 
         stats =
           stats
@@ -2438,14 +2509,36 @@ defmodule DtuAppWeb.DashboardLive do
           {elem(Devices.local_day_utc_range(start_date, tz_offset_seconds), 0),
            elem(Devices.local_day_utc_range(end_date, tz_offset_seconds), 1)}
 
-        yields = Devices.list_range_yield_data(user, start_utc, end_utc_end, dtu_id)
+        # Perf #16: wrap the 3-query year-branch work in a single
+        # `TodayDataCache.fetch/3` call. Cache key includes the
+        # integer `year` so the year-stepper selector naturally
+        # invalidates by changing the key.
+        year_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :year, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, year: year],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(user, dtu_id, start_utc, end_utc_end)
+
+              %{
+                yields: Devices.list_range_yield_data(user, start_utc, end_utc_end, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(user, dtu_id, start_utc, end_utc_end)
+              }
+            end
+          )
+
+        %{
+          yields: yields,
+          peak_w: year_peak_w,
+          peak_time: year_peak_time,
+          self_consumption_pct: year_self_consumption_pct
+        } = year_specific
+
         stats = Devices.compute_range_period_stats(yields, 12)
-
-        {year_peak_w, year_peak_time} =
-          Devices.compute_peak_watts_in_period(user, dtu_id, start_utc, end_utc_end)
-
-        year_self_consumption_pct =
-          Devices.compute_self_consumption_pct(user, dtu_id, start_utc, end_utc_end)
 
         stats =
           stats
@@ -2483,37 +2576,59 @@ defmodule DtuAppWeb.DashboardLive do
         # the user's tz offset so a CET user at 01:00 local on Monday sees
         # the window start at the previous Tuesday's local midnight
         # (matching the dashboard's other local-day boundaries).
-        yields =
-          Devices.list_last_n_days_yield_data(user, 7, tz_offset_seconds, dtu_id)
-
-        # Stats use the range period helper — divisor is the calendar
-        # span (7) so the average matches what the user gets on a custom
-        # week view, not just the days that have data.
-        stats = Devices.compute_range_period_stats(yields, 7)
-
-        # `local_day_utc_range/2` returns {utc_start, utc_end}; for a
-        # rolling 7-day window we anchor on `today_local` so the peak
-        # watts query covers the same span the bar chart plots.
         today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {seven_day_utc_start, seven_day_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
 
-        {seven_day_peak_w, seven_day_peak_time} =
-          Devices.compute_peak_watts_in_period(
-            user,
-            dtu_id,
-            DateTime.add(seven_day_utc_start, -6 * 86_400, :second),
-            seven_day_utc_end
+        seven_day_window_start = DateTime.add(seven_day_utc_start, -6 * 86_400, :second)
+
+        # Perf #16: wrap the 3-query 7d-branch work in a single
+        # `TodayDataCache.fetch/3` call. Rolling window anchored on
+        # `today_local` — the cache key therefore changes daily at
+        # local midnight (no explicit invalidate needed; the old
+        # entry simply ages out via the 15 s TTL or sits under an
+        # orphan key until the next `:today` / `:day` overwrite
+        # happens to collide). The 15 s TTL is fine because no new
+        # readings for past dates can change the window's content
+        # (the rolling tail re-evaluates on the next cache miss
+        # after local midnight).
+        seven_day_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :"7d", tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(
+                  user,
+                  dtu_id,
+                  seven_day_window_start,
+                  seven_day_utc_end
+                )
+
+              %{
+                yields: Devices.list_last_n_days_yield_data(user, 7, tz_offset_seconds, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(
+                    user,
+                    dtu_id,
+                    seven_day_window_start,
+                    seven_day_utc_end
+                  )
+              }
+            end
           )
 
-        seven_day_self_consumption_pct =
-          Devices.compute_self_consumption_pct(
-            user,
-            dtu_id,
-            DateTime.add(seven_day_utc_start, -6 * 86_400, :second),
-            seven_day_utc_end
-          )
+        %{
+          yields: yields,
+          peak_w: seven_day_peak_w,
+          peak_time: seven_day_peak_time,
+          self_consumption_pct: seven_day_self_consumption_pct
+        } = seven_day_specific
+
+        stats = Devices.compute_range_period_stats(yields, 7)
 
         stats =
           stats
@@ -2543,31 +2658,52 @@ defmodule DtuAppWeb.DashboardLive do
       "30d" ->
         # Last 30 days ending today, daily yields → bar chart. Same
         # boundary handling as `7d` above; just a wider window.
-        yields =
-          Devices.list_last_n_days_yield_data(user, 30, tz_offset_seconds, dtu_id)
-
-        stats = Devices.compute_range_period_stats(yields, 30)
-
         today_local = TimeHelpers.local_today(tz_offset_seconds)
 
         {thirty_day_utc_start, thirty_day_utc_end} =
           Devices.local_day_utc_range(today_local, tz_offset_seconds)
 
-        {thirty_day_peak_w, thirty_day_peak_time} =
-          Devices.compute_peak_watts_in_period(
-            user,
-            dtu_id,
-            DateTime.add(thirty_day_utc_start, -29 * 86_400, :second),
-            thirty_day_utc_end
+        thirty_day_window_start = DateTime.add(thirty_day_utc_start, -29 * 86_400, :second)
+
+        # Perf #16: wrap the 3-query 30d-branch work in a single
+        # `TodayDataCache.fetch/3` call. Same rolling-window shape
+        # as the `7d` branch above.
+        thirty_day_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :"30d", tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(
+                  user,
+                  dtu_id,
+                  thirty_day_window_start,
+                  thirty_day_utc_end
+                )
+
+              %{
+                yields: Devices.list_last_n_days_yield_data(user, 30, tz_offset_seconds, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(
+                    user,
+                    dtu_id,
+                    thirty_day_window_start,
+                    thirty_day_utc_end
+                  )
+              }
+            end
           )
 
-        thirty_day_self_consumption_pct =
-          Devices.compute_self_consumption_pct(
-            user,
-            dtu_id,
-            DateTime.add(thirty_day_utc_start, -29 * 86_400, :second),
-            thirty_day_utc_end
-          )
+        %{
+          yields: yields,
+          peak_w: thirty_day_peak_w,
+          peak_time: thirty_day_peak_time,
+          self_consumption_pct: thirty_day_self_consumption_pct
+        } = thirty_day_specific
+
+        stats = Devices.compute_range_period_stats(yields, 30)
 
         stats =
           stats
@@ -2602,9 +2738,41 @@ defmodule DtuAppWeb.DashboardLive do
         # window starts on Jan 1 (not Jan 1 of an arbitrary year), so the
         # bars stop at the current month rather than going all the way to
         # December.
-        monthly_yields = Devices.list_ytd_yield_data(user, dtu_id)
         today = Date.utc_today()
+        ytd_start_date = Date.new!(today.year, 1, 1)
         months_in_window = today.month
+
+        {ytd_utc_start, ytd_utc_end} =
+          Devices.local_day_utc_range(ytd_start_date, tz_offset_seconds)
+
+        # Perf #16: wrap the 3-query ytd-branch work in a single
+        # `TodayDataCache.fetch/3` call. Rolling window anchored on
+        # the current calendar year — the cache key therefore changes
+        # at local midnight on Jan 1 (no explicit invalidate needed).
+        ytd_specific =
+          TodayDataCache.fetch(
+            user.id,
+            [branch: :ytd, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
+            fn ->
+              {peak_w, peak_time} =
+                Devices.compute_peak_watts_in_period(user, dtu_id, ytd_utc_start, ytd_utc_end)
+
+              %{
+                monthly_yields: Devices.list_ytd_yield_data(user, dtu_id),
+                peak_w: peak_w,
+                peak_time: peak_time,
+                self_consumption_pct:
+                  Devices.compute_self_consumption_pct(user, dtu_id, ytd_utc_start, ytd_utc_end)
+              }
+            end
+          )
+
+        %{
+          monthly_yields: monthly_yields,
+          peak_w: ytd_peak_w,
+          peak_time: ytd_peak_time,
+          self_consumption_pct: ytd_self_consumption_pct
+        } = ytd_specific
 
         # `Devices.list_ytd_yield_data/2` returns
         # `[{{year, month}, kwh}]` — the range-period stats helper
@@ -2624,16 +2792,6 @@ defmodule DtuAppWeb.DashboardLive do
         # Peak watts + self-consumption across Jan 1 → today (the
         # YTD window). Uses the user's tz offset so the boundaries
         # line up with the bar chart's first bar (January).
-        ytd_start_date = Date.new!(today.year, 1, 1)
-
-        {ytd_utc_start, ytd_utc_end} =
-          Devices.local_day_utc_range(ytd_start_date, tz_offset_seconds)
-
-        {ytd_peak_w, ytd_peak_time} =
-          Devices.compute_peak_watts_in_period(user, dtu_id, ytd_utc_start, ytd_utc_end)
-
-        ytd_self_consumption_pct =
-          Devices.compute_self_consumption_pct(user, dtu_id, ytd_utc_start, ytd_utc_end)
 
         stats =
           stats

@@ -1,7 +1,13 @@
 defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   @moduledoc """
-  In-process TTL cache for the today-window pre-fetches at the top of
-  `DashboardLive.assign_dashboard_data/5`:
+  In-process TTL cache for the dashboard's per-branch pre-fetches in
+  `DashboardLive.assign_dashboard_data/5`. Despite the "Today" name,
+  the cache is branch-agnostic — every `time_range` branch (today,
+  day, week, month, year, 7d, 30d, ytd) wraps its query work in
+  `fetch/3` with a distinct `branch:` opt, and the cache key
+  partitions accordingly.
+
+  Today branch (the historical original consumer):
 
     * `Devices.list_today_consumption_chart_data/2` — today-window
       consumption readings bucketed into 5-minute means.
@@ -20,19 +26,40 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
     * `Devices.list_yesterday_chart_data_for_dashboard/4` — yesterday
       ghost-overlay data on the 1D live view.
 
-  `fetch/3` covers the whole today branch of the dashboard, so a
-  2–6 Hz PubSub `:reading` stream collapses to a single
-  ~10-round-trip work pass per 15 s window instead of one per
-  broadcast. The reading-broadcast handler in `DashboardLive`
+  Historical-day branch (`time_range == "day"`):
+
+    * `Devices.list_day_chart_data/4` — historical-day chart points.
+    * `Devices.list_range_yield_data/4` — historical-day yield.
+    * `Devices.compute_self_consumption_pct/5` — historical-day
+      self-consumption percentage.
+
+  Week / month / year / 7d / 30d / ytd branches share the same
+  shape (`list_range_yield_data` + `compute_peak_watts_in_period` +
+  `compute_self_consumption_pct`), each wrapped in its own cache
+  entry so a user navigating between, say, "this month" and
+  "YTD" doesn't poison either view's cache.
+
+  `fetch/3` covers the whole `assign_dashboard_data/5` work pass
+  per branch, so a 2–6 Hz PubSub `:reading` stream collapses to a
+  single ~10-round-trip work pass per 15 s window instead of one
+  per broadcast. The reading-broadcast handler in `DashboardLive`
   calls `invalidate/1` to drop the entry; the next
-  `assign_dashboard_data/5` re-fetches.
+  `assign_dashboard_data/5` re-fetches. Historical branches don't
+  receive a `:reading`-driven invalidation — their data is fixed
+  at render time, so the 15 s TTL handles staleness on its own.
 
   ## Cache key
 
   The key is `{user_id, opts}` where `opts` is the keyword list
-  passed to `fetch/3` (typically `tz_offset_seconds`, `dtu_id`,
-  `cents_per_kwh`). A tz change or DTU switch produces a new key
-  automatically — no extra `invalidate/1` calls needed.
+  passed to `fetch/3`. Every caller passes at least
+  `tz_offset_seconds:` and `dtu_id:` (a tz change or DTU switch
+  produces a new key automatically — no extra `invalidate/1` calls
+  needed). The today branch additionally passes `branch: :today`,
+  and the historical branches pass `branch: :day | :week | :month
+  | :year | :"7d" | :"30d" | :ytd` plus the period identifier
+  (`:date`, `:monday`, `:first_day`, `:year`) where applicable —
+  clicking through the calendar naturally invalidates by changing
+  the key.
 
   ## TTL
 
@@ -42,7 +69,11 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCache do
   minute, and reloads sees readings that landed in the interim
   within the same window. The reading handler's explicit
   `invalidate/1` is what makes the today view pick up fresh
-  readings within the broadcast coalesce window.
+  readings within the broadcast coalesce window. Historical
+  branches don't strictly need the invalidate (their data is
+  fixed), but the same TTL covers a user clicking between
+  adjacent historical periods without paying a round-trip on
+  each click.
 
   ## `fetcher` runs in the caller's process
 
