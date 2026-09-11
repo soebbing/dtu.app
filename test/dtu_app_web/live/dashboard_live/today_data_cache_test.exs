@@ -235,7 +235,9 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCacheTest do
 
       # :today was wiped — the fetcher must run again.
       assert %{which: :today} =
-               TodayDataCache.fetch(user_id, [branch: :today], fn -> %{which: :today, rerun: true} end)
+               TodayDataCache.fetch(user_id, [branch: :today], fn ->
+                 %{which: :today, rerun: true}
+               end)
 
       # The historical branches still hit their original cache entries
       # (the cached fetcher returns :flunk — using flunk-bound fetchers
