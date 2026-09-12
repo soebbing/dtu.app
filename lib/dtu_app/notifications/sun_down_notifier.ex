@@ -87,6 +87,7 @@ defmodule DtuApp.Notifications.SunDown do
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.Reading
   alias DtuApp.Emails.SunDownChart
+  alias DtuApp.SunCalc
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunDownFire
@@ -341,13 +342,74 @@ defmodule DtuApp.Notifications.SunDown do
     if is_nil(user_id), do: state, else: arm_if_idle(state, user_id)
   end
 
+  # Sunset gate: returns `true` iff the user's fleet should be
+  # considered idle AND the current instant is past today's
+  # sunset for the user's geographic position. The user
+  # explicitly asked for "sun_down" to fire only after sunset —
+  # a daily summary fired at noon (under cloud cover) is the
+  # wrong signal (that's `YieldAnomaly`'s job).
+  #
+  # Fallback contract: when the user has no coordinates
+  # (`latitude` / `longitude` nil) `past_sunset?/2` returns
+  # `true`, matching the legacy behaviour. Adding the gate is a
+  # strict upgrade, not a regression for users who never set
+  # their location — they keep getting a fire at any time of
+  # day, same as before.
+  #
+  # Polar edge cases (`{sunrise, nil}` polar day,
+  # `{nil, sunset}` polar night) and other unknown shapes
+  # return `false` — no sunset known for the location today,
+  # so the gate conservatively blocks the fire rather than
+  # guess.
+  defp past_sunset?(user_id, %DateTime{} = now) do
+    case safe_get_user(user_id) do
+      nil ->
+        # User vanished mid-flight (deletion race) — treat as past
+        # sunset so the summary still fires; this matches the
+        # original un-gated behaviour for users that briefly don't
+        # exist.
+        true
+
+      %User{latitude: nil} ->
+        true
+
+      %User{longitude: nil} ->
+        true
+
+      %User{latitude: lat, longitude: lon} when not is_nil(lat) and not is_nil(lon) ->
+        date = DateTime.to_date(now)
+
+        case SunCalc.sunrise_sunset_utc(lat, lon, date) do
+          {_, %DateTime{} = sunset} -> DateTime.compare(now, sunset) in [:gt, :eq]
+          # Polar day (`{_, nil}`), polar night (`{nil, _}`) and
+          # unknown shapes: no sunset known for this location/date,
+          # so conservatively block the fire rather than guess.
+          _ -> false
+        end
+
+      _ ->
+        true
+    end
+  end
+
+  # Test override for "now" — mirrors `:yield_anomaly_now` in
+  # `YieldAnomaly`. Lets the suite drive the sunset-gate check
+  # at a fixed instant without mocking `Time.utc_now/0`. Falls
+  # back to the wall-clock time in production.
+  defp read_now do
+    case Application.get_env(:dtu_app, :sun_down_now, :__unset__) do
+      :__unset__ -> Time.utc_now()
+      %DateTime{} = configured -> configured
+    end
+  end
+
   defp arm_if_idle(state, user_id) do
     case Map.get(state.users, user_id) do
       nil ->
         state
 
       %{devices: devices, zero_since: zero_since, timer: timer} = user_state ->
-        now = Time.utc_now()
+        now = read_now()
         fleet_w = active_fleet_w(devices, now)
         silent? = all_devices_silent?(user_state, now)
 
@@ -366,7 +428,19 @@ defmodule DtuApp.Notifications.SunDown do
           # where the entire fleet has gone silent (no fresh AC readings
           # in the last @fleet_reading_stale_seconds); we still want a
           # summary at the end of a silent day.
-          (fleet_w == 0.0 or silent?) and zero_since == nil ->
+          #
+          # Sunset gate: a daily summary at noon is meaningless — the
+          # user explicitly asked for "sun_down", which only fires
+          # once the sun is actually down. Look up the user to read
+          # their coordinates; the DB hit is only charged on the
+          # rare idle-transition path, never on the hot reactive
+          # path (the cond branches above return state unchanged
+          # for the producing-power cases). Users without
+          # coordinates fall back to the legacy behaviour
+          # (fire regardless) — `past_sunset?/2` returns `true` for
+          # them — so adding the gate is a strict upgrade, not a
+          # regression for users who never set their location.
+          (fleet_w == 0.0 or silent?) and zero_since == nil and past_sunset?(user_id, now) ->
             zero_since = Time.utc_now()
 
             idle_seconds = idle_seconds()
