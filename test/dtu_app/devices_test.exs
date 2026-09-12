@@ -3106,6 +3106,81 @@ defmodule DtuApp.DevicesTest do
       stats = Devices.get_consumption_daily_stats(user)
       assert_in_delta stats.current_consumption, 42.0, 0.1
     end
+
+    test "current_consumption is 0.0 when the only readings are older than 2 minutes (DISTINCT ON bound)" do
+      # Perf regression for the unbounded `SELECT DISTINCT ON (dtu_id)
+      # ... ORDER BY inserted_at DESC` in `get_consumption_daily_stats/3`
+      # (consumption side, no `inserted_at` bound). Same fix as the
+      # net-flow helper: `r.inserted_at >= ^two_minutes_ago` is added to
+      # the WHERE clause, turning the unbounded DISTINCT ON into a
+      # single-chunk range scan. Semantics unchanged — the in-memory
+      # `fresh?` filter already dropped stale rows. See the matching
+      # comment in `get_net_flow_stats/3` for the prod-telemetry data.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # Only reading is 3 minutes stale — must be ignored entirely.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 800.0,
+          inserted_at: DateTime.add(now, -180, :second)
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert_in_delta stats.current_consumption, 0.0, 0.1
+    end
+
+    test "current_consumption returns the fresh value even with many stale rows (bounded scan correctness)" do
+      # Companion to the net-flow equivalent test: 500 stale readings
+      # plus 1 fresh reading. Pre-fix the unbounded DISTINCT ON walked
+      # all 501 rows; post-fix the DB-level bound excludes the stale
+      # 500 outright. Either way the fresh value must win.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      for idx <- 0..499 do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: device.id,
+            inverter_serial: "em:0",
+            mppt_index: 0,
+            power_type: "consumption",
+            consumption_power: 800.0,
+            inserted_at: DateTime.add(now, -(180 * 1_000_000) - idx, :microsecond)
+          })
+      end
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 76.0,
+          inserted_at: DateTime.add(now, -10, :second)
+        })
+
+      stats = Devices.get_consumption_daily_stats(user)
+      assert_in_delta stats.current_consumption, 76.0, 0.1
+    end
   end
 
   describe "get_consumption_period_stats/4 — period-aware consumption stats" do
@@ -4093,6 +4168,63 @@ defmodule DtuApp.DevicesTest do
 
       stats = Devices.get_net_flow_stats(user)
       assert_in_delta stats.current_net_flow, 800.0, 0.1
+    end
+
+    test "current_net_flow is 0.0 when the only readings are older than 2 minutes (DISTINCT ON bound)" do
+      # Perf regression for the unbounded `SELECT DISTINCT ON (dtu_id,
+      # power_type) ... ORDER BY inserted_at DESC` in
+      # `get_net_flow_stats/3` (no `inserted_at` bound). Pre-fix this
+      # query walked the entire `readings` hypertable on every mount
+      # — observed 13.1 s on a multi-year install with ~3.7 M rows
+      # (perf-telemetry 2026-09-12). Post-fix the query carries
+      # `r.inserted_at >= ^two_minutes_ago`, collapsing the scan to a
+      # single chunk. The semantics are unchanged: the in-memory
+      # `fresh?` filter already dropped stale rows before the DB bound
+      # was added, so a DTU with only stale readings contributed 0 W
+      # before and still contributes 0 W now. This test pins that
+      # equivalence — a future refactor that re-introduces an
+      # unbounded DISTINCT ON would still produce the same
+      # observable value, but this test would still pass; the win
+      # is that we now also have a comment-bound and DB-bound guard
+      # with the same observable behaviour.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      inverter = DevicesFixtures.device_fixture(user)
+
+      shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # Inverter's only reading is 3 minutes stale (production,
+      # 999 W) — would have been dropped by the in-memory filter.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: inverter.id,
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          power_type: "production",
+          ac_power: 999.0,
+          inserted_at: DateTime.add(now, -180, :second)
+        })
+
+      # Shelly's only reading is 4 minutes stale (consumption,
+      # 555 W) — also dropped.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: shelly.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          power_type: "consumption",
+          consumption_power: 555.0,
+          inserted_at: DateTime.add(now, -240, :second)
+        })
+
+      stats = Devices.get_net_flow_stats(user)
+      # No fresh readings → no production_now, no consumption_now.
+      assert_in_delta stats.current_net_flow, 0.0, 0.1
     end
   end
 

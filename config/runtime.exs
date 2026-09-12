@@ -36,7 +36,24 @@ if config_env() == :prod do
   config :dtu_app, DtuApp.Repo,
     # ssl: true,
     url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
+    # Bumped from 10 to 20 to absorb MQTT-ingest write bursts without
+    # starving the dashboard's read path. With 10 slots, the live
+    # `INSERT INTO readings ...` cycle (one per Shelly/em:0 / per
+    # inverter/5-10 s) held connections long enough that the
+    # dashboard's mount process queued on `DBConnection.checkout`,
+    # visible in telemetry as `idle_time: ~1.5 s` spikes on trivial
+    # `SELECT FROM dtus WHERE id = $1` lookups (perf-telemetry
+    # 2026-09-12). 20 slots gives 2× headroom for mixed read/write
+    # workloads. Override at deploy time with `POOL_SIZE=N`.
+    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "20"),
+    # `queue_target` caps the number of processes waiting for a
+    # connection. When exceeded, new checkouts fail fast (raise)
+    # instead of silently piling up behind a 15 s checkout_timeout —
+    # which would otherwise let a dashboard mount thread wedge the
+    # whole endpoint until it times out. 50 keeps the per-request
+    # queue short enough that misconfigurations surface as fast
+    # errors instead of long-tail latency.
+    queue_target: 50,
     # For machines with several cores, consider starting multiple pools of `pool_size`
     # pool_count: 4,
     socket_options: maybe_ipv6
