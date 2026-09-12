@@ -533,23 +533,43 @@ defmodule DtuApp.Notifications.SunDown do
   defp try_fire(%User{} = user) do
     today = Date.utc_today()
 
-    case insert_fire(user.id, today) do
-      :ok ->
-        # The SunDown producer runs as a long-lived GenServer
-        # without a request context, so `gettext/1` would default to
-        # whatever Gettext was initialized with (≈ "en") regardless
-        # of the user's preference. Wrap the build_payload +
-        # dispatch pair in the user's locale so the title/body
-        # strings are generated in the right language — both the
-        # in-page PubSub broadcast and the dispatcher's email
-        # rendering (handled inside `Dispatcher.fire/3` via its own
-        # `Gettext.with_locale/2` wrapper) carry that locale.
-        Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          case build_payload(user, today) do
-            nil ->
-              :ok
+    # The SunDown producer runs as a long-lived GenServer
+    # without a request context, so `gettext/1` would default to
+    # whatever Gettext was initialized with (≈ "en") regardless
+    # of the user's preference. Wrap the build_payload +
+    # dispatch pair in the user's locale so the title/body
+    # strings are generated in the right language — both the
+    # in-page PubSub broadcast and the dispatcher's email
+    # rendering (handled inside `Dispatcher.fire/3` via its own
+    # `Gettext.with_locale/2` wrapper) carry that locale.
+    #
+    # Order matters: `build_payload/2` runs FIRST so the dedup
+    # `sun_down_fires` row is only written when there is
+    # something to dispatch. A user with devices but no
+    # readings inside today's date range (silent-inverter
+    # overnight / post-deploy-at-night seed scenario) makes
+    # `build_payload/2` return `nil` — writing the dedup row
+    # before that check would silently swallow the day's
+    # notification AND lock out any later retry (the row's
+    # unique constraint blocks every subsequent fire attempt
+    # until tomorrow).
+    Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+      case build_payload(user, today) do
+        nil ->
+          # No payload — nothing to broadcast, no email, no
+          # push, no history row. Log a warning so an operator
+          # can spot silent-inverter installs in production
+          # logs; the day is left open for a later sweep that
+          # might find real readings.
+          Logger.warning(
+            "[sun_down] no payload user=#{user.id} fired_on=#{Date.to_iso8601(today)} reason=no_today_readings"
+          )
 
-            payload ->
+          :ok
+
+        payload ->
+          case insert_fire(user.id, today) do
+            :ok ->
               # Augment the payload with the email-specific keys.
               # `build_payload/2` retains the in-page JS shape
               # (`today_yield_yesterday_kwh` /
@@ -587,12 +607,17 @@ defmodule DtuApp.Notifications.SunDown do
               )
 
               Dispatcher.fire(user, "sun_down", full)
-          end
-        end)
 
-      {:error, :duplicate} ->
-        :ok
-    end
+            {:error, :duplicate} ->
+              # Another idle window for the same user fired
+              # between our `build_payload/2` and
+              # `insert_fire/2` calls and beat us to the row.
+              # The other fire already broadcast + dispatched —
+              # nothing to do.
+              :ok
+          end
+      end
+    end)
   end
 
   defp insert_fire(user_id, %Date{} = fired_on) do
