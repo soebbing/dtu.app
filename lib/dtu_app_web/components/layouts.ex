@@ -5,8 +5,10 @@ defmodule DtuAppWeb.Layouts do
   """
   use DtuAppWeb, :html
 
+  alias DtuAppWeb.InstallPromptButton
   alias DtuAppWeb.NetworkStatusIndicator
   alias DtuAppWeb.OfflineBanner
+  alias DtuAppWeb.StaleDataBadge
 
   @repo_url "https://github.com/soebbing/dtu.app"
 
