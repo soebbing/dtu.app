@@ -699,4 +699,100 @@ defmodule DtuApp.Notifications.SunDownTest do
       assert payload.date == Date.to_iso8601(Date.utc_today())
     end
   end
+
+  describe "silent drop when build_payload/2 returns nil" do
+    # Regression: a user with devices but zero AC readings inside
+    # today's date range used to drop silently inside `try_fire/1`:
+    #
+    #   1. The dedup `sun_down_fires` row was inserted FIRST
+    #      (`insert_fire(user.id, today)` at the top of `try_fire/1`).
+    #   2. `build_payload/2` then returned `nil` because
+    #      `current_power == 0.0 and per_series == []` — the
+    #      `Devices.get_daily_stats/3` result for a user with
+    #      devices but no readings inside today.
+    #   3. The `case` branch fell into `nil -> :ok`, so neither
+    #      `Phoenix.PubSub.broadcast/3` nor `Dispatcher.fire/3`
+    #      ran — no in-page banner, no push, no email, no
+    #      `notifications` history row.
+    #   4. The dedup row was already committed, locking the user
+    #      out of any retry for the rest of the day — even if a
+    #      reading arrived later that would have made
+    #      `build_payload/2` succeed.
+    #
+    # Most common real-world trigger: deploy / restart at night.
+    # `seed_users_from_db/0` (cutoff = `@seed_window_seconds`,
+    # 24h) loads a user whose last reading is from yesterday
+    # evening. The 5-min sweep re-checks the cache, sees the
+    # cached entry is past `@fleet_reading_stale_seconds`
+    # (300s), arms the timer, and `try_fire/1` runs with no
+    # readings inside today's date range.
+    #
+    # Contract pinned by the tests in this describe: when
+    # `build_payload/2` returns nil, the producer must NOT
+    # write a `sun_down_fires` row, must NOT broadcast, and
+    # must NOT emit a `notifications` history row. The user's
+    # day is left untouched so a later reading + sweep can
+    # still produce a real summary.
+    test "no dedup row, no broadcast, no history row when the user has devices but no readings today" do
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Silent Inverter"})
+
+      # Deliberately NO `Devices.create_reading/1` for today.
+      # `owned_dtu_ids(user, nil)` returns `[dtu.id]` (the
+      # device exists), but the DISTINCT ON query inside
+      # `get_daily_stats/3` filters by today's date range and
+      # returns `[]` — so `current_power == 0.0` AND
+      # `per_series == []`, which trips the `build_payload/2`
+      # nil guard.
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Prime the producer cache with a yesterday-stale entry.
+      # Mirrors the post-deploy-at-night seed scenario:
+      # yesterday's last reading was 250 W (a sunny afternoon),
+      # then the inverter went silent overnight.
+      yesterday = DateTime.add(Time.utc_now(), -86_400, :second)
+
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{
+              dtu.id => %{power_w: 250.0, last_reading_at: yesterday}
+            },
+            zero_since: nil,
+            timer: nil
+          })
+
+        %{state | users: users, device_to_user: Map.put(state.device_to_user, dtu.id, user.id)}
+      end)
+
+      # Drive the producer through the same path the periodic
+      # sweep takes: `:sun_down_sweep` → `arm_if_idle/2` →
+      # `{:fire_sun_down, user_id}` → `try_fire/1`.
+      # `idle_seconds: 0` (set in `setup`) makes the armed
+      # timer fire on the next message-pass, no extra wait.
+      send(SunDown, :sun_down_sweep)
+
+      # No `:notification` PubSub broadcast reaches the user.
+      refute_receive {:notification, _}, 500
+
+      # No `sun_down_fires` row for today — the dedup row MUST
+      # only be written when a real payload is going to be
+      # dispatched. (This is the assertion that fails before
+      # the fix: the producer inserted the dedup row first
+      # and then discovered the payload was nil.)
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunDownFire, where: f.user_id == ^user.id),
+               :count
+             ) == 0
+
+      # No `notifications` history row — `Dispatcher.fire/3`
+      # is the only writer, and it must not run when the
+      # producer has nothing to dispatch.
+      assert DtuApp.Repo.aggregate(
+               from(n in DtuApp.Notifications.Notification, where: n.user_id == ^user.id),
+               :count
+             ) == 0
+    end
+  end
 end
