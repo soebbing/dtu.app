@@ -1091,10 +1091,24 @@ defmodule DtuAppWeb.DashboardLive do
     # curve on single-inverter installs. Same defensive filter lives
     # at the data layer in `get_daily_stats/3` and `Devices.list_*` for
     # the same reason.
+    #
+    # `inverter_serial != "em:0"` is the matching defensive filter for
+    # the Shelly Plus 3EM case. The Shelly parser writes rows with
+    # `inverter_serial: "em:0"`, `mppt_index: 0`, `power_type:
+    # "consumption"`, and nil `ac_power`/`dc_power` — the
+    # `chart_power_for_mppt/1` nil-fallback returns 0.0 W for that
+    # combination, which would otherwise render a synthetic flat-zero
+    # line labelled "em:0" on the production chart. The data-layer
+    # filter (`r.power_type == "production"` in
+    # `list_day_readings_for_chart/4` and
+    # `live_tail_bucketed_chart_points/3`) is the source of truth;
+    # this clause is belt-and-suspenders for any caller that reaches
+    # the dashboard with a hand-rolled `chart_points` opt.
     chart_points =
       all_chart_points
       |> Enum.filter(fn pt ->
-        pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+        {_, serial, mppt_index, _name} = pt.series
+        mppt_index == 0 and serial not in ["_fleet", "em:0"]
       end)
       # `readings_5m.avg_ac_power` is NULL for buckets whose only rows
       # had `ac_power: nil` (e.g. an AhoyDTU yield-only buffer flush
@@ -2282,7 +2296,8 @@ defmodule DtuAppWeb.DashboardLive do
                   dtu_id
                 )
                 |> Enum.filter(fn pt ->
-                  pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
+                  {_, serial, mppt_index, _name} = pt.series
+                  mppt_index == 0 and serial not in ["_fleet", "em:0"]
                 end)
                 |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
 

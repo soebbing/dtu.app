@@ -675,9 +675,20 @@ defmodule DtuApp.Devices do
     else
       Repo.all(
         from r in Reading,
+          # Filter to production-side rows so a paired Shelly Plus
+          # 3EM (which writes rows with `inverter_serial: "em:0"`
+          # and `power_type: "consumption"`) never contributes to
+          # the production chart's input stream. Without this,
+          # `chart_power_for_mppt/1`'s nil-fallback returns 0.0 W
+          # for every Shelly row, producing a synthetic flat-zero
+          # line labelled "em:0" in the legend (see the matching
+          # filter in `live_tail_bucketed_chart_points/3` and the
+          # defensive filter in
+          # `DtuAppWeb.DashboardLive.assign_line_chart_data/5`).
           where:
             r.dtu_id in ^dtu_ids and
-              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
+              r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end and
+              r.power_type == "production",
           order_by: [asc: r.inserted_at],
           select: %{
             inserted_at: r.inserted_at,
@@ -1045,7 +1056,8 @@ defmodule DtuApp.Devices do
         from r in Reading,
           where:
             r.dtu_id in ^dtu_ids and
-              r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end,
+              r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end and
+              r.power_type == "production",
           group_by: [
             fragment("time_bucket(INTERVAL '5 minutes', ?)", r.inserted_at),
             r.dtu_id,

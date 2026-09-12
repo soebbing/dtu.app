@@ -1176,6 +1176,77 @@ defmodule DtuApp.DevicesTest do
                their_dtu.id
              ) == []
     end
+
+    test "drops Shelly Plus 3EM 'em:0' rows from the production-side chart points" do
+      # Regression: the live-tail reader at
+      # `live_tail_bucketed_chart_points/3` used to emit a chart point
+      # for every Shelly consumption row (inverter_serial: "em:0",
+      # power_type: "consumption", ac_power: nil, dc_power: nil). The
+      # `chart_power_for_mppt/1` fallback returns 0.0 for that
+      # combination, so the point plotted a flat zero line on the
+      # production chart, labelled "em:0" via
+      # `series_legend`'s `friendly = name || serial`. Filtering at
+      # the data layer (WHERE power_type = 'production') keeps the
+      # Shelly data flowing to the consumption overlay / daily stats /
+      # net flow, but never lets a synthetic zero row reach the
+      # production chart's input stream.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      device =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      now = DateTime.utc_now()
+
+      # One real production reading on a paired inverter — proves the
+      # filter doesn't accidentally drop AC rows.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "INV-1",
+          inverter_name: "INV-1",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: now
+        })
+
+      # And one Shelly consumption row with the same DTU id but the
+      # `inverter_serial: "em:0"` shape the parser writes — this is
+      # the row the filter must drop.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: device.id,
+          inverter_serial: "em:0",
+          mppt_index: 0,
+          inverter_name: nil,
+          power_type: "consumption",
+          ac_power: nil,
+          dc_power: nil,
+          consumption_power: 120.0,
+          inserted_at: now
+        })
+
+      points =
+        Devices.list_day_chart_data_for_dashboard(
+          user,
+          DateTime.add(now, -3600, :second),
+          DateTime.add(now, 3600, :second),
+          device.id
+        )
+
+      serials =
+        points
+        |> Enum.map(fn pt -> elem(pt.series, 1) end)
+        |> Enum.uniq()
+
+      assert "em:0" not in serials,
+             "production chart points included Shelly em:0 row: #{inspect(serials)}"
+
+      assert "INV-1" in serials,
+             "real inverter row was also dropped — filter is too broad"
+    end
   end
 
   describe "list_yesterday_chart_data_for_dashboard/4 (yesterday ghost)" do
