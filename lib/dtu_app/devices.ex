@@ -1462,13 +1462,25 @@ defmodule DtuApp.Devices do
         latest_readings =
           Repo.all(
             from r in Reading,
-              where: r.dtu_id in ^dtu_ids,
+              where: r.dtu_id in ^dtu_ids and r.inserted_at >= ^two_minutes_ago,
               distinct: [r.dtu_id, r.power_type],
               order_by: [r.dtu_id, r.power_type, desc: r.inserted_at]
           )
 
         # `distinct: [r.dtu_id, r.power_type]` gives one row per
         # (dtu_id, power_type) — production and consumption latest.
+        # The `inserted_at >= ^two_minutes_ago` bound turns the
+        # otherwise-unbounded DISTINCT ON into a single-chunk range
+        # scan via the `(dtu_id, power_type, inserted_at)` access
+        # path. It is semantically equivalent to the original query:
+        # the reduce loop below discards any row older than
+        # `two_minutes_ago` via `DateTime.after?(r.inserted_at,
+        # two_minutes_ago)`, so a DTU whose latest reading is older
+        # than the bound contributes 0 W either way. Without this
+        # bound, a multi-year install's `readings` hypertable walks
+        # every compressed chunk on every dashboard mount —
+        # observed 13.1 s for a user with ~3.7 M readings (see
+        # perf-telemetry 2026-09-12).
         {production_now, consumption_now} =
           Enum.reduce(latest_readings, {0.0, 0.0}, fn r, {p, c} ->
             fresh? = DateTime.after?(r.inserted_at, two_minutes_ago)
@@ -1888,7 +1900,9 @@ defmodule DtuApp.Devices do
       latest_readings =
         Repo.all(
           from r in Reading,
-            where: r.dtu_id in ^dtu_ids and r.power_type == "consumption",
+            where:
+              r.dtu_id in ^dtu_ids and r.power_type == "consumption" and
+                r.inserted_at >= ^two_minutes_ago,
             distinct: [r.dtu_id],
             order_by: [r.dtu_id, desc: r.inserted_at]
         )
