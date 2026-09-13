@@ -40,9 +40,15 @@ defmodule DtuAppWeb.StaleDataBadge do
         [
           "stale-data-badge",
           "fixed inset-x-0 z-40",
-          # CSS hides when `data-freshness="fresh"`, slides in for
-          # the degraded states. The hook updates `data-freshness`
-          # as events fire.
+          # Tailwind handles layout + the slide-in entrance. The
+          # CSS in app.css (targeting `data-freshness`) handles
+          # the colour mapping and the reveal: when the hook
+          # flips `data-freshness` to anything other than
+          # "fresh", the CSS removes `-translate-y-full` and
+          # `opacity-0` (and paints the colour for that state).
+          "transform -translate-y-full opacity-0",
+          "transition-all duration-300 ease-out motion-reduce:transition-none",
+          "shadow-md",
           @class
         ]
       }
