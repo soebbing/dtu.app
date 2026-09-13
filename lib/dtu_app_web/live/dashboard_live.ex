@@ -25,14 +25,17 @@ defmodule DtuAppWeb.DashboardLive do
   # `ChartPalette` owns the per-series colour assignment + Tailwind
   # hex lookup used by the tooltip swatches. See the module docs on
   # each for the rationale.
-  alias DtuAppWeb.DashboardLive.ChartHelpers
   alias DtuAppWeb.DashboardLive.ChartPalette
   alias DtuAppWeb.DashboardLive.Components
+  alias DtuAppWeb.DashboardLive.DashboardData
   alias DtuAppWeb.DashboardLive.DashboardMountCache
+  alias DtuAppWeb.DashboardLive.DtuKinds
   alias DtuAppWeb.DashboardLive.MountTiming
   alias DtuAppWeb.DashboardLive.PeriodSelectable
+  alias DtuAppWeb.DashboardLive.ShareLink
   alias DtuAppWeb.DashboardLive.TimeHelpers
   alias DtuAppWeb.DashboardLive.TodayDataCache
+  alias DtuAppWeb.DashboardLive.Weather
 
   # Dashboard-specific function components (`<.dtu_switcher>`,
   # `<.quick_range_switcher>`, `<.historical_stepper>`,
@@ -225,7 +228,7 @@ defmodule DtuAppWeb.DashboardLive do
     # because the Shelly's reading-side queries aren't all cached).
     {mount_stages, socket} =
       MountTiming.measure(:dashboard_data, mount_stages, fn ->
-        assign_dashboard_data(socket, user, nil, "today", nil)
+        DashboardData.assign_dashboard_data(socket, user, nil, "today", nil)
       end)
 
     MountTiming.emit(mount_start, mount_stages, user_id: user.id)
@@ -233,50 +236,21 @@ defmodule DtuAppWeb.DashboardLive do
     {:ok, socket}
   end
 
-  # The three weather-driven assigns start as placeholders so the
-  # WebSocket mount's first render (before the async fetch returns)
-  # has something to read. On the HTTP render path `kickoff_weather_fetch/6`
-  # runs the fetch inline and overwrites them before the response ships,
-  # so the initial HTML includes the band + current-condition. On the
-  # WebSocket path the same kickoff spawns a Task that sends
-  # `{:weather_update, snapshot}` to self, and `handle_info/2` below
-  # applies the values. See `kickoff_weather_fetch/6` for the full
-  # rationale — it's the only HTTP-vs-WebSocket split in the mount path
-  # because the HTTP render is one-shot (no follow-up render).
-  defp assign_weather_placeholders(socket) do
-    socket
-    |> assign(:cloud_cover_line, %{
-      path: "",
-      area_path: "",
-      has_data: false,
-      points: [],
-      ticks: [0, 25, 50, 75, 100]
-    })
-    |> assign(:current_cloud_cover, nil)
-    |> assign(:current_cloud_cover_pct, nil)
-  end
-
-  # Cloud-cover fingerprint — see `kickoff_weather_fetch/6` for the
-  # full rationale. The five inputs that determine whether the
-  # Open-Meteo response would differ from the snapshot we already
-  # hold, packed into a single value-comparable tuple:
-  #
-  #   * `user.latitude` / `user.longitude` — different fetch bucket
-  #     (`Weather.Cache.key/3` rounds to 1°, but only when the
-  #     coords cross that integer boundary);
-  #   * `local_date` — the daily-band start anchors on the user's
-  #     local date;
-  #   * `x_min_seconds` / `x_max_seconds` — the visible X window
-  #     that `build_cloud_cover_band/5` projects into;
-  #   * `tz_offset_seconds` — re-derives local seconds-of-day from
-  #     the UTC chart points.
-  #
-  # Anything else (a fresh `:reading` broadcast, a quick-range
-  # re-click with the same args, a `refresh_devices` callback) keeps
-  # the fingerprint identical and the snapshot stays valid.
-  defp weather_fingerprint(user, local_date, x_min, x_max, tz_offset_seconds) do
-    {user.latitude, user.longitude, local_date, x_min, x_max, tz_offset_seconds}
-  end
+  # Weather cluster (`assign_weather_placeholders/1`,
+  # `kickoff_weather_fetch/6`, `fetch_weather_snapshot/5`,
+  # `apply_weather_snapshot/2`, `build_cloud_cover_band/5`,
+  # `weather_current_condition/1`, `weather_current_pct/1`,
+  # `most_recent_pct/2`, `weather_fingerprint/5`) lives in
+  # `DtuAppWeb.DashboardLive.Weather` — see that module's @moduledoc
+  # for the HTTP-vs-WebSocket split rationale and the
+  # failure-handling contract.
+  # weather-fetch cluster (`kickoff_weather_fetch/6`,
+  # `fetch_weather_snapshot/5`, `apply_weather_snapshot/2`,
+  # `assign_weather_placeholders/1`, `build_cloud_cover_band/5`,
+  # `weather_current_condition/1`, `weather_current_pct/1`,
+  # `most_recent_pct/2`) live in `DtuAppWeb.DashboardLive.Weather` —
+  # see that module's @moduledoc for the HTTP-vs-WebSocket split
+  # rationale and the failure-handling contract.
 
   # `phx-push` path: the JS hook's `this.pushEvent("set_timezone", ...)`
   # arrives here and is forwarded to `handle_info({:set_timezone, ...})`
@@ -342,7 +316,7 @@ defmodule DtuAppWeb.DashboardLive do
     socket =
       socket
       |> assign(:selected_dtu_id, selected_id)
-      |> reapply_current_view(user, selected_id)
+      |> DashboardData.reapply_current_view(user, selected_id)
 
     {:noreply, socket}
   end
@@ -372,7 +346,7 @@ defmodule DtuAppWeb.DashboardLive do
           |> assign(:live, true)
           |> assign(:time_range, "today")
           |> assign(:selected_period, nil)
-          |> assign_dashboard_data(user, dtu_id, "today", nil)
+          |> DashboardData.assign_dashboard_data(user, dtu_id, "today", nil)
 
         "7d" ->
           socket
@@ -380,7 +354,7 @@ defmodule DtuAppWeb.DashboardLive do
           |> assign(:live, false)
           |> assign(:time_range, "7d")
           |> assign(:selected_period, nil)
-          |> assign_dashboard_data(user, dtu_id, "7d", nil)
+          |> DashboardData.assign_dashboard_data(user, dtu_id, "7d", nil)
 
         "30d" ->
           socket
@@ -388,7 +362,7 @@ defmodule DtuAppWeb.DashboardLive do
           |> assign(:live, false)
           |> assign(:time_range, "30d")
           |> assign(:selected_period, nil)
-          |> assign_dashboard_data(user, dtu_id, "30d", nil)
+          |> DashboardData.assign_dashboard_data(user, dtu_id, "30d", nil)
 
         "ytd" ->
           socket
@@ -396,7 +370,7 @@ defmodule DtuAppWeb.DashboardLive do
           |> assign(:live, false)
           |> assign(:time_range, "ytd")
           |> assign(:selected_period, nil)
-          |> assign_dashboard_data(user, dtu_id, "ytd", nil)
+          |> DashboardData.assign_dashboard_data(user, dtu_id, "ytd", nil)
 
         "custom" ->
           # Keep the existing granularity + period; the stepper already
@@ -410,7 +384,7 @@ defmodule DtuAppWeb.DashboardLive do
           |> assign(:range_preset, "custom")
           |> assign(:live, false)
           |> assign(:time_range, granularity)
-          |> assign_dashboard_data(user, dtu_id, granularity, period)
+          |> DashboardData.assign_dashboard_data(user, dtu_id, granularity, period)
       end
 
     {:noreply, socket}
@@ -439,7 +413,7 @@ defmodule DtuAppWeb.DashboardLive do
      |> assign(:live, false)
      |> assign(:granularity, granularity)
      |> assign(:time_range, granularity)
-     |> assign_dashboard_data(user, dtu_id, granularity, period)}
+     |> DashboardData.assign_dashboard_data(user, dtu_id, granularity, period)}
   end
 
   # Stepper: move one granularity step backward/forward.
@@ -459,7 +433,7 @@ defmodule DtuAppWeb.DashboardLive do
      socket
      |> assign(:live, false)
      |> assign(:time_range, granularity)
-     |> assign_dashboard_data(user, dtu_id, granularity, period)}
+     |> DashboardData.assign_dashboard_data(user, dtu_id, granularity, period)}
   end
 
   # Calendar: native <input type=date> picks the anchor date for the granularity.
@@ -477,7 +451,7 @@ defmodule DtuAppWeb.DashboardLive do
          socket
          |> assign(:live, false)
          |> assign(:time_range, granularity)
-         |> assign_dashboard_data(user, dtu_id, granularity, period)}
+         |> DashboardData.assign_dashboard_data(user, dtu_id, granularity, period)}
 
       {:error, _} ->
         {:noreply, socket}
@@ -560,34 +534,10 @@ defmodule DtuAppWeb.DashboardLive do
 
   def handle_event("toggle_share", _payload, socket), do: {:noreply, socket}
 
-  defp do_apply_share_link_result(socket, {:ok, {plaintext, _link}}) do
-    {:noreply,
-     socket
-     |> assign(:share_active?, true)
-     |> assign(:share_url, url_for_token(plaintext))
-     |> assign(:share_loading?, false)}
-  end
-
-  defp do_apply_share_link_result(socket, {:error, reason}) do
-    user = socket.assigns.current_scope.user
-
-    Logger.warning(
-      "[dashboard] create_shared_link failed user=#{user.id} reason=#{inspect(reason)}"
-    )
-
-    {:noreply,
-     socket
-     |> assign(:share_loading?, false)
-     |> assign(:share_active?, false)
-     |> assign(:share_url, nil)}
-  end
-
-  # Build the public share URL from a plaintext token. Uses the configured
-  # PHX_HOST so the link points at the right deployment (dev / staging /
-  # production) without a hard-coded hostname.
-  defp url_for_token(token) do
-    DtuAppWeb.Endpoint.url() <> "/s/" <> token
-  end
+  # Share-link result handlers live in
+  # `DtuAppWeb.DashboardLive.ShareLink` (`apply_result/2` and
+  # `url_for_token/1`). See that module's moduledoc for the toggle
+  # flow contract.
 
   # Phase 2 of the enable flow: the delayed `Process.send_after` from
   # `toggle_share` fired. Run the DB work synchronously on the LiveView
@@ -600,7 +550,7 @@ defmodule DtuAppWeb.DashboardLive do
 
     if user_id == current_user_id do
       user = socket.assigns.current_scope.user
-      do_apply_share_link_result(socket, Accounts.create_shared_link(user))
+      ShareLink.apply_result(socket, Accounts.create_shared_link(user))
     else
       {:noreply, socket}
     end
@@ -693,7 +643,7 @@ defmodule DtuAppWeb.DashboardLive do
     socket =
       socket
       |> assign(:dashboard_refresh_pending, false)
-      |> maybe_reassign_dashboard_data(user, selected_id)
+      |> DashboardData.maybe_reassign_dashboard_data(user, selected_id)
 
     {:noreply, socket}
   end
@@ -796,7 +746,7 @@ defmodule DtuAppWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:user_tz_offset_seconds, offset_seconds)
-     |> assign_dashboard_data(
+     |> DashboardData.assign_dashboard_data(
        socket.assigns.current_scope.user,
        socket.assigns.selected_dtu_id,
        socket.assigns.time_range,
@@ -828,7 +778,7 @@ defmodule DtuAppWeb.DashboardLive do
         {:noreply,
          socket
          |> assign(:geolocation_state, :granted)
-         |> assign_dashboard_data(
+         |> DashboardData.assign_dashboard_data(
            refreshed_user,
            socket.assigns.selected_dtu_id,
            socket.assigns.time_range,
@@ -842,7 +792,7 @@ defmodule DtuAppWeb.DashboardLive do
         {:noreply,
          socket
          |> assign(:geolocation_state, :denied)
-         |> assign_dashboard_data(
+         |> DashboardData.assign_dashboard_data(
            user,
            socket.assigns.selected_dtu_id,
            socket.assigns.time_range,
@@ -879,7 +829,7 @@ defmodule DtuAppWeb.DashboardLive do
   # re-render cycle (e.g. a new reading broadcast) re-fires the kickoff.
   @impl true
   def handle_info({:weather_update, snapshot}, socket) do
-    {:noreply, apply_weather_snapshot(socket, snapshot)}
+    {:noreply, Weather.apply_weather_snapshot(socket, snapshot)}
   end
 
   # Catch-all for other messages
@@ -923,9 +873,9 @@ defmodule DtuAppWeb.DashboardLive do
     # paying the invalidate cost on every refresh.
     socket
     |> assign(:devices, devices)
-    |> assign(:has_inverter?, Enum.any?(devices, &inverter_kind?/1))
-    |> assign(:has_shelly?, Enum.any?(devices, &shelly_kind?/1))
-    |> assign(:has_ro_sink?, Enum.any?(devices, &ro_sink_kind?/1))
+    |> assign(:has_inverter?, Enum.any?(devices, &DtuKinds.inverter_kind?/1))
+    |> assign(:has_shelly?, Enum.any?(devices, &DtuKinds.shelly_kind?/1))
+    |> assign(:has_ro_sink?, Enum.any?(devices, &DtuKinds.ro_sink_kind?/1))
     |> assign(:error_counts, error_counts_by_dtu_id(devices))
   end
 
@@ -958,28 +908,9 @@ defmodule DtuAppWeb.DashboardLive do
     end
   end
 
-  # Inverter kinds: DTUs that report `ac_power` / `yield_day` and
-  # contribute to the production stats and chart. Currently
-  # OpenDTU and AhoyDTU.
-  defp inverter_kind?(%Devices.Dtu{kind: kind}), do: kind in [:opendtu, :ahoydtu]
-  defp inverter_kind?(_), do: false
-
-  # Shelly kinds: DTUs that publish `consumption_power` from a
-  # paired energy meter. Currently only the Plus 3EM Gen3+.
-  defp shelly_kind?(%Devices.Dtu{kind: :shelly3em}), do: true
-  defp shelly_kind?(_), do: false
-
-  # Read-only MQTT sink: a passive subscriber that wants a real-time
-  # feed of every other DTU's telemetry on the same account, but is
-  # **never** allowed to PUBLISH. Sinks are not inverters and not
-  # consumption meters — they show as a presence-only device card
-  # with a "sink" badge so the user understands why this entry doesn't
-  # contribute to the production/consumption/net rows above. The
-  # broker enforces the publish-suppression contract
-  # (`DtuApp.MqttBroker.Broker.handle_publish/4`); this predicate is
-  # purely about the dashboard's presentation.
-  defp ro_sink_kind?(%Devices.Dtu{kind: :mqtt_ro_sink}), do: true
-  defp ro_sink_kind?(_), do: false
+  # DTU-kind predicates (`inverter_kind?/1`, `shelly_kind?/1`,
+  # `ro_sink_kind?/1`) live in `DtuAppWeb.DashboardLive.DtuKinds`.
+  # Used by `refresh_devices/2` and `mount_seed/2` below.
 
   # Tier 2 / Perf #15 — wrap the four cacheable mount-time fetches
   # in a single `DashboardMountCache.fetch/4` closure. The HTTP render
@@ -1002,9 +933,9 @@ defmodule DtuAppWeb.DashboardLive do
 
         %{
           devices: devices,
-          has_inverter?: Enum.any?(devices, &inverter_kind?/1),
-          has_shelly?: Enum.any?(devices, &shelly_kind?/1),
-          has_ro_sink?: Enum.any?(devices, &ro_sink_kind?/1),
+          has_inverter?: Enum.any?(devices, &DtuKinds.inverter_kind?/1),
+          has_shelly?: Enum.any?(devices, &DtuKinds.shelly_kind?/1),
+          has_ro_sink?: Enum.any?(devices, &DtuKinds.ro_sink_kind?/1),
           error_counts: error_counts_by_dtu_id(devices),
           has_push_subscriptions: PushSubscriptions.list_for_user(user) != [],
           share_active?: Accounts.get_shared_link(user) != nil
@@ -1036,994 +967,12 @@ defmodule DtuAppWeb.DashboardLive do
     end
   end
 
-  # Helper to construct SVG line chart coordinates and range.
-  # `local_date` is the user-facing date in the browser's timezone
-  # (already converted from `selected_period` or `local_today/1`).
-  # `tz_offset_seconds` shifts bucket times and labels so they read in
-  # local time.
-  defp assign_line_chart_data(
-         socket,
-         user,
-         local_date,
-         tz_offset_seconds,
-         dtu_id,
-         opts \\ []
-       ) do
-    # `:live?` flips on the yesterday-ghost overlay. Only the 1D (today)
-    # preset shows it — historical day/week/month/year views keep the
-    # chart scoped to their selected period. The historical-day caller
-    # still gets a clean chart without a confusing ghost line.
-    live? = Keyword.get(opts, :live?, socket.assigns[:live] == true)
-
-    {utc_start, utc_end} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-    # Read from the `readings_5m` continuous aggregate (older buckets)
-    # unioned with a 5-minute live tail from raw rows; collapses the
-    # per-row scan that `list_day_chart_data/4` did on every refresh.
-    # See `DtuApp.Devices.list_day_chart_data_for_dashboard/4`.
-    #
-    # The dashboard thread pre-fetches the chart points once at the
-    # top of `assign_dashboard_data/5`'s `:today` branch (where
-    # `get_daily_stats/4` ALSO needs `bucket_max`). Re-using that
-    # result here collapses two identical day-chart queries into one
-    # on the noon mount path. Older callers (anything still passing
-    # 5 args, including historical day/week/month branches and tests
-    # via `select_quick_range`) fall through to the old fetch path.
-    all_chart_points =
-      case Keyword.get(opts, :chart_points) do
-        nil -> Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id)
-        pts -> pts
-      end
-
-    # The dashboard exposes one line per *inverter* (its AC aggregate,
-    # mppt_index = 0). Per-MPPT DC rows are intentionally collapsed so
-    # the chart stays readable when a fleet mixes single- and multi-
-    # MPPT inverters; users can drill into a specific DTU on the
-    # /devices page if they need MPPT-level detail.
-    #
-    # `inverter_serial != "_fleet"` is the matching defensive filter
-    # against any legacy fleet-total rows an older parser version
-    # persisted before the parser drop (see the matching comment in
-    # `Devices.get_daily_stats/3`). The new parser no longer creates
-    # these rows, but installs upgrading from a previous version still
-    # have historical `_fleet` rows on disk — letting them through
-    # would (a) render a phantom "Total" line in the legend and (b)
-    # inflate the `show_total?` count, lighting up the headline Total
-    # curve on single-inverter installs. Same defensive filter lives
-    # at the data layer in `get_daily_stats/3` and `Devices.list_*` for
-    # the same reason.
-    #
-    # `inverter_serial != "em:0"` is the matching defensive filter for
-    # the Shelly Plus 3EM case. The Shelly parser writes rows with
-    # `inverter_serial: "em:0"`, `mppt_index: 0`, `power_type:
-    # "consumption"`, and nil `ac_power`/`dc_power` — the
-    # `chart_power_for_mppt/1` nil-fallback returns 0.0 W for that
-    # combination, which would otherwise render a synthetic flat-zero
-    # line labelled "em:0" on the production chart. The data-layer
-    # filter (`r.power_type == "production"` in
-    # `list_day_readings_for_chart/4` and
-    # `live_tail_bucketed_chart_points/3`) is the source of truth;
-    # this clause is belt-and-suspenders for any caller that reaches
-    # the dashboard with a hand-rolled `chart_points` opt.
-    chart_points =
-      all_chart_points
-      |> Enum.filter(fn pt ->
-        {_, serial, mppt_index, _name} = pt.series
-        mppt_index == 0 and serial not in ["_fleet", "em:0"]
-      end)
-      # `readings_5m.avg_ac_power` is NULL for buckets whose only rows
-      # had `ac_power: nil` (e.g. an AhoyDTU yield-only buffer flush
-      # before the AC reading arrived — the same root cause as the
-      # `bucket_max_from_chart_points/1` fix in PR #131). The aggregate
-      # path exposes that NULL as a chart-point with `power: nil`.
-      # Coalesce to `0.0` here, once, so every downstream consumer
-      # (`Enum.max` over powers, `Enum.sum` per bucket, the per-point
-      # `y = zero_y - power * pixels_per_watt_positive` calc) sees
-      # numeric values only. Without the coalesce, `Float.ceil(nil, 0)`
-      # at the `max_power` step raises `FunctionClauseError` and
-      # `nil * pixels_per_watt_positive` at the per-point step raises
-      # `ArithmeticError` — both crash the dashboard mount with a 500.
-      |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
-
-    # Pull the consumption series upfront so `y_max` below can include
-    # its peak — otherwise a heavy-load evening (Shelly reporting e.g.
-    # 1500 W draw on a 600 W solar day) would clip the consumption line
-    # off-screen above the chart.
-    #
-    # The today branch of `assign_dashboard_data/5` pre-fetches these
-    # points once and threads them through `:consumption_chart_points`
-    # so the consumption overlay + `get_consumption_daily_stats/3` +
-    # `get_consumption_period_stats/5` all share a single `readings`
-    # scan instead of running three independent ones on a paired-user
-    # mount.
-    consumption_chart_points =
-      case Keyword.get(opts, :consumption_chart_points) do
-        nil -> Devices.list_today_consumption_chart_data(user, dtu_id)
-        pts -> pts
-      end
-
-    # Net-flow chart points (production minus consumption, sign-flipped
-    # in the path below) — fetched up front so we can size the Y-axis
-    # negative bound before computing the production/consumption paths.
-    # Without this we'd render export peaks below the chart's bottom
-    # edge, exactly the bug this fix targets.
-    #
-    # The today branch of `assign_dashboard_data/5` pre-fetches these
-    # points once and threads them through `:net_chart_points` so the
-    # net overlay + `get_net_flow_stats/3` share a single `readings`
-    # scan instead of running two.
-    net_chart_points =
-      case Keyword.get(opts, :net_chart_points) do
-        nil ->
-          {start, end_} = Devices.local_day_utc_range(local_date, tz_offset_seconds)
-          Devices.list_net_chart_data(user, start, end_, dtu_id)
-
-        pts ->
-          pts
-      end
-
-    max_power =
-      chart_points
-      |> Enum.map(& &1.power)
-      |> Enum.max(fn -> 100.0 end)
-      |> max(100.0)
-      |> Float.ceil()
-
-    # Fleet Total is the sum of every series at each bucket, which is
-    # larger than any individual series power when more than one
-    # inverter/MPPT is producing. The y-axis must cover the Total line
-    # peak or it renders off-screen.
-    total_max_power =
-      chart_points
-      |> Enum.group_by(& &1.time)
-      |> Enum.map(fn {_time, pts} -> Enum.sum(Enum.map(pts, & &1.power)) end)
-      |> Enum.max(fn -> 0.0 end)
-
-    # Consumption peak — the highest bucket-mean household draw on
-    # today/day. We compare against (max per-series production,
-    # max Total production) so the Y-axis covers whatever's largest on
-    # the chart. Without this, the consumption path renders off-screen
-    # above the chart whenever the household draw exceeds solar peak
-    # (common in winter / evenings).
-    consumption_max_power =
-      consumption_chart_points
-      |> Enum.map(& &1.power)
-      |> Enum.max(fn -> 0.0 end)
-
-    # Scale max power to next multiple of 100, taking the larger of
-    # the per-series peak, the Total peak, and the consumption peak so
-    # the headline curve stays inside the chart area.
-    y_max =
-      [max_power, total_max_power, consumption_max_power]
-      |> Enum.max()
-      |> Float.ceil()
-      |> Kernel./(100)
-      |> Float.ceil()
-      |> Kernel.*(100)
-      |> max(100.0)
-
-    # Negative Y-axis bound: the chart's lower edge should extend down
-    # to the most-negative net-flow display value (i.e. -max_export),
-    # rounded DOWN to the next multiple of 100 so the export peak
-    # never sits flush against the chart's bottom edge. Without this
-    # guard a 432 W export peak would clip to ~432 W below the zero
-    # line on a chart whose lower bound is implicitly 0.
-    #
-    # `display_power` here is the *sign-flipped* net value (positive
-    # for import, negative for export) — the same convention the path
-    # uses below — so the most-negative display_power equals
-    # -max_export. We only extend the axis when the user actually has
-    # net data and a non-zero export peak; without that, the chart
-    # stays positive-only (the previous behaviour).
-    #
-    # DTU-only users (no Shelly paired) have nothing to net against, so
-    # the chart must NEVER extend below zero — there's no export peak to
-    # show in the lower half and a negative axis would be visually
-    # wrong (negative gridline labels on a production-only curve).
-    # `list_net_chart_data/4` already returns [] for DTU-only users
-    # (the bucket-drop guard requires a consumption row), but we clamp
-    # at the chart layer too as defense-in-depth against any future
-    # code path that might seed a net row without a paired Shelly.
-    y_min =
-      cond do
-        not socket.assigns[:has_shelly?] ->
-          0.0
-
-        true ->
-          case net_chart_points do
-            [] ->
-              0.0
-
-            pts ->
-              most_negative_display =
-                pts
-                |> Enum.map(fn p -> -p.power end)
-                |> Enum.min(fn -> 0.0 end)
-
-              # Round DOWN to the next lower 100. A -432 W peak → -500 W
-              # (next lower multiple of 100). A -50 W peak → -100 W so
-              # even small export dips stay inside the chart area.
-              if most_negative_display < 0.0 do
-                most_negative_display
-                |> Float.floor()
-                |> Kernel./(100)
-                |> Float.floor()
-                |> Kernel.*(100)
-              else
-                0.0
-              end
-          end
-      end
-
-    # Net path's Y mapping depends on the unified [y_min, y_max] range.
-    # When y_min < 0 (paired user with export peak), the zero line
-    # shifts UP proportionally to `y_max / (y_max + |y_min|)` of the
-    # chart area, leaving room for the export peak in the lower half.
-    # The net path is then plotted against this asymmetric two-sided
-    # scale.
-    #
-    # When y_min == 0 (no export data), there is no positive-only
-    # constraint on the lower half. DTU-only users (no Shelly paired)
-    # have nothing to net against — the chart never extends below
-    # zero, and pushing the zero line to the chart bottom (`zero_y =
-    # chart_bottom_y`) gives the production curve the full chart
-    # height. The previous mid-chart zero line (`zero_y_default =
-    # 135`) wasted the lower half of the canvas for DTU-only users,
-    # since no curve ever plots there.
-    chart_top_y = 20.0
-    chart_bottom_y = 250.0
-    zero_y_default = 135.0
-
-    {zero_y, lower_height} =
-      cond do
-        y_min < 0.0 ->
-          total_range = y_max + abs(y_min)
-
-          {chart_top_y + y_max / total_range * (chart_bottom_y - chart_top_y), abs(y_min)}
-
-        socket.assigns[:has_shelly?] ->
-          # Shelly-only / no-net-data case: the previous behaviour
-          # (zero line at y=135) is preserved. Only paired inverters
-          # + Shelly users flip the asymmetric layout on, so a Shelly-
-          # only user keeps the historical layout for now.
-          {zero_y_default, 0.0}
-
-        true ->
-          # DTU-only user: pin zero to the chart bottom so the
-          # production curve fills the full chart height.
-          {chart_bottom_y, 0.0}
-      end
-
-    # Pixel-per-watt scale factors for the unified Y-axis. Positive
-    # values (production, consumption, total) use the upper-half
-    # scale; the net path's negative display values use the lower-
-    # half scale (only set when y_min < 0; defaults to 0 when the
-    # chart stays positive-only).
-    pixels_per_watt_positive = (zero_y - chart_top_y) / y_max
-    pixels_per_watt_negative = (chart_bottom_y - zero_y) / max(lower_height, 1.0)
-
-    # Chart dimensions: width 800, height 250 (with 20px top padding).
-    # X range is dynamic: zoomed to data when present, full day (00:00–
-    # 24:00) when empty. See `chart_time_range/2` below.
-    {x_min_seconds, x_max_seconds} =
-      ChartHelpers.chart_time_range(
-        chart_points,
-        tz_offset_seconds,
-        user.latitude,
-        user.longitude,
-        local_date
-      )
-
-    x_span = x_max_seconds - x_min_seconds
-
-    # Group points by series (one line per (inverter, MPPT) pair) and
-    # translate each point into SVG coordinates within the dynamic X range.
-    # We also capture the LOCAL bucket time (seconds-of-day, after applying
-    # the user's timezone offset) per point so the ChartTooltip hook can
-    # look up values by cursor time in the user's frame of reference
-    # without round-tripping through the UTC values.
-    series_points =
-      chart_points
-      |> Enum.group_by(& &1.series)
-      |> Enum.map(fn {series, pts} ->
-        coords =
-          pts
-          |> Enum.map(fn %{time: time, power: power} ->
-            utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-            local_seconds = utc_seconds + tz_offset_seconds
-            local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
-            x = (local_seconds - x_min_seconds) / x_span * 800.0
-            # Positive watts use the upper-half pixel-per-watt scale
-            # (above the zero line). When `y_min` is 0 the zero line
-            # sits at y=135 by default and this collapses to the
-            # original `250 - power/y_max * 230` formula.
-            y = zero_y - power * pixels_per_watt_positive
-            {Float.round(x, 1), Float.round(y, 1), local_seconds}
-          end)
-          |> Enum.sort_by(&elem(&1, 0))
-
-        {series, coords}
-      end)
-      |> Enum.sort_by(fn {{dtu_id, serial, mppt_index, _name}, _pts} ->
-        {dtu_id, serial, mppt_index}
-      end)
-
-    # Build path data per series, plus an area fill for the first
-    # series (the AC aggregate, mppt_index = 0) for the existing
-    # "tinted under the curve" look.
-    series_paths =
-      Enum.map(series_points, fn {series, coords} ->
-        path =
-          case coords do
-            [] ->
-              ""
-
-            [{first_x, first_y, _first_t} | rest] ->
-              "M #{first_x} #{first_y} " <>
-                (rest |> Enum.map_join(" ", fn {x, y, _t} -> "L #{x} #{y}" end))
-          end
-
-        {series, path}
-      end)
-      |> Map.new()
-
-    # Yesterday's ghost overlay — only on the 1D (live) view. The
-    # ghost reuses the same X/Y scale as today's chart so it sits on
-    # the same baseline visually; same per-series grouping so the
-    # ghost line picks up the same inverter colour (just rendered
-    # translucent + dashed in the template). Empty when there's no
-    # yesterday data — e.g. a brand-new install — so the template can
-    # render nothing instead of a misleading zero line.
-    #
-    # The today branch of `assign_dashboard_data/5` pre-fetches
-    # these points via `TodayDataCache` (the closure captures the
-    # work to avoid running the `readings_5m` continuous-aggregate
-    # query per reading broadcast). Older callers — historical day /
-    # week / month / year — pass nothing for this opt and fall
-    # through to the direct fetch.
-    yesterday_paths =
-      if live? do
-        yesterday_chart_points =
-          case Keyword.get(opts, :yesterday_chart_points) do
-            nil ->
-              user
-              |> Devices.list_yesterday_chart_data_for_dashboard(utc_start, utc_end, dtu_id)
-              |> Enum.filter(fn pt ->
-                pt.series |> elem(2) == 0 and pt.series |> elem(1) != "_fleet"
-              end)
-              |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
-
-            pts ->
-              pts
-          end
-
-        yesterday_chart_points
-        |> Enum.group_by(& &1.series)
-        |> Enum.map(fn {series, pts} ->
-          coords =
-            pts
-            |> Enum.map(fn %{time: time, power: power} ->
-              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-
-              local_seconds =
-                (utc_seconds + tz_offset_seconds)
-                |> rem(86_400 * 4)
-                |> rem(86_400)
-
-              x = (local_seconds - x_min_seconds) / x_span * 800.0
-              y = zero_y - power * pixels_per_watt_positive
-              {Float.round(x, 1), Float.round(y, 1)}
-            end)
-            |> Enum.sort_by(&elem(&1, 0))
-
-          path =
-            case coords do
-              [] ->
-                ""
-
-              [{fx, fy} | rest] ->
-                "M #{fx} #{fy} " <>
-                  Enum.map_join(rest, " ", fn {x, y} -> "L #{x} #{y}" end)
-            end
-
-          {series, path}
-        end)
-        |> Map.new()
-      else
-        %{}
-      end
-
-    # Color palette per series. Each series is now one line per
-    # inverter (mppt_index = 0 only), so we just need the per-inverter
-    # base hue. The shade is fixed at 400 because there's no second
-    # MPPT line to differentiate against anymore — using a single
-    # bright shade keeps each inverter's line clearly visible against
-    # the tinted area fill.
-    inverter_color = ChartPalette.inverte_order_to_color(series_points)
-
-    series_palette =
-      Enum.map(series_points, fn {series, _pts} ->
-        dtu_id = elem(series, 0)
-        serial = elem(series, 1)
-        base = Map.get(inverter_color, {dtu_id, serial})
-        {series, {base, "400"}}
-      end)
-      |> Map.new()
-
-    # Friendly names for the legend. Prefer the user-set `inverter_name`,
-    # fall back to the serial. Per-MPPT rows are collapsed into the
-    # inverter's AC line (see the `Enum.filter` further up), so the
-    # legend labels are simply the inverter's friendly name — no
-    # `MPPT N` suffix needed.
-    series_legend =
-      Enum.map(series_points, fn {series, _pts} ->
-        {dtu_id, serial, mppt_index, name} = series
-        friendly = name || serial
-        {{dtu_id, serial, mppt_index, name}, friendly}
-      end)
-      |> Map.new()
-
-    # No tinted area under the curves. The decorative fill that used to
-    # sit under the first inverter's line was misleading: in single-
-    # inverter fleets the only inverter's line *is* the total, so users
-    # reasonably read the tinted region as "Total" — but it wasn't.
-    # The chart's lines, legend, and tooltip already convey all the
-    # information; the fill was just visual noise.
-
-    x_labels = ChartHelpers.chart_x_labels(x_min_seconds, x_max_seconds)
-
-    # Time series per series for the tooltip hook. Encoded as JSON
-    # strings (data-points="...") so the JS hook can look up the value
-    # at the cursor's time without parsing the SVG path's `d=` string.
-    # Each series entry is a list of {time, power} pairs in seconds /
-    # watts, sorted by time. We use the bucket time captured alongside
-    # each point in `series_points` (third tuple element) so we don't
-    # lose precision reverse-mapping through the rounded X coord.
-    series_points_data =
-      Enum.map(series_points, fn {series, coords} ->
-        {series,
-         Enum.map(coords, fn {_x, y, seconds} ->
-           %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
-         end)}
-      end)
-      |> Map.new()
-
-    # Fleet-wide "Total" line: sum of every series' power at each
-    # bucket. This is the headline curve a customer wants to see — it
-    # answers "how much am I producing right now?" without having to
-    # mentally add up per-inverter lines. Computed server-side from
-    # `chart_points` (one entry per inverter per bucket) so the total
-    # is exact, not interpolated.
-    #
-    # The Total is suppressed when there's only one inverter in scope
-    # — in that case the per-inverter line *is* the total and adding
-    # it again would be a redundant curve.
-    distinct_inverters =
-      chart_points
-      |> Enum.map(fn pt -> {elem(pt.series, 0), elem(pt.series, 1)} end)
-      |> Enum.uniq()
-
-    show_total? = length(distinct_inverters) > 1
-
-    {total_path, total_coords} =
-      if show_total? do
-        chart_points
-        |> Enum.group_by(& &1.time)
-        |> Enum.map(fn {time, pts} ->
-          utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-          local_seconds = rem(utc_seconds + tz_offset_seconds + 86_400 * 4, 86_400)
-          x = (local_seconds - x_min_seconds) / x_span * 800.0
-          total_power = pts |> Enum.map(& &1.power) |> Enum.sum()
-          y = zero_y - total_power * pixels_per_watt_positive
-          {Float.round(x, 1), Float.round(y, 1), local_seconds, total_power}
-        end)
-        |> Enum.sort_by(&elem(&1, 0))
-        |> then(fn pts ->
-          path =
-            case pts do
-              [] ->
-                ""
-
-              [{fx, fy, _, _} | rest] ->
-                "M #{fx} #{fy} " <>
-                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
-            end
-
-          coords = Enum.map(pts, fn {x, y, t, _} -> {x, y, t} end)
-          {path, coords}
-        end)
-      else
-        {"", []}
-      end
-
-    # Total-time -> power data for the tooltip, in the same shape as
-    # `series_points_data` so the ChartTooltip hook can iterate over
-    # both uniformly.
-    total_points_data =
-      Enum.map(total_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
-      end)
-
-    # Consumption overlay: household draw (W) from a paired Shelly
-    # Plus 3EM, plotted alongside the production lines. The consumption
-    # chart points are bound earlier in this function (just below the
-    # production points) so `y_max` can include the consumption peak
-    # and the consumption path stays inside the chart area. Rendered
-    # as a dashed rose-colored line so it reads as a separate metric,
-    # not another inverter.
-    {consumption_path, consumption_coords} =
-      case consumption_chart_points do
-        [] ->
-          {"", []}
-
-        pts ->
-          path_coords =
-            pts
-            |> Enum.map(fn %{time: time, power: power} ->
-              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-              local_seconds = utc_seconds + tz_offset_seconds
-              local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
-              x = (local_seconds - x_min_seconds) / x_span * 800.0
-              y = zero_y - power * pixels_per_watt_positive
-              {Float.round(x, 1), Float.round(y, 1), local_seconds, power}
-            end)
-            |> Enum.sort_by(&elem(&1, 0))
-
-          path =
-            case path_coords do
-              [] ->
-                ""
-
-              [{fx, fy, _, _} | rest] ->
-                "M #{fx} #{fy} " <>
-                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
-            end
-
-          coords = Enum.map(path_coords, fn {x, y, t, _} -> {x, y, t} end)
-          {path, coords}
-      end
-
-    consumption_points_data =
-      Enum.map(consumption_coords, fn {_x, y, seconds} ->
-        %{time: seconds, power: ChartHelpers.power_at_from_unified_y(y, zero_y, y_max)}
-      end)
-
-    # Net flow overlay — production minus consumption, plotted on the
-    # same axes. The user-facing sign convention flips the raw
-    # `production - consumption` value: power LEAVING the home
-    # (export, positive raw) is shown as a NEGATIVE value on the
-    # graph and power ENTERING the home (import, negative raw) is
-    # shown as POSITIVE. This matches the energy-flow perspective
-    # "the home is exporting negative household consumption" and is
-    # also the same convention the Shelly Plus 3EM uses for its
-    # `total_act_power` field.
-    #
-    # Implementation:
-    #   * `display_power = -power` — flips the sign for both the SVG
-    #     Y coordinate and the JSON embedded in `data-points`. The
-    #     tooltip's hover readout therefore shows the same number the
-    #     user sees on the chart (-300 W for a 300 W export).
-    #   * `y = 135 - display_power / y_max * 115.0` — same Y formula
-    #     the production lines use (negative display_power increases
-    #     y, plotting export below the zero line at y=135).
-    #
-    # The full SVG height is 230 (20px top padding, 250px bottom);
-    # a centered zero line at y=135 lets the curve swing ±115. The
-    # zero line itself is rendered as a separate <line> below the
-    # net path so users see at a glance which side of zero a point
-    # is on.
-    #
-    # `net_chart_points` is fetched up front (just below the production
-    # chart_points binding) so the Y-axis scale can include the most-
-    # negative export value before the per-series paths are computed.
-    # `display_power = -power` flips the raw sign so export (positive
-    # raw) becomes a negative display value below the zero line; the
-    # Y mapping uses the unified [y_min, y_max] scale so the export
-    # peak always sits inside the chart area, never clipping below
-    # the bottom edge.
-    {net_path, net_coords, net_points_data} =
-      case net_chart_points do
-        [] ->
-          {"", [], []}
-
-        pts ->
-          path_coords =
-            pts
-            |> Enum.map(fn %{time: time, power: power} ->
-              utc_seconds = time.hour * 3600 + time.minute * 60 + time.second
-              local_seconds = utc_seconds + tz_offset_seconds
-              local_seconds = rem(local_seconds + 86_400 * 4, 86_400)
-              x = (local_seconds - x_min_seconds) / x_span * 800.0
-              # Flip the sign: export (raw positive) becomes negative
-              # for display, then plot below the zero line. See the
-              # block comment above for the full sign-convention
-              # rationale.
-              display_power = -power
-              # Use the unified [y_min, y_max] Y-axis: positive
-              # display values (import) plot above `zero_y` against
-              # the upper-half scale; negative display values (export)
-              # plot below `zero_y` against the lower-half scale. The
-              # export peak therefore sits inside the chart even when
-              # the export magnitude is a fraction of the production
-              # peak — the original centered-115-px formula clipped
-              # export values that exceeded 50% of `y_max` past the
-              # chart's bottom edge.
-              y =
-                cond do
-                  display_power >= 0 ->
-                    zero_y - display_power * pixels_per_watt_positive
-
-                  true ->
-                    zero_y + abs(display_power) * pixels_per_watt_negative
-                end
-
-              {Float.round(x, 1), Float.round(y, 1), local_seconds, display_power}
-            end)
-            |> Enum.sort_by(&elem(&1, 0))
-
-          path =
-            case path_coords do
-              [] ->
-                ""
-
-              [{fx, fy, _, _} | rest] ->
-                "M #{fx} #{fy} " <>
-                  Enum.map_join(rest, " ", fn {x, y, _, _} -> "L #{x} #{y}" end)
-            end
-
-          coords = Enum.map(path_coords, fn {x, y, t, _} -> {x, y, t} end)
-
-          points_data =
-            Enum.map(path_coords, fn {_x, _y, seconds, display_power} ->
-              %{time: seconds, power: display_power}
-            end)
-
-          {path, coords, points_data}
-      end
-
-    socket
-    |> assign(:chart_points, chart_points)
-    |> assign(:y_max, y_max)
-    |> assign(:y_min, y_min)
-    |> assign(:zero_y, zero_y)
-    |> assign(
-      :y_gridlines,
-      ChartHelpers.chart_y_gridlines(y_min, y_max, zero_y, chart_bottom_y, lower_height)
-    )
-    |> assign(:series_paths, series_paths)
-    |> assign(:yesterday_paths, yesterday_paths)
-    |> assign(:series_palette, series_palette)
-    |> assign(:series_legend, series_legend)
-    |> assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
-    |> assign(:x_labels, x_labels)
-    |> assign(:x_min_seconds, x_min_seconds)
-    |> assign(:x_max_seconds, x_max_seconds)
-    |> assign(:series_points_data, series_points_data)
-    |> assign(:total_path, total_path)
-    |> assign(:total_points_data, total_points_data)
-    |> assign(:total_palette, {"emerald", "900"})
-    |> assign(:consumption_path, consumption_path)
-    |> assign(:consumption_points_data, consumption_points_data)
-    |> assign(:consumption_palette, {"rose", "600"})
-    |> assign(:net_path, net_path)
-    |> assign(:net_coords, net_coords)
-    |> assign(:net_points_data, net_points_data)
-    |> assign(:net_palette, {"indigo", "500"})
-    |> assign(
-      :now_marker_x,
-      if(live?,
-        do: ChartHelpers.now_marker_x(x_min_seconds, x_max_seconds, tz_offset_seconds),
-        else: nil
-      )
-    )
-    # Local-time label for the now-marker pill — formatted as
-    # "HH:MM" in the user's timezone so the chart shows the
-    # actual current time, not the static word "now". Gated on
-    # the same `live?` flag as `:now_marker_x`; historical-day
-    # views get `nil` and the template falls back to "now".
-    |> assign(
-      :now_marker_label,
-      if(live?,
-        do: ChartHelpers.now_marker_label(tz_offset_seconds),
-        else: nil
-      )
-    )
-    # Sunrise / sunset guide-line X positions. Only computed when
-    # the user has a captured geographic position (the JS hook
-    # pushes it on every dashboard mount via `set_location`); the
-    # helper returns `{nil, nil}` for nil coords so the template
-    # renders nothing. We pass the chart's local date so the
-    # "today" branch shows today's sunrise/sunset and the historical-
-    # day branch shows that specific day's (slightly different) pair.
-    |> assign(
-      :sun_markers,
-      ChartHelpers.sun_markers(
-        user.latitude,
-        user.longitude,
-        local_date,
-        x_min_seconds,
-        x_max_seconds,
-        tz_offset_seconds
-      )
-    )
-    # Cloud-cover band + current weather condition + percentage used
-    # to live inline here, taking the Open-Meteo HTTP round trip on
-    # every render. Perf #5 moved them out of the synchronous path:
-    # `kickoff_weather_fetch/6` runs the fetch async on WebSocket
-    # callbacks (so the chart paints first) and inline on the HTTP
-    # render path (which has no follow-up render). See
-    # `kickoff_weather_fetch/6` for the full rationale.
-    |> kickoff_weather_fetch(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds)
-    # Perf #5 — flip `:initial_mount?` off so subsequent
-    # `assign_dashboard_data/5` re-renders (preset switches,
-    # `set_location`, `set_timezone`, PubSub reading broadcasts)
-    # take the async-on-WebSocket branch in
-    # `kickoff_weather_fetch/6`.
-    |> assign(:initial_mount?, false)
-    # Mirrored from `user.latitude` / `user.longitude` so the cloud-
-    # cover card slot can branch on "user has coords" without
-    # reaching into the user struct from the template. Re-derived
-    # on every `assign_dashboard_data` call so it stays fresh after
-    # `set_location` persists a new position.
-    |> assign(:user_has_geolocation, DtuApp.Accounts.user_has_geolocation?(user))
-  end
-
-  defp build_cloud_cover_band(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds) do
-    case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
-      nil ->
-        ChartHelpers.cloud_cover_line(
-          [],
-          local_date,
-          x_min_seconds,
-          x_max_seconds,
-          tz_offset_seconds,
-          800
-        )
-
-      {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
-        readings =
-          Enum.zip(times, values) |> Enum.map(fn {time, pct} -> %{time: time, pct: pct} end)
-
-        ChartHelpers.cloud_cover_line(
-          readings,
-          local_date,
-          x_min_seconds,
-          x_max_seconds,
-          tz_offset_seconds,
-          800
-        )
-
-      _ ->
-        ChartHelpers.cloud_cover_line(
-          [],
-          local_date,
-          x_min_seconds,
-          x_max_seconds,
-          tz_offset_seconds,
-          800
-        )
-    end
-  end
-
-  defp weather_current_condition(%{latitude: nil}), do: nil
-  defp weather_current_condition(%{longitude: nil}), do: nil
-
-  defp weather_current_condition(user) do
-    DtuApp.Weather.current_condition(user.latitude, user.longitude)
-  end
-
-  defp weather_current_pct(%{latitude: nil}), do: nil
-  defp weather_current_pct(%{longitude: nil}), do: nil
-
-  defp weather_current_pct(user) do
-    case DtuApp.Weather.cloud_cover_for(user.latitude, user.longitude, past_days: 30) do
-      {:ok, %{hourly: %{time: times, cloud_cover: values}}} ->
-        case most_recent_pct(times, values) do
-          nil -> nil
-          pct -> pct
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp most_recent_pct([], _), do: nil
-  defp most_recent_pct(_, []), do: nil
-
-  defp most_recent_pct([_t], [v]), do: v
-
-  defp most_recent_pct(times, values) do
-    pairs = Enum.zip(times, values)
-    {_t, pct} = Enum.max_by(pairs, fn {t, _} -> DateTime.to_unix(t, :second) end)
-    pct
-  end
-
-  # Perf #5: weather fetch dispatch. Three call sites:
-  #
-  #   1. HTTP render (the initial GET's static response). One-shot,
-  #      no follow-up render — the fetch has to run inline or the
-  #      HTML ships without the cloud-cover band + current-condition
-  #      card. `connected?/1` is `false` here, so the `else` branch
-  #      fires unconditionally.
-  #   2. WebSocket `mount/3` (the channel upgrade after the static
-  #      HTML). The HTTP render already shipped weather, so the user
-  #      has already seen the populated band before this mount even
-  #      runs. We still run synchronously here for two reasons:
-  #      (a) `LiveViewTest.live/2`'s returned `html` reflects this
-  #      connected render, and existing cloud-cover tests assert
-  #      weather is in that html; (b) the sync cost is amortised by
-  #      the 15-min `Weather.Cache`, so a cache hit lands in
-  #      microseconds. Detected via `socket.assigns[:initial_mount?]`,
-  #      which `mount/3` sets to `true` and `assign_line_chart_data/6`
-  #      flips to `false` after this function runs.
-  #   3. WebSocket callbacks (`handle_event`, `handle_info` — e.g.
-  #      preset switches, `set_location`, `set_timezone`). The chart
-  #      is already on screen; deferring weather here shaves the
-  #      re-render latency without losing the band (the
-  #      `{:weather_update, ...}` message lands a moment later and
-  #      `handle_info/2` re-renders with the populated assigns).
-  #
-  # The Task uses `send(parent, ...)` rather than `Phoenix.PubSub` so
-  # the message targets this LV process specifically — a stale fetch
-  # for a disconnected user never wakes another tab's process. Errors
-  # in the fetch fall through to the helpers' nil/empty defaults; the
-  # `Weather.cloud_cover_for/3` facade already returns `nil` on nil
-  # coords or upstream failure, so a try/rescue isn't needed (and would
-  # mask real bugs if added).
-  defp kickoff_weather_fetch(socket, user, local_date, x_min, x_max, tz) do
-    initial_mount? = socket.assigns[:initial_mount?] == true
-    fingerprint = weather_fingerprint(user, local_date, x_min, x_max, tz)
-
-    # Fingerprint gate. The five weather inputs (lat / lon / local
-    # date / visible X range / tz offset) determine the snapshot
-    # uniquely — if none of them changed since the last fetch, the
-    # existing `cloud_cover_line` / `current_cloud_cover` /
-    # `current_cloud_cover_pct` assigns are still valid and we must
-    # NOT reset them. Without this gate, every PubSub `:reading`
-    # broadcast ran `assign_dashboard_data/5 → assign_weather_placeholders/1`,
-    # wiping the line for one render before the async refetch
-    # re-applied it — visible as a flicker every few seconds on a
-    # connected inverter. The reset moves inside the
-    # `fingerprint_changed?` branch below so steady-state broadcasts
-    # pass through untouched.
-    #
-    # `set_location` and `set_timezone` change `user.latitude /
-    # longitude` and `tz_offset_seconds` respectively, so they
-    # naturally fall through to the changed branch and trigger a
-    # fresh fetch. Range switches change `local_date` /
-    # `x_min_seconds` / `x_max_seconds`, same path. The initial HTTP
-    # render and the very first WebSocket sync fetch land here with
-    # `weather_input_fingerprint == nil`, so the changed branch
-    # always fires on mount.
-    if socket.assigns[:weather_input_fingerprint] == fingerprint do
-      socket
-    else
-      socket =
-        socket
-        |> assign_weather_placeholders()
-        |> assign(:weather_input_fingerprint, fingerprint)
-
-      if connected?(socket) and not initial_mount? do
-        parent = self()
-
-        Task.start(fn ->
-          snapshot = fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
-          send(parent, {:weather_update, snapshot})
-        end)
-
-        socket
-      else
-        # HTTP render, OR initial WebSocket mount (initial_mount?).
-        # Compute inline so the rendered HTML includes the band +
-        # current-condition.
-        #
-        # Defensive: wrap the inline snapshot in try/catch so a
-        # weather-side failure (e.g. Open-Meteo returning a 200 with
-        # non-JSON body — captive portal, regional outage) leaves
-        # the placeholder chart visible (`assign_weather_placeholders/1`
-        # already ran above) instead of crashing the LV. The
-        # `Task.start` branch above already fails quietly; this
-        # brings the inline branch in line with that contract.
-        try do
-          apply_weather_snapshot(
-            socket,
-            fetch_weather_snapshot(user, local_date, x_min, x_max, tz)
-          )
-        catch
-          kind, reason ->
-            require Logger
-
-            Logger.warning(
-              "[dashboard] inline weather snapshot failed (#{kind}: " <>
-                "#{Exception.message(reason)}) — continuing with placeholders"
-            )
-
-            socket
-        end
-      end
-    end
-  end
-
-  defp fetch_weather_snapshot(user, local_date, x_min, x_max, tz) do
-    %{
-      cloud_cover_line: build_cloud_cover_band(user, local_date, x_min, x_max, tz),
-      current_cloud_cover: weather_current_condition(user),
-      current_cloud_cover_pct: weather_current_pct(user)
-    }
-  end
-
-  defp apply_weather_snapshot(socket, snapshot) do
-    socket
-    |> assign(:cloud_cover_line, Map.fetch!(snapshot, :cloud_cover_line))
-    |> assign(:current_cloud_cover, Map.fetch!(snapshot, :current_cloud_cover))
-    |> assign(:current_cloud_cover_pct, Map.fetch!(snapshot, :current_cloud_cover_pct))
-  end
-
-  # Chart math + Y-axis formatting helpers (`shift_local/2`,
-  # `chart_time_range/2`, `chart_x_labels/2`, `chart_y_gridlines/5`,
-  # `tick_range/3`, `format_hour_label/1`, `power_at_from_unified_y/3`,
-  # `now_marker_x/4`) all live in `DtuAppWeb.DashboardLive.ChartHelpers`
-  # now — see that module for the rationale and the per-function docs.
-
-  # Today's date in the user's local timezone. `Date.utc_today()`
-  # `local_today/1`, `utc_day_range_for_local_date/2`,
-  # `format_peak_time/2`, and `format_time_hhmm/1` live in
-  # `DtuAppWeb.DashboardLive.TimeHelpers` (extracted for testability
-  # — see that module's @moduledoc).
-
-  # Empty `series_paths` map is OK; we just need a default for the
-  # `path_data` assign so the template always has a string.
-  defp hd_or_first_key(map) when map_size(map) == 0, do: nil
-  defp hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
-
-  # MPPT-specific shades were used when the chart plotted per-MPPT
-  # lines (`mppt_index = 0` was the AC aggregate, 1+ were per-string
-  # DC). Now that the dashboard exposes one line per inverter (the
-  # `Enum.filter` in `assign_line_chart_data/5` collapses all MPPTs
-  # into the inverter's AC row), there's nothing to shade-vary — see
-  # `series_palette` for the fixed `"400"` shade.
-
-  # Helper to construct SVG bar chart coordinates and range
-  defp assign_bar_chart_data(socket, bar_data) do
-    max_val =
-      bar_data
-      |> Enum.map(& &1.value)
-      |> Enum.max(fn -> 1.0 end)
-      |> max(1.0)
-
-    y_max =
-      cond do
-        max_val <= 5.0 -> 5.0
-        max_val <= 10.0 -> 10.0
-        true -> Float.ceil(max_val)
-      end
-
-    count = length(bar_data)
-    col_width = 800.0 / count
-    bar_width = col_width * 0.65
-
-    bars =
-      bar_data
-      |> Enum.with_index()
-      |> Enum.map(fn {item, idx} ->
-        height = item.value / y_max * 200.0
-        x = idx * col_width + (col_width - bar_width) / 2.0
-        y = 220.0 - height
-
-        %{
-          x: Float.round(x / 1.0, 1),
-          y: Float.round(y / 1.0, 1),
-          w: Float.round(bar_width / 1.0, 1),
-          h: Float.round(max(height, 1.0) / 1.0, 1),
-          label: item.label,
-          value: Float.round(item.value / 1.0, 1)
-        }
-      end)
-
-    socket
-    |> assign(:y_max, y_max)
-    |> assign(:bars, bars)
-  end
+  # Line + bar chart data orchestration (`assign_line_chart_data/6`,
+  # `assign_bar_chart_data/2`, `hd_or_first_key/1`) lives in
+  # `DtuAppWeb.DashboardLive.LineChartData` — see that module's
+  # @moduledoc for the coordinate-system + range-preset rationale.
+  # Pure chart math (projection, X labels, Y gridlines) lives in
+  # `ChartHelpers`.
 
   # --- Time-picker helpers ----------------------------------------------------
 
@@ -2031,28 +980,6 @@ defmodule DtuAppWeb.DashboardLive do
   # views (day / week / month / year) are static and don't refresh on
   # every reading. Kept as a helper so the reading handler above can
   # stay readable.
-  defp maybe_reassign_dashboard_data(socket, user, selected_id) do
-    if socket.assigns.live do
-      assign_dashboard_data(socket, user, selected_id, socket.assigns.time_range, nil)
-    else
-      socket
-    end
-  end
-
-  # Re-run the dashboard for whichever view is active after a DTU switch.
-  defp reapply_current_view(socket, user, dtu_id) do
-    if socket.assigns.live do
-      assign_dashboard_data(socket, user, dtu_id, socket.assigns.time_range, nil)
-    else
-      assign_dashboard_data(
-        socket,
-        user,
-        dtu_id,
-        socket.assigns.granularity,
-        socket.assigns.selected_period
-      )
-    end
-  end
 
   # Map a granularity to the prebuilt selectable-period list from assigns.
   defp selectable_periods_for(assigns, "day"), do: assigns.selectable_days
@@ -2126,798 +1053,6 @@ defmodule DtuAppWeb.DashboardLive do
 
       true ->
         Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
-    end
-  end
-
-  defp assign_dashboard_data(socket, user, dtu_id, time_range, selected_period) do
-    # Cloud-cover / current-condition assigns are managed by
-    # `kickoff_weather_fetch/6` via the fingerprint gate — the
-    # previous unconditional `assign_weather_placeholders(socket)`
-    # here wiped them on every PubSub `:reading` broadcast and
-    # produced a one-render flicker between reset and the async
-    # refetch completing. Steady-state broadcasts now leave the
-    # snapshot untouched; only a true input change (coords, date,
-    # visible X range, tz) triggers a fresh fetch.
-    #
-    # Bar-chart branches (week / month / year) don't call
-    # `kickoff_weather_fetch/6`, but the chart SVG is gated on
-    # `@chart_type == :line` (line 3113), so the band never
-    # renders there. `current_cloud_cover` / `current_cloud_cover_pct`
-    # flow into the stat-card row independently and a snapshot
-    # carried over from a prior line-chart view stays correct.
-
-    tz_offset_seconds = socket.assigns.user_tz_offset_seconds
-    # Energy rate for the "Saved" card. `cents_per_kwh` is set in
-    # `mount/3` from `user.cents_per_kwh`; if the user hasn't set a
-    # rate yet this is `nil` and `Devices.compute_savings/2`
-    # short-circuits to `nil`, so the card is hidden by the
-    # template (`<%= if @savings %>`).
-    cents = socket.assigns.cents_per_kwh
-
-    # Pre-fetch today's consumption + net-flow bucket-mean points
-    # ONCE and share them across:
-    #   * `get_consumption_daily_stats/3` (consumption stat cards),
-    #   * `get_net_flow_stats/3` (net-flow stat cards),
-    #   * `assign_line_chart_data/6` (chart overlays).
-    # Without this dedup, a paired-user mount ran
-    # `list_consumption_chart_data/4` three times and
-    # `list_net_chart_data/4` twice on the same data, each as a
-    # separate `readings` row scan. The stats helpers and the chart
-    # share the same 5-minute bucket means, so deriving both from a
-    # single fetch is a safe optimisation that keeps every consumer's
-    # number identical.
-    #
-    # Perf #4 layer 1: the today-window chart data is read-through
-    # cached for 15 s by `TodayDataCache`. The cache key is
-    # `{user_id, opts}` where `opts` carries `tz_offset_seconds` and
-    # `dtu_id` (a tz change or DTU switch automatically produces a new
-    # key, so no extra invalidation is needed). The reading-broadcast
-    # handler calls `invalidate/1` to drop the entry; the next
-    # `assign_dashboard_data/5` re-fetches.
-    %{consumption: consumption_chart_points, net: net_chart_points} =
-      TodayDataCache.fetch(
-        user.id,
-        [tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
-        fn ->
-          net_today_start = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
-          net_today_end = DateTime.new!(Date.utc_today(), ~T[23:59:59], "Etc/UTC")
-
-          %{
-            consumption: Devices.list_today_consumption_chart_data(user, dtu_id),
-            net: Devices.list_net_chart_data(user, net_today_start, net_today_end, dtu_id)
-          }
-        end
-      )
-
-    # Consumption stats from a paired Shelly Plus 3EM (Gen3+) energy
-    # meter: current household draw (W), today's consumed energy
-    # (kWh), and peak demand. Computed once per dashboard refresh and
-    # shared across all branches since consumption is independent of
-    # the production time_range/granularity.
-    consumption_stats =
-      Devices.get_consumption_daily_stats(
-        user,
-        dtu_id,
-        consumption_chart_points: consumption_chart_points
-      )
-
-    # Period-aware consumption stats — same shape as `@stats` for the
-    # production side: today/day views get current/today/peak, week/
-    # month/year views get period total / period peak / peak date.
-    # Drives the dedicated "Power consumption" stat-card row that
-    # mirrors the production row when a Shelly is paired.
-    #
-    # We pass the already-fetched `consumption_stats` through so the
-    # today / day branches don't re-fetch the same data. The
-    # `get_consumption_period_stats/4` helper used to call
-    # `get_consumption_daily_stats/2` again, doubling the per-day
-    # consumption scan on every dashboard mount / reading refresh
-    # (the dashboard pre-fetches the value just above for the
-    # consumption stat cards). The 5th argument is `nil` by default
-    # for older callers — see `DtuApp.Devices.get_consumption_period_stats/5`.
-    consumption_period_stats =
-      Devices.get_consumption_period_stats(
-        user,
-        dtu_id,
-        time_range,
-        selected_period,
-        consumption_stats
-      )
-
-    # Net flow (production minus consumption) — the headline value
-    # for a solar dashboard ("am I net-exporting or net-importing?").
-    # Only meaningful when both an inverter AND a Shelly are paired;
-    # otherwise the helper returns all-zeros and the dashboard's
-    # `net_flow_active` guard hides the row.
-    net_flow_stats =
-      Devices.get_net_flow_stats(
-        user,
-        dtu_id,
-        net_chart_points: net_chart_points
-      )
-
-    case time_range do
-      "today" ->
-        # The today branch needs 4 heavy queries on top of the
-        # consumption + net chart points already cached above:
-        #   * `list_day_chart_data_for_dashboard/4` (Repo.all + 5m agg)
-        #   * `get_daily_stats/4` (4× DISTINCT ON Repo.all)
-        #   * `compute_self_consumption_pct/5` (2× Repo.all)
-        #   * `list_yesterday_chart_data_for_dashboard/4` (called from
-        #     `assign_line_chart_data/6` on the live view)
-        # On a paired-user mount that's ~8 more round-trips per
-        # refresh — multiplied by a 2–6 Hz PubSub `:reading` stream
-        # (Shelly 30s + OpenDTU 5–10s), the connection pool
-        # (`POOL_SIZE=10` per `config/runtime.exs:39`) drains and the
-        # 8th call's `DBConnection.checkout_timeout` (15 s) fires.
-        #
-        # A second `TodayDataCache.fetch/3` call with a different
-        # cache key (`branch: :today`) covers the today-specific work
-        # in a single closure. On cache hit, the dashboard re-render
-        # runs **zero** DB queries for the today branch.
-        today_local = TimeHelpers.local_today(tz_offset_seconds)
-
-        {today_utc_start, today_utc_end} =
-          Devices.local_day_utc_range(today_local, tz_offset_seconds)
-
-        today_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :today, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
-            fn ->
-              # Cache miss — run the four heavy queries that drive
-              # the today branch. The closure captures `user` /
-              # `dtu_id` / `today_utc_start` / `today_utc_end` from
-              # the call site.
-              today_chart_points =
-                Devices.list_day_chart_data_for_dashboard(
-                  user,
-                  today_utc_start,
-                  today_utc_end,
-                  dtu_id
-                )
-
-              raw_daily_stats =
-                Devices.get_daily_stats(user, dtu_id, Date.utc_today(), today_chart_points)
-
-              today_self_consumption_pct =
-                Devices.compute_self_consumption_pct(
-                  user,
-                  dtu_id,
-                  today_utc_start,
-                  today_utc_end
-                )
-
-              yesterday_chart_points =
-                user
-                |> Devices.list_yesterday_chart_data_for_dashboard(
-                  today_utc_start,
-                  today_utc_end,
-                  dtu_id
-                )
-                |> Enum.filter(fn pt ->
-                  {_, serial, mppt_index, _name} = pt.series
-                  mppt_index == 0 and serial not in ["_fleet", "em:0"]
-                end)
-                |> Enum.map(fn pt -> %{pt | power: pt.power || 0.0} end)
-
-              %{
-                today_chart_points: today_chart_points,
-                daily_stats: raw_daily_stats,
-                self_consumption_pct: today_self_consumption_pct,
-                yesterday_chart_points: yesterday_chart_points
-              }
-            end
-          )
-
-        # The destructured keys come from the closure's return map.
-        # The post-processing (`:total_yield` overwrite,
-        # `Map.put :self_consumption_pct`) stays at the call site so
-        # the cached value is the cheapest raw form.
-        %{
-          today_chart_points: today_chart_points,
-          daily_stats: raw_daily_stats,
-          self_consumption_pct: today_self_consumption_pct,
-          yesterday_chart_points: yesterday_chart_points
-        } = today_specific
-
-        stats = raw_daily_stats
-
-        # The 5-up stat-card row's "Yield" tile reads `@stats.total_yield`
-        # uniformly across all 8 time_range branches. For the day / week
-        # / month / year / 7d / 30d / ytd branches, `compute_day_period_stats/2`
-        # and `compute_range_period_stats/2` already return
-        # `:total_yield` as the period's kWh sum. But `get_daily_stats/4`
-        # uses `:total_yield` for the **lifetime** cumulative yield
-        # (firmware `yield_total`) and `:today_yield` for the day's
-        # sum-of-latest-`yield_day`. Overwrite `:total_yield` here so
-        # the 1D view matches the period semantics the other branches
-        # use — otherwise the Yield card on 1D would show the lifetime
-        # number instead of today's kWh.
-        #
-        # `self_consumption_pct` is computed by the same closure and
-        # applied here. The cache stores the raw `get_daily_stats/4`
-        # map (without these Map.puts) so the same cached value can
-        # serve both today and any future caller that needs the
-        # unmodified shape.
-        stats =
-          stats
-          |> Map.put(:total_yield, stats.today_yield)
-          |> Map.put(:self_consumption_pct, today_self_consumption_pct)
-
-        socket
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.today_yield, cents))
-        |> assign(:chart_type, :line)
-        |> assign_line_chart_data(
-          user,
-          today_local,
-          tz_offset_seconds,
-          dtu_id,
-          chart_points: today_chart_points,
-          consumption_chart_points: consumption_chart_points,
-          net_chart_points: net_chart_points,
-          yesterday_chart_points: yesterday_chart_points
-        )
-
-      "day" ->
-        date =
-          case selected_period do
-            %Date{} = d ->
-              d
-
-            _ ->
-              selectable = socket.assigns.selectable_dates
-              List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
-          end
-
-        # Convert the user-facing local date to the UTC range that
-        # contains the readings for that local day.
-        {utc_start, utc_end} = Devices.local_day_utc_range(date, tz_offset_seconds)
-
-        # Perf #16: wrap the 4-query historical-day work
-        # (`list_day_chart_data` + `list_range_yield_data` +
-        # `compute_self_consumption_pct`) in a single
-        # `TodayDataCache.fetch/3` call. Mirrors the today branch —
-        # a 15 s TTL covers the PubSub `:reading` broadcast flood
-        # (2–6 Hz on a paired user), so a user who's navigated to
-        # "last Tuesday" and is sitting on that view doesn't pay
-        # 4 round-trips per reading.
-        #
-        # Cache key includes the user's tz_offset (different tz →
-        # different utc window), dtu_id (per-device view vs
-        # fleet), and the picked `date` (clicking through the
-        # calendar invalidates by changing the key).
-        day_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :day, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, date: date],
-            fn ->
-              %{
-                points: Devices.list_day_chart_data(user, utc_start, utc_end, dtu_id),
-                yields: Devices.list_range_yield_data(user, utc_start, utc_end, dtu_id),
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(user, dtu_id, utc_start, utc_end)
-              }
-            end
-          )
-
-        %{points: points, yields: yields, self_consumption_pct: day_self_consumption_pct} =
-          day_specific
-
-        stats = Devices.compute_day_period_stats(yields, points)
-
-        stats_with_self_consumption =
-          Map.put(stats, :self_consumption_pct, day_self_consumption_pct)
-
-        socket
-        |> assign(:selected_period, date)
-        |> assign(:stats, stats_with_self_consumption)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :line)
-        |> assign_line_chart_data(user, date, tz_offset_seconds, dtu_id)
-
-      "week" ->
-        monday =
-          case selected_period do
-            %Date{} = d ->
-              d
-
-            _ ->
-              selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
-              Date.add(latest_date, -(Date.day_of_week(latest_date) - 1))
-          end
-
-        sunday = Date.add(monday, 6)
-
-        {monday_utc, sunday_utc_end} =
-          {elem(Devices.local_day_utc_range(monday, tz_offset_seconds), 0),
-           elem(Devices.local_day_utc_range(sunday, tz_offset_seconds), 1)}
-
-        # Perf #16: wrap the 3-query week-branch work
-        # (`list_range_yield_data` + `compute_peak_watts_in_period` +
-        # `compute_self_consumption_pct`) in a single
-        # `TodayDataCache.fetch/3` call. Same 15 s TTL + same
-        # PubSub-flood rationale as the `day` branch above.
-        # Cache key includes `monday` so clicking between adjacent
-        # weeks invalidates by changing the key (no separate
-        # invalidate needed).
-        week_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :week, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, monday: monday],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(user, dtu_id, monday_utc, sunday_utc_end)
-
-              %{
-                yields: Devices.list_range_yield_data(user, monday_utc, sunday_utc_end, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(user, dtu_id, monday_utc, sunday_utc_end)
-              }
-            end
-          )
-
-        %{
-          yields: yields,
-          peak_w: week_peak_w,
-          peak_time: week_peak_time,
-          self_consumption_pct: week_self_consumption_pct
-        } = week_specific
-
-        stats = Devices.compute_range_period_stats(yields, 7)
-
-        stats =
-          stats
-          |> Map.put(:peak_power, week_peak_w)
-          |> Map.put(:peak_time, week_peak_time)
-          |> Map.put(:self_consumption_pct, week_self_consumption_pct)
-
-        yield_map = Map.new(yields)
-
-        bar_data =
-          for day_offset <- 0..6 do
-            d = Date.add(monday, day_offset)
-            label = Calendar.strftime(d, "%a")
-            value = Map.get(yield_map, d, 0.0)
-            %{label: label, value: value}
-          end
-
-        socket
-        |> assign(:selected_period, monday)
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
-
-      "month" ->
-        first_day =
-          case selected_period do
-            %Date{} = d ->
-              d
-
-            _ ->
-              selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
-              Date.new!(latest_date.year, latest_date.month, 1)
-          end
-
-        last_day = Date.end_of_month(first_day)
-
-        {first_utc, last_utc_end} =
-          {elem(Devices.local_day_utc_range(first_day, tz_offset_seconds), 0),
-           elem(Devices.local_day_utc_range(last_day, tz_offset_seconds), 1)}
-
-        total_days = Date.diff(last_day, first_day) + 1
-
-        # Perf #16: wrap the 3-query month-branch work in a single
-        # `TodayDataCache.fetch/3` call. Same shape as the `week`
-        # branch above. Cache key includes `first_day` so clicking
-        # between months invalidates by changing the key.
-        month_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [
-              branch: :month,
-              tz_offset_seconds: tz_offset_seconds,
-              dtu_id: dtu_id,
-              first_day: first_day
-            ],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(user, dtu_id, first_utc, last_utc_end)
-
-              %{
-                yields: Devices.list_range_yield_data(user, first_utc, last_utc_end, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(user, dtu_id, first_utc, last_utc_end)
-              }
-            end
-          )
-
-        %{
-          yields: yields,
-          peak_w: month_peak_w,
-          peak_time: month_peak_time,
-          self_consumption_pct: month_self_consumption_pct
-        } = month_specific
-
-        stats = Devices.compute_range_period_stats(yields, total_days)
-
-        stats =
-          stats
-          |> Map.put(:peak_power, month_peak_w)
-          |> Map.put(:peak_time, month_peak_time)
-          |> Map.put(:self_consumption_pct, month_self_consumption_pct)
-
-        yield_map = Map.new(yields)
-
-        bar_data =
-          for day_offset <- 0..(total_days - 1) do
-            d = Date.add(first_day, day_offset)
-            label = to_string(d.day)
-            value = Map.get(yield_map, d, 0.0)
-            %{label: label, value: value}
-          end
-
-        socket
-        |> assign(:selected_period, first_day)
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
-
-      "year" ->
-        year =
-          case selected_period do
-            %Date{} = d ->
-              d.year
-
-            y when is_integer(y) ->
-              y
-
-            _ ->
-              selectable = socket.assigns.selectable_dates
-              latest_date = List.first(selectable) || TimeHelpers.local_today(tz_offset_seconds)
-              latest_date.year
-          end
-
-        start_date = Date.new!(year, 1, 1)
-        end_date = Date.new!(year, 12, 31)
-
-        {start_utc, end_utc_end} =
-          {elem(Devices.local_day_utc_range(start_date, tz_offset_seconds), 0),
-           elem(Devices.local_day_utc_range(end_date, tz_offset_seconds), 1)}
-
-        # Perf #16: wrap the 3-query year-branch work in a single
-        # `TodayDataCache.fetch/3` call. Cache key includes the
-        # integer `year` so the year-stepper selector naturally
-        # invalidates by changing the key.
-        year_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :year, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id, year: year],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(user, dtu_id, start_utc, end_utc_end)
-
-              %{
-                yields: Devices.list_range_yield_data(user, start_utc, end_utc_end, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(user, dtu_id, start_utc, end_utc_end)
-              }
-            end
-          )
-
-        %{
-          yields: yields,
-          peak_w: year_peak_w,
-          peak_time: year_peak_time,
-          self_consumption_pct: year_self_consumption_pct
-        } = year_specific
-
-        stats = Devices.compute_range_period_stats(yields, 12)
-
-        stats =
-          stats
-          |> Map.put(:peak_power, year_peak_w)
-          |> Map.put(:peak_time, year_peak_time)
-          |> Map.put(:self_consumption_pct, year_self_consumption_pct)
-
-        yield_map = Map.new(yields)
-
-        bar_data =
-          for month <- 1..12 do
-            month_yield =
-              yield_map
-              |> Enum.filter(fn {date, _} -> date.month == month end)
-              |> Enum.map(fn {_, y} -> y end)
-              |> Enum.sum()
-
-            first_day_of_month = Date.new!(year, month, 1)
-            label = Calendar.strftime(first_day_of_month, "%b")
-            %{label: label, value: month_yield}
-          end
-
-        socket
-        |> assign(:selected_period, Date.new!(year, 1, 1))
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
-
-      "7d" ->
-        # Last 7 days ending today, daily yields → bar chart. Anchored on
-        # the user's tz offset so a CET user at 01:00 local on Monday sees
-        # the window start at the previous Tuesday's local midnight
-        # (matching the dashboard's other local-day boundaries).
-        today_local = TimeHelpers.local_today(tz_offset_seconds)
-
-        {seven_day_utc_start, seven_day_utc_end} =
-          Devices.local_day_utc_range(today_local, tz_offset_seconds)
-
-        seven_day_window_start = DateTime.add(seven_day_utc_start, -6 * 86_400, :second)
-
-        # Perf #16: wrap the 3-query 7d-branch work in a single
-        # `TodayDataCache.fetch/3` call. Rolling window anchored on
-        # `today_local` — the cache key therefore changes daily at
-        # local midnight (no explicit invalidate needed; the old
-        # entry simply ages out via the 15 s TTL or sits under an
-        # orphan key until the next `:today` / `:day` overwrite
-        # happens to collide). The 15 s TTL is fine because no new
-        # readings for past dates can change the window's content
-        # (the rolling tail re-evaluates on the next cache miss
-        # after local midnight).
-        seven_day_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :"7d", tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(
-                  user,
-                  dtu_id,
-                  seven_day_window_start,
-                  seven_day_utc_end
-                )
-
-              %{
-                yields: Devices.list_last_n_days_yield_data(user, 7, tz_offset_seconds, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(
-                    user,
-                    dtu_id,
-                    seven_day_window_start,
-                    seven_day_utc_end
-                  )
-              }
-            end
-          )
-
-        %{
-          yields: yields,
-          peak_w: seven_day_peak_w,
-          peak_time: seven_day_peak_time,
-          self_consumption_pct: seven_day_self_consumption_pct
-        } = seven_day_specific
-
-        stats = Devices.compute_range_period_stats(yields, 7)
-
-        stats =
-          stats
-          |> Map.put(:peak_power, seven_day_peak_w)
-          |> Map.put(:peak_time, seven_day_peak_time)
-          |> Map.put(:self_consumption_pct, seven_day_self_consumption_pct)
-
-        yield_map = Map.new(yields)
-
-        bar_data =
-          for day_offset <- -6..0 do
-            d = Date.add(today_local, day_offset)
-            label = Calendar.strftime(d, "%a")
-            value = Map.get(yield_map, d, 0.0)
-            %{label: label, value: value}
-          end
-
-        socket
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
-
-      "30d" ->
-        # Last 30 days ending today, daily yields → bar chart. Same
-        # boundary handling as `7d` above; just a wider window.
-        today_local = TimeHelpers.local_today(tz_offset_seconds)
-
-        {thirty_day_utc_start, thirty_day_utc_end} =
-          Devices.local_day_utc_range(today_local, tz_offset_seconds)
-
-        thirty_day_window_start = DateTime.add(thirty_day_utc_start, -29 * 86_400, :second)
-
-        # Perf #16: wrap the 3-query 30d-branch work in a single
-        # `TodayDataCache.fetch/3` call. Same rolling-window shape
-        # as the `7d` branch above.
-        thirty_day_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :"30d", tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(
-                  user,
-                  dtu_id,
-                  thirty_day_window_start,
-                  thirty_day_utc_end
-                )
-
-              %{
-                yields: Devices.list_last_n_days_yield_data(user, 30, tz_offset_seconds, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(
-                    user,
-                    dtu_id,
-                    thirty_day_window_start,
-                    thirty_day_utc_end
-                  )
-              }
-            end
-          )
-
-        %{
-          yields: yields,
-          peak_w: thirty_day_peak_w,
-          peak_time: thirty_day_peak_time,
-          self_consumption_pct: thirty_day_self_consumption_pct
-        } = thirty_day_specific
-
-        stats = Devices.compute_range_period_stats(yields, 30)
-
-        stats =
-          stats
-          |> Map.put(:peak_power, thirty_day_peak_w)
-          |> Map.put(:peak_time, thirty_day_peak_time)
-          |> Map.put(:self_consumption_pct, thirty_day_self_consumption_pct)
-
-        yield_map = Map.new(yields)
-
-        bar_data =
-          for day_offset <- -29..0 do
-            d = Date.add(today_local, day_offset)
-            # %-d → no zero-pad; with 30 bars the wider "%b %-d" format
-            # keeps each label readable on a tight x-axis.
-            label = Calendar.strftime(d, "%b %-d")
-            value = Map.get(yield_map, d, 0.0)
-            %{label: label, value: value}
-          end
-
-        socket
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
-
-      "ytd" ->
-        # Year-to-date (Jan 1 of current year → today), monthly yields →
-        # bar chart. Same shape as the existing `year` branch above but
-        # window starts on Jan 1 (not Jan 1 of an arbitrary year), so the
-        # bars stop at the current month rather than going all the way to
-        # December.
-        today = Date.utc_today()
-        ytd_start_date = Date.new!(today.year, 1, 1)
-        months_in_window = today.month
-
-        {ytd_utc_start, ytd_utc_end} =
-          Devices.local_day_utc_range(ytd_start_date, tz_offset_seconds)
-
-        # Perf #16: wrap the 3-query ytd-branch work in a single
-        # `TodayDataCache.fetch/3` call. Rolling window anchored on
-        # the current calendar year — the cache key therefore changes
-        # at local midnight on Jan 1 (no explicit invalidate needed).
-        ytd_specific =
-          TodayDataCache.fetch(
-            user.id,
-            [branch: :ytd, tz_offset_seconds: tz_offset_seconds, dtu_id: dtu_id],
-            fn ->
-              {peak_w, peak_time} =
-                Devices.compute_peak_watts_in_period(user, dtu_id, ytd_utc_start, ytd_utc_end)
-
-              %{
-                monthly_yields: Devices.list_ytd_yield_data(user, dtu_id),
-                peak_w: peak_w,
-                peak_time: peak_time,
-                self_consumption_pct:
-                  Devices.compute_self_consumption_pct(user, dtu_id, ytd_utc_start, ytd_utc_end)
-              }
-            end
-          )
-
-        %{
-          monthly_yields: monthly_yields,
-          peak_w: ytd_peak_w,
-          peak_time: ytd_peak_time,
-          self_consumption_pct: ytd_self_consumption_pct
-        } = ytd_specific
-
-        # `Devices.list_ytd_yield_data/2` returns
-        # `[{{year, month}, kwh}]` — the range-period stats helper
-        # expects `[{Date.t(), float()}]` so we widen the tuple back
-        # into a first-of-month `Date`. Multi-year installs (rare:
-        # one full January's worth of cross-year data is the only
-        # case where the same `{year, month}` would collide) collapse
-        # cleanly because we group by `month` only below for the bars.
-        stats =
-          Devices.compute_range_period_stats(
-            Enum.map(monthly_yields, fn {{year, month}, kwh} ->
-              {Date.new!(year, month, 1), kwh}
-            end),
-            months_in_window
-          )
-
-        # Peak watts + self-consumption across Jan 1 → today (the
-        # YTD window). Uses the user's tz offset so the boundaries
-        # line up with the bar chart's first bar (January).
-
-        stats =
-          stats
-          |> Map.put(:peak_power, ytd_peak_w)
-          |> Map.put(:peak_time, ytd_peak_time)
-          |> Map.put(:self_consumption_pct, ytd_self_consumption_pct)
-
-        bar_data =
-          for month <- 1..months_in_window do
-            first_day = Date.new!(today.year, month, 1)
-            label = Calendar.strftime(first_day, "%b")
-
-            value =
-              monthly_yields
-              |> Enum.filter(fn {{_y, m}, _} -> m == month end)
-              |> Enum.map(fn {_, kwh} -> kwh end)
-              |> Enum.sum()
-
-            %{label: label, value: value}
-          end
-
-        socket
-        |> assign(:stats, stats)
-        |> assign(:consumption_stats, consumption_stats)
-        |> assign(:consumption_period_stats, consumption_period_stats)
-        |> assign(:net_flow_stats, net_flow_stats)
-        |> assign(:savings, Devices.compute_savings(stats.total_yield, cents))
-        |> assign(:chart_type, :bar)
-        |> assign_bar_chart_data(bar_data)
     end
   end
 
@@ -5006,7 +3141,7 @@ defmodule DtuAppWeb.DashboardLive do
                                read independently. The violet palette matches
                                nothing else on the dashboard — sinks are their own
                                kind, neither inverter nor consumption meter. --%>
-                          <%= if ro_sink_kind?(device) do %>
+                          <%= if DtuKinds.ro_sink_kind?(device) do %>
                             <span
                               class="inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-300"
                               id={"dtu-sink-badge-#{device.id}"}
