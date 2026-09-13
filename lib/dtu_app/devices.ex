@@ -23,14 +23,6 @@ defmodule DtuApp.Devices do
 
   @type chart_point :: %{time: DateTime.t(), series: series_key(), power: float()}
 
-
-
-
-
-
-
-
-
   # Chart helpers (`clamp_household_draw/1`, `chart_power_for_mppt/1`,
   # `bucket_max_from_chart_points/1`, `owned_dtu_ids/2`, `owned?/2`) live in
   # `DtuApp.Devices.ChartHelpers` \u2014 see that module's @moduledoc for the
@@ -106,6 +98,7 @@ defmodule DtuApp.Devices do
   defdelegate list_recent_readings(user, dtu_id), to: __MODULE__.ReadingExports
   defdelegate list_recent_readings(user, dtu_id, limit), to: __MODULE__.ReadingExports
   defdelegate export_page_size(), to: __MODULE__.ReadingExports
+
   defdelegate stream_readings_for_export(user, dtu_id, utc_start, utc_end),
     to: __MODULE__.ReadingExports
 
@@ -119,17 +112,23 @@ defmodule DtuApp.Devices do
   # preserve default values at the forward boundary.
   defdelegate list_day_readings_for_chart(user, utc_start, utc_end),
     to: __MODULE__.ChartData
+
   defdelegate list_day_readings_for_chart(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.ChartData
+
   defdelegate local_day_utc_range(local_date, tz_offset_seconds), to: __MODULE__.ChartData
   defdelegate list_day_chart_data(user, utc_start, utc_end), to: __MODULE__.ChartData
   defdelegate list_day_chart_data(user, utc_start, utc_end, dtu_id), to: __MODULE__.ChartData
+
   defdelegate list_day_chart_data_for_dashboard(user, utc_start, utc_end),
     to: __MODULE__.ChartData
+
   defdelegate list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.ChartData
+
   defdelegate list_yesterday_chart_data_for_dashboard(user, utc_start, utc_end),
     to: __MODULE__.ChartData
+
   defdelegate list_yesterday_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.ChartData
 
@@ -148,13 +147,18 @@ defmodule DtuApp.Devices do
   defdelegate list_today_chart_data(user, dtu_id), to: __MODULE__.ConsumptionChartData
   defdelegate list_today_consumption_chart_data(user), to: __MODULE__.ConsumptionChartData
   defdelegate list_today_consumption_chart_data(user, dtu_id), to: __MODULE__.ConsumptionChartData
+
   defdelegate list_consumption_chart_data(user, utc_start, utc_end),
     to: __MODULE__.ConsumptionChartData
+
   defdelegate list_consumption_chart_data(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.ConsumptionChartData
+
   defdelegate list_net_chart_data(user, utc_start, utc_end), to: __MODULE__.ConsumptionChartData
+
   defdelegate list_net_chart_data(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.ConsumptionChartData
+
   defdelegate get_net_flow_stats(user), to: __MODULE__.ConsumptionChartData
   defdelegate get_net_flow_stats(user, dtu_id), to: __MODULE__.ConsumptionChartData
   defdelegate get_net_flow_stats(user, dtu_id, opts), to: __MODULE__.ConsumptionChartData
@@ -176,14 +180,19 @@ defmodule DtuApp.Devices do
   defdelegate get_consumption_daily_stats(user), to: __MODULE__.Stats
   defdelegate get_consumption_daily_stats(user, dtu_id), to: __MODULE__.Stats
   defdelegate get_consumption_daily_stats(user, dtu_id, opts), to: __MODULE__.Stats
+
   defdelegate integrate_consumption_kwh(user, dtu_id, utc_start, utc_end),
     to: __MODULE__.Stats
+
   defdelegate get_consumption_period_stats(user, dtu_id, time_range, selected_period),
     to: __MODULE__.Stats
+
   defdelegate get_consumption_period_stats(user, dtu_id, time_range, selected_period, cds),
     to: __MODULE__.Stats
+
   defdelegate compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end),
     to: __MODULE__.Stats
+
   defdelegate compute_peak_watts_in_period(user, dtu_id, utc_start, utc_end), to: __MODULE__.Stats
   defdelegate compute_self_consumption_pct(user, dtu_id, utc_start, utc_end), to: __MODULE__.Stats
 
@@ -196,14 +205,19 @@ defmodule DtuApp.Devices do
   # call sites continue to work unchanged.
   defdelegate list_selectable_dates(user), to: __MODULE__.SelectableDates
   defdelegate list_selectable_dates(user, dtu_id), to: __MODULE__.SelectableDates
+
   defdelegate list_range_yield_data(user, utc_start, utc_end),
     to: __MODULE__.SelectableDates
+
   defdelegate list_range_yield_data(user, utc_start, utc_end, dtu_id),
     to: __MODULE__.SelectableDates
+
   defdelegate list_last_n_days_yield_data(user, n, tz_offset_seconds),
     to: __MODULE__.SelectableDates
+
   defdelegate list_last_n_days_yield_data(user, n, tz_offset_seconds, dtu_id),
     to: __MODULE__.SelectableDates
+
   defdelegate list_ytd_yield_data(user), to: __MODULE__.SelectableDates
   defdelegate list_ytd_yield_data(user, dtu_id), to: __MODULE__.SelectableDates
 

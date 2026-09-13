@@ -21,7 +21,10 @@ defmodule DtuAppWeb.DashboardLive.ShareLink do
 
   alias DtuAppWeb.Endpoint
 
-  @spec apply_result(Phoenix.LiveView.Socket.t(), {:ok, {String.t(), String.t()}} | {:error, term()}) ::
+  @spec apply_result(
+          Phoenix.LiveView.Socket.t(),
+          {:ok, {String.t(), String.t()}} | {:error, term()}
+        ) ::
           {:noreply, Phoenix.LiveView.Socket.t()}
   def apply_result(socket, {:ok, {plaintext, _link}}) do
     {:noreply,

@@ -204,7 +204,10 @@ defmodule DtuAppWeb.DashboardLive.Weather do
     socket
     |> Phoenix.Component.assign(:cloud_cover_line, Map.fetch!(snapshot, :cloud_cover_line))
     |> Phoenix.Component.assign(:current_cloud_cover, Map.fetch!(snapshot, :current_cloud_cover))
-    |> Phoenix.Component.assign(:current_cloud_cover_pct, Map.fetch!(snapshot, :current_cloud_cover_pct))
+    |> Phoenix.Component.assign(
+      :current_cloud_cover_pct,
+      Map.fetch!(snapshot, :current_cloud_cover_pct)
+    )
   end
 
   @spec kickoff_weather_fetch(

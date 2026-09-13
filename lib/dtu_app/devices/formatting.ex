@@ -209,6 +209,4 @@ defmodule DtuApp.Devices.Formatting do
   # split the number — the NBSP keeps the digits glued together.
   defp locale_separators("fr"), do: {"\u00A0", ","}
   defp locale_separators(_), do: {",", "."}
-
-
 end

@@ -116,5 +116,4 @@ defmodule DtuApp.Devices.PeriodStats do
       peak_val: Float.round(peak_val * 1.0, 1)
     }
   end
-
 end

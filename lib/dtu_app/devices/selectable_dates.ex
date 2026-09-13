@@ -226,5 +226,4 @@ defmodule DtuApp.Devices.SelectableDates do
     |> DateTime.add(tz_offset_seconds, :second)
     |> DateTime.to_date()
   end
-
 end

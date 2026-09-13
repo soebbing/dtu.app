@@ -49,13 +49,13 @@ defmodule DtuAppWeb.DashboardLive.LineChartData do
   alias DtuAppWeb.DashboardLive.Weather
 
   def assign_line_chart_data(
-         socket,
-         user,
-         local_date,
-         tz_offset_seconds,
-         dtu_id,
-         opts \\ []
-       ) do
+        socket,
+        user,
+        local_date,
+        tz_offset_seconds,
+        dtu_id,
+        opts \\ []
+      ) do
     # `:live?` flips on the yesterday-ghost overlay. Only the 1D (today)
     # preset shows it — historical day/week/month/year views keep the
     # chart scoped to their selected period. The historical-day caller
@@ -700,7 +700,10 @@ defmodule DtuAppWeb.DashboardLive.LineChartData do
     |> Phoenix.Component.assign(:yesterday_paths, yesterday_paths)
     |> Phoenix.Component.assign(:series_palette, series_palette)
     |> Phoenix.Component.assign(:series_legend, series_legend)
-    |> Phoenix.Component.assign(:path_data, Map.get(series_paths, hd_or_first_key(series_paths), ""))
+    |> Phoenix.Component.assign(
+      :path_data,
+      Map.get(series_paths, hd_or_first_key(series_paths), "")
+    )
     |> Phoenix.Component.assign(:x_labels, x_labels)
     |> Phoenix.Component.assign(:x_min_seconds, x_min_seconds)
     |> Phoenix.Component.assign(:x_max_seconds, x_max_seconds)
@@ -759,7 +762,13 @@ defmodule DtuAppWeb.DashboardLive.LineChartData do
     # callbacks (so the chart paints first) and inline on the HTTP
     # render path (which has no follow-up render). See
     # `kickoff_weather_fetch/6` for the full rationale.
-    |> Weather.kickoff_weather_fetch(user, local_date, x_min_seconds, x_max_seconds, tz_offset_seconds)
+    |> Weather.kickoff_weather_fetch(
+      user,
+      local_date,
+      x_min_seconds,
+      x_max_seconds,
+      tz_offset_seconds
+    )
     # Perf #5 — flip `:initial_mount?` off so subsequent
     # `assign_dashboard_data/5` re-renders (preset switches,
     # `set_location`, `set_timezone`, PubSub reading broadcasts)
@@ -771,12 +780,14 @@ defmodule DtuAppWeb.DashboardLive.LineChartData do
     # reaching into the user struct from the template. Re-derived
     # on every `assign_dashboard_data` call so it stays fresh after
     # `set_location` persists a new position.
-    |> Phoenix.Component.assign(:user_has_geolocation, DtuApp.Accounts.user_has_geolocation?(user))
+    |> Phoenix.Component.assign(
+      :user_has_geolocation,
+      DtuApp.Accounts.user_has_geolocation?(user)
+    )
   end
 
   def hd_or_first_key(map) when map_size(map) == 0, do: nil
   def hd_or_first_key(map), do: map |> Enum.at(0) |> elem(0)
-
 
   # Helper to construct SVG bar chart coordinates and range
   def assign_bar_chart_data(socket, bar_data) do

@@ -464,5 +464,4 @@ defmodule DtuApp.Devices.ConsumptionChartData do
       end
     end
   end
-
 end

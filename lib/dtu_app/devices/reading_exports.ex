@@ -113,5 +113,4 @@ defmodule DtuApp.Devices.ReadingExports do
       []
     end
   end
-
 end

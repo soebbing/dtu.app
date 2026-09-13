@@ -655,7 +655,8 @@ defmodule DtuApp.Devices.Stats do
           {monday, sunday} = week_range(selected_period, today_start)
 
           {utc_start, utc_end} =
-            {elem(ChartData.local_day_utc_range(monday, 0), 0), elem(ChartData.local_day_utc_range(sunday, 0), 1)}
+            {elem(ChartData.local_day_utc_range(monday, 0), 0),
+             elem(ChartData.local_day_utc_range(sunday, 0), 1)}
 
           period_total = compute_consumption_total_kwh(user, dtu_ids, utc_start, utc_end)
           {peak_date, peak_val} = compute_consumption_peak_day(user, dtu_ids, utc_start, utc_end)
@@ -1172,5 +1173,4 @@ defmodule DtuApp.Devices.Stats do
   # `#20260831183444` is staged for the day we drop in a
   # `materialized_only => false` cagg or a daily-marker materialised
   # view that can serve this query safely.
-
 end

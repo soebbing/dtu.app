@@ -21,7 +21,6 @@ defmodule DtuApp.Devices.Readings do
   alias DtuApp.Devices.Reading
   alias DtuApp.Repo
 
-
   @doc "Create a telemetry reading."
   def create_reading(attrs) do
     %Reading{}
@@ -178,5 +177,4 @@ defmodule DtuApp.Devices.Readings do
         end
     end
   end
-
 end

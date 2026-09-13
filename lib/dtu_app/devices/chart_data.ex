@@ -466,5 +466,4 @@ defmodule DtuApp.Devices.ChartData do
       }
     end)
   end
-
 end

@@ -865,5 +865,4 @@ defmodule DtuAppWeb.DashboardLive.DashboardData do
         |> LineChartData.assign_bar_chart_data(bar_data)
     end
   end
-
 end

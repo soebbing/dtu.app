@@ -311,5 +311,4 @@ defmodule DtuApp.Devices.DtuErrors do
       limit: ^cap,
       select: e.id
   end
-
 end
