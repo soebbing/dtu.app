@@ -57,6 +57,36 @@ defmodule DtuApp.Notifications.SunDown do
   user-facing "off = silent" semantics the user explicitly asked
   for.
 
+  ## Silent-day explanation row (silent-drop guard)
+
+  When `build_payload/2` returns `nil` because the user owns
+  devices but none of them have reported readings today (e.g.
+  the inverter is silent / offline / the MQTT session never
+  came up), the producer used to do nothing — no broadcast, no
+  history row, no `sun_down_fires` insert — leaving the user
+  wondering why "today's summary" never arrived when their
+  account toggle is on. The producer now writes an explanatory
+  `notifications` history row so the silent day is no longer
+  invisible to the user (they see it on the history page, and
+  can troubleshoot their devices without having to ask).
+
+  Three callsites deliberately skip this:
+
+    * `sun_down_fires` dedup row — NOT inserted (the day
+      stays open for a later sweep that might find real
+      readings; PR #255's invariant).
+    * PubSub broadcast — not emitted (no real signal to
+      deliver, no in-page banner would feel right for "your
+      devices are silent").
+    * Push / email — not fanned out (same reason; the
+      dispatcher's `push_enabled?` gate would also block
+      this path).
+
+  Suppressed when the user owns zero devices (`dtu_ids == []`):
+  a daily "you have no devices" reminder would be noise — the
+  default state for that user is "no summary". Only the
+  warning log line carries the operator signal in that case.
+
   ## Dedup persistence
 
   Once-per-day dedup state lives in the `sun_down_fires` table
@@ -630,15 +660,28 @@ defmodule DtuApp.Notifications.SunDown do
     Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
       case build_payload(user, today) do
         nil ->
-          # No payload — nothing to broadcast, no email, no
-          # push, no history row. Log a warning so an operator
-          # can spot silent-inverter installs in production
-          # logs; the day is left open for a later sweep that
-          # might find real readings.
+          # No payload — log a warning so an operator can spot
+          # silent-inverter installs in production logs. The
+          # `sun_down_fires` dedup row is intentionally NOT
+          # written here so the day stays open for a later
+          # sweep that might find real readings (PR #255's
+          # invariant — preserved exactly).
+          #
+          # What we DO write: a single `notifications` history
+          # row explaining why no summary was sent. Without it,
+          # a fleet that's been silent all day is
+          # indistinguishable from "the toggle is off" — the
+          # user has zero feedback that the producer even ran
+          # for them today. The row is suppressed for users
+          # with no devices at all (`dtu_ids == []`); a daily
+          # "you have no devices" entry is noise, not signal.
+          # No PubSub broadcast, no push, no email — there's
+          # no real summary to deliver, just a status note.
           Logger.warning(
             "[sun_down] no payload user=#{user.id} fired_on=#{Date.to_iso8601(today)} reason=no_today_readings"
           )
 
+          write_no_payload_history(user, today)
           :ok
 
         payload ->
@@ -716,6 +759,67 @@ defmodule DtuApp.Notifications.SunDown do
     end
   catch
     :error, %Ecto.ConstraintError{} -> {:error, :duplicate}
+  end
+
+  # Persist an explanatory `notifications` history row when
+  # `build_payload/2` returns nil (user has devices but no
+  # readings today). See the "Silent-day explanation row"
+  # section of the moduledoc for the why / what-is-skipped
+  # policy. Implementation notes:
+  #
+  #   * `body` is a single string (column is `:string`),
+  #     matching the existing normal-fire history rows. The
+  #     locale is honoured via `Gettext.with_locale/2` upstream
+  #     of `try_fire/1`.
+  #   * Wrapped in `try/rescue` so a DB hiccup can't break
+  #     the producer — the producer's job is to fire, not
+  #     to log status notes infallibly.
+  defp write_no_payload_history(%User{} = user, %Date{} = today) do
+    if owned_dtu_ids(user) == [] do
+      :ok
+    else
+      payload = %{
+        event: "sun_down",
+        title: gettext("No end-of-day summary"),
+        body:
+          gettext(
+            "Your devices haven't reported any readings today, so there's no daily summary to send. If readings arrive, we'll fire the summary automatically."
+          ),
+        tag: "sun_down:no_readings:#{Date.to_iso8601(today)}"
+      }
+
+      try do
+        case Notifications.record(user, payload) do
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.warning(
+              "[sun_down] no-payload history insert failed user=#{user.id} errors=#{inspect(changeset.errors)}"
+            )
+
+            :ok
+        end
+      rescue
+        e ->
+          Logger.warning(
+            "[sun_down] no-payload history insert raised user=#{user.id} reason=#{Exception.message(e)}"
+          )
+
+          :ok
+      end
+    end
+  end
+
+  # Tiny wrapper so the helper above stays close to the
+  # `dtu_ids == []` predicate that `build_payload/2` uses to
+  # decide between "user has devices but no readings today"
+  # and "user has no devices at all". Mirrors the
+  # `DtuApp.Devices.owned_dtu_ids/2` contract; delegates to the
+  # user-scoped lookup (`nil` dtu_id branch) so we only count
+  # the user's own devices.
+  defp owned_dtu_ids(%User{} = user) do
+    Devices.owned_dtu_ids(user, nil)
   end
 
   defp clear_user_state(state, user_id) do

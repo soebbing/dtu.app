@@ -728,12 +728,19 @@ defmodule DtuApp.Notifications.SunDownTest do
     # readings inside today's date range.
     #
     # Contract pinned by the tests in this describe: when
-    # `build_payload/2` returns nil, the producer must NOT
-    # write a `sun_down_fires` row, must NOT broadcast, and
-    # must NOT emit a `notifications` history row. The user's
-    # day is left untouched so a later reading + sweep can
-    # still produce a real summary.
-    test "no dedup row, no broadcast, no history row when the user has devices but no readings today" do
+    # `build_payload/2` returns nil (silent-fleet day), the
+    # producer must NOT write a `sun_down_fires` row (the day
+    # stays open for a later sweep that might find real
+    # readings), must NOT broadcast on the user's PubSub
+    # topic (no real signal to deliver), and must NOT fire
+    # push or email. The user does, however, get ONE history
+    # row so the silent day is visible in their notification
+    # history — without it, a fleet that's been silent all day
+    # is indistinguishable from "the toggle is off". The
+    # history row carries an explanatory title / body so the
+    # user understands why they didn't receive the usual
+    # summary.
+    test "writes an explanatory history row but no dedup row, broadcast, push or email when the user has devices but no readings today" do
       user = user_fixture(%{notify_sun_down: true})
       dtu = device_fixture(user, %{name: "Silent Inverter"})
 
@@ -773,22 +780,97 @@ defmodule DtuApp.Notifications.SunDownTest do
       # timer fire on the next message-pass, no extra wait.
       send(SunDown, :sun_down_sweep)
 
-      # No `:notification` PubSub broadcast reaches the user.
+      # No `:notification` PubSub broadcast reaches the user —
+      # there's no real summary to deliver, just a
+      # backfill-style explanation, and we don't want a banner
+      # popping up for "your devices are silent".
       refute_receive {:notification, _}, 500
+
+      # Give the producer a moment to finish its DB writes after
+      # the timer fires. The test's `refute_receive` only waits
+      # for a PubSub event; `try_fire/1`'s `write_no_payload_history/2`
+      # writes to the notifications table out-of-band and needs
+      # a brief window to complete.
+      Process.sleep(200)
 
       # No `sun_down_fires` row for today — the dedup row MUST
       # only be written when a real payload is going to be
       # dispatched. (This is the assertion that fails before
       # the fix: the producer inserted the dedup row first
-      # and then discovered the payload was nil.)
+      # and then discovered the payload was nil.) PR #255's
+      # invariant is preserved: a later reading + sweep can
+      # still produce a real summary, which is exactly when
+      # the dedup row should land.
       assert DtuApp.Repo.aggregate(
                from(f in DtuApp.Notifications.SunDownFire, where: f.user_id == ^user.id),
                :count
              ) == 0
 
-      # No `notifications` history row — `Dispatcher.fire/3`
-      # is the only writer, and it must not run when the
-      # producer has nothing to dispatch.
+      # Exactly one `notifications` history row, with the
+      # "no readings" explanatory title and body. The body is
+      # the only signal the user gets that the producer fired
+      # for them today and intentionally suppressed the
+      # summary — without it, the silent day is invisible.
+      history_rows =
+        DtuApp.Repo.all(
+          from(n in DtuApp.Notifications.Notification, where: n.user_id == ^user.id)
+        )
+
+      assert length(history_rows) == 1
+
+      [row] = history_rows
+      assert row.event == "sun_down"
+      assert row.body =~ "readings"
+      # `body` is a string column; the producer passes the
+      # `gettext/1` result directly so the user's locale is
+      # honoured.
+      assert is_binary(row.body)
+      # `delivered_at` is server-stamped — sanity-check it's
+      # within the test wall-clock window.
+      assert DateTime.diff(DateTime.utc_now(), row.delivered_at, :second) <= 5
+    end
+
+    # The "user has no devices" case is a separate shape: a
+    # silent day is the default state, so a daily
+    # "no summary because you have no devices" row would just
+    # be noise. The history row is intentionally suppressed
+    # when `dtu_ids == []` — only the warning is logged.
+    test "writes no history row when the user has no devices at all (default-state noise suppressed)" do
+      user = user_fixture(%{notify_sun_down: true})
+
+      # No device_fixture/1 call — user owns zero devices, so
+      # `owned_dtu_ids/2` returns `[]` and `build_payload/2`
+      # returns nil on the default-state branch.
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Seed an empty entry for this user so the sweep arms
+      # the timer. The `devices: []` list makes
+      # `all_devices_silent?/2` return true (vacuous truth),
+      # so the gate `fleet_w == 0.0 or silent?` passes.
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{},
+            zero_since: nil,
+            timer: nil
+          })
+
+        %{state | users: users}
+      end)
+
+      send(SunDown, :sun_down_sweep)
+
+      refute_receive {:notification, _}, 500
+
+      # No dedup row (same invariant as the silent-fleet case).
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunDownFire, where: f.user_id == ^user.id),
+               :count
+             ) == 0
+
+      # No history row — the "you have no devices" state is
+      # the default and a daily reminder would be noise.
       assert DtuApp.Repo.aggregate(
                from(n in DtuApp.Notifications.Notification, where: n.user_id == ^user.id),
                :count
