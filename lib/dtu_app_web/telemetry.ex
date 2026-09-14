@@ -21,6 +21,20 @@ defmodule DtuAppWeb.Telemetry do
 
   def metrics do
     [
+      # Notification dispatch counter — emitted once per fired
+      # channel by `DtuApp.Notifications.Dispatcher`. Sliced by
+      # `:event` (producer), `:channel` (path that fired), and
+      # `:outcome` (what happened). The `:push_zero` outcome is the
+      # silent-drop case the dispatcher was built to guard against
+      # (VAPID unconfigured, zero live subscriptions, or every live
+      # row 404/410 mid-fan-out) — its rate is the headline number
+      # an operator watches to catch subscription-rotation
+      # regressions before users report missing notifications.
+      counter("dtu_app.notifications.dispatch.count",
+        tags: [:event, :channel, :outcome],
+        description: "Notification dispatch attempts by event/channel/outcome"
+      ),
+
       # Phoenix Metrics
       summary("phoenix.endpoint.start.system_time",
         unit: {:native, :millisecond}

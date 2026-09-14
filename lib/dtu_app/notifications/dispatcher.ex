@@ -35,6 +35,8 @@ defmodule DtuApp.Notifications.Dispatcher do
   alias DtuApp.Push
   alias DtuApp.Repo
 
+  @telemetry_event [:dtu_app, :notifications, :dispatch]
+
   @doc """
   Fire a notification across the user's chosen channels.
 
@@ -207,8 +209,28 @@ defmodule DtuApp.Notifications.Dispatcher do
     try do
       Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
         case Push.deliver(user, wire) do
-          {:ok, %{delivered: delivered}} -> delivered
-          _ -> 0
+          {:ok, %{delivered: delivered}} when delivered > 0 ->
+            emit_dispatch_telemetry(user, event, "push", :push_ok)
+            delivered
+
+          {:ok, %{delivered: _zero}} ->
+            # The "silent drop" case the dispatcher exists to guard
+            # against: VAPID unconfigured, zero live subscriptions,
+            # or every live row 404/410 mid-fan-out. The dispatcher's
+            # email-fallback in `fire/3` keys on `delivered == 0` so
+            # the user gets a banner one way or another; the counter
+            # here surfaces the rate so an iOS subscription-rotation
+            # regression doesn't quietly blow up overnight.
+            emit_dispatch_telemetry(user, event, "push", :push_zero)
+            0
+
+          _unexpected ->
+            # Any non-`{:ok, _}` shape (currently impossible per the
+            # `Push.deliver/2` spec but defensive against future
+            # library changes) is treated as a silent drop and
+            # emitted under the same outcome for telemetry parity.
+            emit_dispatch_telemetry(user, event, "push", :push_zero)
+            0
         end
       end)
     rescue
@@ -217,6 +239,7 @@ defmodule DtuApp.Notifications.Dispatcher do
           "[dispatcher] push failed event=#{event} user=#{user.id} reason=#{Exception.message(e)}"
         )
 
+        emit_dispatch_telemetry(user, event, "push", :push_error)
         0
     end
   end
@@ -274,6 +297,8 @@ defmodule DtuApp.Notifications.Dispatcher do
       Logger.warning(
         "[dispatcher] skipping email event=#{event} user=#{user.id}: email not confirmed"
       )
+
+      emit_dispatch_telemetry(user, event, "email", :email_skipped)
     else
       try do
         Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
@@ -289,6 +314,7 @@ defmodule DtuApp.Notifications.Dispatcher do
 
           case Mailer.deliver(email) do
             {:ok, _meta} ->
+              emit_dispatch_telemetry(user, event, "email", :email_sent)
               :ok
 
             {:error, reason} ->
@@ -296,6 +322,7 @@ defmodule DtuApp.Notifications.Dispatcher do
                 "[dispatcher] email send failed event=#{event} user=#{user.id} reason=#{inspect(reason)}"
               )
 
+              emit_dispatch_telemetry(user, event, "email", :email_failed)
               :ok
           end
         end)
@@ -305,6 +332,7 @@ defmodule DtuApp.Notifications.Dispatcher do
             "[dispatcher] email render/raise event=#{event} user=#{user.id} reason=#{Exception.message(e)}"
           )
 
+          emit_dispatch_telemetry(user, event, "email", :email_rescued)
           :ok
       end
     end
@@ -347,5 +375,62 @@ defmodule DtuApp.Notifications.Dispatcher do
       [name, address] -> {name, address}
       _ -> mail_from
     end
+  end
+
+  # Emits one `:telemetry.execute/3` per dispatched channel. Each
+  # helper (`try_push/3`, `try_email/3`) calls this exactly once per
+  # fire with the outcome it observed. Tags carry the slice axes
+  # useful for dashboards:
+  #
+  #   * `:event` — the producer event ("sun_down", "dtu_connection",
+  #     "yield_anomaly", "test"). Tagged at the fire-event level so
+  #     sun_down → push_zero can be split from dtu_connection →
+  #     push_zero without parsing logs.
+  #   * `:channel` — the path that actually fired ("push" or "email").
+  #     The user's *chosen* `notification_channel` ("push", "email",
+  #     "both") is one fire upstream and not tagged here; we already
+  #     have the email-fallback telemetry from counting
+  #     `channel="email"` events with `outcome=:email_sent` that
+  #     follow a `channel="push", outcome=:push_zero` on the same
+  #     fire, so the cross-tag cardinality is bounded.
+  #   * `:outcome` — what happened (`:push_ok` / `:push_zero` /
+  #     `:push_error` / `:email_sent` / `:email_failed` /
+  #     `:email_skipped` / `:email_rescued`). Tagged so a rate of
+  #     `:push_zero` per `event` answers "is iOS subscription
+  #     rotation getting worse for sun_down?".
+  #
+  # `:user_id` stays in metadata (not tags) to keep tag cardinality
+  # bounded — one tag tuple per `(event, channel, outcome)` rather
+  # than one per user. Operators who want per-user slicing can attach
+  # a handler that reads `:user_id` from metadata.
+  #
+  # The `count: 1` measurement is the inc-value the
+  # `Telemetry.Metrics.counter/2` definition in
+  # `DtuAppWeb.Telemetry.metrics/0` sums. Including `system_time`
+  # lets percentile-style reporters (e.g. `last_value`) keep their
+  # tags alive even when no `:telemetry.execute/3` matches the
+  # event for a while.
+  defp emit_dispatch_telemetry(%User{} = user, event, channel, outcome)
+       when is_binary(channel) and is_atom(outcome) do
+    # `event` is allowed to be nil / non-binary at this boundary:
+    # `Notifications.broadcast/2` reads it from a producer-supplied
+    # payload, and a producer that omits it (e.g. the broadcast-
+    # isolation test in mqtt_broker_test.exs:2246) would otherwise
+    # crash here even though the fire is a no-op for both push and
+    # email. We coerce anything non-binary to "unknown" so the
+    # metric tag stays a string — `outcome` already carries the
+    # dispatch-decision signal, so the unknown bucket is a
+    # low-cardinality safety net for misbehaving callers rather
+    # than a new high-cardinality axis.
+    :telemetry.execute(
+      @telemetry_event,
+      %{count: 1, system_time: System.system_time()},
+      %{
+        event: if(is_binary(event), do: event, else: "unknown"),
+        channel: channel,
+        outcome: outcome,
+        user_id: user.id
+      }
+    )
   end
 end
