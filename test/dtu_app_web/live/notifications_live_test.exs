@@ -549,6 +549,229 @@ defmodule DtuAppWeb.NotificationsLiveTest do
     end
   end
 
+  describe "Notification history filter chips" do
+    # The /notifications page renders a row of chips (All /
+    # Connection / Sun down / Sun up / Yield anomaly / Test) above
+    # the history list. Clicking a chip:
+    #   1. Re-renders the list scoped to the chosen event (server
+    #      query, not a client-side filter — important because the
+    #      pagination total also re-scopes).
+    #   2. push_patch-es the URL so the filter is bookmarkable.
+    # The "All" chip drops the param entirely so the URL stays
+    # clean (`/notifications` rather than `/notifications?event=all`).
+    setup :register_and_log_in_user
+
+    setup %{user: user} do
+      # Seed one row per event so each chip has something to filter
+      # to (and the unfiltered list shows all five).
+      for event <- ["dtu_connection", "sun_down", "sun_up", "yield_anomaly", "test"] do
+        Notifications.record(user, %{
+          event: event,
+          title: "title-#{event}",
+          body: "b",
+          tag: "t-#{event}",
+          payload: %{}
+        })
+      end
+
+      :ok
+    end
+
+    test "the chip row renders one chip per known event plus an All chip", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      assert html =~ ~s(id="notification-history-filters")
+      # All six chips must be present (count `data-event-filter=...`).
+      assert html =~ ~s(data-event-filter="all")
+      assert html =~ ~s(data-event-filter="dtu_connection")
+      assert html =~ ~s(data-event-filter="sun_down")
+      assert html =~ ~s(data-event-filter="sun_up")
+      assert html =~ ~s(data-event-filter="yield_anomaly")
+      assert html =~ ~s(data-event-filter="test")
+    end
+
+    test "the All chip is active on a clean mount", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      # The active chip carries `aria-pressed="true"` and every
+      # other chip carries `aria-pressed="false"`. The Pin pattern
+      # (aria-pressed for state) means the visual style is driven
+      # by the same attribute the test asserts on — a regression
+      # that drops the attribute would also break the active-chip
+      # styling.
+      assert active_chip_with_value(html, "all"),
+             "expected the All chip to be aria-pressed=\"true\""
+
+      assert inactive_chip_with_value(html, "sun_down"),
+             "expected the Sun down chip to be aria-pressed=\"false\""
+    end
+
+    test "clicking the Sun down chip scopes the list to sun_down rows", %{conn: conn} do
+      {:ok, view, html} = live(conn, ~p"/notifications")
+
+      # Unfiltered: all five rows render.
+      assert html =~ "title-sun_down"
+      assert html =~ "title-test"
+      assert html =~ "title-yield_anomaly"
+
+      view
+      |> element(~s(button[data-event-filter="sun_down"]))
+      |> render_click()
+
+      # After the filter: only the sun_down row survives.
+      assert render(view) =~ "title-sun_down"
+      refute render(view) =~ "title-test"
+      refute render(view) =~ "title-yield_anomaly"
+      refute render(view) =~ "title-sun_up"
+      refute render(view) =~ "title-dtu_connection"
+    end
+
+    test "clicking a chip push_patch-es the URL with ?event=...", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      view
+      |> element(~s(button[data-event-filter="sun_down"]))
+      |> render_click()
+
+      # push_patch leaves the LiveView on the same URL with the new
+      # query string. We assert on the URL bar (conn) — `render_click`
+      # returns the re-rendered HTML; the `patch` event lands on the
+      # socket's URL via `assert_patched`.
+      assert_patched(view, ~p"/notifications?event=sun_down")
+    end
+
+    test "clicking All drops the param entirely from the URL", %{conn: conn} do
+      # Start on a filtered URL → click All → URL reverts to the
+      # clean form (no ?event=...) so a copy/paste of the URL after
+      # clicking All doesn't carry a redundant query string.
+      {:ok, view, _html} = live(conn, ~p"/notifications?event=sun_down")
+
+      view
+      |> element(~s(button[data-event-filter="all"]))
+      |> render_click()
+
+      assert_patched(view, ~p"/notifications")
+    end
+
+    test "mounting with ?event=sun_down in the URL applies the filter on first render", %{
+      conn: conn
+    } do
+      {:ok, _view, html} = live(conn, ~p"/notifications?event=sun_down")
+
+      # Only sun_down row visible on the first render — the filter
+      # is read in handle_params/3, not deferred to a click. A
+      # regression that moves the URL read back to mount/3 only
+      # would still pass for the click path; this URL-then-mount
+      # path exercises the actual entry shape.
+      assert html =~ "title-sun_down"
+      refute html =~ "title-test"
+      refute html =~ "title-yield_anomaly"
+      refute html =~ "title-sun_up"
+      refute html =~ "title-dtu_connection"
+
+      # And the sun_down chip is the active one (aria-pressed="true").
+      assert active_chip_with_value(html, "sun_down"),
+             "expected the Sun down chip to be aria-pressed=\"true\""
+
+      assert inactive_chip_with_value(html, "all"),
+             "expected the All chip to be aria-pressed=\"false\""
+    end
+
+    test "mounting with ?event=bogus falls back to All (allow-list defence)", %{conn: conn} do
+      # URL injection defence: a hand-edited query string (or a JS
+      # hook that ships an unknown event) must NOT crash the page
+      # and must NOT leak rows the user can't see in the UI. The
+      # normalisation drops bogus values to "all".
+      {:ok, _view, html} = live(conn, ~p"/notifications?event=<script>alert(1)</script>")
+
+      assert html =~ "title-sun_down"
+      assert html =~ "title-test"
+
+      assert active_chip_with_value(html, "all"),
+             "expected the All chip to be aria-pressed=\"true\" after the bogus value fell back"
+    end
+
+    test "switching filter resets the page index to 1", %{user: user, conn: conn} do
+      # Three pages of "test" rows + 1 sun_down row (yielding a
+      # 4-row global set — 120 test + 1 sun_down = 121, but the
+      # setup seeds only 5 distinct events, so we add the bulk
+      # test rows here in this test). The seed leaves the user
+      # on page 1 with all rows visible. Paginate to page 2
+      # (rows 51–75 visible), then filter to sun_down — the page
+      # index MUST reset to 1 and the pagination controls MUST
+      # disappear (the filtered set is a single page, so the
+      # pagination footer is hidden by the `history_total_pages >
+      # 1` gate in the template).
+      for i <- 1..120 do
+        {:ok, n} =
+          Notifications.record(user, %{
+            event: "test",
+            title: "row #{i}",
+            body: "b",
+            tag: "n-#{i}",
+            payload: %{}
+          })
+
+        touch_notification(n, DateTime.add(DtuApp.Time.utc_now(), -i, :second))
+      end
+
+      {:ok, view, html} = live(conn, ~p"/notifications")
+      # Sanity: page 1 of 3 (75 / 50 = 2 → +1 for the tail page).
+      assert html =~ "Page 1 of 3"
+
+      # Page through to page 2.
+      view
+      |> element("button[phx-click=set_history_page][phx-value-page='2']")
+      |> render_click()
+
+      assert render(view) =~ "Page 2 of 3"
+
+      # Switch filter to sun_down — page resets, pagination
+      # controls disappear (1 row → 1 page → hidden).
+      view
+      |> element(~s(button[data-event-filter="sun_down"]))
+      |> render_click()
+
+      # The pagination footer is gated on `@history_total_pages >
+      # 1`, so a single-page filtered list hides it entirely. The
+      # load-bearing assertion is the *next* button: if the page
+      # index leaked, the next button would still carry
+      # `phx-value-page="3"`; after the reset it carries
+      # `phx-value-page="2"` (page 1 + 1) — and the button is gone
+      # because there's no next page to navigate to.
+      refute render(view) =~ "phx-click=\"set_history_page\""
+    end
+
+    test "filter chip row renders the conditional empty-state copy when no rows match", %{
+      conn: conn
+    } do
+      {:ok, view, html} = live(conn, ~p"/notifications")
+
+      # The seed above adds one row of EVERY known event (the chip
+      # row's per-event labels need to be visible), so a direct
+      # filter-to-event never yields zero rows. To exercise the
+      # filter-active empty-state branch we wipe the user's
+      # history after mount, then filter — the per-event filter
+      # applies to an empty table, and the copy must surface
+      # "in this filter" rather than the global "No notifications
+      # yet" copy.
+      refute html =~ "No notifications in this filter yet"
+
+      view
+      |> element("button[phx-click=clear_all_notifications]")
+      |> render_click()
+
+      # After clear_all + a filter, the empty-state copy is the
+      # filter-active variant.
+      view
+      |> element(~s(button[data-event-filter="sun_down"]))
+      |> render_click()
+
+      assert render(view) =~ "No notifications in this filter yet"
+      refute render(view) =~ "No notifications yet. The list updates automatically"
+    end
+  end
+
   defp touch_notification(n, dt) do
     alias DtuApp.Notifications.Notification
     import Ecto.Query
@@ -561,4 +784,40 @@ defmodule DtuAppWeb.NotificationsLiveTest do
 
     n
   end
+
+  # Locates the chip with `data-event-filter="<value>"` in the
+  # rendered HTML and asserts on its `aria-pressed` attribute.
+  # The chip's rendered HTML is one line (HEEx strips whitespace
+  # between elements), so a multi-line substring pattern would
+  # never match. We extract the chip element via a regex and
+  # assert on its attribute directly.
+  #
+  # Returns `true` on match so the caller can attach a failure
+  # message via `assert ... , "..."`.
+  defp chip_with_pressed(html, value, pressed) do
+    # HEEx renders attributes in declaration order, so the chip
+    # comes out as e.g. `<button type="button" ... aria-pressed="..."
+    # data-event-filter="all" class="...">`. The chip element is
+    # self-contained (no nested `<button>`), so a non-greedy match
+    # to the closing `>` is safe.
+    regex =
+      ~r/<button\b[^>]*\bdata-event-filter="#{Regex.escape(value)}"[^>]*>/
+
+    case Regex.run(regex, html) do
+      [chip_tag] ->
+        case Regex.run(~r/aria-pressed="([^"]+)"/, chip_tag) do
+          [_, actual] -> actual == pressed
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp active_chip_with_value(html, value),
+    do: chip_with_pressed(html, value, "true")
+
+  defp inactive_chip_with_value(html, value),
+    do: chip_with_pressed(html, value, "false")
 end

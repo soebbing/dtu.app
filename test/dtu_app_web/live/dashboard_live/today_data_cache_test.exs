@@ -117,4 +117,149 @@ defmodule DtuAppWeb.DashboardLive.TodayDataCacheTest do
       assert result == %{consumption: [2, 3, 4], net: [5, 6, 7]}
     end
   end
+
+  describe "fetch/3 — branch-keyed cache entries" do
+    # The dashboard's historical branches (day / week / month / year /
+    # 7d / 30d / ytd) wrap their query work in `fetch/3` with a
+    # branch-distinguishing opt so a PubSub `:reading` broadcast that
+    # re-renders the `day` view doesn't poison the `week` view's
+    # cache entry (and vice versa). Verify the cache key treats
+    # `branch: :today`, `branch: :day`, and `branch: :week` as
+    # distinct.
+    test "different branch opts produce independent cache entries" do
+      user_id = System.unique_integer([:positive])
+      TodayDataCache.invalidate(user_id)
+
+      # Seed three branches for the same user_id.
+      TodayDataCache.fetch(user_id, [branch: :today], fn -> %{which: :today} end)
+      TodayDataCache.fetch(user_id, [branch: :day], fn -> %{which: :day} end)
+      TodayDataCache.fetch(user_id, [branch: :week], fn -> %{which: :week} end)
+
+      # Each branch's second fetch must hit its own cached entry —
+      # the cached fetcher never re-runs.
+      assert %{which: :today} =
+               TodayDataCache.fetch(user_id, [branch: :today], fn -> flunk("today cache miss") end)
+
+      assert %{which: :day} =
+               TodayDataCache.fetch(user_id, [branch: :day], fn -> flunk("day cache miss") end)
+
+      assert %{which: :week} =
+               TodayDataCache.fetch(user_id, [branch: :week], fn -> flunk("week cache miss") end)
+    end
+
+    test "tz_offset_seconds / dtu_id / period keys partition the cache per dashboard session" do
+      # Two users viewing the same period must NOT see each other's
+      # cached stats — that's what `user_id` partitioning guarantees,
+      # but two sessions for the same user with different `dtu_id`
+      # (a fleet-wide vs single-device view) or different `date` /
+      # `monday` / `year` period (a user clicking back through the
+      # calendar) also need to see independent cached values.
+      user_id = System.unique_integer([:positive])
+      TodayDataCache.invalidate(user_id)
+
+      # Two different dtu_ids for the same branch+date.
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :day, dtu_id: 1, date: ~D[2026-09-10]],
+        fn -> %{dtu: 1} end
+      )
+
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :day, dtu_id: 2, date: ~D[2026-09-10]],
+        fn -> %{dtu: 2} end
+      )
+
+      assert %{dtu: 1} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, dtu_id: 1, date: ~D[2026-09-10]],
+                 fn -> flunk("dtu_id=1 cache miss") end
+               )
+
+      assert %{dtu: 2} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, dtu_id: 2, date: ~D[2026-09-10]],
+                 fn -> flunk("dtu_id=2 cache miss") end
+               )
+
+      # A different date for the same branch+dtu must also be a new entry.
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :day, dtu_id: 1, date: ~D[2026-09-09]],
+        fn -> %{dtu: 1, date: :other} end
+      )
+
+      assert %{dtu: 1, date: :other} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, dtu_id: 1, date: ~D[2026-09-09]],
+                 fn -> flunk("date-partitioned cache miss") end
+               )
+
+      # The original key still returns its original cached value.
+      assert %{dtu: 1} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, dtu_id: 1, date: ~D[2026-09-10]],
+                 fn -> flunk("date-partitioned cache miss") end
+               )
+    end
+
+    test "invalidate_today/1 drops only the :today branch entry; :day and :week survive" do
+      user_id = System.unique_integer([:positive])
+      TodayDataCache.invalidate(user_id)
+
+      # Seed three branches for the same user. The :day and :week
+      # seeds include the period identifier (`date:` / `monday:`)
+      # that the production callers pass — see `dashboard_live.ex`
+      # ~L2351 for :day's production key shape — so the seed and
+      # the assertion below hash to the same cache key.
+      TodayDataCache.fetch(user_id, [branch: :today], fn -> %{which: :today} end)
+
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :day, date: ~D[2026-09-10]],
+        fn -> %{which: :day} end
+      )
+
+      TodayDataCache.fetch(
+        user_id,
+        [branch: :week, monday: ~D[2026-09-07]],
+        fn -> %{which: :week} end
+      )
+
+      # Drop only :today.
+      assert :ok = TodayDataCache.invalidate_today(user_id)
+
+      # :today was wiped — the fetcher must run again.
+      assert %{which: :today} =
+               TodayDataCache.fetch(user_id, [branch: :today], fn ->
+                 %{which: :today, rerun: true}
+               end)
+
+      # The historical branches still hit their original cache entries
+      # (the cached fetcher returns :flunk — using flunk-bound fetchers
+      # to prove the cached value came back rather than re-running).
+      assert %{which: :day} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :day, date: ~D[2026-09-10]],
+                 fn -> flunk(":day cache miss after invalidate_today") end
+               )
+
+      assert %{which: :week} =
+               TodayDataCache.fetch(
+                 user_id,
+                 [branch: :week, monday: ~D[2026-09-07]],
+                 fn -> flunk(":week cache miss after invalidate_today") end
+               )
+    end
+
+    test "invalidate_today/1 is a no-op on nil and on missing user_id" do
+      assert :ok = TodayDataCache.invalidate_today(nil)
+      assert :ok = TodayDataCache.invalidate_today(999_999_999)
+    end
+  end
 end

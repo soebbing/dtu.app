@@ -70,6 +70,28 @@ services:
     ports:
       - "4000:4000"   # Phoenix HTTP / LiveView
       - "1883:1883"   # embedded MQTT broker (plain TCP; DTUs connect here)
+    # `wget --spider` does an HTTP HEAD-like probe: it issues a GET
+    # but discards the body, returning 0 only on 2xx. That maps to
+    # Docker's healthcheck contract (0 = healthy, non-zero = unhealthy)
+    # so a 200 from `/healthz` flips the container to `healthy`, and
+    # a 503 (DB or broker down) flips it to `unhealthy` — which the
+    # `restart: unless-stopped` policy above then turns into a restart
+    # loop until things recover. The endpoint's full JSON body is
+    # visible via `docker compose inspect` or `docker logs`; we don't
+    # need to scrape it from here.
+    #
+    # Intervals: 10 s probe cadence, 5 s timeout, 5 retries before
+    # declaring `starting` → `unhealthy`. At 10 s the steady-state
+    # probe cost is one `SELECT 1` per `app` container every 10 s,
+    # which is negligible vs. the query load the app itself puts on
+    # the DB. `--spider` is silent on success (no body written), so
+    # `/app` stays clean of probe artifacts.
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q -T 5 http://localhost:4000/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     environment:
       PHX_SERVER: "true"
       PHX_HOST: ${PHX_HOST:-localhost}

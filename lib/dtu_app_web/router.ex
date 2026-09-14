@@ -249,4 +249,20 @@ defmodule DtuAppWeb.Router do
 
     live "/s/:token", SharedDashboardLive, :index
   end
+
+  # Health probe endpoint. Read by the docker-compose `app` service's
+  # healthcheck (`wget --spider http://localhost:4000/healthz`) and any
+  # future readiness probe — so it must be reachable WITHOUT auth.
+  # The `:api` pipeline is the bare minimum: accepts JSON, no session,
+  # no CSRF, no `current_scope`. CSRF/session plugs would just waste a
+  # few µs on every probe, but the bigger reason to keep them off is
+  # that the orchestrator's HTTP client never sends a session cookie
+  # or a CSRF token, and we don't want a probe to be mistaken for a
+  # stale-browser request. Returns either 200 OK or 503 Service
+  # Unavailable with a JSON body — see `DtuAppWeb.HealthController`.
+  scope "/", DtuAppWeb do
+    pipe_through :api
+
+    get "/healthz", HealthController, :show
+  end
 end

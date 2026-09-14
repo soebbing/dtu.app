@@ -35,9 +35,11 @@ import topbar from "../vendor/topbar"
 import {Flash} from "./flash.js"
 import {NotificationPermission} from "./notification_permission.js"
 import {Notifications} from "./notifications.js"
+import {InstallPromptButton} from "./install_prompt_button.js"
 import {OfflineBanner} from "./offline_banner.js"
 import {PushSubscribe} from "./push_subscribe.js"
 import {PasskeyFlow} from "./hooks/passkey_flow.js"
+import {StaleDataBadge} from "./stale_data_badge.js"
 
 // Network Status Hook
 //
@@ -189,8 +191,10 @@ const Hooks = {
   NotificationPermission,
   Notifications,
   OfflineBanner,
+  InstallPromptButton,
   PushSubscribe,
-  PasskeyFlow
+  PasskeyFlow,
+  StaleDataBadge
 }
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,

@@ -699,4 +699,461 @@ defmodule DtuApp.Notifications.SunDownTest do
       assert payload.date == Date.to_iso8601(Date.utc_today())
     end
   end
+
+  describe "silent drop when build_payload/2 returns nil" do
+    # Regression: a user with devices but zero AC readings inside
+    # today's date range used to drop silently inside `try_fire/1`:
+    #
+    #   1. The dedup `sun_down_fires` row was inserted FIRST
+    #      (`insert_fire(user.id, today)` at the top of `try_fire/1`).
+    #   2. `build_payload/2` then returned `nil` because
+    #      `current_power == 0.0 and per_series == []` — the
+    #      `Devices.get_daily_stats/3` result for a user with
+    #      devices but no readings inside today.
+    #   3. The `case` branch fell into `nil -> :ok`, so neither
+    #      `Phoenix.PubSub.broadcast/3` nor `Dispatcher.fire/3`
+    #      ran — no in-page banner, no push, no email, no
+    #      `notifications` history row.
+    #   4. The dedup row was already committed, locking the user
+    #      out of any retry for the rest of the day — even if a
+    #      reading arrived later that would have made
+    #      `build_payload/2` succeed.
+    #
+    # Most common real-world trigger: deploy / restart at night.
+    # `seed_users_from_db/0` (cutoff = `@seed_window_seconds`,
+    # 24h) loads a user whose last reading is from yesterday
+    # evening. The 5-min sweep re-checks the cache, sees the
+    # cached entry is past `@fleet_reading_stale_seconds`
+    # (300s), arms the timer, and `try_fire/1` runs with no
+    # readings inside today's date range.
+    #
+    # Contract pinned by the tests in this describe: when
+    # `build_payload/2` returns nil (silent-fleet day), the
+    # producer must NOT write a `sun_down_fires` row (the day
+    # stays open for a later sweep that might find real
+    # readings), must NOT broadcast on the user's PubSub
+    # topic (no real signal to deliver), and must NOT fire
+    # push or email. The user does, however, get ONE history
+    # row so the silent day is visible in their notification
+    # history — without it, a fleet that's been silent all day
+    # is indistinguishable from "the toggle is off". The
+    # history row carries an explanatory title / body so the
+    # user understands why they didn't receive the usual
+    # summary.
+    test "writes an explanatory history row but no dedup row, broadcast, push or email when the user has devices but no readings today" do
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Silent Inverter"})
+
+      # Deliberately NO `Devices.create_reading/1` for today.
+      # `owned_dtu_ids(user, nil)` returns `[dtu.id]` (the
+      # device exists), but the DISTINCT ON query inside
+      # `get_daily_stats/3` filters by today's date range and
+      # returns `[]` — so `current_power == 0.0` AND
+      # `per_series == []`, which trips the `build_payload/2`
+      # nil guard.
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Prime the producer cache with a yesterday-stale entry.
+      # Mirrors the post-deploy-at-night seed scenario:
+      # yesterday's last reading was 250 W (a sunny afternoon),
+      # then the inverter went silent overnight.
+      yesterday = DateTime.add(Time.utc_now(), -86_400, :second)
+
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{
+              dtu.id => %{power_w: 250.0, last_reading_at: yesterday}
+            },
+            zero_since: nil,
+            timer: nil
+          })
+
+        %{state | users: users, device_to_user: Map.put(state.device_to_user, dtu.id, user.id)}
+      end)
+
+      # Drive the producer through the same path the periodic
+      # sweep takes: `:sun_down_sweep` → `arm_if_idle/2` →
+      # `{:fire_sun_down, user_id}` → `try_fire/1`.
+      # `idle_seconds: 0` (set in `setup`) makes the armed
+      # timer fire on the next message-pass, no extra wait.
+      send(SunDown, :sun_down_sweep)
+
+      # No `:notification` PubSub broadcast reaches the user —
+      # there's no real summary to deliver, just a
+      # backfill-style explanation, and we don't want a banner
+      # popping up for "your devices are silent".
+      refute_receive {:notification, _}, 500
+
+      # Give the producer a moment to finish its DB writes after
+      # the timer fires. The test's `refute_receive` only waits
+      # for a PubSub event; `try_fire/1`'s `write_no_payload_history/2`
+      # writes to the notifications table out-of-band and needs
+      # a brief window to complete.
+      Process.sleep(200)
+
+      # No `sun_down_fires` row for today — the dedup row MUST
+      # only be written when a real payload is going to be
+      # dispatched. (This is the assertion that fails before
+      # the fix: the producer inserted the dedup row first
+      # and then discovered the payload was nil.) PR #255's
+      # invariant is preserved: a later reading + sweep can
+      # still produce a real summary, which is exactly when
+      # the dedup row should land.
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunDownFire, where: f.user_id == ^user.id),
+               :count
+             ) == 0
+
+      # Exactly one `notifications` history row, with the
+      # "no readings" explanatory title and body. The body is
+      # the only signal the user gets that the producer fired
+      # for them today and intentionally suppressed the
+      # summary — without it, the silent day is invisible.
+      history_rows =
+        DtuApp.Repo.all(
+          from(n in DtuApp.Notifications.Notification, where: n.user_id == ^user.id)
+        )
+
+      assert length(history_rows) == 1
+
+      [row] = history_rows
+      assert row.event == "sun_down"
+      assert row.body =~ "readings"
+      # `body` is a string column; the producer passes the
+      # `gettext/1` result directly so the user's locale is
+      # honoured.
+      assert is_binary(row.body)
+      # `delivered_at` is server-stamped — sanity-check it's
+      # within the test wall-clock window.
+      assert DateTime.diff(DateTime.utc_now(), row.delivered_at, :second) <= 5
+    end
+
+    # The "user has no devices" case is a separate shape: a
+    # silent day is the default state, so a daily
+    # "no summary because you have no devices" row would just
+    # be noise. The history row is intentionally suppressed
+    # when `dtu_ids == []` — only the warning is logged.
+    test "writes no history row when the user has no devices at all (default-state noise suppressed)" do
+      user = user_fixture(%{notify_sun_down: true})
+
+      # No device_fixture/1 call — user owns zero devices, so
+      # `owned_dtu_ids/2` returns `[]` and `build_payload/2`
+      # returns nil on the default-state branch.
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Seed an empty entry for this user so the sweep arms
+      # the timer. The `devices: []` list makes
+      # `all_devices_silent?/2` return true (vacuous truth),
+      # so the gate `fleet_w == 0.0 or silent?` passes.
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.put(state.users, user.id, %{
+            devices: %{},
+            zero_since: nil,
+            timer: nil
+          })
+
+        %{state | users: users}
+      end)
+
+      send(SunDown, :sun_down_sweep)
+
+      refute_receive {:notification, _}, 500
+
+      # No dedup row (same invariant as the silent-fleet case).
+      assert DtuApp.Repo.aggregate(
+               from(f in DtuApp.Notifications.SunDownFire, where: f.user_id == ^user.id),
+               :count
+             ) == 0
+
+      # No history row — the "you have no devices" state is
+      # the default and a daily reminder would be noise.
+      assert DtuApp.Repo.aggregate(
+               from(n in DtuApp.Notifications.Notification, where: n.user_id == ^user.id),
+               :count
+             ) == 0
+    end
+  end
+
+  describe "location-aware sunset gate" do
+    # The SunDown trigger now requires the user's fleet to be
+    # idle (0 W or all-silent) AND the current moment to be past
+    # today's sunset for the user's geographic position. The
+    # existing trigger ("fleet at 0 W for `:sun_down_idle_seconds`")
+    # had no time-of-day check — it would fire the daily summary
+    # at noon if the fleet went idle under cloud cover, which is
+    # the wrong signal (that's `YieldAnomaly`'s domain). Sunset
+    # for a location comes from `DtuApp.SunCalc.sunrise_sunset_utc/3`,
+    # the same wrapper YieldAnomaly uses.
+    #
+    # Fallback contract: users WITHOUT coordinates (lat/lon nil)
+    # fall back to the old behaviour (fire regardless of time of
+    # day). Adding the sunset gate must not regress users who
+    # never set their location — the gate is a strict upgrade,
+    # not a requirement.
+
+    setup do
+      # Test override for "now" so the suite can exercise
+      # before-sunset and after-sunset deterministically.
+      # Mirrors `:yield_anomaly_now` from `YieldAnomaly`'s tests.
+      original = Application.get_env(:dtu_app, :sun_down_now)
+
+      # Bump the idle window high (60 s) so the timer does NOT
+      # fire during the test — we want to inspect the cached
+      # arming state mid-flight, before `fire_for_user/2`
+      # wipes it via `clear_user_state/2`. Individual tests
+      # override this back to 0 when they want to drive the
+      # full arm → fire path.
+      original_idle = Application.get_env(:dtu_app, :sun_down_idle_seconds)
+      Application.put_env(:dtu_app, :sun_down_idle_seconds, 60_000)
+
+      on_exit(fn ->
+        if original do
+          Application.put_env(:dtu_app, :sun_down_now, original)
+        else
+          Application.delete_env(:dtu_app, :sun_down_now)
+        end
+
+        if original_idle do
+          Application.put_env(:dtu_app, :sun_down_idle_seconds, original_idle)
+        else
+          Application.delete_env(:dtu_app, :sun_down_idle_seconds)
+        end
+      end)
+
+      :ok
+    end
+
+    test "arming is blocked before today's sunset when the user has coordinates" do
+      # Berlin-ish coords (52.5°N, 13.4°E) — sunset on 2026-06-21
+      # is ~19:30 UTC; we pick 14:00 UTC so the test point is
+      # unambiguously before sunset, and 20:00 UTC for the
+      # after-sunset scenario below.
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Berlin DTU"})
+
+      {1, _} =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [latitude: Decimal.new("52.5"), longitude: Decimal.new("13.4")]
+        )
+
+      # Set the "now" override BEFORE driving any `:reading`
+      # events so the producer's `arm_if_idle/2` consults the
+      # overridden instant on the first arm attempt.
+      Application.put_env(
+        :dtu_app,
+        :sun_down_now,
+        DateTime.from_naive!(~N[2026-06-21 14:00:00], "Etc/UTC")
+      )
+
+      # Seed a daytime AC reading so the reactive broadcast
+      # path populates the cache.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 250.0}}
+      )
+
+      # Prime the cache with a stale (silent) reading — mirrors
+      # the existing `fleet goes silent (nighttime)` test. With
+      # no sunset gate, this would arm the idle timer; the gate
+      # must block that arming.
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.update(state.users, user.id, %{}, fn u ->
+            %{
+              u
+              | devices:
+                  Map.put(u.devices, dtu.id, %{
+                    power_w: 250.0,
+                    last_reading_at: DateTime.add(Time.utc_now(), -360, :second)
+                  })
+            }
+          end)
+
+        %{state | users: users}
+      end)
+
+      # Drive `arm_if_idle/2` via the reactive broadcast path.
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_2", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      # Let the producer process the broadcast.
+      :timer.sleep(50)
+
+      state = :sys.get_state(SunDown)
+      user_state = state.users[user.id]
+
+      # No timer armed, no `zero_since` set — the sunset gate
+      # blocked arming because 14:00 UTC is before sunset
+      # (~19:30 UTC for Berlin on 2026-06-21).
+      assert user_state.timer == nil
+      assert user_state.zero_since == nil
+    end
+
+    test "arming proceeds past today's sunset when the user has coordinates" do
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "Berlin DTU"})
+
+      {1, _} =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [latitude: Decimal.new("52.5"), longitude: Decimal.new("13.4")]
+        )
+
+      # Seed a daytime AC reading so the producer's
+      # `seed_users_from_db` at init + reactive `:reading`
+      # broadcasts see a known fleet.
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      # Prime the cache via the producer's reactive path,
+      # then age out (mirrors the `silent (nighttime)` test).
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 250.0}}
+      )
+
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.update(state.users, user.id, %{}, fn u ->
+            %{
+              u
+              | devices:
+                  Map.put(u.devices, dtu.id, %{
+                    power_w: 250.0,
+                    last_reading_at: DateTime.add(Time.utc_now(), -360, :second)
+                  })
+            }
+          end)
+
+        %{state | users: users}
+      end)
+
+      # `idle_seconds` left at 60_000 (from describe setup) so
+      # the timer arms but does NOT fire — we inspect the
+      # cached state mid-flight to confirm arming.
+      Application.put_env(
+        :dtu_app,
+        :sun_down_now,
+        DateTime.from_naive!(~N[2026-06-21 20:00:00], "Etc/UTC")
+      )
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_2", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      # Give the producer a tick to process the broadcast
+      # and run `arm_if_idle/2`.
+      :timer.sleep(50)
+
+      state = :sys.get_state(SunDown)
+      user_state = state.users[user.id]
+
+      # After sunset, the gate's `past_sunset?` check passes
+      # and the timer arms. We assert the arming observable
+      # (a non-nil `timer` ref + a `zero_since` timestamp)
+      # rather than driving the full fire path through the
+      # chart render + broadcast — those are covered by the
+      # existing `fleet goes silent` test and would only add
+      # noise to this gate-focused test.
+      assert is_reference(user_state.timer),
+             "expected timer to be armed after sunset, got #{inspect(user_state.timer)}"
+
+      assert user_state.zero_since != nil
+    end
+
+    test "users without coordinates fall back to the old behaviour (fire regardless of time)" do
+      # Backward-compat: users who haven't set lat/lon keep the
+      # pre-fix behaviour. The sunset gate only kicks in when
+      # coordinates are known — adding the gate must not
+      # regress users who never set their location.
+      user = user_fixture(%{notify_sun_down: true})
+      dtu = device_fixture(user, %{name: "No-loc DTU"})
+
+      # Confirm no coords (default).
+      assert DtuApp.Repo.get!(DtuApp.Accounts.User, user.id).latitude == nil
+
+      {:ok, _} =
+        Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 0,
+          ac_power: 250.0,
+          inserted_at: DateTime.utc_now() |> DateTime.truncate(:second)
+        })
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 250.0}}
+      )
+
+      :sys.replace_state(SunDown, fn state ->
+        users =
+          Map.update(state.users, user.id, %{}, fn u ->
+            %{
+              u
+              | devices:
+                  Map.put(u.devices, dtu.id, %{
+                    power_w: 250.0,
+                    last_reading_at: DateTime.add(Time.utc_now(), -360, :second)
+                  })
+            }
+          end)
+
+        %{state | users: users}
+      end)
+
+      # 02:00 UTC — definitely before any plausible sunset for
+      # any inhabited location. Without the fallback, the gate
+      # would block this; with the fallback, the timer arms.
+      Application.put_env(
+        :dtu_app,
+        :sun_down_now,
+        DateTime.from_naive!(~N[2026-06-21 02:00:00], "Etc/UTC")
+      )
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_2", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      :timer.sleep(50)
+
+      state = :sys.get_state(SunDown)
+      user_state = state.users[user.id]
+
+      assert is_reference(user_state.timer),
+             "expected timer to be armed (no-coords fallback), got #{inspect(user_state.timer)}"
+
+      assert user_state.zero_since != nil
+    end
+  end
 end

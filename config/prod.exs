@@ -29,8 +29,28 @@ config :swoosh, api_client: Swoosh.ApiClient.Req
 # Disable Swoosh Local Memory Storage
 config :swoosh, local: false
 
-# Do not print debug messages in production
-config :logger, level: :info
+# Default to :info in production. Operators can override per-instance
+# with `LOG_LEVEL=debug` (or `:warning` / `:error`) for ad-hoc
+# performance triage — e.g. when chasing a slow mount with the
+# `DASHBOARD_MOUNT_TIMING_LOG` probe or attaching an Ecto telemetry
+# handler at runtime. We validate against the four standard Logger
+# levels and silently fall back to :info on anything else, since
+# `String.to_atom/1` would otherwise leak a fresh atom per typo
+# (`:deubg` → atom leaks forever).
+config :logger,
+  level:
+    (case System.get_env("LOG_LEVEL") do
+       nil -> :info
+       "emergency" -> :emergency
+       "alert" -> :alert
+       "critical" -> :critical
+       "error" -> :error
+       "warning" -> :warning
+       "notice" -> :notice
+       "info" -> :info
+       "debug" -> :debug
+       _ -> :info
+     end)
 
 # Runtime production configuration, including reading
 # of environment variables, is done on config/runtime.exs.

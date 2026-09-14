@@ -353,6 +353,156 @@ defmodule DtuApp.Notifications.SunUpTest do
     end
   end
 
+  describe "location-aware sunrise gate" do
+    # Mirror of `SunDown`'s sunset gate. `sun_up` fires once per
+    # user per local day when the fleet transitions from 0 W to
+    # > 0 W. The user's original spec asked for "first time the
+    # fleet is >0 W *after sunrise according to location*" — i.e.
+    # a pre-dawn wake should be deferred, not delivered at 04:00.
+    #
+    # The gate is a strict upgrade: users WITHOUT coordinates
+    # fall back to the old behaviour (fire immediately on first
+    # wake). Polar edge cases (sun never rises on the requested
+    # date) conservatively block the fire — there's no sunrise
+    # to gate against.
+    #
+    # Test override: `Application.put_env(:dtu_app, :sun_up_now,
+    # %DateTime{})` lets the suite drive the gate check at a fixed
+    # instant without mocking `Time.utc_now/0`. Mirrors
+    # `:sun_down_now` in `SunDown`'s tests.
+
+    setup do
+      original = Application.get_env(:dtu_app, :sun_up_now)
+
+      on_exit(fn ->
+        if original do
+          Application.put_env(:dtu_app, :sun_up_now, original)
+        else
+          Application.delete_env(:dtu_app, :sun_up_now)
+        end
+      end)
+
+      :ok
+    end
+
+    test "arming is deferred before today's sunrise when the user has coordinates" do
+      # Berlin-ish coords (52.5°N, 13.4°E). On the winter solstice
+      # 2026-12-21, sunrise is around 08:15 UTC — we pick 06:00 UTC
+      # so the test point is unambiguously before sunrise, and
+      # 10:00 UTC for the after-sunrise scenario below.
+      user = user_fixture(%{notify_sun_up: true})
+      dtu = device_fixture(user, %{name: "Berlin DTU"})
+
+      {1, _} =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [latitude: Decimal.new("52.5"), longitude: Decimal.new("13.4")]
+        )
+
+      # Set the "now" override BEFORE driving the `:reading`
+      # event so the producer's gate check consults the
+      # overridden instant on the first arm attempt.
+      Application.put_env(
+        :dtu_app,
+        :sun_up_now,
+        DateTime.from_naive!(~N[2026-12-21 06:00:00], "Etc/UTC")
+      )
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 50.0}}
+      )
+
+      # No notification fired — pre-sunrise wake is deferred.
+      # Drain the mailbox so any leftover broadcasts from
+      # previous tests don't satisfy the refute.
+      flush_notifications()
+      refute_receive {:notification, _}, 100
+
+      state = :sys.get_state(SunUp)
+      user_state = state.users[user.id]
+
+      # `wake_until` is set to today's sunrise — the producer
+      # must wait for the sun to rise before firing the
+      # notification.
+      assert %DateTime{} = wake_until = user_state.wake_until
+      assert DateTime.compare(wake_until, ~U[2026-12-21 06:00:00Z]) in [:gt, :eq]
+      # Sanity-check it's not absurdly far from the expected
+      # Berlin sunrise (~08:15 UTC on 2026-12-21).
+      assert DateTime.compare(wake_until, ~U[2026-12-21 07:00:00Z]) == :gt
+      assert DateTime.compare(wake_until, ~U[2026-12-21 09:30:00Z]) == :lt
+    end
+
+    test "arming fires at-or-after today's sunrise when the user has coordinates" do
+      user = user_fixture(%{notify_sun_up: true})
+      dtu = device_fixture(user, %{name: "Berlin DTU"})
+
+      {1, _} =
+        DtuApp.Repo.update_all(
+          from(u in DtuApp.Accounts.User, where: u.id == ^user.id),
+          set: [latitude: Decimal.new("52.5"), longitude: Decimal.new("13.4")]
+        )
+
+      Application.put_env(
+        :dtu_app,
+        :sun_up_now,
+        DateTime.from_naive!(~N[2026-12-21 10:00:00], "Etc/UTC")
+      )
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 50.0}}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_up"
+
+      state = :sys.get_state(SunUp)
+      user_state = state.users[user.id]
+
+      # Past-sunrise wake fires immediately — no `wake_until`
+      # left behind (the gate cleared the path and the fire
+      # happened in one step).
+      assert user_state.wake_until == nil
+    end
+
+    test "users without coordinates fall back to the old behaviour" do
+      user = user_fixture(%{notify_sun_up: true})
+      dtu = device_fixture(user, %{name: "Co-ordless DTU"})
+
+      # 02:00 UTC on a winter day — before any conceivable
+      # sunrise, but the gate must NOT block because the user
+      # never set their location.
+      Application.put_env(
+        :dtu_app,
+        :sun_up_now,
+        DateTime.from_naive!(~N[2026-12-21 02:00:00], "Etc/UTC")
+      )
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 50.0}}
+      )
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_up"
+
+      state = :sys.get_state(SunUp)
+      user_state = state.users[user.id]
+
+      assert user_state.wake_until == nil
+    end
+  end
+
   describe "local_date/2" do
     test "returns the shifted calendar date for a positive (east) offset" do
       # 2026-08-23T22:00:00Z in CEST (+7200) is 2026-08-24T00:00 local.

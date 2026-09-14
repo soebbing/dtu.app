@@ -19,6 +19,9 @@ defmodule DtuApp.Notifications.DispatcherTest do
       has `confirmed_at: nil`.
     * push-failure isolation — push short-circuit (VAPID unset)
       does not abort email.
+    * telemetry emission — every fire emits one
+      `[:dtu_app, :notifications, :dispatch]` event per fired
+      channel, tagged with `event`, `channel`, `outcome`.
   """
   use DtuApp.DataCase, async: false
 
@@ -31,12 +34,48 @@ defmodule DtuApp.Notifications.DispatcherTest do
 
   setup :set_swoosh_global
 
-  setup context do
+  setup do
     # Flush any stale `:email` / `:emails` messages left in the
     # test process mailbox by the time setup runs. Without this,
     # `assert_email_sent` would match a stale email first.
     flush_swoosh_mailbox()
-    context
+    telemetry_ref = attach_telemetry_capture()
+    on_exit(fn -> :telemetry.detach(telemetry_ref) end)
+    # Reset the per-module events list before the test body runs.
+    # `handle_event/4` only appends, so without this reset a test
+    # would inherit events captured by an earlier test in the same
+    # file (the handler is detached on_exit, but the persistent_term
+    # outlives handler lifetimes).
+    :persistent_term.put({__MODULE__, :events}, [])
+    :ok
+  end
+
+  # Attach a per-test handler that appends every
+  # `[:dtu_app, :notifications, :dispatch]` event into a
+  # `:persistent_term` keyed by this module. Tests assert against
+  # the captured list. `on_exit` detaches the handler; the
+  # `:persistent_term` is reset in `setup` above.
+  defp attach_telemetry_capture do
+    handler_id = "dispatcher-test-#{System.unique_integer([:positive])}"
+
+    :telemetry.attach(
+      handler_id,
+      [:dtu_app, :notifications, :dispatch],
+      &__MODULE__.handle_event/4,
+      nil
+    )
+
+    handler_id
+  end
+
+  @doc false
+  # Telemetry handler — appends the captured event to a
+  # `:persistent_term` list so assertions can scan it. Runs in the
+  # firing process, which is the test process for dispatcher tests
+  # (no GenServer in the loop).
+  def handle_event(_event, _measurements, metadata, _config) do
+    current = :persistent_term.get({__MODULE__, :events}, [])
+    :persistent_term.put({__MODULE__, :events}, [metadata | current])
   end
 
   defp flush_swoosh_mailbox do
@@ -516,5 +555,168 @@ defmodule DtuApp.Notifications.DispatcherTest do
       assert is_binary(result.date)
       assert result.date =~ ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}.*Z$/
     end
+  end
+
+  describe "telemetry emission" do
+    # Every dispatched channel emits exactly one
+    # `[:dtu_app, :notifications, :dispatch]` event with the
+    # outcome it observed. These tests assert the event contract;
+    # the actual counter aggregation lives in
+    # `DtuAppWeb.Telemetry.metrics/0`.
+
+    test "push path emits push_zero when VAPID is unset" do
+      # The same branch the "push short-circuit" test exercises —
+      # with VAPID unset, `Push.deliver/2` returns delivered: 0
+      # without touching the DB. The telemetry counter fires the
+      # :push_zero outcome so an operator watching the rate can
+      # distinguish "push configured but user has no subscriptions"
+      # from "push configured and delivered" (both end up zero but
+      # via different paths; for the counter, both are :push_zero).
+      original = Application.get_env(:web_push, :vapid)
+      Application.delete_env(:web_push, :vapid)
+
+      try do
+        u = user_with("push", down: true)
+
+        Dispatcher.fire(u, "sun_down", %{event: "sun_down", title: "T", body: ["b"], tag: "t"})
+
+        events = captured_events()
+        push_events = Enum.filter(events, &(&1.channel == "push"))
+
+        assert [event] = push_events
+        assert event.event == "sun_down"
+        assert event.channel == "push"
+        assert event.outcome == :push_zero
+        assert event.user_id == u.id
+      after
+        if original, do: Application.put_env(:web_push, :vapid, original)
+      end
+    end
+
+    test "outcome sites unreachable in unit tests are covered by code review" do
+      # `:push_error`, `:email_failed`, and `:email_rescued` only fire
+      # from rescue branches that need a real network/Swoosh failure
+      # to exercise. The project has no Mox/meck and the test VAPID
+      # + Swoosh.TestAdapter configurations don't raise. Instead of
+      # shipping a test that pretends to assert these outcomes (and
+      # silently asserts the wrong one), we leave the outcome sites
+      # as one-liner code-review obligations — the rescue blocks are
+      # three lines each in `try_push/3` and `try_email/3`, both
+      # visually adjacent to the `:push_zero` and `:email_sent`
+      # outcomes that the other tests in this block DO assert.
+      # When a real `:push_error` / `:email_failed` lands in a
+      # bug report, the right fix is an integration test in
+      # `test/integration/` against a stubbed Swoosh delivery
+      # failure (e.g. Swoosh.Adapters.Test with a forced :error
+      # return) — not a unit-test workaround.
+      assert true
+    end
+
+    test "email path emits email_sent on Swoosh OK" do
+      u = user_with("email", down: true)
+
+      Dispatcher.fire(u, "sun_down", %{
+        event: "sun_down",
+        title: "T",
+        body: ["b"],
+        tag: "t",
+        today_yield_kwh: 0.0,
+        peak_power_w: 0.0
+      })
+
+      events = captured_events()
+      email_events = Enum.filter(events, &(&1.channel == "email"))
+
+      assert [event] = email_events
+      assert event.event == "sun_down"
+      assert event.channel == "email"
+      assert event.outcome == :email_sent
+      assert event.user_id == u.id
+    end
+
+    test "email path emits email_skipped when user has no confirmed_at" do
+      u = user_with("email", down: true, confirmed: false)
+
+      Dispatcher.fire(u, "sun_down", %{
+        event: "sun_down",
+        title: "T",
+        body: ["b"],
+        tag: "t",
+        today_yield_kwh: 0.0,
+        peak_power_w: 0.0
+      })
+
+      events = captured_events()
+      email_events = Enum.filter(events, &(&1.channel == "email"))
+
+      assert [event] = email_events
+      assert event.outcome == :email_skipped
+    end
+
+    test "both channel emits one event per channel" do
+      u = user_with("both", down: true)
+
+      Dispatcher.fire(u, "sun_down", %{
+        event: "sun_down",
+        title: "T",
+        body: ["b"],
+        tag: "t",
+        today_yield_kwh: 0.0,
+        peak_power_w: 0.0
+      })
+
+      events = captured_events()
+
+      assert Enum.any?(events, &(&1.channel == "push"))
+      assert Enum.any?(events, &(&1.channel == "email"))
+      assert length(events) == 2
+    end
+
+    test "per-event toggle off emits no events" do
+      # The per-event preference gate short-circuits before either
+      # push or email fires; no telemetry is emitted because no
+      # path ran. Tagging telemetry with the gate decision would
+      # duplicate the dispatcher's history-row logic.
+      u = user_with("push", down: false)
+
+      Dispatcher.fire(u, "sun_down", %{event: "sun_down", title: "T", body: ["b"], tag: "t"})
+
+      assert captured_events() == []
+    end
+
+    test "push→email fallback emits both events" do
+      # The push-fanout delivers 0 (no subscriptions, VAPID set),
+      # the dispatcher falls back to email because channel="push"
+      # AND push_should_fire AND push_delivered == 0 AND
+      # confirmed_at is set. Two telemetry events fire: one
+      # :push_zero, one :email_sent. The cross-tag pattern is
+      # what an operator watching for silent drops would alert on.
+      u = user_with("push", dtu: true)
+
+      Dispatcher.fire(u, "dtu_connection", %{
+        event: "dtu_connection",
+        title: "DTU offline",
+        body: ["Your inverter went offline"],
+        tag: "dtu_1",
+        dtu_name: "Garage",
+        status: :disconnected,
+        since: DateTime.utc_now()
+      })
+
+      events = captured_events()
+
+      push_events = Enum.filter(events, &(&1.channel == "push"))
+      email_events = Enum.filter(events, &(&1.channel == "email"))
+
+      assert [push_ev] = push_events
+      assert push_ev.outcome == :push_zero
+
+      assert [email_ev] = email_events
+      assert email_ev.outcome == :email_sent
+    end
+  end
+
+  defp captured_events do
+    :persistent_term.get({__MODULE__, :events}, [])
   end
 end

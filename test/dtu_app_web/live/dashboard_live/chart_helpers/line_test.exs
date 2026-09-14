@@ -336,6 +336,89 @@ defmodule DtuAppWeb.Live.DashboardLive.ChartHelpers.LineTest do
       assert result.points == []
     end
 
+    test "first segment does not curl left of the first point (boundary mirror pins p0 = p1)" do
+      # Regression for the C-curl at the chart's left edge: the
+      # smoothing algorithm used `Enum.at(pts, i - 1) || p1` to pick
+      # the previous-neighbour anchor for the Catmull-Rom formula.
+      # When `i == 0`, `Enum.at(pts, -1)` returns the LAST element
+      # of the list (non-nil), so the `|| p1` boundary mirror never
+      # fires — the first segment was being smoothed as if its
+      # previous neighbour were the chart's last point. The
+      # resulting cp1.x landed far to the left of the first point,
+      # producing a visible C-curl that looped back through the
+      # first anchor before continuing rightward.
+      #
+      # Test shape: choose readings where the first and last have
+      # wildly different Xs AND different Ys, so any leak of the
+      # last point into the first segment's CP1.x formula would
+      # visibly exceed the first anchor's X (i.e. cp1.x < first.x).
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 0},
+        %{time: at(~D[2026-08-30], 6), pct: 25},
+        %{time: at(~D[2026-08-30], 12), pct: 75},
+        %{time: at(~D[2026-08-30], 18), pct: 25},
+        %{time: at(~D[2026-08-30], 23), pct: 100}
+      ]
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
+
+      assert result.has_data == true
+
+      # Path shape: "M x y C cp1x cp1y, cp2x cp2y, x y C ...".
+      # Splitting on " C " eats the separator — segments come out
+      # as 6 numeric tokens (cp1x cp1y cp2x cp2y ax ay). The M
+      # anchor is the first element; each C segment follows.
+      [_m_anchor, first_c_segment | _] =
+        String.split(result.path, " C ", trim: true)
+
+      [cp1x_str, _cp1y_str, _cp2x_str, _cp2y_str, _ax_str, _ay_str] =
+        String.split(first_c_segment, ~r/[\s,]+/, trim: true)
+
+      first_point = List.first(result.points)
+      cp1x = String.to_float(cp1x_str)
+
+      assert cp1x >= first_point.x,
+             "First segment CP1.x (#{cp1x}) must not curl left of the first anchor's X (#{first_point.x}) — got path: #{result.path}"
+    end
+
+    test "last segment does not curl right of the last point (boundary mirror pins p3 = p2)" do
+      # Symmetric regression for the same boundary-mirror pattern
+      # on the right edge — `Enum.at(pts, i + 2) || p2` already
+      # mirrors `p2` when `i + 2` is out of range, but this test
+      # pins the contract so a future refactor can't accidentally
+      # break the symmetric boundary handling without a failing
+      # assertion.
+      x_min = 0
+      x_max = 86_400
+
+      readings = [
+        %{time: at(~D[2026-08-30], 0), pct: 100},
+        %{time: at(~D[2026-08-30], 6), pct: 75},
+        %{time: at(~D[2026-08-30], 12), pct: 25},
+        %{time: at(~D[2026-08-30], 18), pct: 75},
+        %{time: at(~D[2026-08-30], 23), pct: 0}
+      ]
+
+      result = ChartHelpers.cloud_cover_line(readings, nil, x_min, x_max, 0, 800)
+
+      assert result.has_data == true
+
+      segments = String.split(result.path, " C ", trim: true)
+      last_segment = List.last(segments)
+
+      [_cp1x_str, _cp1y_str, cp2x_str, _cp2y_str, _ax_str, _ay_str] =
+        String.split(last_segment, ~r/[\s,]+/, trim: true)
+
+      last_point = List.last(result.points)
+      cp2x = String.to_float(cp2x_str)
+
+      assert cp2x <= last_point.x,
+             "Last segment CP2.x (#{cp2x}) must not curl right of the last anchor's X (#{last_point.x}) — got path: #{result.path}"
+    end
+
     test "no control-point Y falls outside the chart's [20, 250] range" do
       # Regression for the Catmull-Rom overshoot: a 0% reading
       # followed by a 25% reading produces a control point whose

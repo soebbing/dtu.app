@@ -57,6 +57,36 @@ defmodule DtuApp.Notifications.SunDown do
   user-facing "off = silent" semantics the user explicitly asked
   for.
 
+  ## Silent-day explanation row (silent-drop guard)
+
+  When `build_payload/2` returns `nil` because the user owns
+  devices but none of them have reported readings today (e.g.
+  the inverter is silent / offline / the MQTT session never
+  came up), the producer used to do nothing — no broadcast, no
+  history row, no `sun_down_fires` insert — leaving the user
+  wondering why "today's summary" never arrived when their
+  account toggle is on. The producer now writes an explanatory
+  `notifications` history row so the silent day is no longer
+  invisible to the user (they see it on the history page, and
+  can troubleshoot their devices without having to ask).
+
+  Three callsites deliberately skip this:
+
+    * `sun_down_fires` dedup row — NOT inserted (the day
+      stays open for a later sweep that might find real
+      readings; PR #255's invariant).
+    * PubSub broadcast — not emitted (no real signal to
+      deliver, no in-page banner would feel right for "your
+      devices are silent").
+    * Push / email — not fanned out (same reason; the
+      dispatcher's `push_enabled?` gate would also block
+      this path).
+
+  Suppressed when the user owns zero devices (`dtu_ids == []`):
+  a daily "you have no devices" reminder would be noise — the
+  default state for that user is "no summary". Only the
+  warning log line carries the operator signal in that case.
+
   ## Dedup persistence
 
   Once-per-day dedup state lives in the `sun_down_fires` table
@@ -87,6 +117,7 @@ defmodule DtuApp.Notifications.SunDown do
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.Reading
   alias DtuApp.Emails.SunDownChart
+  alias DtuApp.SunCalc
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunDownFire
@@ -341,13 +372,74 @@ defmodule DtuApp.Notifications.SunDown do
     if is_nil(user_id), do: state, else: arm_if_idle(state, user_id)
   end
 
+  # Sunset gate: returns `true` iff the user's fleet should be
+  # considered idle AND the current instant is past today's
+  # sunset for the user's geographic position. The user
+  # explicitly asked for "sun_down" to fire only after sunset —
+  # a daily summary fired at noon (under cloud cover) is the
+  # wrong signal (that's `YieldAnomaly`'s job).
+  #
+  # Fallback contract: when the user has no coordinates
+  # (`latitude` / `longitude` nil) `past_sunset?/2` returns
+  # `true`, matching the legacy behaviour. Adding the gate is a
+  # strict upgrade, not a regression for users who never set
+  # their location — they keep getting a fire at any time of
+  # day, same as before.
+  #
+  # Polar edge cases (`{sunrise, nil}` polar day,
+  # `{nil, sunset}` polar night) and other unknown shapes
+  # return `false` — no sunset known for the location today,
+  # so the gate conservatively blocks the fire rather than
+  # guess.
+  defp past_sunset?(user_id, %DateTime{} = now) do
+    case safe_get_user(user_id) do
+      nil ->
+        # User vanished mid-flight (deletion race) — treat as past
+        # sunset so the summary still fires; this matches the
+        # original un-gated behaviour for users that briefly don't
+        # exist.
+        true
+
+      %User{latitude: nil} ->
+        true
+
+      %User{longitude: nil} ->
+        true
+
+      %User{latitude: lat, longitude: lon} when not is_nil(lat) and not is_nil(lon) ->
+        date = DateTime.to_date(now)
+
+        case SunCalc.sunrise_sunset_utc(lat, lon, date) do
+          {_, %DateTime{} = sunset} -> DateTime.compare(now, sunset) in [:gt, :eq]
+          # Polar day (`{_, nil}`), polar night (`{nil, _}`) and
+          # unknown shapes: no sunset known for this location/date,
+          # so conservatively block the fire rather than guess.
+          _ -> false
+        end
+
+      _ ->
+        true
+    end
+  end
+
+  # Test override for "now" — mirrors `:yield_anomaly_now` in
+  # `YieldAnomaly`. Lets the suite drive the sunset-gate check
+  # at a fixed instant without mocking `Time.utc_now/0`. Falls
+  # back to the wall-clock time in production.
+  defp read_now do
+    case Application.get_env(:dtu_app, :sun_down_now, :__unset__) do
+      :__unset__ -> Time.utc_now()
+      %DateTime{} = configured -> configured
+    end
+  end
+
   defp arm_if_idle(state, user_id) do
     case Map.get(state.users, user_id) do
       nil ->
         state
 
       %{devices: devices, zero_since: zero_since, timer: timer} = user_state ->
-        now = Time.utc_now()
+        now = read_now()
         fleet_w = active_fleet_w(devices, now)
         silent? = all_devices_silent?(user_state, now)
 
@@ -366,7 +458,19 @@ defmodule DtuApp.Notifications.SunDown do
           # where the entire fleet has gone silent (no fresh AC readings
           # in the last @fleet_reading_stale_seconds); we still want a
           # summary at the end of a silent day.
-          (fleet_w == 0.0 or silent?) and zero_since == nil ->
+          #
+          # Sunset gate: a daily summary at noon is meaningless — the
+          # user explicitly asked for "sun_down", which only fires
+          # once the sun is actually down. Look up the user to read
+          # their coordinates; the DB hit is only charged on the
+          # rare idle-transition path, never on the hot reactive
+          # path (the cond branches above return state unchanged
+          # for the producing-power cases). Users without
+          # coordinates fall back to the legacy behaviour
+          # (fire regardless) — `past_sunset?/2` returns `true` for
+          # them — so adding the gate is a strict upgrade, not a
+          # regression for users who never set their location.
+          (fleet_w == 0.0 or silent?) and zero_since == nil and past_sunset?(user_id, now) ->
             zero_since = Time.utc_now()
 
             idle_seconds = idle_seconds()
@@ -533,23 +637,56 @@ defmodule DtuApp.Notifications.SunDown do
   defp try_fire(%User{} = user) do
     today = Date.utc_today()
 
-    case insert_fire(user.id, today) do
-      :ok ->
-        # The SunDown producer runs as a long-lived GenServer
-        # without a request context, so `gettext/1` would default to
-        # whatever Gettext was initialized with (≈ "en") regardless
-        # of the user's preference. Wrap the build_payload +
-        # dispatch pair in the user's locale so the title/body
-        # strings are generated in the right language — both the
-        # in-page PubSub broadcast and the dispatcher's email
-        # rendering (handled inside `Dispatcher.fire/3` via its own
-        # `Gettext.with_locale/2` wrapper) carry that locale.
-        Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          case build_payload(user, today) do
-            nil ->
-              :ok
+    # The SunDown producer runs as a long-lived GenServer
+    # without a request context, so `gettext/1` would default to
+    # whatever Gettext was initialized with (≈ "en") regardless
+    # of the user's preference. Wrap the build_payload +
+    # dispatch pair in the user's locale so the title/body
+    # strings are generated in the right language — both the
+    # in-page PubSub broadcast and the dispatcher's email
+    # rendering (handled inside `Dispatcher.fire/3` via its own
+    # `Gettext.with_locale/2` wrapper) carry that locale.
+    #
+    # Order matters: `build_payload/2` runs FIRST so the dedup
+    # `sun_down_fires` row is only written when there is
+    # something to dispatch. A user with devices but no
+    # readings inside today's date range (silent-inverter
+    # overnight / post-deploy-at-night seed scenario) makes
+    # `build_payload/2` return `nil` — writing the dedup row
+    # before that check would silently swallow the day's
+    # notification AND lock out any later retry (the row's
+    # unique constraint blocks every subsequent fire attempt
+    # until tomorrow).
+    Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
+      case build_payload(user, today) do
+        nil ->
+          # No payload — log a warning so an operator can spot
+          # silent-inverter installs in production logs. The
+          # `sun_down_fires` dedup row is intentionally NOT
+          # written here so the day stays open for a later
+          # sweep that might find real readings (PR #255's
+          # invariant — preserved exactly).
+          #
+          # What we DO write: a single `notifications` history
+          # row explaining why no summary was sent. Without it,
+          # a fleet that's been silent all day is
+          # indistinguishable from "the toggle is off" — the
+          # user has zero feedback that the producer even ran
+          # for them today. The row is suppressed for users
+          # with no devices at all (`dtu_ids == []`); a daily
+          # "you have no devices" entry is noise, not signal.
+          # No PubSub broadcast, no push, no email — there's
+          # no real summary to deliver, just a status note.
+          Logger.warning(
+            "[sun_down] no payload user=#{user.id} fired_on=#{Date.to_iso8601(today)} reason=no_today_readings"
+          )
 
-            payload ->
+          write_no_payload_history(user, today)
+          :ok
+
+        payload ->
+          case insert_fire(user.id, today) do
+            :ok ->
               # Augment the payload with the email-specific keys.
               # `build_payload/2` retains the in-page JS shape
               # (`today_yield_yesterday_kwh` /
@@ -587,12 +724,17 @@ defmodule DtuApp.Notifications.SunDown do
               )
 
               Dispatcher.fire(user, "sun_down", full)
-          end
-        end)
 
-      {:error, :duplicate} ->
-        :ok
-    end
+            {:error, :duplicate} ->
+              # Another idle window for the same user fired
+              # between our `build_payload/2` and
+              # `insert_fire/2` calls and beat us to the row.
+              # The other fire already broadcast + dispatched —
+              # nothing to do.
+              :ok
+          end
+      end
+    end)
   end
 
   defp insert_fire(user_id, %Date{} = fired_on) do
@@ -617,6 +759,67 @@ defmodule DtuApp.Notifications.SunDown do
     end
   catch
     :error, %Ecto.ConstraintError{} -> {:error, :duplicate}
+  end
+
+  # Persist an explanatory `notifications` history row when
+  # `build_payload/2` returns nil (user has devices but no
+  # readings today). See the "Silent-day explanation row"
+  # section of the moduledoc for the why / what-is-skipped
+  # policy. Implementation notes:
+  #
+  #   * `body` is a single string (column is `:string`),
+  #     matching the existing normal-fire history rows. The
+  #     locale is honoured via `Gettext.with_locale/2` upstream
+  #     of `try_fire/1`.
+  #   * Wrapped in `try/rescue` so a DB hiccup can't break
+  #     the producer — the producer's job is to fire, not
+  #     to log status notes infallibly.
+  defp write_no_payload_history(%User{} = user, %Date{} = today) do
+    if owned_dtu_ids(user) == [] do
+      :ok
+    else
+      payload = %{
+        event: "sun_down",
+        title: gettext("No end-of-day summary"),
+        body:
+          gettext(
+            "Your devices haven't reported any readings today, so there's no daily summary to send. If readings arrive, we'll fire the summary automatically."
+          ),
+        tag: "sun_down:no_readings:#{Date.to_iso8601(today)}"
+      }
+
+      try do
+        case Notifications.record(user, payload) do
+          {:ok, _} ->
+            :ok
+
+          {:error, changeset} ->
+            Logger.warning(
+              "[sun_down] no-payload history insert failed user=#{user.id} errors=#{inspect(changeset.errors)}"
+            )
+
+            :ok
+        end
+      rescue
+        e ->
+          Logger.warning(
+            "[sun_down] no-payload history insert raised user=#{user.id} reason=#{Exception.message(e)}"
+          )
+
+          :ok
+      end
+    end
+  end
+
+  # Tiny wrapper so the helper above stays close to the
+  # `dtu_ids == []` predicate that `build_payload/2` uses to
+  # decide between "user has devices but no readings today"
+  # and "user has no devices at all". Mirrors the
+  # `DtuApp.Devices.owned_dtu_ids/2` contract; delegates to the
+  # user-scoped lookup (`nil` dtu_id branch) so we only count
+  # the user's own devices.
+  defp owned_dtu_ids(%User{} = user) do
+    Devices.owned_dtu_ids(user, nil)
   end
 
   defp clear_user_state(state, user_id) do

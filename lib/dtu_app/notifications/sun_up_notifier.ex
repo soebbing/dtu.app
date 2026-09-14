@@ -75,6 +75,7 @@ defmodule DtuApp.Notifications.SunUp do
   alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunUpFire
   alias DtuApp.Repo
+  alias DtuApp.SunCalc
 
   @reading_topic "dtu:reading"
 
@@ -162,7 +163,7 @@ defmodule DtuApp.Notifications.SunUp do
     else
       users =
         state.users
-        |> Map.put_new(user_id, %{devices: %{}})
+        |> Map.put_new(user_id, %{devices: %{}, wake_until: nil})
         |> Map.update!(user_id, fn u ->
           %{u | devices: Map.put(u.devices, device_id, power_w)}
         end)
@@ -225,15 +226,140 @@ defmodule DtuApp.Notifications.SunUp do
                 # the native-push path. Sun-up is a single low-value
                 # greeting and skipping it cleanly is the better UX.
                 if user.notify_sun_up == true do
-                  try_fire(user)
+                  handle_wake(state, user)
+                else
+                  state
                 end
-
-                state
             end
           else
-            state
+            # Fleet back to 0 W — cancel any pending deferred
+            # fire. The wake event was either a cloud-induced
+            # blip or a transient pre-sunrise flicker; either
+            # way, we should NOT fire a "sun's up" notification
+            # for it. If the user wakes again later (and is now
+            # post-sunrise), `handle_wake/2` will fire as usual.
+            clear_wake_until(state, user_id)
           end
       end
+    end
+  end
+
+  # Sunrise gate. The user explicitly asked for sun-up to fire
+  # "the first time the fleet is >0 W *after sunrise according to
+  # location*". When the user has coordinates and the wake
+  # happens before today's sunrise, we defer the fire by setting
+  # `wake_until` to today's sunrise; the periodic sweep (and
+  # every reactive broadcast) will re-check and fire once the
+  # sun is up.
+  #
+  # Users without coordinates fall back to the legacy behaviour
+  # (fire immediately) — `past_sunrise?/2` returns `true` for
+  # them — so adding the gate is a strict upgrade, not a
+  # regression for users who never set their location.
+  #
+  # Polar night (`{nil, _}` — sun never rises today): no sunrise
+  # known for the location/date, so conservatively block the
+  # fire rather than guess. Polar day (`{%DateTime{}, nil}` —
+  # sun never sets): sunrise exists, so the standard gate
+  # applies.
+  defp handle_wake(state, %User{} = user) do
+    now = read_now()
+
+    if past_sunrise?(user.id, now) do
+      try_fire(user)
+      clear_wake_until(state, user.id)
+    else
+      defer_wake_until(state, user.id, now)
+    end
+  end
+
+  defp defer_wake_until(state, user_id, now) do
+    case Map.get(state.users, user_id) do
+      nil ->
+        state
+
+      user_state ->
+        wake_until = compute_wake_until(user_id, now)
+
+        if wake_until do
+          put_in(state.users[user_id], %{user_state | wake_until: wake_until})
+        else
+          # Polar night — no sunrise today. Don't fire, but
+          # also don't keep a stale `wake_until` around (no
+          # point sweeping for one that can never resolve).
+          state
+        end
+    end
+  end
+
+  defp clear_wake_until(state, user_id) do
+    case Map.get(state.users, user_id) do
+      nil ->
+        state
+
+      %{wake_until: nil} ->
+        state
+
+      user_state ->
+        put_in(state.users[user_id], %{user_state | wake_until: nil})
+    end
+  end
+
+  defp compute_wake_until(user_id, %DateTime{} = now) do
+    case safe_get_user(user_id) do
+      %User{latitude: lat, longitude: lon}
+      when not is_nil(lat) and not is_nil(lon) ->
+        date = DateTime.to_date(now)
+
+        case SunCalc.sunrise_sunset_utc(lat, lon, date) do
+          {%DateTime{} = sunrise, _} -> sunrise
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp past_sunrise?(user_id, %DateTime{} = now) do
+    case safe_get_user(user_id) do
+      nil ->
+        # User vanished mid-flight (deletion race) — fire on the
+        # legacy "fire regardless" path so the summary still
+        # delivers.
+        true
+
+      %User{latitude: nil} ->
+        true
+
+      %User{longitude: nil} ->
+        true
+
+      %User{latitude: lat, longitude: lon} when not is_nil(lat) and not is_nil(lon) ->
+        date = DateTime.to_date(now)
+
+        case SunCalc.sunrise_sunset_utc(lat, lon, date) do
+          {%DateTime{} = sunrise, _} -> DateTime.compare(now, sunrise) in [:gt, :eq]
+          # Polar night (`{nil, _}`) — sun never rises on the
+          # requested date. The "after sunrise" requirement
+          # can't be met, so conservatively block the fire.
+          {nil, _} -> false
+        end
+
+      _ ->
+        true
+    end
+  end
+
+  # Test override for "now" — mirrors `:yield_anomaly_now` in
+  # `YieldAnomaly` and `:sun_down_now` in `SunDown`. Lets the
+  # suite drive the sunrise-gate check at a fixed instant
+  # without mocking `Time.utc_now/0`. Falls back to wall-clock
+  # in production.
+  defp read_now do
+    case Application.get_env(:dtu_app, :sun_up_now, :__unset__) do
+      :__unset__ -> DateTime.utc_now()
+      %DateTime{} = configured -> configured
     end
   end
 

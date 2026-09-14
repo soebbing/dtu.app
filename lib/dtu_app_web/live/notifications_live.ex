@@ -25,6 +25,47 @@ defmodule DtuAppWeb.NotificationsLive do
 
   @history_page_size 50
 
+  # The five event types that the `notifications.event` column can
+  # hold. Drives both the filter-chip row and the "active filter"
+  # highlight. Listed in display order: connection events are the
+  # most-noisy on a multi-inverter install, so they're first.
+  @event_filters [
+    "all",
+    "dtu_connection",
+    "sun_down",
+    "sun_up",
+    "yield_anomaly",
+    "test"
+  ]
+
+  # Allow-list for event-filter URL params. Unknown values fall back
+  # to "all" so a forged `?event=...` query (or a typo) can't surface
+  # rows for a future event type that hasn't shipped to the UI yet.
+  defp normalize_event_filter(value)
+       when value in ["dtu_connection", "sun_down", "sun_up", "yield_anomaly", "test"],
+       do: value
+
+  defp normalize_event_filter(_), do: "all"
+
+  defp filter_label("all"), do: gettext("All")
+  defp filter_label("dtu_connection"), do: gettext("Connection")
+  defp filter_label("sun_down"), do: gettext("Sun down")
+  defp filter_label("sun_up"), do: gettext("Sun up")
+  defp filter_label("yield_anomaly"), do: gettext("Yield anomaly")
+  defp filter_label("test"), do: gettext("Test")
+  defp filter_label(_), do: gettext("All")
+
+  # `event_filter == "all"` is the sentinel that means "no filter
+  # applied" in the UI. `count_user_notifications/2` and
+  # `list_user_notifications/4` both treat the sentinel as nil so
+  # the underlying query stays `WHERE user_id = $1` (no event
+  # WHERE clause) — the live-view + URL layer is the only thing
+  # that knows about the "all" label.
+  defp event_filter_to_query(nil), do: nil
+  defp event_filter_to_query(""), do: nil
+  defp event_filter_to_query("all"), do: nil
+  defp event_filter_to_query(value), do: value
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -39,6 +80,13 @@ defmodule DtuAppWeb.NotificationsLive do
     user = socket.assigns.current_scope.user
     has_subscriptions = PushSubscriptions.list_for_user(user) != []
 
+    # The event-filter URL param is read in `handle_params/3` (not
+    # `mount/3`) so that `push_patch/2` from the chip-row handler
+    # re-fires the read on every URL change — `mount/3` only runs
+    # once per socket lifetime, which is too coarse for a filter
+    # that's toggled repeatedly. The filter assign defaults to
+    # "all" here so the first render before `handle_params/3`
+    # returns a sensible value.
     {:ok,
      socket
      |> assign(:page_title, gettext("Notifications"))
@@ -53,20 +101,54 @@ defmodule DtuAppWeb.NotificationsLive do
      # hook's first push lands.
      |> assign(:notification_state, %{"state" => "loading", "device" => nil})
      |> assign(:has_push_subscriptions, has_subscriptions)
-     |> assign_history(user, 1)
+     # `:event_filters` is the chip-row's source of truth — the
+     # list of values the template iterates to render one chip
+     # each. Assigning it (rather than reading it from the module
+     # attribute) lets the template access it via `@event_filters`
+     # the same way it accesses every other assign. The
+     # `:history_event_filter` assign below is the *active* filter;
+     # the chip-row template compares each chip against it to set
+     # `aria-pressed`.
+     |> assign(:event_filters, @event_filters)
+     |> assign(:history_event_filter, "all")
+     |> assign_history(user, 1, "all")
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
 
+  # Phoenix.LiveView dispatches `handle_params/3` on every URL
+  # change (mount, `push_patch/2`, `push_navigate/2`) so the URL
+  # remains the single source of truth for filter state. Without
+  # this callback, `push_patch/2` from `filter_history` updates
+  # the address bar but leaves the assign + history list on the
+  # previous filter — `push_patch` would be a no-op for state, only
+  # a URL-bar cosmetic change.
+  @impl true
+  def handle_params(params, _url, socket) do
+    event_filter = normalize_event_filter(params["event"])
+    user = socket.assigns.current_scope.user
+
+    {:noreply,
+     socket
+     |> assign(:history_event_filter, event_filter)
+     |> assign_history(user, 1, event_filter)}
+  end
+
   # Load the first page of the user's notification history into
-  # `:history_items` / `:history_page` / `:history_total_pages`.
-  # Called from mount/3 and after every mutation (delete, clear-all,
-  # paginate) so the UI always reflects DB state without needing a
-  # local cache that could drift.
-  defp assign_history(socket, user, page) do
-    total = Notifications.count_user_notifications(user)
+  # `:history_items` / `:history_page` / `:history_total_pages` /
+  # `:history_filter_total`. Called from mount/3 and after every
+  # mutation (delete, clear-all, paginate) so the UI always reflects
+  # DB state without needing a local cache that could drift.
+  #
+  # The total returned by `count_user_notifications/2` is the
+  # filtered total (per-filter pagination), NOT the global total —
+  # a user with 200 dtu_connection rows + 3 sun_down rows sees
+  # "Page 1 of 1 within Sun down", not "Page 4 of 8".
+  defp assign_history(socket, user, page, event_filter) do
+    query_filter = event_filter_to_query(event_filter)
+    total = Notifications.count_user_notifications(user, query_filter)
     total_pages = max(1, div(total + @history_page_size - 1, @history_page_size))
     page = min(max(1, page), total_pages)
-    items = Notifications.list_user_notifications(user, page, @history_page_size)
+    items = Notifications.list_user_notifications(user, page, @history_page_size, query_filter)
 
     socket
     |> assign(:history_items, items)
@@ -88,7 +170,11 @@ defmodule DtuAppWeb.NotificationsLive do
     socket =
       socket
       |> push_event("notify", payload)
-      |> assign_history(socket.assigns.current_scope.user, socket.assigns.history_page)
+      |> assign_history(
+        socket.assigns.current_scope.user,
+        socket.assigns.history_page,
+        socket.assigns.history_event_filter
+      )
 
     {:noreply, socket}
   end
@@ -97,7 +183,7 @@ defmodule DtuAppWeb.NotificationsLive do
     user = socket.assigns.current_scope.user
     page = page |> to_string() |> String.to_integer()
 
-    {:noreply, assign_history(socket, user, page)}
+    {:noreply, assign_history(socket, user, page, socket.assigns.history_event_filter)}
   end
 
   def handle_event("delete_notification", %{"id" => id}, socket) do
@@ -107,9 +193,15 @@ defmodule DtuAppWeb.NotificationsLive do
     _ = Notifications.delete(user, id)
 
     # After deleting, the current page may now be empty. Stay on
-    # the same page index; `assign_history/3` clamps it back into
+    # the same page index; `assign_history/4` clamps it back into
     # range so we never render a phantom page.
-    {:noreply, assign_history(socket, user, socket.assigns.history_page)}
+    {:noreply,
+     assign_history(
+       socket,
+       user,
+       socket.assigns.history_page,
+       socket.assigns.history_event_filter
+     )}
   end
 
   def handle_event("clear_all_notifications", _payload, socket) do
@@ -118,10 +210,29 @@ defmodule DtuAppWeb.NotificationsLive do
 
     socket =
       socket
-      |> assign_history(user, 1)
+      |> assign_history(user, 1, socket.assigns.history_event_filter)
       |> put_flash(:info, gettext("Notification history cleared."))
 
     {:noreply, socket}
+  end
+
+  def handle_event("filter_history", %{"event" => value}, socket) do
+    # `push_patch/2` updates the URL bar; Phoenix then dispatches
+    # `handle_params/3` with the new params, which is what actually
+    # reads the URL value back into the assign + history list.
+    # We don't assign + reload here — the dispatch is the single
+    # source of truth for URL-driven state, and doing the work in
+    # both places would race on the assign.
+    #
+    # `value` is normalised inside `handle_params/3` so a forged
+    # `phx-value-event` (no allow-list at the JS layer) still
+    # falls back to "all" — see `normalize_event_filter/1`.
+    params =
+      if normalize_event_filter(value) == "all",
+        do: %{},
+        else: %{"event" => value}
+
+    {:noreply, push_patch(socket, to: ~p"/notifications?#{params}")}
   end
 
   def handle_event("notification_state", params, socket) do
@@ -546,11 +657,53 @@ defmodule DtuAppWeb.NotificationsLive do
             <% end %>
           </div>
 
+          <%!--
+            Event filter chip row. One chip per known event type plus
+            an "All" reset. Clicking a chip fires `filter_history` →
+            `push_patch` so the URL carries `?event=...` (shareable /
+            bookmarkable). The active chip is highlighted via the
+            `aria-pressed` attribute the template picks up; using
+            `aria-pressed` rather than plain `class="active"` keeps
+            the visual state machine in one place (the attribute is
+            set on the active chip, removed on the others).
+          --%>
+          <div
+            id="notification-history-filters"
+            role="group"
+            aria-label={gettext("Filter notifications by event")}
+            class="flex flex-wrap gap-2"
+          >
+            <%= for value <- @event_filters do %>
+              <button
+                type="button"
+                phx-click="filter_history"
+                phx-value-event={value}
+                aria-pressed={to_string(@history_event_filter == value)}
+                data-event-filter={value}
+                class={[
+                  "rounded-full px-3 py-1 text-xs font-medium transition",
+                  @history_event_filter == value &&
+                    "bg-emerald-500 text-zinc-950 hover:bg-emerald-400",
+                  @history_event_filter != value &&
+                    "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
+                ]}
+              >
+                {filter_label(value)}
+              </button>
+            <% end %>
+          </div>
+
           <%= if @history_total == 0 do %>
             <p class="text-sm text-zinc-500 dark:text-zinc-400">
-              {gettext(
-                "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
-              )}
+              <%= if @history_event_filter == "all" do %>
+                {gettext(
+                  "No notifications yet. The list updates automatically the next time your devices trigger an event or you send a test notification above."
+                )}
+              <% else %>
+                {gettext(
+                  "No notifications in this filter yet. Pick a different event above or send a test notification to verify your setup."
+                )}
+              <% end %>
             </p>
           <% else %>
             <ul role="list" class="divide-y divide-zinc-100 dark:divide-zinc-700">

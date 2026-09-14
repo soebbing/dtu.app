@@ -70,6 +70,7 @@
     <%!-- PWA: top-of-page banner shown when the browser is offline.
          The OfflineBanner hook toggles `data-offline` based on
          `navigator.onLine`; CSS in app.css slides it in. --%>
+    <StaleDataBadge.stale_data_badge />
     <OfflineBanner.offline_banner />
 
     <!-- Unified Glassmorphic Navbar -->
@@ -104,6 +105,18 @@
               <%= if @current_scope && @current_scope.user do %>
                 <li class="hidden sm:inline text-xs text-zinc-500 dark:text-zinc-400 font-mono">
                   {@current_scope.user.email}
+                </li>
+                <%!-- PWA install prompt button. Hidden by default
+                     (the hook flips it visible once the browser
+                     fires `beforeinstallprompt`); renders for
+                     authenticated users so anonymous visitors
+                     don't see an install nudge on the marketing
+                     surfaces. --%>
+                <li>
+                  <InstallPromptButton.install_prompt_button
+                    id="install-prompt-button"
+                    variant="navbar"
+                  />
                 </li>
                 <%!-- "Manage Devices" lives in the desktop right-side
                      cluster (between email and Settings) so users on
@@ -181,6 +194,9 @@
                   <%= if @current_scope && @current_scope.user do %>
                     <li class="px-2 py-1 text-xs text-zinc-500 dark:text-zinc-400 font-mono truncate">
                       {@current_scope.user.email}
+                    </li>
+                    <li>
+                      <InstallPromptButton.install_prompt_button id="install-prompt-button-burger" variant="burger" />
                     </li>
                     <li>
                       <.link

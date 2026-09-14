@@ -3798,6 +3798,20 @@ defmodule DtuAppWeb.DashboardLiveTest do
         ]
       )
 
+      # The `readings_5m` aggregate has a 5-minute `end_offset`, so the
+      # `current_bucket` row above is filtered out by
+      # `list_day_chart_data_for_dashboard/4`'s `bucket < utc_tail_start`
+      # clause within the first 5 minutes of the current hour — leaving
+      # the chart with only `past_bucket`, an `x_max` an hour behind
+      # "now", and a `now_marker_x` that returns nil. The chart's live
+      # tail (`live_tail_bucketed_chart_points/3`) reads from the raw
+      # `readings` table though, so a fresh uplink with `inserted_at =
+      # now()` lands in the tail and the chart's `last_local` ends up
+      # at the bucket containing "now" — covering "now" in the X range
+      # and rendering the now-marker regardless of the wall-clock
+      # minute the test happens to start on.
+      insert_live_reading(dtu.id, "INV-1", 300.0)
+
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 
       # The now-marker group is gated on `@now_marker_x` — when
@@ -4587,6 +4601,18 @@ defmodule DtuAppWeb.DashboardLiveTest do
               |> Map.put(:microsecond, {0, 6})
           })
       end
+
+      # The daytime arc above stops at 19:00, so without this
+      # `inserted_at = now()` uplink the chart's `last_local` lands
+      # at 19:00 and `now_marker_x/4` returns nil whenever "now"
+      # sits outside the X window (after sunset, before the next
+      # sunrise). The chart's live tail (`live_tail_bucketed_chart_
+      # points/3`) reads from the raw `readings` table, so a fresh
+      # uplink makes the chart's last_local cover "now" — rendering
+      # the now-marker pill rect regardless of the wall-clock minute
+      # the test happens to start on. Same fix shape as the
+      # `1D view renders the now-marker` regression test below.
+      insert_live_reading(dtu.id, "INV-LINE", 200.0)
 
       # Set coords through `Accounts.update_user_location/2` so the
       # schema's `:decimal` storage path is exercised end-to-end
@@ -5717,6 +5743,100 @@ defmodule DtuAppWeb.DashboardLiveTest do
 
       assert cached_after != [],
              "tz change should re-populate the cache via assign_dashboard_data"
+    end
+  end
+
+  describe "DTU-seen debounce (regression for per-uplink refresh_devices/2 calls)" do
+    # Spec: docs/PERF_FINDINGS_2026-09-08.md finding #4. A 6-inverter
+    # + 1 Shelly Plus 3EM install fires ~1–4 PubSub `:dtu_seen`
+    # broadcasts per second sustained (one per MQTT uplink). Without
+    # coalescing, every `:dtu_seen` triggered an uncached
+    # `refresh_devices/2` call (`Devices.list_devices/1` +
+    # `error_counts_by_dtu_id/1`), which exhausted the 10-slot DB
+    # pool alongside the reading-driven traffic. Mirror the proven
+    # `:reading` debounce (1 s window) so at most one
+    # `refresh_devices/2` runs per second.
+    #
+    # We observe the `devices_refresh_pending` flag via
+    # `socket_assigns(view)` — the same idiom the `:reading`
+    # coalesce test uses above. The flag flips `false → true` on
+    # the first broadcast, stays `true` for additional broadcasts
+    # inside the window, and flips back to `false` after the
+    # scheduled `:refresh_devices` message lands and the handler
+    # runs `refresh_devices/2`.
+
+    test "rapid :dtu_seen broadcasts coalesce (flag stays pending, single refresh fires)",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-seen-coalesce-test"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+
+      # Mount completes with no pending refresh.
+      refute socket_assigns(view).devices_refresh_pending
+
+      # Burst: 10 :dtu_seen with the same `device_id` in <50 ms.
+      # Direct `send/2` works because `handle_info/2` is
+      # transport-agnostic; we're exercising the handler, not the
+      # PubSub fanout (covered by `mqtt_broker_test.exs`).
+      pid = view.pid
+
+      for _ <- 1..10 do
+        send(pid, {:dtu_seen, 42})
+      end
+
+      # Yield so the LV process has a chance to process the burst
+      # before we observe the flag.
+      Process.sleep(50)
+
+      # The first broadcast set the flag and scheduled the 1 s
+      # debounce timer; the next nine absorbed into the existing
+      # pending window.
+      assert socket_assigns(view).devices_refresh_pending,
+             "10 rapid :dtu_seen broadcasts within 50 ms should leave the debounce flag set"
+
+      # Wait for the debounce timer to fire + the :refresh_devices
+      # handler to clear the flag.
+      Process.sleep(1_200)
+
+      refute socket_assigns(view).devices_refresh_pending,
+             "after the 1 s debounce window, the flag should be cleared by :refresh_devices"
+    end
+
+    test "a second :dtu_seen after the window schedules a fresh refresh",
+         %{conn: conn, user: user} do
+      _dtu =
+        device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "dtu-seen-second-window"
+        })
+
+      {:ok, view, _html} = live(conn, ~p"/dashboard")
+      pid = view.pid
+
+      # First window: 1 broadcast → flag set → wait → flag cleared.
+      send(pid, {:dtu_seen, 42})
+      Process.sleep(50)
+
+      assert socket_assigns(view).devices_refresh_pending
+
+      Process.sleep(1_200)
+
+      refute socket_assigns(view).devices_refresh_pending,
+             "first :refresh_devices should have cleared the flag"
+
+      # Second window: a new :dtu_seen fires a fresh debounce.
+      send(pid, {:dtu_seen, 42})
+      Process.sleep(50)
+
+      assert socket_assigns(view).devices_refresh_pending,
+             "a :dtu_seen after the window should start a fresh debounce window"
+
+      Process.sleep(1_200)
+      refute socket_assigns(view).devices_refresh_pending
     end
   end
 end

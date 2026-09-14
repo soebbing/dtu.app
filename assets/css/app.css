@@ -66,4 +66,49 @@
   opacity: 1;
 }
 
+/* Stale-data badge: drives its visibility and colour from the
+   `data-freshness` attribute the StaleDataBadge hook sets on the
+   root. Base classes on the component (`-translate-y-full opacity-0`)
+   keep it hidden when freshness="fresh"; the attribute selector
+   rules below reveal + paint for the four degraded states.  The
+   badge sits just below the offline banner (z-40 vs the banner's
+   z-50), so they stack visually without overlap.
+
+   Each state is fully self-contained: reveal + colour in one rule.
+   Adding a new state is a single rule, not a cascading chase.
+
+   State → colour mapping:
+   - stale        amber (something's wrong but we're still getting ticks)
+   - very_stale   orange (no fresh tick for >5 min — degraded)
+   - disconnected sky   (LiveView WS dropped — still some network)
+   - offline      red    (browser-level offline — same palette as offline_banner)
+*/
+.stale-data-badge[data-freshness="stale"] {
+  transform: translateY(0);
+  opacity: 1;
+  background-color: rgb(245 158 11); /* amber-500 */
+  color: rgb(120 53 15); /* amber-900 */
+}
+
+.stale-data-badge[data-freshness="very_stale"] {
+  transform: translateY(0);
+  opacity: 1;
+  background-color: rgb(253 186 116); /* orange-300 */
+  color: rgb(124 45 18); /* orange-900 */
+}
+
+.stale-data-badge[data-freshness="disconnected"] {
+  transform: translateY(0);
+  opacity: 1;
+  background-color: rgb(56 189 248); /* sky-400 */
+  color: rgb(12 74 110); /* sky-900 */
+}
+
+.stale-data-badge[data-freshness="offline"] {
+  transform: translateY(0);
+  opacity: 1;
+  background-color: rgb(239 68 68); /* red-500 */
+  color: rgb(254 242 242); /* red-50 — high-contrast readable text */
+}
+
 /* This file is for your main application CSS */
