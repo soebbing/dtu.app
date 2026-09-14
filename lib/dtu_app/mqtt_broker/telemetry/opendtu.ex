@@ -59,9 +59,9 @@ defmodule DtuApp.MqttBroker.Telemetry.OpenDtu do
         flush_buffer(client_id, device_info, serial, channel, pairs, payload, state, safe_db_call)
 
       {:name, serial, name} ->
-        case safe_db_call.(
-               fn -> DtuApp.Devices.update_inverter_name(device_info.id, serial, name) end
-             ) do
+        case safe_db_call.(fn ->
+               DtuApp.Devices.update_inverter_name(device_info.id, serial, name)
+             end) do
           {:ok, count} ->
             Logger.debug(
               "[Telemetry] OpenDTU inverter name for DTU #{device_info.id} " <>
@@ -77,9 +77,9 @@ defmodule DtuApp.MqttBroker.Telemetry.OpenDtu do
         end
 
       {:status, serial, flags} ->
-        case safe_db_call.(
-               fn -> DtuApp.Devices.patch_latest_reading_status(device_info.id, serial, flags) end
-             ) do
+        case safe_db_call.(fn ->
+               DtuApp.Devices.patch_latest_reading_status(device_info.id, serial, flags)
+             end) do
           {:ok, _} ->
             {:noreply, state}
 
