@@ -45,7 +45,19 @@ RUN mix release
 # the compiled release and other runtime necessities
 FROM alpine:3.19.1
 
-RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates
+# `wget` is here for the docker-compose healthcheck
+# (`wget --spider http://localhost:4000/healthz`). It's the
+# smallest HTTP client that:
+#   * doesn't write the response body to disk (so we don't pollute
+#     `/app` with probe artifacts when nobody owns the dir);
+#   * returns 0 on 2xx, non-zero otherwise — exactly what Docker's
+#     healthcheck `test:` expects;
+#   * ships on alpine base (vs. `curl` which would pull extra deps).
+# The DB and Mailpit containers run their own `pg_isready` / `nc -z`
+# healthchecks against services inside the same container; for `app`
+# the HTTP probe must hit localhost, so the tool needs to be IN the
+# container.
+RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget
 
 WORKDIR "/app"
 RUN chown nobody /app
