@@ -195,6 +195,7 @@ defmodule DtuApp.Push do
         Logger.warning(
           "[push] failed event=#{payload[:event] || payload["event"]} user_id=#{sub.user_id} endpoint_host=#{endpoint_host(sub.endpoint)} reason=#{inspect(reason)}"
         )
+
         :error
     end
   end
