@@ -952,14 +952,14 @@ defmodule DtuApp.MqttBroker.Telemetry do
             {:noreply, state}
         end
 
-      {:ignored, :unknown_topic} ->
-        # The most common cause is a Shelly whose MQTT prefix doesn't match
-        # the device's base_topic here (the Shelly default is
-        # `shellyplus3em-XXXXXXXXXXXX`). Unlike the OpenDTU/AhoyDTU
-        # equivalent, we *do* surface this to the user — there's a fix-it
-        # action (set the Shelly's MQTT prefix), and the symptom
-        # ("device shows as online but no values") is hard to diagnose
-        # from logs alone.
+      {:ignored, :prefix_mismatch} ->
+        # The topic is from a Shelly device, but the MQTT prefix doesn't
+        # match the device's `base_topic` here (Shelly's firmware default
+        # is `shellyplus3em-XXXXXXXXXXXX`). Unlike OpenDTU/AhoyDTU
+        # equivalent, we *do* surface this to the user — there's a
+        # fix-it action (set the Shelly's MQTT prefix), and the
+        # symptom ("device shows as online but no values") is hard to
+        # diagnose from logs alone.
         Logger.warning(
           "[Telemetry] Shelly uplink on topic #{inspect(topic_str)} did not match " <>
             "the device's base_topic #{inspect(device_info.base_topic)} — " <>
@@ -977,6 +977,22 @@ defmodule DtuApp.MqttBroker.Telemetry do
           if(snippet == "", do: base, else: base <> " — payload: " <> snippet)
         )
 
+        {:noreply, state}
+
+      {:ignored, :unknown_suffix} ->
+        # The device's prefix is correctly configured (we matched it
+        # above in `shelly_prefix_matches?/2`), but the topic suffix is
+        # one we don't currently parse. The Shelly Plus 3EM publishes
+        # several informational topics we don't consume — `/info`
+        # (device-id / firmware / model JSON), `/events`,
+        # `/events/rpc`, and outgoing `command/...` echoes — which
+        # are firmware-emitted extras, not user-visible errors. Log at
+        # info with topic + payload so a developer reading logs can
+        # identify what the device is sending; do NOT call
+        # `record_dtu_error/2` so the user's manage-device error
+        # panel isn't polluted with metadata they can't act on.
+        # Mirrors `log_unknown_uplink/4`'s OpenDTU / AhoyDTU path.
+        log_unknown_uplink("Shelly", device_info.id, topic_str, payload)
         {:noreply, state}
 
       {:ignored, :online_lwt} ->
@@ -1004,15 +1020,56 @@ defmodule DtuApp.MqttBroker.Telemetry do
   end
 
   defp parse_shelly(topic_str, base_topic, payload) do
-    case String.split(topic_str, "/") do
-      # `online` retained LWT — we don't act on it explicitly; the broker's
-      # disconnect path + `last_seen_at` updates already cover liveness.
-      # Topic matches when the device's `base_topic` is the single prefix
-      # segment OR the first two segments of a multi-segment prefix.
-      [binary_base, "online"] when binary_base == base_topic ->
-        {:ignored, :online_lwt}
+    # Distinguish two "did not parse" cases the user can experience:
+    #
+    #   * `:prefix_mismatch` — the topic doesn't start with the device's
+    #     configured `base_topic`. Real user-fixable error: the Shelly's
+    #     MQTT prefix is unset / wrong. Surface as a WARN + persistent
+    #     `dtu_errors` row + user-visible error bubble.
+    #   * `:unknown_suffix` — prefix is correct, but the suffix is one
+    #     we don't currently parse (`/info`, `/events`, `/events/rpc`,
+    #     outgoing `command/...` echoes). Informational only — the
+    #     firmware just emits extras we don't consume. Surface as
+    #     `Logger.info` (no `dtu_errors` row, no user-visible error)
+    #     so a developer reading logs can identify what the device is
+    #     sending without polluting the manage-device error panel.
+    #
+    # Before this split, both cases fell through to a single
+    # `{:ignored, :unknown_topic}` clause that always surfaced a
+    # "Shelly topic mismatch — check the device's MQTT prefix" warning,
+    # even for `/info` uplinks where the prefix IS correct. That
+    # produced a misleading red-herring error the user couldn't act on.
+    cond do
+      topic_str == base_topic ->
+        # Topic IS the prefix (no suffix). Defensive — a real Shelly
+        # never publishes on the bare prefix. Treat as unknown_suffix.
+        {:ignored, :unknown_suffix}
 
-      [b1, b2, "online"] when b1 <> "/" <> b2 == base_topic ->
+      String.starts_with?(topic_str, base_topic <> "/") ->
+        # Strip the validated prefix so we can match the suffix
+        # uniformly, independent of whether `base_topic` was one
+        # segment (`shellies`) or many (`shellies/shellyplus3em`).
+        # The previous two-arm `[binary_base, ...]` + `[b1, b2, ...]`
+        # split was a workaround for that same problem.
+        topic_str
+        |> String.replace_prefix(base_topic <> "/", "")
+        |> parse_shelly_with_known_prefix(payload)
+
+      true ->
+        {:ignored, :prefix_mismatch}
+    end
+  end
+
+  # Parse the suffix portion of a Shelly topic (the part after the
+  # device's `base_topic`). The prefix has already been validated
+  # upstream, so we only need to discriminate the suffixes we
+  # actually consume from everything else.
+  defp parse_shelly_with_known_prefix(suffix, payload) do
+    case String.split(suffix, "/") do
+      # `online` retained LWT — we don't act on it explicitly; the
+      # broker's disconnect path + `last_seen_at` updates already cover
+      # liveness.
+      ["online"] ->
         {:ignored, :online_lwt}
 
       # `status/em:0` carries the consolidated meter status. Real Shelly
@@ -1028,11 +1085,6 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # We deliberately drop voltage / current / freq / pf — the dashboard
       # doesn't render them yet, and persisting them would just cost DB space.
       #
-      # The topic's prefix must match the device's `base_topic`. We accept
-      # both single-segment prefixes (`shellies`) and multi-segment prefixes
-      # (`shellies/shellyplus3em`) by matching either the full prefix as one
-      # segment or as two concatenated segments joined by a "/".
-      #
       # Both `em:0` and `emdata:0` are accepted as valid suffixes — the
       # latter is published by some Shelly Plus 3EM firmware versions
       # alongside the more common `em:0`. The two suffixes carry the
@@ -1040,21 +1092,9 @@ defmodule DtuApp.MqttBroker.Telemetry do
       # total_act_power fields below), so a single `shelly_json_to_pairs/1`
       # consumer is reused. Without the `emdata:0` clause, an
       # otherwise-correctly-prefixed uplink falls through to
-      # `{:ignored, :unknown_topic}` and surfaces a misleading
-      # "Shelly prefix mismatch" warning to the user — the prefix IS
-      # correct, only the suffix doesn't match.
-      [binary_base, "status", suffix]
-      when binary_base == base_topic and suffix in ["em:0", "emdata:0"] ->
-        case Jason.decode(payload) do
-          {:ok, json} when is_map(json) ->
-            {:reading, shelly_json_to_pairs(json)}
-
-          _ ->
-            {:ignored, :bad_json}
-        end
-
-      [b1, b2, "status", suffix]
-      when b1 <> "/" <> b2 == base_topic and suffix in ["em:0", "emdata:0"] ->
+      # `{:ignored, :unknown_suffix}` and is logged at info — the
+      # prefix IS correct, only the suffix doesn't match.
+      ["status", em] when em in ["em:0", "emdata:0"] ->
         case Jason.decode(payload) do
           {:ok, json} when is_map(json) ->
             {:reading, shelly_json_to_pairs(json)}
@@ -1064,7 +1104,7 @@ defmodule DtuApp.MqttBroker.Telemetry do
         end
 
       _ ->
-        {:ignored, :unknown_topic}
+        {:ignored, :unknown_suffix}
     end
   end
 
