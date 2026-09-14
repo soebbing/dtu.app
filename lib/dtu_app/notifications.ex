@@ -76,27 +76,55 @@ defmodule DtuApp.Notifications do
   `page` is 1-indexed. `per_page` defaults to #{@default_page_size}
   (the value the history UI uses). Pass a smaller value from the
   LiveView when rendering a partial page during pagination.
+
+  Pass an `event` filter to scope the listing to a single event type
+  (e.g. `"sun_down"`, `"dtu_connection"`); `nil` (the default) returns
+  every event. The filter must match the `notifications.event` column
+  exactly — invalid strings return an empty list rather than raising.
   """
-  @spec list_user_notifications(User.t(), pos_integer(), pos_integer()) :: [Notification.t()]
-  def list_user_notifications(%User{id: user_id}, page, per_page \\ @default_page_size)
+  @spec list_user_notifications(User.t(), pos_integer(), pos_integer(), String.t() | nil) ::
+          [Notification.t()]
+  def list_user_notifications(
+        %User{id: user_id},
+        page,
+        per_page \\ @default_page_size,
+        event_filter \\ nil
+      )
       when is_integer(page) and page > 0 and is_integer(per_page) and per_page > 0 do
     offset = (page - 1) * per_page
 
     Notification
     |> where([n], n.user_id == ^user_id)
+    |> maybe_where_event(event_filter)
     |> order_by([n], desc: n.delivered_at, desc: n.id)
     |> limit(^per_page)
     |> offset(^offset)
     |> Repo.all()
   end
 
-  @doc "Total count of notifications for the user (used to render pagination totals)."
-  @spec count_user_notifications(User.t()) :: non_neg_integer()
-  def count_user_notifications(%User{id: user_id}) do
+  @doc """
+  Total count of notifications for the user. When `event_filter` is
+  supplied, counts only rows of that event type — used by the history
+  page to render per-filter pagination totals so the user sees
+  "Page 1 of 3 within sun_down" instead of the global total.
+  """
+  @spec count_user_notifications(User.t(), String.t() | nil) :: non_neg_integer()
+  def count_user_notifications(%User{id: user_id}, event_filter \\ nil) do
     Notification
     |> where([n], n.user_id == ^user_id)
+    |> maybe_where_event(event_filter)
     |> Repo.aggregate(:count)
   end
+
+  # Add the event WHERE clause only when the filter is a non-empty
+  # binary. `nil` and `""` both mean "no filter" — the history page
+  # URL uses `?event=` (empty) for the "All" chip to keep the
+  # parameter shape uniform.
+  defp maybe_where_event(query, filter) when is_binary(filter) and filter != "" do
+    where(query, [n], n.event == ^filter)
+  end
+
+  defp maybe_where_event(query, _), do: query
 
   @doc """
   Delete a single notification row. Only deletes the row when it

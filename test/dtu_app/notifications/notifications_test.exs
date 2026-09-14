@@ -154,6 +154,150 @@ defmodule DtuApp.NotificationsTest do
     end
   end
 
+  describe "list_user_notifications/3 with event filter" do
+    # The /notifications page filter chip row maps to the optional
+    # 4th arg on `list_user_notifications/4` (kept as a positional
+    # arg with a `nil` default so the ~20 existing callers don't
+    # need a refactor). These tests pin the contract so a future
+    # signature change can't silently drop the filter — a broken
+    # filter would surface rows the user already filtered out, which
+    # is the kind of regression that's invisible in unit tests
+    # without an explicit fixture per event type.
+    setup do
+      user = user_fixture()
+
+      # Seed one row per event so the filter has something to
+      # include AND exclude. `count_user_notifications/2` (and the
+      # UI's pagination badge) read the same `notifications.event`
+      # column, so this is enough for both sides of the filter
+      # contract.
+      for event <- ["dtu_connection", "sun_down", "sun_up", "yield_anomaly", "test"] do
+        {:ok, n} =
+          Notifications.record(user, %{
+            event: event,
+            title: "title-#{event}",
+            body: "b",
+            tag: "t-#{event}"
+          })
+
+        # Touch delivered_at so the newest-first ordering is
+        # deterministic across iterations.
+        touch_delivered_at(n, DateTime.add(DateTime.utc_now(:second), -1, :second))
+      end
+
+      %{user: user}
+    end
+
+    test "filter=nil returns every event (default behaviour preserved)", %{user: user} do
+      rows = Notifications.list_user_notifications(user, 1, 10, nil)
+      assert length(rows) == 5
+
+      assert Enum.map(rows, & &1.event) |> Enum.sort() ==
+               ~w(dtu_connection sun_down sun_up test yield_anomaly)
+    end
+
+    test "filter=\"\" returns every event (sentinel for URL `?event=` empty)", %{user: user} do
+      # The LiveView's `push_patch/2` drops the param when the user
+      # picks the "All" chip, so the URL never carries `?event=` —
+      # but `normalize_event_filter/1` is the gate, the helper here
+      # only sees the post-gate value. Belt-and-braces: the query
+      # layer also treats "" as nil so a future caller that bypasses
+      # the gate doesn't break.
+      rows = Notifications.list_user_notifications(user, 1, 10, "")
+      assert length(rows) == 5
+    end
+
+    test "filter='sun_down' returns only sun_down rows", %{user: user} do
+      rows = Notifications.list_user_notifications(user, 1, 10, "sun_down")
+
+      assert length(rows) == 1
+      assert hd(rows).event == "sun_down"
+    end
+
+    test "filter scopes the page size to the filtered set, not the global total", %{user: user} do
+      # With 1 sun_down row + 4 other rows + per_page=1, the first
+      # page should contain ONLY the sun_down row, not be filled
+      # with the most-recent-of-the-other-events. Pins the ORDER BY
+      # + WHERE interaction: the WHERE clause is applied BEFORE the
+      # LIMIT/OFFSET, not after.
+      rows = Notifications.list_user_notifications(user, 1, 1, "sun_down")
+
+      assert length(rows) == 1
+      assert hd(rows).event == "sun_down"
+    end
+
+    test "filter with an unknown event string returns [] (no raise, no rows)", %{user: user} do
+      # The LiveView normalises the URL value through the
+      # `normalize_event_filter/1` allow-list BEFORE reaching here, so
+      # this branch is only reachable by a misbehaving caller — but
+      # the query layer must not raise on a bogus string, otherwise
+      # a LiveView refactor that drops the gate would 500 the page.
+      assert Notifications.list_user_notifications(user, 1, 10, "not_a_real_event") == []
+    end
+
+    test "filter only scopes the calling user's history, not another user's", %{user: user} do
+      other = user_fixture()
+
+      Notifications.record(other, %{
+        event: "sun_down",
+        title: "other's row",
+        body: "b",
+        tag: "other"
+      })
+
+      rows = Notifications.list_user_notifications(user, 1, 10, "sun_down")
+      # The user's own 1 sun_down row, not the other user's.
+      assert length(rows) == 1
+      assert hd(rows).title == "title-sun_down"
+    end
+  end
+
+  describe "count_user_notifications/1 with event filter" do
+    # `assign_history/4` uses this to compute the per-filter
+    # pagination total — "Page 1 of 1 within Sun down" instead of
+    # "Page 4 of 8". Pins the contract that the count honours the
+    # same filter the listing does.
+    setup do
+      user = user_fixture()
+
+      # 3 dtu_connection rows + 1 sun_down — the filter must see
+      # the 3 vs the 1 split, not lump them together.
+      for _ <- 1..3 do
+        Notifications.record(user, %{
+          event: "dtu_connection",
+          title: "t",
+          body: "b",
+          tag: "dtu"
+        })
+      end
+
+      Notifications.record(user, %{
+        event: "sun_down",
+        title: "t",
+        body: "b",
+        tag: "sun_down"
+      })
+
+      %{user: user}
+    end
+
+    test "filter=nil returns the global total", %{user: user} do
+      assert Notifications.count_user_notifications(user, nil) == 4
+    end
+
+    test "filter='dtu_connection' returns the filtered total", %{user: user} do
+      assert Notifications.count_user_notifications(user, "dtu_connection") == 3
+    end
+
+    test "filter='sun_down' returns the filtered total", %{user: user} do
+      assert Notifications.count_user_notifications(user, "sun_down") == 1
+    end
+
+    test "filter with no matching rows returns 0", %{user: user} do
+      assert Notifications.count_user_notifications(user, "yield_anomaly") == 0
+    end
+  end
+
   describe "delete/2" do
     test "deletes the row when it belongs to the user" do
       user = user_fixture()
