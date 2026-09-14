@@ -595,7 +595,17 @@ defmodule DtuAppWeb.DashboardLive.ChartHelpers do
       |> Enum.with_index()
       |> Enum.map(fn {p1, i} ->
         p2 = Enum.at(pts, i + 1)
-        p0 = Enum.at(pts, i - 1) || p1
+
+        # Boundary mirror: when `i == 0` there's no previous
+        # anchor, so use p1 itself (the Catmull-Rom convention
+        # for the chart's left edge — keeps cp1.x from leaping
+        # across the chart to the last point). Naively writing
+        # `Enum.at(pts, i - 1) || p1` fails here because
+        # `Enum.at(pts, -1)` returns the LAST element of a
+        # non-empty list, not nil — the `|| p1` fallback never
+        # fires and the first segment's CP1.x is computed as if
+        # the previous neighbour were the chart's last point.
+        p0 = if i == 0, do: p1, else: Enum.at(pts, i - 1)
         p3 = Enum.at(pts, i + 2) || p2
 
         # Standard Catmull-Rom tension 0.5 → cubic Bezier control
