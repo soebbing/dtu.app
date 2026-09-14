@@ -1250,6 +1250,211 @@ defmodule DtuApp.MqttBrokerTest do
       after_seen = DtuApp.Repo.reload!(dtu).last_seen_at
       assert DateTime.compare(after_seen, before) in [:gt, :eq]
     end
+
+    test "unhandled suffix on a correctly-prefixed topic logs at info (no WARN, no dtu_errors row)",
+         %{user: user} do
+      # Regression: a real Shelly Plus 3EM publishes several
+      # informational topics we don't consume (`/info` carries
+      # device-id / firmware / model JSON, `/events` and `/events/rpc`
+      # carry event notifications, outgoing `command/...` echoes land
+      # on the broker too). All of those are on the correct
+      # `base_topic` — only the suffix differs from the three forms the
+      # parser actually consumes (`online`, `status/em:0`,
+      # `status/emdata:0`).
+      #
+      # Pre-fix, every such uplink fell through to the
+      # `{:ignored, :unknown_topic}` clause which always surfaced a
+      # WARN + persistent `dtu_errors` row + user-visible error
+      # bubble with "Shelly topic mismatch — check the device's MQTT
+      # prefix". That diagnostic is misleading for known-prefix /
+      # unknown-suffix: the prefix IS correct, only the suffix isn't
+      # parsed. The user can't act on the message and the error
+      # panel ends up polluted with metadata.
+      #
+      # Post-fix: prefix matches → `:unknown_suffix` → `Logger.info`
+      # with topic + payload (mirrors the OpenDTU / AhoyDTU
+      # `log_unknown_uplink` path), no `dtu_errors` row written.
+      # `last_seen_at` still gets touched (it's done at the top of
+      # `handle_info/2` before the parser dispatches) so the device's
+      # online indicator still tracks real liveness.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-info",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      # `/info` payload shape (Shelly Plus 3EM Gen3+): id / model /
+      # mac / gen / fw_id / ver / app. We deliberately don't parse
+      # any of these — the dashboard doesn't render them. The
+      # important property here is just that the topic suffix is
+      # unhandled.
+      payload =
+        Jason.encode!(%{
+          "id" => "shellyplus3em-aabbccddeeff",
+          "model" => "SNSN-0013A",
+          "mac" => "AABBCCDDEEFF",
+          "gen" => 3,
+          "fw_id" => "20230913-134022/1.0.3+gece0bf3",
+          "ver" => "1.0.3",
+          "app" => "Plus3EM"
+        })
+
+      msg = {:uplink, "client_shelly", device_info, "shellies/shellyplus3em/info", payload}
+
+      # The default test log level (`config :logger, level: :warning`)
+      # drops `Logger.info` calls before they reach `ExUnit.CaptureLog`
+      # — raise the threshold to :info for the duration of the call,
+      # restoring the prior level on_exit so the bump doesn't leak
+      # across tests. Same pattern as the OpenDTU unknown-topic test.
+      previous_level = Logger.level()
+      Logger.configure(level: :info)
+      on_exit(fn -> Logger.configure(level: previous_level) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+        end)
+
+      # The "did not match" / "MQTT prefix" warning path belongs to
+      # the prefix-mismatch branch — an unhandled suffix must NOT
+      # trigger it.
+      refute log =~ "did not match",
+             "known-prefix / unknown-suffix uplink must not log a prefix-mismatch warning"
+
+      refute log =~ "MQTT prefix"
+
+      # The handler must downgrade to info-level (no WARN line at
+      # all from this path) and include the topic + a payload snippet
+      # so a developer grepping logs can identify what the device is
+      # sending.
+      assert log =~ "[info]"
+      assert log =~ "/info"
+      assert log =~ "Shelly"
+
+      # No row written — `/info` is informational only.
+      assert Devices.list_recent_readings(user, dtu.id) == []
+
+      # No `dtu_errors` row written — the manage-device error panel
+      # stays clean.
+      assert DtuApp.Devices.count_distinct_dtu_errors(dtu.id) == 0
+
+      # `last_seen_at` still touched at the top of `handle_info/2`
+      # so the device's online indicator tracks real liveness.
+      fresh = DtuApp.Repo.reload!(dtu)
+      assert fresh.last_seen_at != nil
+    end
+
+    test "/events and /events/rpc are also treated as unknown_suffix (not user errors)",
+         %{user: user} do
+      # The same downgraded-log behaviour applies to every
+      # known-prefix topic whose suffix we don't parse — `/events`
+      # and `/events/rpc` are the other two Shelly Plus 3EM Gen3+
+      # informational extras the parser ignores today. We don't
+      # exhaustively list every firmware variant here; the contract
+      # is "prefix matches → informational" and this test pins that
+      # against the two most common variants.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-events",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      for topic <- [
+            "shellies/shellyplus3em/events",
+            "shellies/shellyplus3em/events/rpc"
+          ] do
+        # Same log-level bump as the `/info` test above — `Logger.info`
+        # calls are dropped at the default `:warning` test threshold.
+        previous_level = Logger.level()
+        Logger.configure(level: :info)
+        on_exit(fn -> Logger.configure(level: previous_level) end)
+
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            {:noreply, _} =
+              Telemetry.handle_info(
+                {:uplink, "client_shelly", device_info, topic, "{}"},
+                %{buffers: %{}}
+              )
+          end)
+
+        refute log =~ "did not match"
+        refute log =~ "MQTT prefix"
+        assert log =~ "[info]"
+      end
+
+      assert Devices.list_recent_readings(user, dtu.id) == []
+      assert DtuApp.Devices.count_distinct_dtu_errors(dtu.id) == 0
+    end
+
+    test "real prefix mismatch still surfaces WARN + dtu_errors row (regression guard)",
+         %{user: user} do
+      # Pin the opposite direction: a topic on a genuinely
+      # wrong prefix must still take the `:prefix_mismatch` path
+      # and surface both the WARN log line AND a `dtu_errors` row.
+      # Without this test, the previous test could pass by accident
+      # if the refactor accidentally swallowed ALL unknowns into
+      # the info-only branch — this guards against that.
+      dtu =
+        device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "shelly-mismatch",
+          base_topic: "shellies/shellyplus3em"
+        })
+
+      Credentials.refresh(dtu.mqtt_username)
+
+      device_info = %{
+        id: dtu.id,
+        user_id: user.id,
+        kind: :shelly3em,
+        base_topic: "shellies/shellyplus3em",
+        name: dtu.name
+      }
+
+      # Topic the device actually publishes on (Shelly firmware default
+      # — no user-set prefix), so the prefix differs from base_topic.
+      msg =
+        {:uplink, "client_shelly", device_info, "shellyplus3em-aabbcc/status/em:0", "{}"}
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {:noreply, _} = Telemetry.handle_info(msg, %{buffers: %{}})
+        end)
+
+      # The exact same warning text the existing prefix-mismatch
+      # test (`test/dtu_app/mqtt_broker_test.exs:1092`) asserts —
+      # we keep that contract.
+      assert log =~ "did not match"
+      assert log =~ "base_topic"
+      assert log =~ "MQTT prefix"
+
+      # And the persistent `dtu_errors` row landed too (so the
+      # manage-device error panel surfaces it).
+      assert DtuApp.Devices.count_distinct_dtu_errors(dtu.id) >= 1
+    end
   end
 
   describe "last_seen_at touch path — :dtu_seen broadcast" do
