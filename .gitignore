@@ -46,3 +46,6 @@ npm-debug.log
 # Local secrets for docker compose (copy .env.example to .env).
 .env
 
+# Isolated workspaces for Claude Code feature work.
+/.worktrees/
+
