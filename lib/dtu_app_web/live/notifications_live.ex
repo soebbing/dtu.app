@@ -8,27 +8,49 @@ defmodule DtuAppWeb.NotificationsLive do
       comparing today's yield + peak with yesterday's.
     * `:notify_sun_up` — a single morning ping when the fleet first
       produces power for the day (once per user per local day).
+    * `:notify_yield_anomaly` — a single mid-day heads-up if the
+      fleet stops producing for over 15 minutes while the sun is
+      up.
 
   The browser-side permission state (allowed / blocked / not
   installed as PWA / not supported) is computed by the JS hook
   `NotificationPermission` and pushed to the server so the
   template can render the right CTA per state.
+
+  ## Module layout
+
+  This module owns the LiveView orchestration (mount, handle_*,
+  render). Pure helpers and stateless data loaders live under
+  `DtuAppWeb.NotificationsLive.*`:
+
+    * `FilterHelpers` — URL param normalise, sentinel-to-nil
+      translation, chip-row labels
+    * `FormatHelpers` — `format_relative_time/1` for the history
+      list
+    * `History`       — page-clamping + list for the history
+      section (the only DB call surface)
   """
   use DtuAppWeb, :live_view
 
   alias DtuApp.Accounts
   alias DtuApp.Notifications
   alias DtuApp.PushSubscriptions
-  alias DtuApp.Time
+  alias DtuAppWeb.NotificationsLive.FilterHelpers
+  alias DtuAppWeb.NotificationsLive.FormatHelpers
+  alias DtuAppWeb.NotificationsLive.History
 
   require Logger
-
-  @history_page_size 50
 
   # The five event types that the `notifications.event` column can
   # hold. Drives both the filter-chip row and the "active filter"
   # highlight. Listed in display order: connection events are the
   # most-noisy on a multi-inverter install, so they're first.
+  #
+  # The list is also the canonical allow-list used by
+  # `FilterHelpers.normalize_event_filter/1` — adding a new
+  # event here is what unblocks the URL filter; the allow-list
+  # clause lives in `FilterHelpers` next to the chip-row
+  # rendering, so a new event ships in two edits.
   @event_filters [
     "all",
     "dtu_connection",
@@ -37,34 +59,6 @@ defmodule DtuAppWeb.NotificationsLive do
     "yield_anomaly",
     "test"
   ]
-
-  # Allow-list for event-filter URL params. Unknown values fall back
-  # to "all" so a forged `?event=...` query (or a typo) can't surface
-  # rows for a future event type that hasn't shipped to the UI yet.
-  defp normalize_event_filter(value)
-       when value in ["dtu_connection", "sun_down", "sun_up", "yield_anomaly", "test"],
-       do: value
-
-  defp normalize_event_filter(_), do: "all"
-
-  defp filter_label("all"), do: gettext("All")
-  defp filter_label("dtu_connection"), do: gettext("Connection")
-  defp filter_label("sun_down"), do: gettext("Sun down")
-  defp filter_label("sun_up"), do: gettext("Sun up")
-  defp filter_label("yield_anomaly"), do: gettext("Yield anomaly")
-  defp filter_label("test"), do: gettext("Test")
-  defp filter_label(_), do: gettext("All")
-
-  # `event_filter == "all"` is the sentinel that means "no filter
-  # applied" in the UI. `count_user_notifications/2` and
-  # `list_user_notifications/4` both treat the sentinel as nil so
-  # the underlying query stays `WHERE user_id = $1` (no event
-  # WHERE clause) — the live-view + URL layer is the only thing
-  # that knows about the "all" label.
-  defp event_filter_to_query(nil), do: nil
-  defp event_filter_to_query(""), do: nil
-  defp event_filter_to_query("all"), do: nil
-  defp event_filter_to_query(value), do: value
 
   @impl true
   def mount(_params, _session, socket) do
@@ -124,7 +118,7 @@ defmodule DtuAppWeb.NotificationsLive do
   # a URL-bar cosmetic change.
   @impl true
   def handle_params(params, _url, socket) do
-    event_filter = normalize_event_filter(params["event"])
+    event_filter = FilterHelpers.normalize_event_filter(params["event"])
     user = socket.assigns.current_scope.user
 
     {:noreply,
@@ -133,26 +127,20 @@ defmodule DtuAppWeb.NotificationsLive do
      |> assign_history(user, 1, event_filter)}
   end
 
-  # Load the first page of the user's notification history into
+  # Load one page of the user's notification history into
   # `:history_items` / `:history_page` / `:history_total_pages` /
-  # `:history_filter_total`. Called from mount/3 and after every
-  # mutation (delete, clear-all, paginate) so the UI always reflects
-  # DB state without needing a local cache that could drift.
-  #
-  # The total returned by `count_user_notifications/2` is the
-  # filtered total (per-filter pagination), NOT the global total —
-  # a user with 200 dtu_connection rows + 3 sun_down rows sees
-  # "Page 1 of 1 within Sun down", not "Page 4 of 8".
+  # `:history_total`. Called from mount/3 and after every mutation
+  # (delete, clear-all, paginate, new broadcast) so the UI always
+  # reflects DB state without needing a local cache that could
+  # drift. Page-clamping + total-pagination math lives in
+  # `History.load/3`.
   defp assign_history(socket, user, page, event_filter) do
-    query_filter = event_filter_to_query(event_filter)
-    total = Notifications.count_user_notifications(user, query_filter)
-    total_pages = max(1, div(total + @history_page_size - 1, @history_page_size))
-    page = min(max(1, page), total_pages)
-    items = Notifications.list_user_notifications(user, page, @history_page_size, query_filter)
+    {items, clamped_page, total_pages, total} =
+      History.load(user, page, FilterHelpers.event_filter_to_query(event_filter))
 
     socket
     |> assign(:history_items, items)
-    |> assign(:history_page, page)
+    |> assign(:history_page, clamped_page)
     |> assign(:history_total_pages, total_pages)
     |> assign(:history_total, total)
   end
@@ -226,9 +214,10 @@ defmodule DtuAppWeb.NotificationsLive do
     #
     # `value` is normalised inside `handle_params/3` so a forged
     # `phx-value-event` (no allow-list at the JS layer) still
-    # falls back to "all" — see `normalize_event_filter/1`.
+    # falls back to "all" — see
+    # `FilterHelpers.normalize_event_filter/1`.
     params =
-      if normalize_event_filter(value) == "all",
+      if FilterHelpers.normalize_event_filter(value) == "all",
         do: %{},
         else: %{"event" => value}
 
@@ -688,7 +677,7 @@ defmodule DtuAppWeb.NotificationsLive do
                     "bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-600"
                 ]}
               >
-                {filter_label(value)}
+                {FilterHelpers.filter_label(value)}
               </button>
             <% end %>
           </div>
@@ -721,7 +710,7 @@ defmodule DtuAppWeb.NotificationsLive do
                         {n.event}
                       </span>
                       <span class="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
-                        {format_relative_time(n.delivered_at)}
+                        {FormatHelpers.format_relative_time(n.delivered_at)}
                       </span>
                     </div>
                     <p class="mt-1 text-sm text-zinc-600 dark:text-zinc-300 break-words">
@@ -777,23 +766,5 @@ defmodule DtuAppWeb.NotificationsLive do
       </div>
     </Layouts.app>
     """
-  end
-
-  # Human-readable "X ago" label for a notification's `delivered_at`.
-  # Mirrors `DtuAppWeb.DeviceLive.Details.format_relative_time/1` so the
-  # history page reads consistently with the device-details "last
-  # seen" column. Future-dated rows (clock skew between DB and a
-  # user's browser) are clamped to "just now" rather than rendering
-  # negative values.
-  @spec format_relative_time(DateTime.t()) :: String.t()
-  defp format_relative_time(%DateTime{} = dt) do
-    diff = DateTime.diff(Time.utc_now(), dt, :second) |> max(0)
-
-    cond do
-      diff < 60 -> gettext("just now")
-      diff < 3600 -> gettext("%{n} minutes ago", n: div(diff, 60))
-      diff < 86_400 -> gettext("%{n} hours ago", n: div(diff, 3600))
-      true -> gettext("%{n} days ago", n: div(diff, 86_400))
-    end
   end
 end
