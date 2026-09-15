@@ -23,6 +23,14 @@ defmodule DtuAppWeb.DeviceLive.Index do
   import DtuAppWeb.ErrorExpansionPanel,
     only: [error_expansion_panel: 1]
 
+  # The success modal that opens immediately after the user saves
+  # a new DTU. Bundles the 5 copy-to-clipboard fields, the colocated
+  # `.CopyToClipboard` JS hook, the hardware setup instructions, the
+  # Shelly-specific notes branch, and the "What happens next" footer.
+  # Sister to `DtuAppWeb.DeviceRow` and `DtuAppWeb.ErrorExpansionPanel`.
+  import DtuAppWeb.PostCreateSetupModal,
+    only: [post_create_setup_modal: 1]
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
