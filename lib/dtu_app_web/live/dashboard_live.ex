@@ -25,7 +25,6 @@ defmodule DtuAppWeb.DashboardLive do
   # `ChartPalette` owns the per-series colour assignment + Tailwind
   # hex lookup used by the tooltip swatches. See the module docs on
   # each for the rationale.
-  alias DtuAppWeb.DashboardLive.ChartPalette
   alias DtuAppWeb.DashboardLive.Components
   alias DtuAppWeb.DashboardLive.DashboardData
   alias DtuAppWeb.DashboardLive.DashboardMountCache
@@ -85,6 +84,17 @@ defmodule DtuAppWeb.DashboardLive do
   # `@chart_type` switch and decides which panel to invoke; this
   # component owns the bar-specific SVG, empty-state, and palette.
   import DtuAppWeb.BarChartPanel, only: [bar_chart_panel: 1]
+
+  # The primary line chart panel - rendered when the dashboard's
+  # `@chart_type` resolves to `:line` (today / historical day / week
+  # / month / year views). The component owns the full SVG, the
+  # legend strip, the empty-state, and the colocated `.ChartTooltip`
+  # JS hook that paints the cursor guide and the now-marker live
+  # tick. The dashboard template keeps the `@chart_type` switch and
+  # decides which panel to invoke; this component owns the line-
+  # specific rendering, palette, and event handling. Sister to
+  # `DtuAppWeb.BarChartPanel` (PR #278).
+  import DtuAppWeb.LineChartPanel, only: [line_chart_panel: 1]
 
   require Logger
 
