@@ -79,6 +79,13 @@ defmodule DtuAppWeb.DashboardLive do
   # unit-test surface.
   import DtuAppWeb.ChartTitle, only: [chart_title: 1]
 
+  # The bar chart fallback panel — rendered when the dashboard's
+  # `@chart_type` resolves to a non-`:line` variant (week / month /
+  # year / 7d / 30d / ytd). The dashboard template keeps the
+  # `@chart_type` switch and decides which panel to invoke; this
+  # component owns the bar-specific SVG, empty-state, and palette.
+  import DtuAppWeb.BarChartPanel, only: [bar_chart_panel: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
