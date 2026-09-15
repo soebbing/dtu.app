@@ -6,6 +6,14 @@ defmodule DtuAppWeb.DeviceLive.Index do
   alias DtuApp.Devices.Dtu
   alias DtuApp.MqttBroker.Telemetry
 
+  # The single-device row inside the device list's stream container.
+  # Bundles the rose-tinted warning fill, the green/grey online
+  # dot, the clickable content area (toggle_expanded_errors), the
+  # optional inline error strip, and the action cluster
+  # (Details / Edit / Remove). Rendered per device inside the
+  # `<div id="devices" phx-update="stream">` wrapper below.
+  import DtuAppWeb.DeviceRow, only: [device_row: 1]
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
