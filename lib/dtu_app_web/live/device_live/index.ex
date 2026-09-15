@@ -14,6 +14,15 @@ defmodule DtuAppWeb.DeviceLive.Index do
   # `<div id="devices" phx-update="stream">` wrapper below.
   import DtuAppWeb.DeviceRow, only: [device_row: 1]
 
+  # The rose-tinted "error history" panel that opens beneath a
+  # device row when the user clicks the row's content area.
+  # Rendered OUTSIDE the `phx-update="stream"` container so
+  # `:dtu_seen` / `:dtu_error` broadcasts (which call `stream/3
+  # reset: true`) don't wipe the panel's DOM nodes on every
+  # refetch. Sister to `DtuAppWeb.DeviceRow`.
+  import DtuAppWeb.ErrorExpansionPanel,
+    only: [error_expansion_panel: 1]
+
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
@@ -316,23 +325,6 @@ defmodule DtuAppWeb.DeviceLive.Index do
   # (name, username) resolve correctly; otherwise build against a fresh struct.
   defp dtu_changeset_target(%{assigns: %{device: %Dtu{} = device}}), do: device
   defp dtu_changeset_target(_socket), do: %Dtu{}
-
-  # Friendly relative-time label for the expansion panel's
-  # "last seen" line on each error group. Lightweight format that
-  # reads naturally in both English and German (`vor 5 Minuten`) —
-  # the dashboard's `relative_time_label/1` is private, so we inline
-  # a similar-enough helper here rather than coupling the two
-  # LiveViews. Returns "just now" for sub-minute timestamps.
-  defp format_relative(%DateTime{} = dt) do
-    diff_seconds = DateTime.diff(DtuApp.Time.utc_now(), dt, :second)
-
-    cond do
-      diff_seconds < 60 -> gettext("just now")
-      diff_seconds < 3600 -> gettext("%{n} minutes ago", n: div(diff_seconds, 60))
-      diff_seconds < 86_400 -> gettext("%{n} hours ago", n: div(diff_seconds, 3600))
-      true -> gettext("%{n} days ago", n: div(diff_seconds, 86_400))
-    end
-  end
 
   # Parse a stored `dtu_errors.message` into the structured parts the
   # expansion panel renders. The message formats we know about:
