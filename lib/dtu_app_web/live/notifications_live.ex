@@ -42,6 +42,16 @@ defmodule DtuAppWeb.NotificationsLive do
   alias DtuAppWeb.NotificationsLive.FormatHelpers
   alias DtuAppWeb.NotificationsLive.History
 
+  # Function-component imports. The three extracted components
+  # used to live as inline blocks in `notifications_live.html.heex`;
+  # they're now standalone modules under
+  # `DtuAppWeb.Components.*` so each block (capability card,
+  # preferences form, history card) gets its own render-only
+  # test surface.
+  import DtuAppWeb.NotificationCapabilityCard, only: [notification_capability_card: 1]
+  import DtuAppWeb.NotificationHistoryCard, only: [notification_history_card: 1]
+  import DtuAppWeb.NotificationPreferencesForm, only: [notification_preferences_form: 1]
+
   require Logger
 
   # The five event types that the `notifications.event` column can
@@ -108,6 +118,15 @@ defmodule DtuAppWeb.NotificationsLive do
      # `aria-pressed`.
      |> assign(:event_filters, @event_filters)
      |> assign(:history_event_filter, "all")
+     # `:history_filters` is the chip-row source list, pre-built
+     # as `{value, label}` tuples so the history-card component
+     # doesn't need to call `FilterHelpers.filter_label/1`
+     # itself. Building it once at mount (vs. recomputing on
+     # every render) also keeps the chip-row stable across
+     # URL-driven `handle_params/3` reloads — only the active
+     # filter chip's `aria-pressed` flips, never the source
+     # list itself.
+     |> assign(:history_filters, Enum.map(@event_filters, &{&1, FilterHelpers.filter_label(&1)}))
      |> assign_history(user, 1, "all")
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
@@ -140,6 +159,19 @@ defmodule DtuAppWeb.NotificationsLive do
   defp assign_history(socket, user, page, event_filter) do
     {items, clamped_page, total_pages, total} =
       History.load(user, page, FilterHelpers.event_filter_to_query(event_filter))
+
+    # `delivered_label` is the pre-formatted relative-time string
+    # the history card renders next to each row's event chip.
+    # We format here (not inside the component) because
+    # `FormatHelpers.format_relative_time/1` bottoms out in the
+    # DB-backed `DtuApp.Time.utc_now/0` — pushing the call to
+    # the LV keeps the card sandbox-free so its tests can be
+    # `async: true` render-only.
+    items =
+      Enum.map(
+        items,
+        &Map.put(&1, :delivered_label, FormatHelpers.format_relative_time(&1.delivered_at))
+      )
 
     socket
     |> assign(:history_items, items)
