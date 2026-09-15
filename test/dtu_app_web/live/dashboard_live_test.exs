@@ -5494,7 +5494,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # registered (they're set up inside `mounted/1`).
       assert has_element?(
                view,
-               "#share-url-input[phx-hook='DtuAppWeb.DashboardLive.SelectOnFocus']"
+               "#share-url-input[phx-hook='DtuAppWeb.SharePanel.SelectOnFocus']"
              )
     end
 
@@ -5513,7 +5513,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # emerald AND reveals the "Copied!" hint label.
       assert has_element?(
                view,
-               "#btn-share-copy[phx-hook='DtuAppWeb.DashboardLive.CopyToClipboardWithHint']"
+               "#btn-share-copy[phx-hook='DtuAppWeb.SharePanel.CopyToClipboardWithHint']"
              )
 
       # The hint element exists, is initially hidden via
