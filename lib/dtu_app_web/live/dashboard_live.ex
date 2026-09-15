@@ -43,6 +43,13 @@ defmodule DtuAppWeb.DashboardLive do
   # template stays close to plain HEEx.
   import Components
 
+  # Per-device status card rendered in the dashboard's
+  # device-status grid. Extracted from the inline heex block
+  # (formerly lines 2027-2181 of `dashboard_live.html.heex`)
+  # so the per-device card has its own unit-test surface and
+  # the dashboard template stays focused on page-level layout.
+  import DtuAppWeb.DeviceStatusCard, only: [device_status_card: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
@@ -1030,29 +1037,4 @@ defmodule DtuAppWeb.DashboardLive do
   defp anchor_period(date, "month"), do: Date.new!(date.year, date.month, 1)
   defp anchor_period(date, "year"), do: Date.new!(date.year, 1, 1)
   defp anchor_period(date, _), do: date
-
-  # Human-readable "X ago" label for a past `DateTime`. Falls back to an
-  # absolute YYYY-MM-DD HH:MM string for points in time more than a week
-  # back, since minute/hour counts get unwieldy beyond that. Clamps future
-  # timestamps to "just now" rather than rendering negative values.
-  defp relative_time_label(%DateTime{} = dt, now \\ DtuApp.Time.utc_now()) do
-    diff = DateTime.diff(now, dt, :second) |> max(0)
-
-    cond do
-      diff < 60 ->
-        gettext("just now")
-
-      diff < 3_600 ->
-        gettext("%{n} minutes ago", n: div(diff, 60))
-
-      diff < 86_400 ->
-        gettext("%{n} hours ago", n: div(diff, 3_600))
-
-      diff < 604_800 ->
-        gettext("%{n} days ago", n: div(diff, 86_400))
-
-      true ->
-        Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
-    end
-  end
 end
