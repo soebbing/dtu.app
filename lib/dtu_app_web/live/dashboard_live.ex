@@ -50,6 +50,16 @@ defmodule DtuAppWeb.DashboardLive do
   # the dashboard template stays focused on page-level layout.
   import DtuAppWeb.DeviceStatusCard, only: [device_status_card: 1]
 
+  # The "Power consumption" row (Total / Today's / Peak) rendered
+  # between the production stat_card_row and the chart panel.
+  # Extracted from the inline heex block (formerly lines 300-492 of
+  # `dashboard_live.html.heex`) so the per-card render branches
+  # (live/day view vs. historical view; the Total placeholder; the
+  # Peak Power Day peak_date sub-label) have a stable unit-test
+  # surface. Mirrors the production-side `<.stat_card_row>` pattern
+  # from PR #269.
+  import DtuAppWeb.ConsumptionStatCards, only: [consumption_stat_cards: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
