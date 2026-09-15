@@ -5547,6 +5547,35 @@ defmodule DtuAppWeb.DashboardLiveTest do
       DtuAppWeb.DashboardLive.TodayDataCache.invalidate(nil)
     end
 
+    # Poll the cache until `pred` returns true. Replaces fixed
+    # `Process.sleep/1` waits in tests where the LV process
+    # re-populates the cache asynchronously (after a
+    # `:reading`-driven `:refresh_today` debounce + Repo.all round
+    # trips, or after a `:set_timezone`-driven render). Under
+    # back-to-back suite load the LV process can lose its sandbox
+    # checkout mid-RoundTrip — the work still completes, just on a
+    # delayed schedule — and a fixed 1.2 s sleep is too short.
+    # Polling with a generous deadline absorbs that jitter without
+    # masking genuine regressions (the timeout fires fast if the
+    # refresh handler never runs).
+    defp wait_until_cache(user_id, pred, timeout_ms \\ 5_000) do
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+      Stream.repeatedly(fn ->
+        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+      end)
+      |> Stream.take_while(fn _ ->
+        System.monotonic_time(:millisecond) < deadline
+      end)
+      |> Enum.find_value(:timeout, fn rows ->
+        if pred.(rows), do: rows, else: Process.sleep(25) && nil
+      end)
+      |> case do
+        :timeout -> flunk("cache predicate never became true within #{timeout_ms}ms")
+        rows -> rows
+      end
+    end
+
     test "rapid PubSub :reading broadcasts coalesce (assign stays pending, single refresh fires)",
          %{conn: conn, user: user} do
       _dtu =
@@ -5654,11 +5683,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
         {:reading, "c", %{dtu_id: dtu.id}}
       )
 
-      # Wait for the debounce + refresh to complete.
-      Process.sleep(1_200)
-
-      cached_after_refresh =
-        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+      # Wait for the debounce + refresh to complete. Polling (not a
+      # fixed sleep) absorbs the LV process's async refresh latency
+      # without flaking under back-to-back suite load.
+      cached_after_refresh = wait_until_cache(user_id, &(length(&1) >= 2))
 
       assert length(cached_after_refresh) >= 2,
              "after invalidate + reading, the cache should be repopulated"
@@ -5738,11 +5766,9 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # `match_delete` is synchronous in `:ets`. The render that
       # follows re-populates the cache, so by the time we check,
       # the entry should exist again under a new key (different
-      # `tz_offset_seconds`).
-      Process.sleep(50)
-
-      cached_after =
-        :ets.match_object(DtuAppWeb.DashboardLive.TodayDataCache, {{user_id, :_}, :_})
+      # `tz_offset_seconds`). Polling absorbs the LV process's
+      # async render latency under back-to-back suite load.
+      cached_after = wait_until_cache(user_id, &(&1 != []))
 
       assert cached_after != [],
              "tz change should re-populate the cache via assign_dashboard_data"
