@@ -60,6 +60,16 @@ defmodule DtuAppWeb.DashboardLive do
   # from PR #269.
   import DtuAppWeb.ConsumptionStatCards, only: [consumption_stat_cards: 1]
 
+  # The "Net flow" row (Current Net Flow / Exported today /
+  # Imported today / Peak power) rendered between the consumption
+  # row and the chart panel. Only visible for paired-inverter-and-
+  # shelly users. Extracted from the inline heex block (formerly
+  # lines 313-498 of `dashboard_live.html.heex`) so the
+  # sign-aware "Current Net Flow" card (the only card whose label
+  # + colour + absolute-value branches off `current_net_flow >= 0`)
+  # has a stable unit-test surface.
+  import DtuAppWeb.NetFlowStatCards, only: [net_flow_stat_cards: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
