@@ -92,45 +92,34 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   use GenServer
 
-  use Gettext, backend: DtuAppWeb.Gettext
-
   require Logger
 
   import Ecto.Query, only: [from: 2]
 
-  alias DtuApp.Devices.Dtu
+  alias DtuApp.Accounts.User
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
+  alias DtuApp.Notifications.DtuConnection.Payload
   alias DtuApp.Notifications.DtuConnectionState
   alias DtuApp.Repo
   alias DtuApp.Time
-  alias DtuApp.Accounts.User
 
   @presence_topic "dtu:presence"
 
-  # Same 5-min threshold the previous in-LiveView check used (see
-  # git history of `dashboard_live.ex` before this module existed).
-  # A disconnect whose `last_seen_at` is older than this is treated as
-  # a stale post-deploy reconnect, not a real offline event.
-  @recency_seconds 300
-
-  # The "must have been online continuously for X before a disconnect
-  # is notification-worthy" threshold. Raised from the historical
-  # `@recency_seconds` (5 min) after user reports that inverters which
-  # flap every few minutes (connect → ~10 min later → disconnect →
-  # reconnect → ~10 min later → disconnect …) still produced one push
-  # per cycle. 15 min catches the long-cycle flapper without dropping
-  # notifications on devices that genuinely reconnect and stay up.
-  @prior_uptime_seconds 900
-
-  # Per-device re-fire cooldown. After a `:went_offline` fires, the
-  # same device is suppressed for this many seconds — even across
-  # connect/disconnect cycles. See the moduledoc's disconnect-gating
-  # paragraph for the design rationale.
-  @cooldown_seconds 1800
-
   @doc "The PubSub topic this producer subscribes to. Exposed for tests."
   def presence_topic, do: @presence_topic
+
+  # Forward the gating predicates + DB-rescue helpers to the
+  # sibling `Detection` module (constants `@recency_seconds`,
+  # `@prior_uptime_seconds`, `@cooldown_seconds` live there too).
+  defdelegate recently_active?(last_seen_at), to: __MODULE__.Detection
+  defdelegate prior_uptime?(connected_at), to: __MODULE__.Detection
+  defdelegate cooldown_over?(last_fired_at), to: __MODULE__.Detection
+  defdelegate safe_lookup(device_id), to: __MODULE__.Detection
+  defdelegate safe_get_user(user_id), to: __MODULE__.Detection
+
+  # Forward the payload builder to the sibling `Payload` module.
+  defdelegate build(status, name, now), to: __MODULE__.Payload
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
@@ -422,18 +411,6 @@ defmodule DtuApp.Notifications.DtuConnection do
     end
   end
 
-  # C1 gate: the device must have been online for at least
-  # @prior_uptime_seconds before a disconnect can be called "offline".
-  # `connected_at` is stamped at every connect (above); a `nil`
-  # value means we've never seen a connect for this device — the
-  # conservative answer is to suppress the fire (we have no way
-  # to confirm prior uptime).
-  defp prior_uptime?(%DateTime{} = connected_at) do
-    DateTime.before?(connected_at, DateTime.add(Time.utc_now(), -@prior_uptime_seconds, :second))
-  end
-
-  defp prior_uptime?(_), do: false
-
   # Read the timestamp of the most recent `:went_offline` fire for this
   # device. `nil` when we have never fired (the common case for the
   # very first disconnect of a device).
@@ -442,19 +419,6 @@ defmodule DtuApp.Notifications.DtuConnection do
       %{last_offline_fired_at: %DateTime{} = at} -> at
       _ -> nil
     end
-  end
-
-  # Cooldown gate: returns true if the per-device re-fire window is
-  # open. `nil` (never fired) is always open. A timestamp within
-  # `@cooldown_seconds` is closed (suppress the fire). A timestamp
-  # older than `@cooldown_seconds` is open (allow the fire).
-  defp cooldown_over?(nil), do: true
-
-  defp cooldown_over?(%DateTime{} = last_fired_at) do
-    DateTime.before?(
-      last_fired_at,
-      DateTime.add(Time.utc_now(), -@cooldown_seconds, :second)
-    )
   end
 
   # Stamp `last_offline_fired_at` on the device's state entry so the
@@ -470,26 +434,6 @@ defmodule DtuApp.Notifications.DtuConnection do
         Map.put(state, device_id, Map.put(info, :last_offline_fired_at, Time.utc_now()))
     end
   end
-
-  defp safe_lookup(device_id) do
-    try do
-      case Repo.get(Dtu, device_id) do
-        nil ->
-          nil
-
-        %{user_id: user_id, name: name, last_seen_at: last_seen_at} ->
-          %{user_id: user_id, name: name, last_seen_at: last_seen_at}
-      end
-    rescue
-      _ -> nil
-    end
-  end
-
-  defp recently_active?(%DateTime{} = last_seen_at) do
-    DateTime.after?(last_seen_at, DateTime.add(Time.utc_now(), -@recency_seconds, :second))
-  end
-
-  defp recently_active?(_), do: false
 
   defp fire_for_status(device_id, status) do
     case safe_lookup(device_id) do
@@ -535,29 +479,13 @@ defmodule DtuApp.Notifications.DtuConnection do
       # dispatcher reads `Push.native_enabled?/2` (which has explicit
       # atom- and string-keyed clauses) so the atom flows through
       # unchanged. The `:status` field on the payload mirrors it for
-      # the email / history path.
-      payload = %{
-        event: "dtu_connection",
-        title: dtu_title(status, name),
-        # `body` is a list (the email/layout pipeline expects a list
-        # of paragraphs; the dispatcher's history-row insert coerces
-        # it back to a single string for the `:body` column).
-        body: [dtu_body(status, name)],
-        # Existing tag semantics kept (Ruling F: prefer existing tag
-        # unless the brief's version adds clear value). The brief's
-        # `dtu_connection:#{name}:#{status}` would dedup by status,
-        # which is redundant — the producer-side `not was_disconnected?`
-        # / `disconnected?: true` gates already suppress duplicate
-        # fires within a single offline period.
-        tag: "dtu:#{name}",
-        # Email + history extras. `:dtu_name` and `:status` are the
-        # data the email subject + body lines key off; `:since` is
-        # the moment the producer observed the state change (used by
-        # the email's "at HH:MM" line and by history drill-down UIs).
-        dtu_name: name,
-        status: status,
-        since: DateTime.utc_now()
-      }
+      # the email / history path. `since` is the moment the producer
+      # observed the state change (used by the email's "at HH:MM"
+      # line and by history drill-down UIs) — stamped once here so
+      # both the in-page PubSub broadcast and the dispatcher see the
+      # same value.
+      now = DateTime.utc_now()
+      payload = Payload.build(status, name, now)
 
       # In-page PubSub broadcast for the dashboard LiveView hook
       # (`Notifications.subscribe(user.id)` →
@@ -573,22 +501,4 @@ defmodule DtuApp.Notifications.DtuConnection do
       Dispatcher.fire(user, "dtu_connection", payload)
     end)
   end
-
-  defp safe_get_user(user_id) do
-    try do
-      Repo.get(User, user_id)
-    rescue
-      _ -> nil
-    end
-  end
-
-  defp dtu_title(:went_offline, _name), do: gettext("DTU went offline")
-  defp dtu_title(:back_online, _name), do: gettext("DTU back online")
-  defp dtu_title(_status, name), do: gettext("DTU status changed for %{name}", name: name)
-
-  defp dtu_body(:went_offline, name),
-    do: gettext("Your inverter %{name} has gone offline.", name: name)
-
-  defp dtu_body(:back_online, name),
-    do: gettext("Your inverter %{name} is publishing telemetry again.", name: name)
 end
