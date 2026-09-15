@@ -4375,13 +4375,16 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # resolve to the colocated hook defined alongside the
       # `stat_card_row/1` template — LiveView expands the short
       # `.X` form to the FQ module path of the calling template's
-      # module. Pin the resolved name here so a future refactor
-      # that moves the template (or the hook) doesn't silently
-      # re-introduce an "unknown hook found for
-      # DtuAppWeb.DashboardLive.Components.RequestLocation" in
-      # the browser console.
+      # module. The hook now lives in
+      # `DtuAppWeb.DashboardLive.Components.StatCardRow` (extracted
+      # from `Components` so the latter isn't 52% one component),
+      # so the resolved name picks up that new path. Pin it here
+      # so a future refactor that moves the template (or the hook)
+      # doesn't silently re-introduce an "unknown hook found for
+      # DtuAppWeb.DashboardLive.Components.StatCardRow.RequestLocation"
+      # in the browser console.
       assert html =~
-               ~s(phx-hook="DtuAppWeb.DashboardLive.Components.RequestLocation")
+               ~s(phx-hook="DtuAppWeb.DashboardLive.Components.StatCardRow.RequestLocation")
 
       # Row 1 uses the exact class signature
       # `grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3`
