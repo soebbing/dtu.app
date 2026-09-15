@@ -70,6 +70,15 @@ defmodule DtuAppWeb.DashboardLive do
   # has a stable unit-test surface.
   import DtuAppWeb.NetFlowStatCards, only: [net_flow_stat_cards: 1]
 
+  # The `<h2 id="chart-title">` heading above the chart panel.
+  # Extracted from the inline 9-case `<%= cond do %>` block
+  # (formerly lines 334-360 of `dashboard_live.html.heex`) so
+  # the German-only month-name branch (the one place the
+  # template calls `Gettext.gettext/2` directly instead of the
+  # `gettext/1` macro on the Gettext backend) has a stable
+  # unit-test surface.
+  import DtuAppWeb.ChartTitle, only: [chart_title: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"

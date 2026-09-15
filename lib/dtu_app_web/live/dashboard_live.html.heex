@@ -331,33 +331,13 @@
 
       <!-- Chart Panel -->
       <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
-        <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4" id="chart-title">
-          <%= cond do %>
-            <% not @has_inverter? and @has_shelly? and @live -> %>
-              {gettext("Today's Consumption Curve (Watts)")}
-            <% not @has_inverter? and @has_shelly? and @time_range == "day" -> %>
-              {gettext("Consumption Curve for %{period} (Watts)", period: @selected_period)}
-            <% @live -> %>
-              {gettext("Today's Production Curve (Watts)")}
-            <% @time_range == "day" -> %>
-              {gettext("Production Curve for %{period} (Watts)", period: @selected_period)}
-            <% @time_range == "week" -> %>
-              {gettext("Daily Yields for Week starting %{period} (kWh)", period: @selected_period)}
-            <% @time_range == "month" -> %>
-              {gettext("Daily Yields for month of %{month_year} (kWh)",
-                month_year:
-                  "#{Gettext.gettext(DtuAppWeb.Gettext, Calendar.strftime(@selected_period, "%B"))} #{@selected_period.year}"
-              )}
-            <% @time_range == "year" -> %>
-              {gettext("Monthly Yields for %{year} (kWh)", year: @selected_period.year)}
-            <% @time_range == "7d" -> %>
-              {gettext("Daily Yields — Last 7 days (kWh)")}
-            <% @time_range == "30d" -> %>
-              {gettext("Daily Yields — Last 30 days (kWh)")}
-            <% @time_range == "ytd" -> %>
-              {gettext("Monthly Yields — Year to date (kWh)")}
-          <% end %>
-        </h2>
+        <.chart_title
+          live={@live}
+          has_inverter={@has_inverter?}
+          has_shelly={@has_shelly?}
+          time_range={@time_range}
+          selected_period={@selected_period}
+        />
 
         <%= if @chart_type == :line do %>
           <%!-- The chart container always renders — even when
