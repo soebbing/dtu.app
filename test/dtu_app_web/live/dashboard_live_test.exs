@@ -1671,9 +1671,10 @@ defmodule DtuAppWeb.DashboardLiveTest do
       # Phoenix LiveView expands colocated hook names to their fully
       # qualified module path in the rendered HTML — the `.ChartTooltip`
       # shorthand in the template becomes
-      # `phx-hook="DtuAppWeb.DashboardLive.ChartTooltip"`.
+      # `phx-hook="DtuAppWeb.LineChartPanel.ChartTooltip"` (PR #279
+      # moved the hook into the new `LineChartPanel` component).
       assert html =~ ~s(id="solar-chart-container")
-      assert html =~ ~s(phx-hook="DtuAppWeb.DashboardLive.ChartTooltip")
+      assert html =~ ~s(phx-hook="DtuAppWeb.LineChartPanel.ChartTooltip")
     end
 
     test "the chart embeds the guide line and tooltip overlay elements", %{
