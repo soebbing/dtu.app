@@ -32,13 +32,20 @@ Codebase notes driving the plan:
 
 ## Tier 2 — Easy–Medium (offline + reliability)
 
-- [ ] **5. Service worker — app-shell precache** — register a SW that precaches
+- [x] **5. Service worker — app-shell precache** — register a SW that precaches
       the HTML shell, CSS, JS, logo, icons; cache-first for assets, network-first
       for navigations. Version the SW on each build for cache invalidation.
-- [ ] **6. Offline fallback** — branded "You're offline" banner wired to
+      *(shipped via #71, hardened via #111; canonical source
+      `priv/static/service-worker.js`.)*
+- [x] **6. Offline fallback** — branded "You're offline" banner wired to
       LiveView disconnect + `window offline`.
-- [ ] **7. LiveView connection resilience** — tune reconnect/backoff, surface a
+      *(shipped via #46, polished via #258; `priv/static/offline.html` +
+      `<.offline_banner>` + `assets/js/offline_banner.js`.)*
+- [x] **7. LiveView connection resilience** — tune reconnect/backoff, surface a
       "reconnecting…" indicator (mostly config + a small hook).
+      *(shipped via #258 — `phx-disconnected` flashes in `layouts.ex`,
+      `StaleDataBadge` listening to `phx:connected`/`phx:disconnected`,
+      `longpoll: [window_ms: 30_000]` per #244.)*
 
 ## Tier 3 — Medium (real PWA value)
 
@@ -46,8 +53,13 @@ Codebase notes driving the plan:
       "Install dtu.app" button in the navbar/settings.
 - [ ] **9. Stale-data badge** — show "updated N min ago" when reopened/offline.
 - [ ] **10. App shortcuts** — manifest `shortcuts`: Dashboard, Devices, Add DTU.
-- [ ] **11. Push notifications** (deferred) — Web Push (VAPID) for "DTU offline"
-      / daily yield. Most work; needs a push service + backend job.
+- [x] **11. Push notifications** — Web Push (VAPID) for "DTU offline" / daily
+      yield. Shipped via #82 (`feat(notifications): native Web Push (VAPID)`).
+      `DtuApp.Push` module + `push_subscribe.js` hook + SW `push` /
+      `notificationclick` handlers + `/push/vapid/public_key` + `/push/subscribe`
+      + `/push/unsubscribe` controller. Payload contract: whitelist merge in the
+      SW (`priv/static/service-worker.js:308-312`) guards against garbage in
+      `notification.title`. OS-level dedup via `tag`.
 
 ## Tier 4 — Medium-hard (polish, defer)
 
