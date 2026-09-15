@@ -20,6 +20,8 @@ defmodule DtuAppWeb.DashboardLive.TimeHelpers do
   `SharedDashboardLive.assign_shared_data/2`).
   """
 
+  use Gettext, backend: DtuAppWeb.Gettext
+
   @doc """
   "Today" in the user's local timezone.
 
@@ -87,5 +89,43 @@ defmodule DtuAppWeb.DashboardLive.TimeHelpers do
   def format_time_hhmm(%DateTime{} = dt) do
     :io_lib.format("~2..0B:~2..0B", [dt.hour, dt.minute])
     |> IO.iodata_to_binary()
+  end
+
+  @doc """
+  Human-friendly relative-time label for the device-status card's
+  "Last seen:" line.
+
+  Returns `"just now"` / `"%{n} minutes ago"` / `"%{n} hours ago"`
+  / `"%{n} days ago"` for the past week, then falls back to the
+  absolute `YYYY-MM-DD HH:MM UTC` string for older timestamps
+  (where minute/hour counts get unwieldy). Future timestamps
+  (`diff < 0` after the read) are clamped to `"just now"` rather
+  than rendering negative values.
+
+  Was a `defp` in `DtuAppWeb.DashboardLive`; promoted to this
+  module when the device-status-card render was extracted to its
+  own Phoenix component (`DtuAppWeb.DeviceStatusCard`), which
+  can't resolve free function references in its template.
+  """
+  @spec relative_time_label(DateTime.t(), DateTime.t()) :: String.t()
+  def relative_time_label(%DateTime{} = dt, now \\ DtuApp.Time.utc_now()) do
+    diff = DateTime.diff(now, dt, :second) |> max(0)
+
+    cond do
+      diff < 60 ->
+        gettext("just now")
+
+      diff < 3_600 ->
+        gettext("%{n} minutes ago", n: div(diff, 60))
+
+      diff < 86_400 ->
+        gettext("%{n} hours ago", n: div(diff, 3_600))
+
+      diff < 604_800 ->
+        gettext("%{n} days ago", n: div(diff, 86_400))
+
+      true ->
+        Calendar.strftime(dt, "%Y-%m-%d %H:%M UTC")
+    end
   end
 end
