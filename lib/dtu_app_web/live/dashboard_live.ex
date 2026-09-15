@@ -118,6 +118,17 @@ defmodule DtuAppWeb.DashboardLive do
   # `DtuAppWeb.SharePanel` (PR #280).
   import DtuAppWeb.OnboardingPanel, only: [onboarding_panel: 1]
 
+  # The dashboard page header — the title (`PV Power Dashboard`),
+  # its one-line subtitle, and the conditional `Manage Devices`
+  # link button that only renders while the user has no devices
+  # (the button migrates to the burger menu once at least one
+  # device exists). The component takes only `@locale` +
+  # `@no_devices?`; the dashboard keeps the surrounding spacing
+  # wrapper (`<div class="space-y-6 py-4">`) so multiple header-
+  # level siblings can stack. Sister to
+  # `DtuAppWeb.OnboardingPanel` (PR #281).
+  import DtuAppWeb.DashboardHeader, only: [dashboard_header: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
