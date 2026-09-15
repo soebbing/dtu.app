@@ -186,69 +186,50 @@
       <% end %>
 
       <!-- Chart Panel -->
-      <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
-        <.chart_title
-          live={@live}
-          has_inverter={@has_inverter?}
-          has_shelly={@has_shelly?}
-          time_range={@time_range}
-          selected_period={@selected_period}
-        />
-
-        <%= if @chart_type == :line do %>
-          <.line_chart_panel
-            locale={@locale}
-            chart={
-              %{
-                x_min_seconds: @x_min_seconds,
-                x_max_seconds: @x_max_seconds,
-                y_gridlines: @y_gridlines,
-                cloud_cover_line: @cloud_cover_line,
-                x_labels: @x_labels,
-                yesterday_paths: @yesterday_paths,
-                series_paths: @series_paths,
-                series_palette: @series_palette,
-                series_points_data: @series_points_data,
-                series_legend: @series_legend,
-                total_path: @total_path,
-                total_palette: @total_palette,
-                total_points_data: @total_points_data,
-                consumption_path: @consumption_path,
-                consumption_palette: @consumption_palette,
-                consumption_points_data: @consumption_points_data,
-                net_path: @net_path,
-                net_palette: @net_palette,
-                net_points_data: @net_points_data,
-                y_min: @y_min,
-                sun_markers: @sun_markers,
-                now_marker_x: @now_marker_x,
-                now_marker_label: @now_marker_label,
-                path_data: @path_data,
-                has_inverter?: @has_inverter?,
-                has_shelly?: @has_shelly?
-              }
-            }
-          />
-        <% else %>
-          <!-- Bar Chart -->
-          <.bar_chart_panel bars={@bars} y_max={@y_max} locale={@locale} />
-        <% end %>
-
-        <%!-- Share panel: anonymous current-day dashboard share.
-               The component owns the toggle row, the three-state
-               inner row (spinner / URL row + copy button / static
-               hint), and the colocated `.CopyToClipboardWithHint` +
-               `.SelectOnFocus` JS hooks — see
-               `DtuAppWeb.SharePanel` (PR #280). The dashboard
-               still owns the `toggle_share` event handler and the
-               share-state assigns. --%>
-        <.share_panel
-          share_loading?={@share_loading?}
-          share_active?={@share_active?}
-          share_url={@share_url}
-          locale={@locale}
-        />
-      </div>
+      <.chart_panel
+        live={@live}
+        has_inverter?={@has_inverter?}
+        has_shelly?={@has_shelly?}
+        time_range={@time_range}
+        selected_period={@selected_period}
+        chart_type={@chart_type}
+        chart={
+          %{
+            x_min_seconds: @x_min_seconds,
+            x_max_seconds: @x_max_seconds,
+            y_gridlines: @y_gridlines,
+            cloud_cover_line: @cloud_cover_line,
+            x_labels: @x_labels,
+            yesterday_paths: @yesterday_paths,
+            series_paths: @series_paths,
+            series_palette: @series_palette,
+            series_points_data: @series_points_data,
+            series_legend: @series_legend,
+            total_path: @total_path,
+            total_palette: @total_palette,
+            total_points_data: @total_points_data,
+            consumption_path: @consumption_path,
+            consumption_palette: @consumption_palette,
+            consumption_points_data: @consumption_points_data,
+            net_path: @net_path,
+            net_palette: @net_palette,
+            net_points_data: @net_points_data,
+            y_min: @y_min,
+            sun_markers: @sun_markers,
+            now_marker_x: @now_marker_x,
+            now_marker_label: @now_marker_label,
+            path_data: @path_data,
+            has_inverter?: @has_inverter?,
+            has_shelly?: @has_shelly?
+          }
+        }
+        bars={Map.get(assigns, :bars, [])}
+        y_max={Map.get(assigns, :y_max)}
+        share_loading?={@share_loading?}
+        share_active?={@share_active?}
+        share_url={@share_url}
+        locale={@locale}
+      />
 
       <!-- Devices / Inverters status -->
       <.device_status_grid devices={@devices} error_counts={@error_counts} />
