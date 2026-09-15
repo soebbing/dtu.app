@@ -65,42 +65,8 @@ defmodule DtuAppWeb.DashboardLive do
   # The `<h2 id="chart-title">` heading above the chart panel.
   # Extracted from the inline 9-case `<%= cond do %>` block
   # (formerly lines 334-360 of `dashboard_live.html.heex`) so
-  # the German-only month-name branch (the one place the
-  # template calls `Gettext.gettext/2` directly instead of the
-  # `gettext/1` macro on the Gettext backend) has a stable
-  # unit-test surface.
-  import DtuAppWeb.ChartTitle, only: [chart_title: 1]
-
-  # The bar chart fallback panel — rendered when the dashboard's
-  # `@chart_type` resolves to a non-`:line` variant (week / month /
-  # year / 7d / 30d / ytd). The dashboard template keeps the
-  # `@chart_type` switch and decides which panel to invoke; this
-  # component owns the bar-specific SVG, empty-state, and palette.
-  import DtuAppWeb.BarChartPanel, only: [bar_chart_panel: 1]
-
-  # The primary line chart panel - rendered when the dashboard's
-  # `@chart_type` resolves to `:line` (today / historical day / week
-  # / month / year views). The component owns the full SVG, the
-  # legend strip, the empty-state, and the colocated `.ChartTooltip`
-  # JS hook that paints the cursor guide and the now-marker live
-  # tick. The dashboard template keeps the `@chart_type` switch and
-  # decides which panel to invoke; this component owns the line-
-  # specific rendering, palette, and event handling. Sister to
-  # `DtuAppWeb.BarChartPanel` (PR #278).
-  import DtuAppWeb.LineChartPanel, only: [line_chart_panel: 1]
-
   # The anonymous current-day dashboard share panel — rendered below
   # the chart so the URL row never has to compete for horizontal
-  # space with the quick-range / period stepper. The component owns
-  # the toggle row, the three-state inner row (spinner / URL row +
-  # copy button / static hint), and the colocated `.CopyToClipboardWithHint`
-  # + `.SelectOnFocus` JS hooks. The dashboard still owns the
-  # `@share_loading?` / `@share_active?` / `@share_url` assigns and
-  # the `toggle_share` event handler — those ride along on every
-  # render and don't need a separate component. Sister to
-  # `DtuAppWeb.LineChartPanel` (PR #279).
-  import DtuAppWeb.SharePanel, only: [share_panel: 1]
-
   # The first-visit onboarding panel rendered when the user has
   # no DTUs yet (`@devices == []`). Bundles the welcome card
   # (bolt icon + heading + MQTT-explainer paragraph + Add-your-
@@ -140,6 +106,15 @@ defmodule DtuAppWeb.DashboardLive do
   # `DtuAppWeb.DeviceStatusGridTest`. Sister to
   # `DtuAppWeb.DashboardToolbar` (PR #283).
   import DtuAppWeb.DeviceStatusGrid, only: [device_status_grid: 1]
+
+  # Chart panel: the white-card wrapper that bundles
+  # <.chart_title> + <.line_chart_panel>|<.bar_chart_panel> +
+  # <.share_panel>. The component takes 13 attrs (5 for the
+  # title, 1 chart-type gate, 4 for line/bar chart branches,
+  # 4 for share) and orchestrates the line-vs-bar conditional
+  # internally. Sister to `DtuAppWeb.DeviceStatusGrid` (PR
+  # #284).
+  import DtuAppWeb.ChartPanel, only: [chart_panel: 1]
 
   require Logger
 
