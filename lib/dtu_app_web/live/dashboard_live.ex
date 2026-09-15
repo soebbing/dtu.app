@@ -96,6 +96,18 @@ defmodule DtuAppWeb.DashboardLive do
   # `DtuAppWeb.BarChartPanel` (PR #278).
   import DtuAppWeb.LineChartPanel, only: [line_chart_panel: 1]
 
+  # The anonymous current-day dashboard share panel — rendered below
+  # the chart so the URL row never has to compete for horizontal
+  # space with the quick-range / period stepper. The component owns
+  # the toggle row, the three-state inner row (spinner / URL row +
+  # copy button / static hint), and the colocated `.CopyToClipboardWithHint`
+  # + `.SelectOnFocus` JS hooks. The dashboard still owns the
+  # `@share_loading?` / `@share_active?` / `@share_url` assigns and
+  # the `toggle_share` event handler — those ride along on every
+  # render and don't need a separate component. Sister to
+  # `DtuAppWeb.LineChartPanel` (PR #279).
+  import DtuAppWeb.SharePanel, only: [share_panel: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
