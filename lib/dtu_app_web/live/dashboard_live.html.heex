@@ -85,43 +85,19 @@
       <.onboarding_panel locale={@locale} />
     <% else %>
       <!-- Toolbar: Switcher & Time Ranges -->
-      <div class="flex flex-col gap-4">
-        <!-- DTU Switcher -->
-        <.dtu_switcher devices={@devices} selected_dtu_id={@selected_dtu_id} />
-
-        <!-- Time Range Tab Selector -->
-            <!-- "Today" button + historical stepper share the same row so
-                 the toolbar reads as one toolbar instead of two stacked
-                 controls. The wrapping <div> uses `flex flex-wrap
-                 items-center gap-4` so the two clusters stay side by
-                 side on desktop and wrap below each other on narrow
-                 viewports. -->
-        <div class="flex flex-wrap items-center gap-4">
-          <!-- Quick ranges: 1D (live, auto-refreshing) / 7D / 30D / YTD /
-                   Custom (delegates to the historical stepper below). The
-                   active preset is the one matching @range_preset; the
-                   `1d` preset mirrors @live so legacy tests/clicks still
-                   highlight the first button. -->
-          <.quick_range_switcher range_preset={@range_preset} />
-
-          <!-- Historical stepper: ‹ [Granularity ▾] [Date ▾] › — only rendered
-                   when the user picked the `Custom` preset; the
-                   1D/7D/30D/YTD presets already encode their own
-                   window and don't need the stepper UI. -->
-          <%= if @range_preset == "custom" do %>
-            <.historical_stepper
-              granularity={@granularity}
-              selected_period={@selected_period}
-              selectable_dates={@selectable_dates}
-              selectable_days={@selectable_days}
-              selectable_weeks={@selectable_weeks}
-              selectable_months={@selectable_months}
-              selectable_years={@selectable_years}
-              live={@live}
-            />
-          <% end %>
-        </div>
-      </div>
+      <.dashboard_toolbar
+        devices={@devices}
+        selected_dtu_id={@selected_dtu_id}
+        range_preset={@range_preset}
+        granularity={@granularity}
+        selected_period={@selected_period}
+        selectable_dates={@selectable_dates}
+        selectable_days={@selectable_days}
+        selectable_weeks={@selectable_weeks}
+        selectable_months={@selectable_months}
+        selectable_years={@selectable_years}
+        live={@live}
+      />
 
       <!-- Stats Grid -->
       <%!--
