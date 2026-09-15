@@ -108,6 +108,16 @@ defmodule DtuAppWeb.DashboardLive do
   # `DtuAppWeb.LineChartPanel` (PR #279).
   import DtuAppWeb.SharePanel, only: [share_panel: 1]
 
+  # The first-visit onboarding panel rendered when the user has
+  # no DTUs yet (`@devices == []`). Bundles the welcome card
+  # (bolt icon + heading + MQTT-explainer paragraph + Add-your-
+  # first-DTU CTA) with the quieter "How it works" three-step
+  # rail that sits beneath it. The component takes only
+  # `@locale`; the dashboard's outer template keeps the
+  # `if @devices == []` guard. Sister to
+  # `DtuAppWeb.SharePanel` (PR #280).
+  import DtuAppWeb.OnboardingPanel, only: [onboarding_panel: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
