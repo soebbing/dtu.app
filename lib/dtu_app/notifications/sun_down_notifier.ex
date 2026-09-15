@@ -106,9 +106,9 @@ defmodule DtuApp.Notifications.SunDown do
 
   use GenServer
 
-  use Gettext, backend: DtuAppWeb.Gettext
-
   require Logger
+
+  use Gettext, backend: DtuAppWeb.Gettext
 
   import Ecto.Query
 
@@ -117,12 +117,24 @@ defmodule DtuApp.Notifications.SunDown do
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.Reading
   alias DtuApp.Emails.SunDownChart
-  alias DtuApp.SunCalc
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunDownFire
   alias DtuApp.Repo
   alias DtuApp.Time
+
+  # Pure helpers moved to sibling modules under
+  # `DtuApp.Notifications.SunDown.*`. Re-exported here so the
+  # notifier's call sites stay unchanged and the existing test
+  # surface (e.g. `SunDown.build_payload/2`, `SunDown.reading_topic/0`)
+  # continues to work without edits.
+  defdelegate build_payload(user, date), to: __MODULE__.Payload
+  defdelegate reading_dtu_id(reading), to: __MODULE__.Detection
+  defdelegate reading_ac_power(reading), to: __MODULE__.Detection
+  defdelegate active_fleet_w(devices, now), to: __MODULE__.Detection
+  defdelegate all_devices_silent?(user_state, now), to: __MODULE__.Detection
+  defdelegate past_sunset?(user_id, now), to: __MODULE__.Detection
+  defdelegate read_now(), to: __MODULE__.Detection
 
   @reading_topic "dtu:reading"
 
@@ -162,55 +174,12 @@ defmodule DtuApp.Notifications.SunDown do
   # at night but keep their MQTT session alive with status frames —
   # the cached `power_w` would otherwise hold yesterday's last value
   # forever and `fleet_w == 0.0` would never trip.
-  @fleet_reading_stale_seconds 300
+  # The actual attribute lives on `DtuApp.Notifications.SunDown.Detection`
+  # — the detection helpers (active_fleet_w/2, all_devices_silent?/2)
+  # are the only consumers.
 
   @doc "The PubSub topic this producer subscribes to. Exposed for tests."
   def reading_topic, do: @reading_topic
-
-  @doc """
-  Build the `sun_down` notification payload for `user` and `date`.
-
-  Computes today's + yesterday's daily stats via
-  `DtuApp.Devices.get_daily_stats/3` and returns a map shaped for
-  `assets/js/notifications.js`'s `formatPayload` — see the
-  `sun_down` branch at line ~212 of that file. `today_yield` is
-  converted from Wh to kWh (the readings schema stores Wh; the JS
-  formatter expects kWh). `peak_power` is already W.
-
-  Returns `nil` when the user has no devices (no point firing a
-  summary that reads "0.0 kWh today" — the user has nothing to
-  summarise). Caller is expected to no-op on `nil`.
-  """
-  @spec build_payload(User.t(), Date.t()) :: map() | nil
-  def build_payload(%User{} = user, %Date{} = date) do
-    today = Devices.get_daily_stats(user, nil, date)
-
-    # A user with no devices / no readings at all returns
-    # `current_power: 0.0` and `per_series: []`. Skip the notification
-    # — the user has nothing to summarise, so the OS banner would
-    # just read "Today: 0.0 kWh, peak 0.0 W." (annoying and useless).
-    if today.current_power == 0.0 and today.per_series == [] do
-      nil
-    else
-      yesterday = Devices.get_daily_stats(user, nil, Date.add(date, -1))
-
-      %{
-        event: "sun_down",
-        title: gettext("Sun's down — daily summary"),
-        body: body_for(today, yesterday),
-        tag: "sun_down:#{Date.to_iso8601(date)}",
-        date: Date.to_iso8601(date),
-        # `today_yield` is already converted Wh → kWh inside
-        # `Devices.get_daily_stats/3` (the readings table stores Wh;
-        # the function divides by 1000 before returning). The JS hook
-        # expects kWh, so we pass it through unchanged.
-        today_yield_kwh: today.today_yield,
-        peak_power_w: today.peak_power,
-        today_yield_yesterday_kwh: yesterday.today_yield,
-        peak_power_yesterday_w: yesterday.peak_power
-      }
-    end
-  end
 
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
@@ -272,20 +241,6 @@ defmodule DtuApp.Notifications.SunDown do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # Extract `dtu_id` from a Reading struct or a stripped test map.
-  defp reading_dtu_id(%{dtu_id: id}) when is_integer(id), do: id
-  defp reading_dtu_id(%{dtu_id: id}) when not is_nil(id), do: id
-  defp reading_dtu_id(_), do: nil
-
-  # AC power: only valid on the AC-aggregate row (mppt_index = 0).
-  # Per-MPPT rows (mppt_index >= 1) carry `dc_power`, not `ac_power`,
-  # so we explicitly ignore them. A nil `ac_power` is treated as 0 W
-  # (matches `get_daily_stats` / `assign_dashboard_data` semantics).
-  defp reading_ac_power(%{mppt_index: 0, ac_power: w}) when is_number(w), do: w * 1.0
-  defp reading_ac_power(%{mppt_index: 0, ac_power: nil}), do: 0.0
-  defp reading_ac_power(%{ac_power: _}), do: :ignore
-  defp reading_ac_power(_), do: :ignore
-
   # Update the per-user fleet-power state with this device's latest
   # AC-aggregate reading. Per-device state is
   # `%{power_w: float, last_reading_at: DateTime.t()}` — the timestamp
@@ -320,29 +275,6 @@ defmodule DtuApp.Notifications.SunDown do
   # generating?". Without this filter, the cached `power_w` from a
   # daytime reading would keep the fleet sum > 0 forever, and the
   # idle-window timer would never arm.
-  defp active_fleet_w(devices, now) do
-    devices
-    |> Map.values()
-    |> Enum.filter(fn %{last_reading_at: last} ->
-      DateTime.diff(now, last, :second) < @fleet_reading_stale_seconds
-    end)
-    |> Enum.map(& &1.power_w)
-    |> Enum.sum()
-  end
-
-  # True iff `now - last_reading_at < @fleet_reading_stale_seconds`
-  # for every device the user owns. A user with no devices at all
-  # returns `true` (vacuous truth — they have no fleet to be down).
-  # Used by `maybe_arm_timer/2` to handle the "all devices went silent
-  # at the same time" case: even if the cached `power_w` for a silent
-  # device is non-zero (because it published once at startup and never
-  # again), the timer still arms because every entry is stale.
-  defp all_devices_silent?(%{devices: devices}, now) do
-    devices == [] or
-      Enum.all?(devices, fn {_id, %{last_reading_at: last}} ->
-        DateTime.diff(now, last, :second) >= @fleet_reading_stale_seconds
-      end)
-  end
 
   defp resolve_user_id(state, device_id) do
     case Map.get(state.device_to_user, device_id) do
@@ -357,6 +289,19 @@ defmodule DtuApp.Notifications.SunDown do
         nil -> nil
         %{user_id: uid} -> uid
       end
+    rescue
+      _ -> nil
+    end
+  end
+
+  # Defensive user lookup. The producer's job is to fire on the
+  # idle transition; a brief DB hiccup must not crash the GenServer.
+  # The `Detection` module has a private twin for the sunset-gate
+  # path; both wrap the lookup in `:rescue` so the producer stays
+  # best-effort.
+  defp safe_get_user(user_id) do
+    try do
+      Repo.get(User, user_id)
     rescue
       _ -> nil
     end
@@ -379,59 +324,8 @@ defmodule DtuApp.Notifications.SunDown do
   # a daily summary fired at noon (under cloud cover) is the
   # wrong signal (that's `YieldAnomaly`'s job).
   #
-  # Fallback contract: when the user has no coordinates
-  # (`latitude` / `longitude` nil) `past_sunset?/2` returns
-  # `true`, matching the legacy behaviour. Adding the gate is a
-  # strict upgrade, not a regression for users who never set
-  # their location — they keep getting a fire at any time of
-  # day, same as before.
-  #
-  # Polar edge cases (`{sunrise, nil}` polar day,
-  # `{nil, sunset}` polar night) and other unknown shapes
-  # return `false` — no sunset known for the location today,
-  # so the gate conservatively blocks the fire rather than
-  # guess.
-  defp past_sunset?(user_id, %DateTime{} = now) do
-    case safe_get_user(user_id) do
-      nil ->
-        # User vanished mid-flight (deletion race) — treat as past
-        # sunset so the summary still fires; this matches the
-        # original un-gated behaviour for users that briefly don't
-        # exist.
-        true
-
-      %User{latitude: nil} ->
-        true
-
-      %User{longitude: nil} ->
-        true
-
-      %User{latitude: lat, longitude: lon} when not is_nil(lat) and not is_nil(lon) ->
-        date = DateTime.to_date(now)
-
-        case SunCalc.sunrise_sunset_utc(lat, lon, date) do
-          {_, %DateTime{} = sunset} -> DateTime.compare(now, sunset) in [:gt, :eq]
-          # Polar day (`{_, nil}`), polar night (`{nil, _}`) and
-          # unknown shapes: no sunset known for this location/date,
-          # so conservatively block the fire rather than guess.
-          _ -> false
-        end
-
-      _ ->
-        true
-    end
-  end
-
-  # Test override for "now" — mirrors `:yield_anomaly_now` in
-  # `YieldAnomaly`. Lets the suite drive the sunset-gate check
-  # at a fixed instant without mocking `Time.utc_now/0`. Falls
-  # back to the wall-clock time in production.
-  defp read_now do
-    case Application.get_env(:dtu_app, :sun_down_now, :__unset__) do
-      :__unset__ -> Time.utc_now()
-      %DateTime{} = configured -> configured
-    end
-  end
+  # The gate now lives in `DtuApp.Notifications.SunDown.Detection`
+  # (see `SunDown.past_sunset?/2`); only the call site stays here.
 
   defp arm_if_idle(state, user_id) do
     case Map.get(state.users, user_id) do
@@ -832,55 +726,7 @@ defmodule DtuApp.Notifications.SunDown do
     %{state | users: Map.delete(state.users, user_id)}
   end
 
-  defp safe_get_user(user_id) do
-    try do
-      Repo.get(User, user_id)
-    rescue
-      _ -> nil
-    end
-  end
-
   defp idle_seconds do
     Application.get_env(:dtu_app, :sun_down_idle_seconds, @default_idle_seconds)
   end
-
-  defp body_for(today, yesterday) do
-    yield_diff = compare(today.today_yield, yesterday.today_yield, "kWh")
-    peak_diff = compare(today.peak_power, yesterday.peak_power, "W")
-
-    gettext(
-      "Today: %{today_kwh} kWh%{yield_diff}, peak %{peak_w} W%{peak_diff}.",
-      today_kwh: format_kwh(today.today_yield),
-      yield_diff: yield_diff,
-      peak_w: format_w(today.peak_power),
-      peak_diff: peak_diff
-    )
-  end
-
-  defp compare(today, yesterday, unit) when is_number(yesterday) do
-    cond do
-      today == yesterday ->
-        gettext(" (same as yesterday)")
-
-      true ->
-        diff = today - yesterday
-        sign = if diff > 0, do: "+", else: ""
-
-        if unit == "kWh" do
-          gettext(" (%{sign}%{diff} kWh vs yesterday)", sign: sign, diff: format_kwh(diff))
-        else
-          gettext(" (%{sign}%{diff} W vs yesterday)", sign: sign, diff: format_w(diff))
-        end
-    end
-  end
-
-  defp compare(_, _, _), do: ""
-
-  # `today_yield` is already in kWh (see `build_payload/2`); pass
-  # it through to the formatter. Power fields are already W.
-  defp format_kwh(kwh) when is_number(kwh), do: :erlang.float_to_binary(kwh, decimals: 1)
-  defp format_kwh(_), do: "—"
-
-  defp format_w(w) when is_number(w), do: :erlang.float_to_binary(w, decimals: 1)
-  defp format_w(_), do: "—"
 end
