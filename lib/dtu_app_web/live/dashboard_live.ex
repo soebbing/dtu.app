@@ -129,6 +129,16 @@ defmodule DtuAppWeb.DashboardLive do
   # `DtuAppWeb.OnboardingPanel` (PR #281).
   import DtuAppWeb.DashboardHeader, only: [dashboard_header: 1]
 
+  # Toolbar cluster: DTU switcher + quick-range switcher +
+  # (conditional) historical stepper. The component bundles all
+  # 11 assigns (`:devices`, `:selected_dtu_id`, `:range_preset`,
+  # `:granularity`, `:selected_period`, `:selectable_dates`,
+  # `:selectable_days`, `:selectable_weeks`,
+  # `:selectable_months`, `:selectable_years`, `:live`,
+  # `:locale`) that the three sibling components need. Sister to
+  # `DtuAppWeb.DashboardHeader` (PR #282).
+  import DtuAppWeb.DashboardToolbar, only: [dashboard_toolbar: 1]
+
   require Logger
 
   @timezone_topic "dtu:timezone"
