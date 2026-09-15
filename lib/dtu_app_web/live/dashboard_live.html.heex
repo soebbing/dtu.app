@@ -251,20 +251,7 @@
       </div>
 
       <!-- Devices / Inverters status -->
-      <div class="bg-white dark:bg-zinc-800 shadow rounded-lg border border-zinc-200 dark:border-zinc-700 p-6">
-        <h2 class="text-lg font-medium text-zinc-900 dark:text-white mb-4">
-          {gettext("Device Connection Status")}
-        </h2>
-
-        <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" id="device-status-grid">
-          <%= for device <- @devices do %>
-            <.device_status_card
-              device={device}
-              error_count={Map.get(@error_counts, device.id, 0)}
-            />
-          <% end %>
-        </div>
-      </div>
+      <.device_status_grid devices={@devices} error_counts={@error_counts} />
     <% end %>
   </div>
 

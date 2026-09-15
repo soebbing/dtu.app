@@ -42,13 +42,6 @@ defmodule DtuAppWeb.DashboardLive do
   # template stays close to plain HEEx.
   import Components
 
-  # Per-device status card rendered in the dashboard's
-  # device-status grid. Extracted from the inline heex block
-  # (formerly lines 2027-2181 of `dashboard_live.html.heex`)
-  # so the per-device card has its own unit-test surface and
-  # the dashboard template stays focused on page-level layout.
-  import DtuAppWeb.DeviceStatusCard, only: [device_status_card: 1]
-
   # The "Power consumption" row (Total / Today's / Peak) rendered
   # between the production stat_card_row and the chart panel.
   # Extracted from the inline heex block (formerly lines 300-492 of
@@ -138,6 +131,15 @@ defmodule DtuAppWeb.DashboardLive do
   # `:locale`) that the three sibling components need. Sister to
   # `DtuAppWeb.DashboardHeader` (PR #282).
   import DtuAppWeb.DashboardToolbar, only: [dashboard_toolbar: 1]
+
+  # Device-status grid: white-card wrapper + "Device Connection
+  # Status" heading + responsive grid + per-device
+  # <.device_status_card> loop. The component bundles three
+  # cleanly-separated layers — wrapper chrome, heading, and
+  # the grid — each tested at the boundary by
+  # `DtuAppWeb.DeviceStatusGridTest`. Sister to
+  # `DtuAppWeb.DashboardToolbar` (PR #283).
+  import DtuAppWeb.DeviceStatusGrid, only: [device_status_grid: 1]
 
   require Logger
 
