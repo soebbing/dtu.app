@@ -645,7 +645,7 @@ defmodule DtuApp.Notifications.SunDownTest do
   describe "build_payload/2" do
     test "returns nil for a user with no devices" do
       user = user_fixture()
-      assert SunDown.build_payload(user, Date.utc_today()) == nil
+      assert SunDown.build_payload(user, Date.utc_today(), 0) == nil
     end
 
     test "shapes today + yesterday stats for a user with one inverter" do
@@ -688,7 +688,7 @@ defmodule DtuApp.Notifications.SunDownTest do
           inserted_at: DateTime.new!(Date.utc_today(), ~T[13:00:00], "Etc/UTC")
         })
 
-      payload = SunDown.build_payload(user, Date.utc_today())
+      payload = SunDown.build_payload(user, Date.utc_today(), 0)
 
       assert payload.event == "sun_down"
       assert payload.today_yield_kwh == 2.5
@@ -1154,6 +1154,36 @@ defmodule DtuApp.Notifications.SunDownTest do
              "expected timer to be armed (no-coords fallback), got #{inspect(user_state.timer)}"
 
       assert user_state.zero_since != nil
+    end
+  end
+
+  # Local-date math for the producer's "today". The notifier's
+  # daily summary, dedup row, and history tag all key off the
+  # user's local calendar date — a CEST user at UTC 23:30 on
+  # Sep 15 is already on local Sep 16. Mirrors the SunUp test
+  # surface so the two producers don't drift on offset handling.
+  describe "local_date/2" do
+    test "returns the next calendar date for a positive (east) offset when UTC is late" do
+      # 2026-09-15T22:00:00Z in CEST (+7200) is 2026-09-16T00:00 local.
+      utc = ~U[2026-09-15 22:00:00Z]
+      assert SunDown.local_date(utc, 7_200) == ~D[2026-09-16]
+    end
+
+    test "returns the next calendar date for a positive offset when UTC is early morning" do
+      # 2026-09-16T01:30:00Z in CEST (+7200) is 2026-09-16T03:30 local.
+      utc = ~U[2026-09-16 01:30:00Z]
+      assert SunDown.local_date(utc, 7_200) == ~D[2026-09-16]
+    end
+
+    test "returns the same calendar date for a zero offset" do
+      utc = ~U[2026-09-15 12:00:00Z]
+      assert SunDown.local_date(utc, 0) == ~D[2026-09-15]
+    end
+
+    test "returns the previous calendar date for a negative (west) offset" do
+      # 2026-09-16T03:00:00Z in PDT (-25200) is 2026-09-15T20:00 local.
+      utc = ~U[2026-09-16 03:00:00Z]
+      assert SunDown.local_date(utc, -25_200) == ~D[2026-09-15]
     end
   end
 end

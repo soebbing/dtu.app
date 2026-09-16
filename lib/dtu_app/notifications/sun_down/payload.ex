@@ -20,22 +20,36 @@ defmodule DtuApp.Notifications.SunDown.Payload do
   alias DtuApp.Devices
 
   @doc """
-  Build the `sun_down` notification payload for `user` and `date`.
+  Build the `sun_down` notification payload for `user`, `local_date`
+  (the user's local calendar day), and `tz_offset_seconds` (the
+  user's `User.tz_offset_seconds`).
 
-  Computes today's + yesterday's daily stats via
-  `DtuApp.Devices.get_daily_stats/3` and returns a map shaped for
-  `assets/js/notifications.js`'s `formatPayload` — see the
-  `sun_down` branch at line ~212 of that file. `today_yield` is
-  converted from Wh to kWh (the readings schema stores Wh; the JS
-  formatter expects kWh). `peak_power` is already W.
+  Translates the local date to the inclusive UTC range
+  `[00:00 local, 23:59:59 local]` via
+  `DtuApp.Devices.ChartData.local_day_utc_range/2` and queries
+  `DtuApp.Devices.get_daily_stats_for_local_day/4`. The previous
+  2-arity used `Date.utc_today()`-style semantics and queried the
+  UTC midnight-to-midnight window — that misalignment is what
+  caused CEST users to receive "no end-of-day summary" rows on
+  days when their local morning production (UTC 22:00–23:59 of the
+  previous calendar day) fell outside the queried range. The
+  local-date variant closes the gap for non-UTC users while
+  keeping the same return shape.
+
+  Returns a map shaped for `assets/js/notifications.js`'s
+  `formatPayload` (see the `sun_down` branch at line ~212 of that
+  file). `today_yield` is converted from Wh to kWh (the readings
+  schema stores Wh; the JS formatter expects kWh). `peak_power` is
+  already W.
 
   Returns `nil` when the user has no devices (no point firing a
   summary that reads "0.0 kWh today" — the user has nothing to
   summarise). Caller is expected to no-op on `nil`.
   """
-  @spec build_payload(User.t(), Date.t()) :: map() | nil
-  def build_payload(%User{} = user, %Date{} = date) do
-    today = Devices.get_daily_stats(user, nil, date)
+  @spec build_payload(User.t(), Date.t(), integer()) :: map() | nil
+  def build_payload(%User{} = user, %Date{} = local_date, tz_offset_seconds)
+      when is_integer(tz_offset_seconds) do
+    today = Devices.get_daily_stats_for_local_day(user, nil, local_date, tz_offset_seconds)
 
     # A user with no devices / no readings at all returns
     # `current_power: 0.0` and `per_series: []`. Skip the notification
@@ -44,18 +58,25 @@ defmodule DtuApp.Notifications.SunDown.Payload do
     if today.current_power == 0.0 and today.per_series == [] do
       nil
     else
-      yesterday = Devices.get_daily_stats(user, nil, Date.add(date, -1))
+      yesterday =
+        Devices.get_daily_stats_for_local_day(
+          user,
+          nil,
+          Date.add(local_date, -1),
+          tz_offset_seconds
+        )
 
       %{
         event: "sun_down",
         title: gettext("Sun's down — daily summary"),
         body: body_for(today, yesterday),
-        tag: "sun_down:#{Date.to_iso8601(date)}",
-        date: Date.to_iso8601(date),
+        tag: "sun_down:#{Date.to_iso8601(local_date)}",
+        date: Date.to_iso8601(local_date),
         # `today_yield` is already converted Wh → kWh inside
-        # `Devices.get_daily_stats/3` (the readings table stores Wh;
-        # the function divides by 1000 before returning). The JS hook
-        # expects kWh, so we pass it through unchanged.
+        # `Devices.get_daily_stats_for_local_day/4` (the readings
+        # table stores Wh; the function divides by 1000 before
+        # returning). The JS hook expects kWh, so we pass it through
+        # unchanged.
         today_yield_kwh: today.today_yield,
         peak_power_w: today.peak_power,
         today_yield_yesterday_kwh: yesterday.today_yield,

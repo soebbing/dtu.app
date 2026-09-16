@@ -87,7 +87,59 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
     impl_get_daily_stats(user, dtu_id, date, [])
   end
 
+  @doc """
+  Variant of `get_daily_stats/3` that treats `local_date` as the
+  USER'S local calendar date and translates it to the inclusive
+  UTC range `[00:00 local, 23:59:59 local]` via
+  `ChartData.local_day_utc_range/2`. Used by the SunDown notifier
+  (so a CEST user's "today" maps to UTC [Sep 14 22:00, Sep 15
+  21:59]) and the dashboard stat card (same reasoning — see
+  `DtuAppWeb.SharedDashboardLive`).
+
+  Without this variant, callers that pass a UTC date end up with
+  a midnight-to-midnight-UTC window that misses the early-morning
+  hours of a positive-UTC-offset user's local day (or, for
+  negative-UTC-offset users, the late-evening hours of their local
+  day). The existing `get_daily_stats/3` keeps the UTC-date
+  semantics for callers that genuinely want that window (e.g.
+  the share/heatmap pages that key off UTC calendar days).
+
+  `current_power` and `peak_power` are still computed against the
+  present instant — they only make sense for the live day — but
+  `today_yield` and `total_yield` reflect the local day so we can
+  compare day-over-day in the user's timezone.
+  """
+  def get_daily_stats_for_local_day(
+        %User{} = user,
+        dtu_id,
+        %Date{} = local_date,
+        tz_offset_seconds
+      )
+      when is_integer(tz_offset_seconds) do
+    {utc_start, utc_end} = ChartData.local_day_utc_range(local_date, tz_offset_seconds)
+    impl_get_daily_stats_for_range(user, dtu_id, utc_start, utc_end, [])
+  end
+
   defp impl_get_daily_stats(%User{} = user, dtu_id, %Date{} = date, pre_fetched_chart_points)
+       when is_list(pre_fetched_chart_points) do
+    # The 3-arity UTC-date path: build the [00:00 UTC, 23:59:59 UTC]
+    # window from the date and forward to the range-based impl.
+    # The local-date variant (`get_daily_stats_for_local_day/4`)
+    # computes its own UTC range via
+    # `ChartData.local_day_utc_range/2` so the two paths share the
+    # same SELECT/WHERE clauses below.
+    utc_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
+    utc_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
+    impl_get_daily_stats_for_range(user, dtu_id, utc_start, utc_end, pre_fetched_chart_points)
+  end
+
+  defp impl_get_daily_stats_for_range(
+         %User{} = user,
+         dtu_id,
+         utc_start,
+         utc_end,
+         pre_fetched_chart_points
+       )
        when is_list(pre_fetched_chart_points) do
     dtu_ids = owned_dtu_ids(user, dtu_id)
 
@@ -107,8 +159,15 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
       # rows (or vice versa).
       two_minutes_ago = DtuApp.Time.utc_now() |> DateTime.add(-120, :second)
 
-      today_start = DateTime.new!(date, ~T[00:00:00], "Etc/UTC")
-      today_end = DateTime.new!(date, ~T[23:59:59], "Etc/UTC")
+      # `utc_start` / `utc_end` are passed in by the caller — the
+      # UTC-date variant (`impl_get_daily_stats/4`) builds a
+      # midnight-to-midnight-UTC window from `date`, the local-date
+      # variant (`get_daily_stats_for_local_day/4`) builds a
+      # local-midnight-to-local-midnight window via
+      # `ChartData.local_day_utc_range/2`. Either way, these are the
+      # bounds the DISTINCT ON + chart-points queries use below.
+      today_start = utc_start
+      today_end = utc_end
 
       # Perf #12: a single DISTINCT ON returns the per-inverter "latest
       # reading of the day" row (one per (dtu, serial), filtered to
