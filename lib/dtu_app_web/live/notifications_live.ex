@@ -400,7 +400,10 @@ defmodule DtuAppWeb.NotificationsLive do
         {:noreply,
          socket
          |> assign(:last_regenerated_at, now)
-         |> put_flash(:error, gettext("Pick past dates only — today's summary will fire on its own."))}
+         |> put_flash(
+           :error,
+           gettext("Pick past dates only — today's summary will fire on its own.")
+         )}
 
       Date.compare(parsed_date, Date.add(today, -30)) == :lt ->
         {:noreply,
@@ -408,7 +411,9 @@ defmodule DtuAppWeb.NotificationsLive do
          |> assign(:last_regenerated_at, now)
          |> put_flash(
            :error,
-           gettext("Pick a date within the last 30 days — earlier days no longer have their reading cache in memory.")
+           gettext(
+             "Pick a date within the last 30 days — earlier days no longer have their reading cache in memory."
+           )
          )}
 
       true ->
