@@ -238,6 +238,22 @@ defmodule DtuAppWeb.NotificationsLive do
     {:noreply, socket}
   end
 
+  # Swoosh.Test (the `:test` Mailer adapter) sends `{:email, swoosh_email}`
+  # to `self()` of the process that called `Mailer.deliver/1`. When the
+  # regenerate handler runs synchronously in the LiveView process and
+  # the dispatcher's email-fallback branch fires (because the user has
+  # no live push subscriptions to receive the banner), the swoosh email
+  # lands in the LV mailbox. Production adapters (`Swoosh.Adapters.Local`
+  # / SMTP / etc.) don't send back, so this clause is purely a test
+  # defence — but the LV shouldn't crash on a stray `:email` message
+  # regardless. The history refresh above is the user-facing reaction
+  # to a fan-out; the swoosh payload itself is for `Swoosh.TestAssertions`
+  # to inspect on the test process.
+  @impl true
+  def handle_info({:email, _swoosh_email}, socket) do
+    {:noreply, socket}
+  end
+
   def handle_event("set_history_page", %{"page" => page}, socket) do
     user = socket.assigns.current_scope.user
     page = page |> to_string() |> String.to_integer()
@@ -474,7 +490,15 @@ defmodule DtuAppWeb.NotificationsLive do
              )}
 
           payload ->
-            _ = Notifications.broadcast(user.id, payload)
+            # `force: true` bypasses the per-event preference gate
+            # (`notify_sun_down` typically) because the regenerate
+            # button is a USER-INITIATED fire, not an automatic one
+            # — a user who explicitly asked for a missed day
+            # should get it even if they opted out of the daily
+            # toggle. Channel routing + email fallback + history
+            # row insert still run normally; only the gate is
+            # skipped. See `Dispatcher.fire/4` moduledoc.
+            _ = Notifications.broadcast(user.id, payload, force: true)
 
             {:noreply,
              socket

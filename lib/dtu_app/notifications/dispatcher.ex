@@ -76,9 +76,24 @@ defmodule DtuApp.Notifications.Dispatcher do
   Swoosh-transport failure, so the fallback is strictly best-
   effort; the user with no confirmed email sees the same one-row
   push history either way.
+
+  ## Force-fire (preference bypass)
+
+  `opts[:force] == true` skips the per-event preference gate
+  (`Push.native_enabled?/2` asking "did the user opt into THIS
+  event?"). Channel routing + email fallback + history row
+  insert still run as normal. The single caller exercising this
+  today is the `/notifications` regenerate form, which is a
+  USER-INITIATED fire — a user who explicitly clicked the button
+  should get a summary even if they previously opted out of the
+  *automatic* daily fire (otherwise the "Summary sent" flash
+  would lie: no push, no email, no history row). All other
+  producers (the daily sun_down / sun_up / yield_anomaly /
+  dtu_connection producers + the /notifications "Test
+  notification" button) keep the gate as the default.
   """
-  @spec fire(User.t(), String.t(), map()) :: :ok
-  def fire(%User{} = user, event, payload) when is_map(payload) do
+  @spec fire(User.t(), String.t(), map(), keyword()) :: :ok
+  def fire(%User{} = user, event, payload, opts \\ []) when is_map(payload) do
     channel = user.notification_channel || "push"
 
     # Per-event preference gate. Mirrors the old
@@ -89,7 +104,16 @@ defmodule DtuApp.Notifications.Dispatcher do
     # opted into the event at all (otherwise we'd be sending an
     # unsolicited email to a user who said "no thanks" to the
     # notification).
-    push_enabled? = Push.native_enabled?(user, %{"event" => event})
+    #
+    # `opts[:force]` bypasses this gate for user-initiated fires
+    # (currently the /notifications regenerate button) — see the
+    # "Force-fire" section in the moduledoc for the contract.
+    push_enabled? =
+      if Keyword.get(opts, :force, false) do
+        true
+      else
+        Push.native_enabled?(user, %{"event" => event})
+      end
 
     push_should_fire? = channel in ["push", "both"] and push_enabled?
 
