@@ -116,5 +116,20 @@
       event_filter={@history_event_filter}
       filters={@history_filters}
     />
+
+    <%!--
+      "Missed a day?" regenerate form. Lets the user ask the
+      dispatcher to compute and re-broadcast a `sun_down` summary
+      for any past date in the last 30 days. The form's `min=` /
+      `max=` attributes give the native date picker a chance to
+      grey out out-of-range dates before submit; the
+      authoritative gate is the `regenerate_sun_down` handler in
+      `DtuAppWeb.NotificationsLive` (which also enforces a 30 s
+      in-process cooldown so click-spam is bounded).
+    --%>
+    <.notification_regenerate_card
+      min_date={@regenerate_min_date}
+      max_date={@regenerate_max_date}
+    />
   </div>
 </Layouts.app>

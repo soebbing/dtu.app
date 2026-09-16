@@ -51,6 +51,7 @@ defmodule DtuAppWeb.NotificationsLive do
   import DtuAppWeb.NotificationCapabilityCard, only: [notification_capability_card: 1]
   import DtuAppWeb.NotificationHistoryCard, only: [notification_history_card: 1]
   import DtuAppWeb.NotificationPreferencesForm, only: [notification_preferences_form: 1]
+  import DtuAppWeb.NotificationRegenerateCard, only: [notification_regenerate_card: 1]
 
   require Logger
 
@@ -127,6 +128,14 @@ defmodule DtuAppWeb.NotificationsLive do
      # filter chip's `aria-pressed` flips, never the source
      # list itself.
      |> assign(:history_filters, Enum.map(@event_filters, &{&1, FilterHelpers.filter_label(&1)}))
+     # The Regenerate-summary card's date input `min=` / `max=`
+     # bounds — same [today-30, today-1] window the server enforces.
+     # Anchored at mount so the bounds don't drift during a long-lived
+     # socket (a midnight rollover mid-session would otherwise let the
+     # user pick a date that's now the future, then have the server
+     # reject it as "past dates only").
+     |> assign(:regenerate_min_date, Date.add(Date.utc_today(), -30))
+     |> assign(:regenerate_max_date, Date.add(Date.utc_today(), -1))
      |> assign_history(user, 1, "all")
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
