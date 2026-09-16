@@ -71,6 +71,21 @@ defmodule DtuAppWeb.NotificationCapabilityCard do
     amber inset.
     """
 
+  attr :recently_revoked_subscription, :boolean,
+    default: false,
+    doc: """
+    Whether at least one of the user's push subscriptions was
+    soft-deleted in the last 7 days (server-side signal from
+    `DtuApp.PushSubscriptions.revoked_within_days?/2`). When `true`
+    AND `:has_push_subscriptions` is `false` AND the browser
+    permission is `granted`, we surface an amber inset asking the
+    user to re-subscribe — this is the "your browser cleared your
+    push subscription" case where push *was* working recently and
+    silently stopped. Ignored when `:has_push_subscriptions` is
+    `true` (the iOS edge-case branch wins instead — push is still
+    on, the user is just looking at the wrong tab).
+    """
+
   attr :user_id, :integer,
     required: true,
     doc: """
@@ -161,12 +176,42 @@ defmodule DtuAppWeb.NotificationCapabilityCard do
                 </p>
               <% end %>
             <% else %>
-              <%= if Map.get(@state, "device") == "desktop" do %>
-                <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
-                  {gettext(
-                    "Keep this tab open to receive notifications. For background delivery when the tab is closed, install this site as a PWA."
-                  )}
-                </p>
+              <%= if @recently_revoked_subscription do %>
+                <%!--
+                  Push subscription was working recently but the
+                  dispatcher hit a 404/410 from FCM/APNS (browser
+                  cleared site data, PWA reinstalled, etc.) and
+                  soft-deleted the row. Permission is still granted
+                  on the user's side — they only need to re-run
+                  `PushManager.subscribe()` to get banners back. The
+                  `#notifications-re-subscribe` id targets the same
+                  `PushSubscribe` hook as `#notifications-enable` on
+                  the `:default` state; the hook detects the
+                  already-granted permission and skips the prompt.
+                --%>
+                <div class="mt-2 rounded-md border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40 p-2 text-xs text-amber-800 dark:text-amber-200">
+                  <p>
+                    {gettext(
+                      "Your browser cleared its push subscription. Click below to re-subscribe — permission is still granted, no extra prompt will appear."
+                    )}
+                  </p>
+                  <button
+                    id="notifications-re-subscribe"
+                    type="button"
+                    class="mt-2 inline-flex items-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 px-3 py-1.5 text-xs font-semibold text-zinc-950 transition"
+                  >
+                    <.icon name="hero-bell" class="h-3.5 w-3.5" />
+                    {gettext("Re-subscribe")}
+                  </button>
+                </div>
+              <% else %>
+                <%= if Map.get(@state, "device") == "desktop" do %>
+                  <p class="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                    {gettext(
+                      "Keep this tab open to receive notifications. For background delivery when the tab is closed, install this site as a PWA."
+                    )}
+                  </p>
+                <% end %>
               <% end %>
             <% end %>
           </div>

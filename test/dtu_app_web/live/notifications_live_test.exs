@@ -219,6 +219,62 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       render_hook(view, "push_subscribed", %{endpoint: "https://example.test/push/abc"})
       assert render(view) =~ "Native push is on for this device"
     end
+
+    test "granted + recently-revoked subscription surfaces the amber re-subscribe inset; push_subscribed clears it",
+         %{conn: conn, scope: scope} do
+      # Seed a subscription, then simulate the dispatcher pruning it
+      # because FCM/APNS returned 404/410 (soft-delete via
+      # `delete_by_endpoint/1` — the production hot path).
+      {:ok, _sub} =
+        DtuApp.PushSubscriptions.upsert(scope.user, %{
+          "endpoint" => "https://fcm.googleapis.com/fcm/send/revoked",
+          "p256dh" => "BNcRdreALRFXTkOOUHK1",
+          "auth" => "tBHItJI5svbpez7KI4CCXg"
+        })
+
+      :ok =
+        DtuApp.PushSubscriptions.delete_by_endpoint("https://fcm.googleapis.com/fcm/send/revoked")
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{
+        state: "granted",
+        device: "desktop",
+        installed: true
+      })
+
+      assert render(view) =~ "Your browser cleared its push subscription"
+      assert render(view) =~ ~s(id="notifications-re-subscribe")
+      refute render(view) =~ "Native push is on for this device"
+
+      # User re-subscribes — the JS hook POSTs /push/subscribe, the
+      # server's upsert clears deleted_at, then the hook fires
+      # `push_subscribed` to flip the assigns. The amber inset should
+      # disappear; the native-push badge should appear.
+      render_hook(view, "push_subscribed", %{
+        "endpoint" => "https://fcm.googleapis.com/fcm/send/revoked"
+      })
+
+      refute render(view) =~ "Your browser cleared its push subscription"
+      refute render(view) =~ ~s(id="notifications-re-subscribe")
+      assert render(view) =~ "Native push is on for this device"
+    end
+
+    test "granted + no subscriptions + no recent revoke renders no amber inset", %{conn: conn} do
+      # Fresh user, never subscribed. The recently-revoked signal
+      # must be false on a clean mount.
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_hook(view, "notification_state", %{
+        state: "granted",
+        device: "desktop",
+        installed: true
+      })
+
+      refute render(view) =~ "Your browser cleared its push subscription"
+      refute render(view) =~ ~s(id="notifications-re-subscribe")
+      assert render(view) =~ "Keep this tab open to receive notifications"
+    end
   end
 
   describe "Test notification panel — channel-aware gating" do

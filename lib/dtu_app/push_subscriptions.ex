@@ -23,13 +23,37 @@ defmodule DtuApp.PushSubscriptions do
   alias DtuApp.PushSubscriptions.PushSubscription
   alias DtuApp.Repo
 
-  @doc "All of a user's subscriptions, newest first."
+  @doc "All of a user's *live* subscriptions, newest first. Soft-deleted rows are excluded."
   @spec list_for_user(User.t()) :: [PushSubscription.t()]
   def list_for_user(%User{} = user) do
     PushSubscription
-    |> where([s], s.user_id == ^user.id)
+    |> where([s], s.user_id == ^user.id and is_nil(s.deleted_at))
     |> order_by([s], desc: s.inserted_at)
     |> Repo.all()
+  end
+
+  @doc """
+  Returns `true` if any of the user's subscriptions were soft-deleted
+  within the last `days` days.
+
+  The capability card uses this to surface a one-click "your browser
+  cleared your push subscription" prompt when the user has browser
+  permission = `granted` but no live subscription row exists. The
+  window bounds false-positives for users who lost a single
+  multi-device subscription but still get push on another device.
+
+  Soft-deleted rows live indefinitely (a future periodic prune task
+  can hard-delete rows older than 30 days); this query is cheap
+  because the partial index `push_subscriptions_revoked_user_id_deleted_at_index`
+  only indexes the `deleted_at IS NOT NULL` slice.
+  """
+  @spec revoked_within_days?(User.t(), non_neg_integer()) :: boolean
+  def revoked_within_days?(%User{} = user, days) when is_integer(days) and days >= 0 do
+    cutoff = DateTime.add(DateTime.utc_now(:second), -days * 86_400, :second)
+
+    PushSubscription
+    |> where([s], s.user_id == ^user.id and not is_nil(s.deleted_at) and s.deleted_at > ^cutoff)
+    |> Repo.exists?()
   end
 
   @doc """
@@ -68,17 +92,29 @@ defmodule DtuApp.PushSubscriptions do
         |> Repo.insert()
 
       %PushSubscription{user_id: owner_id} = existing when owner_id == user.id ->
+        # If this row was soft-deleted (the dispatcher hit a 404/410
+        # from the push service), the browser coming back with the
+        # same endpoint means the handle is alive again — reactivate
+        # the row by clearing `deleted_at` so the dispatcher fans
+        # out to it on the next push AND the capability card's
+        # "recently revoked" prompt stops firing. The changeset
+        # allow-list doesn't include `:deleted_at`, so we thread it
+        # in via `Ecto.Changeset.change/2` after the cast.
         existing
         |> PushSubscription.changeset(attrs)
+        |> Ecto.Changeset.change(deleted_at: nil)
         |> Repo.update()
 
       # Endpoint owned by a different user — happens when the same
       # browser profile is used to log in as a second account.
       # Move ownership to the new caller; the encryption keys are
-      # endpoint-bound, not user-bound, so they're unchanged.
+      # endpoint-bound, not user-bound, so they're unchanged. Same
+      # reactivation rule applies: if the row was soft-deleted,
+      # the new owner is telling us the endpoint works again.
       %PushSubscription{} = existing ->
         existing
         |> PushSubscription.changeset(attrs)
+        |> Ecto.Changeset.change(deleted_at: nil)
         |> Repo.update()
     end
   end
@@ -93,13 +129,32 @@ defmodule DtuApp.PushSubscriptions do
     end
   end
 
-  @doc "Delete by endpoint, regardless of owner. Used by the dispatcher after a :gone."
+  @doc """
+  Soft-delete by endpoint, regardless of owner. Used by the
+  dispatcher after a `:gone` from the push service.
+
+  Unlike `delete/2` (a per-user explicit remove), this is the
+  *system-initiated* prune path: the push service has revoked the
+  endpoint (HTTP 404/410), the dispatcher needs to stop fanning out
+  to it, but we want to keep enough server-side state for the
+  capability card to detect "this user's subscription was working
+  recently and isn't now" and surface a one-click re-subscribe
+  prompt. A hard delete would erase that signal.
+
+  The row is hidden from `list_for_user/1` (and therefore from the
+  dispatcher's fan-out) by the `WHERE deleted_at IS NULL` filter.
+  The row stays in the table until a future periodic prune task
+  hard-deletes it; for now the soft-delete tail is bounded (a user
+  only generates a handful of `:gone` events per device lifetime).
+  """
   @spec delete_by_endpoint(String.t()) :: :ok
   def delete_by_endpoint(endpoint) when is_binary(endpoint) do
+    now = DateTime.utc_now(:second)
+
     {count, _} =
       PushSubscription
-      |> where([s], s.endpoint == ^endpoint)
-      |> Repo.delete_all()
+      |> where([s], s.endpoint == ^endpoint and is_nil(s.deleted_at))
+      |> Repo.update_all(set: [deleted_at: now])
 
     # We deliberately swallow the row count — the caller's only
     # branching is "did we send another push?" and the answer is
