@@ -946,6 +946,85 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       refute_receive {:notification, _}, 200
     end
 
+    # The 4-arg `update_user_tz/2` helpers below are scoped just to this
+    # describe block — `Email.Changeset` doesn't accept
+    # `tz_offset_seconds`, so `Accounts.register_user/1` (which the
+    # `register_and_log_in_user` setup uses) silently drops it. The
+    # cleanest path for these tests is to update the user record
+    # directly and reissue a session token so the LiveView's
+    # `current_scope.user` carries the new offset.
+    defp update_user_tz(user, tz_offset_seconds) do
+      user
+      |> Ecto.Changeset.change(%{tz_offset_seconds: tz_offset_seconds})
+      |> DtuApp.Repo.update!()
+    end
+
+    # Refreshes the conn's `:user_token` to point at `user`.
+    # `log_in_user/2` already calls `init_test_session(%{})` which
+    # resets the session, so the previous token never fires on the
+    # rebuilt conn — we don't need to explicitly invalidate it.
+    defp relog(conn, user) do
+      DtuAppWeb.ConnCase.log_in_user(conn, user)
+    end
+
+    test "date input's max attribute is local_today(tz) - 1, not Date.utc_today() - 1", %{
+      conn: conn,
+      user: user
+    } do
+      # 86 400 s = 24 h synthetic offset. With ANY UTC clock time,
+      # `local_today(86_400)` is one calendar day ahead of
+      # `Date.utc_today()` — so the [max, min] pair the OLD code
+      # derives from `Date.utc_today()` is *always* a calendar day
+      # behind what the user actually wants here. The test catches
+      # the regression at any wall-clock time the suite runs.
+      user = update_user_tz(user, 86_400)
+      conn = relog(conn, user)
+
+      alias DtuAppWeb.DashboardLive.TimeHelpers
+
+      {:ok, _view, html} = live(conn, ~p"/notifications")
+
+      expected_max =
+        Date.to_iso8601(Date.add(TimeHelpers.local_today(user.tz_offset_seconds), -1))
+
+      assert html =~ ~s(max="#{expected_max}"),
+             "expected max=\"#{expected_max}\" derived from local_today(tz_offset), " <>
+               "but the form is using Date.utc_today() (so it drifts by a day for the user)"
+    end
+
+    test "handler's `today` baseline is local_today(tz), not Date.utc_today()", %{
+      conn: conn,
+      user: user
+    } do
+      # With a 24h-ahead offset the user's local today is ALWAYS one
+      # calendar day ahead of `Date.utc_today()`. So the date the user
+      # wants treated as their "local yesterday" is exactly
+      # `Date.utc_today()`. With OLD code the handler compares that
+      # to `Date.utc_today()` and rejects as "today" → "past dates
+      # only" flash. With the FIX the handler treats utc_today as
+      # the user's local yesterday, accepts it, and falls through to
+      # `build_payload/3` which returns nil for a fixture user with
+      # no devices → "No data for ..." flash.
+      user = update_user_tz(user, 86_400)
+      conn = relog(conn, user)
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(Date.utc_today())})
+
+      # The exact NEW-behavior flash: "No data for YYYY-MM-DD — ...".
+      # The OLD-behavior flash would be the "past dates only" string
+      # below, which is also matched by the positive assertion — we
+      # pin to the positive case so the test reports the new
+      # contract cleanly. If a future regression reintroduces
+      # `Date.utc_today()`, this is the assertion that fails.
+      rendered = render(view)
+
+      assert rendered =~ "No data for",
+             "expected the 'No data for ...' flash (handler treated utc_today as " <>
+               "the user's local yesterday). Got: #{rendered}"
+    end
+
     test "today's date is rejected (form max = yesterday)", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/notifications")
 
