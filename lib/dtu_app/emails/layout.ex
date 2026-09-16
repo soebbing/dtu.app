@@ -90,6 +90,12 @@ defmodule DtuApp.Emails.Layout do
                        omitted, the existing plain-`:body`-with-p-wrap
                        behaviour is preserved (so ConnectionEmail /
                        SunUpEmail keep working unchanged).
+    * `:text_extra`  — list of plain-text strings appended to the text body
+                       AFTER the body/title/greeting, BEFORE the button/note.
+                       Used by callers that need a plain-text counterpart
+                       for HTML-only content (e.g. an `<img src="cid:">`
+                       chart). Defaults to `[]`. The text body must NEVER
+                       carry raw HTML when this is supplied.
     * `:button`      — `%{label: String.t(), url: String.t()}` CTA, or `nil`
     * `:note`        — small muted footer paragraph (e.g. security note), or `nil`
     * `:lang`        — BCP-47 short code (`"en"`, `"de"`, `"fr"`) used for the
@@ -99,13 +105,17 @@ defmodule DtuApp.Emails.Layout do
                        module does no translation itself) — only the
                        attribute is set here.
 
-  Returns `{html_body, text_body}`.
+  Returns `{html_body, text_body, attachments}`.
+
+  `attachments` is always a list (empty when the caller has none) so the
+  Dispatcher can pipe it directly into `Swoosh.Email.attachment/2`.
   """
   def render(opts) do
     title = Keyword.fetch!(opts, :title)
     greeting = Keyword.fetch!(opts, :greeting)
     body = Keyword.get(opts, :body)
     body_html = Keyword.get(opts, :body_html)
+    text_extra = Keyword.get(opts, :text_extra, [])
     button = Keyword.get(opts, :button)
     note = Keyword.get(opts, :note)
     # Default to "en" so a caller that forgets the option (or pre-dates
@@ -116,9 +126,9 @@ defmodule DtuApp.Emails.Layout do
     lang = Keyword.get(opts, :lang, "en")
 
     html = html(title, greeting, body, body_html, button, note, lang)
-    text = text_body(title, greeting, body, body_html, button, note)
+    text = text_body(title, greeting, body, body_html, text_extra, button, note)
 
-    {html, text}
+    {html, text, []}
   end
 
   defp html(title, greeting, body, body_html, button, note, lang) do
@@ -274,13 +284,25 @@ defmodule DtuApp.Emails.Layout do
     """
   end
 
-  defp text_body(title, greeting, body, body_html, button, note) do
-    # When the caller supplied pre-rendered HTML fragments, the
-    # plain-text body also uses them (joined with blank lines) so
-    # the two views stay aligned. Otherwise fall back to the
-    # plain-paragraph `:body` list.
+  defp text_body(title, greeting, body, body_html, text_extra, button, note) do
+    # Pick the plain-text body path:
+    #
+    #   * `:text_extra` is set — the caller wants a clean plain-text
+    #     counterpart to HTML-only content (e.g. an `<img src="cid:">`
+    #     chart). Use the plain `:body` list (or empty if absent) and
+    #     append the caller's text-only fragments. CRITICAL: `body_html`
+    #     is NOT used here — dropping raw `<svg>` / `<img>` markup
+    #     into a text body produces literal "View Source" gibberish in
+    #     every text/plain viewer.
+    #   * `:text_extra` is empty AND `body_html` is set — historical
+    #     behaviour preserved for callers that pass only pre-rendered
+    #     HTML and no plain paragraphs (ConnectionEmail's call site
+    #     never reaches this branch; SunDownEmail is the chart case).
+    #     Plain `:body` list is used.
+    #   * Neither set — fall back to the plain-paragraph `:body` list.
     body_parts =
       cond do
+        text_extra != [] -> List.wrap(body || []) ++ text_extra
         body_html in [nil, []] -> List.wrap(body || [])
         is_binary(body_html) -> [body_html]
         true -> List.wrap(body_html)

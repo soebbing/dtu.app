@@ -49,32 +49,34 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
   end
 
   describe "render/2 — basic contract" do
-    test "returns {html, text} where html starts with <html and text contains the inverter name",
+    test "returns {html, text, attachments} where html starts with <html and text contains the inverter name",
          %{user: user, payload: p} do
-      {html, text} = ConnectionEmail.render(user, p)
+      {html, text, attachments} = ConnectionEmail.render(user, p)
       assert is_binary(html)
       assert html =~ "<html"
       assert is_binary(text)
       assert text =~ "Shed"
+      assert is_list(attachments)
+      assert attachments == []
     end
 
     test "html includes the inverter name from the payload body", %{user: user, payload: p} do
-      {html, _} = ConnectionEmail.render(user, p)
+      {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ "Shed"
     end
 
     test "html includes the title from the payload", %{user: user, payload: p} do
-      {html, _} = ConnectionEmail.render(user, p)
+      {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ "Shed went offline"
     end
 
     test "html includes the dashboard URL in the CTA", %{user: user, payload: p} do
-      {html, _} = ConnectionEmail.render(user, p)
+      {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ "/dashboard"
     end
 
     test "text body includes the inverter name", %{user: user, payload: p} do
-      {_html, text} = ConnectionEmail.render(user, p)
+      {_html, text, _} = ConnectionEmail.render(user, p)
       assert text =~ "Shed"
       assert text =~ "Shed went offline"
     end
@@ -82,19 +84,19 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
 
   describe "render/2 — <html lang> attribute" do
     test "matches the user's locale", %{user: user, payload: p} do
-      {html, _} = ConnectionEmail.render(%{user | locale: "fr"}, p)
+      {html, _, _} = ConnectionEmail.render(%{user | locale: "fr"}, p)
       assert html =~ ~s(<html lang="fr")
     end
 
     test "renders de with lang=de", %{payload: p} do
       user = %User{email: "u@example.com", locale: "de"}
-      {html, _} = ConnectionEmail.render(user, p)
+      {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ ~s(<html lang="de")
     end
 
     test "falls back to lang=en when user.locale is nil", %{payload: p} do
       user = %User{email: "u@example.com", locale: nil}
-      {html, _} = ConnectionEmail.render(user, p)
+      {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ ~s(<html lang="en")
     end
   end
@@ -117,7 +119,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = ConnectionEmail.render(user, payload)
+      {html, _, _} = ConnectionEmail.render(user, payload)
       assert html =~ localised_body
     end
 
@@ -130,7 +132,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = ConnectionEmail.render(user, payload)
+      {html, _, _} = ConnectionEmail.render(user, payload)
       assert html =~ localised_body
     end
 
@@ -143,7 +145,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = ConnectionEmail.render(user, payload)
+      {html, _, _} = ConnectionEmail.render(user, payload)
       assert html =~ localised_body
     end
   end

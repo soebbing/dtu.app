@@ -326,7 +326,7 @@ defmodule DtuApp.Notifications.Dispatcher do
     else
       try do
         Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          {html, text} = render_email(user, event, payload)
+          {html, text, attachments} = render_email(user, event, payload)
 
           email =
             Swoosh.Email.new()
@@ -335,6 +335,7 @@ defmodule DtuApp.Notifications.Dispatcher do
             |> Swoosh.Email.subject(payload.title)
             |> Swoosh.Email.html_body(html)
             |> Swoosh.Email.text_body(text)
+            |> add_attachments(attachments)
 
           case Mailer.deliver(email) do
             {:ok, _meta} ->
@@ -361,6 +362,14 @@ defmodule DtuApp.Notifications.Dispatcher do
       end
     end
   end
+
+  # Swoosh's `Email.attachment/2` only accepts a single attachment at a
+  # time (no list-arity). Fold the caller's attachment list into the
+  # email struct one attachment at a time. Empty list is a no-op.
+  defp add_attachments(email, []), do: email
+
+  defp add_attachments(email, attachments),
+    do: Enum.reduce(attachments, email, &Swoosh.Email.attachment(&2, &1))
 
   defp render_email(user, "sun_down", p), do: SunDownEmail.render(user, p)
   defp render_email(user, "sun_up", p), do: SunUpEmail.render(user, p)
