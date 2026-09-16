@@ -367,7 +367,9 @@ defmodule DtuApp.Notifications.Dispatcher do
   # time (no list-arity). Fold the caller's attachment list into the
   # email struct one attachment at a time. Empty list is a no-op.
   defp add_attachments(email, []), do: email
-  defp add_attachments(email, attachments), do: Enum.reduce(attachments, email, &Swoosh.Email.attachment(&2, &1))
+
+  defp add_attachments(email, attachments),
+    do: Enum.reduce(attachments, email, &Swoosh.Email.attachment(&2, &1))
 
   defp render_email(user, "sun_down", p), do: SunDownEmail.render(user, p)
   defp render_email(user, "sun_up", p), do: SunUpEmail.render(user, p)

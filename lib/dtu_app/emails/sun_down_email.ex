@@ -73,8 +73,11 @@ defmodule DtuApp.Emails.SunDownEmail do
         # as the in-page chart. Elixir's `System.cmd/3` has no
         # `stdin_data` option, so we write the SVG to a temp file,
         # invoke the converter, and clean up.
-        tmp_in = Path.join(System.tmp_dir!(), "sundo-svg-#{System.unique_integer([:positive])}.svg")
-        tmp_out = Path.join(System.tmp_dir!(), "sundo-png-#{System.unique_integer([:positive])}.png")
+        tmp_in =
+          Path.join(System.tmp_dir!(), "sundo-svg-#{System.unique_integer([:positive])}.svg")
+
+        tmp_out =
+          Path.join(System.tmp_dir!(), "sundo-png-#{System.unique_integer([:positive])}.png")
 
         try do
           File.write!(tmp_in, svg)
@@ -127,8 +130,7 @@ defmodule DtuApp.Emails.SunDownEmail do
             label: gettext("View dashboard"),
             url: dashboard_url(payload)
           },
-          note:
-            gettext("You're getting this email because you enabled end-of-day summaries."),
+          note: gettext("You're getting this email because you enabled end-of-day summaries."),
           lang: locale || "en"
         )
 
@@ -180,7 +182,8 @@ defmodule DtuApp.Emails.SunDownEmail do
   defp chart_block(payload) do
     case payload[:chart_svg] || payload["chart_svg"] do
       nil ->
-        {"<p style=\"font-size:13px;color:#64748b;\">#{escape(gettext("No chart available"))}</p>", nil, []}
+        {"<p style=\"font-size:13px;color:#64748b;\">#{escape(gettext("No chart available"))}</p>",
+         nil, []}
 
       svg ->
         case chart_attachment(svg) do
