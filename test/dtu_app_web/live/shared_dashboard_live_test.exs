@@ -16,9 +16,17 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       device + readings fixture).
   """
 
+  # `ExUnit.Callbacks.skip/1` is a private macro; silencing the
+  # undefined-function warning it raises under `require` keeps the
+  # late-UTC guard below quiet while still letting the macro expand
+  # at runtime.
+  @compile {:no_warn_undefined, ExUnit.Callbacks}
+
   use DtuAppWeb.ConnCase, async: false
 
   use Gettext, backend: DtuAppWeb.Gettext
+
+  require ExUnit.Callbacks
 
   import Phoenix.LiveViewTest
 
@@ -352,6 +360,73 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
 
       refute html =~ ~r/<text[^>]*>\s*-?\d+\.?\d*\s*</,
              "no <text> element should contain a bare numeric label (Y-axis numbers are bug #221)"
+    end
+  end
+
+  # The stat card's `today_yield` MUST use the user's local-day
+  # window — the same window the chart above it already uses — so
+  # the two stay in sync for users east or west of UTC. Before the
+  # fix for #238 the stat card queried `Date.utc_today()` (a UTC
+  # midnight-to-midnight window), so a CEST user's chart rendered
+  # their local-day readings (which start at UTC 22:00 yesterday)
+  # while the stat card silently reported 0 kWh because the
+  # corresponding readings fell outside the UTC-day window.
+  describe "stat-card today_yield uses the user's local-day window" do
+    test "yield includes readings from the local-day boundary (CEST, UTC yesterday 23:30)",
+         %{conn: conn} do
+      now = DateTime.utc_now()
+
+      # The +02:00 user's local day crosses UTC midnight backwards.
+      # A reading at 23:30 UTC yesterday is at local 01:30 today —
+      # in the chart range but not in the UTC-date stats range.
+      # After UTC 22:00 the local day has already rolled to tomorrow,
+      # so 23:30 yesterday is no longer in local today either; the
+      # chart then matches the (buggy) stats by returning 0. Skip
+      # the late-UTC window so the assertion stays deterministic.
+      if now.hour >= 22 do
+        ExUnit.Callbacks.skip(
+          "Late-UTC run: a +02:00 user's local day has rolled to tomorrow " <>
+            "before #{now.hour}:00 UTC, so the boundary reading is no longer " <>
+            "in local today. Re-run before 22:00 UTC."
+        )
+      end
+
+      user = user_fixture()
+
+      dtu =
+        device_fixture(user, %{name: "CEST share", kind: "ahoydtu", mqtt_username: "cest-share-1"})
+
+      # Pin the user to UTC+2 (CEST). The dashboard JS would
+      # normally call `update_user_tz_offset/2` on first mount; in
+      # the test we do it directly so the read path picks up the
+      # offset without a render-time mutation.
+      :ok = Accounts.update_user_tz_offset(user, 7_200)
+
+      today = Date.utc_today()
+      yesterday = Date.add(today, -1)
+
+      # Single reading at yesterday 23:30 UTC (= local today 01:30
+      # CEST). `yield_day` is stored in Wh; the stats aggregator
+      # divides by 1000 and rounds to 1 decimal in kWh, so
+      # 12_345.0 Wh lands as "12.3 kWh" in the stat card after the
+      # `format_kwh/1` two-decimal render.
+      reading_fixture(dtu, %{
+        inverter_serial: "HM-600",
+        inverter_name: "HM-600",
+        yield_day: 12_345.0,
+        inserted_at: DateTime.new!(yesterday, ~T[23:30:00.000000], "Etc/UTC")
+      })
+
+      {:ok, {plaintext, _link}} = Accounts.create_shared_link(user)
+      {:ok, _view, html} = live(conn, "/s/#{plaintext}")
+
+      # With the fix the stat card surfaces the local-day reading
+      # and prints `12.30 kWh`. Pre-fix the buggy `Date.utc_today()`
+      # query returns an empty set for the boundary reading and the
+      # card shows `0.00 kWh` instead.
+      assert html =~ "12.30 kWh",
+             "expected stat card to show 12.30 kWh for a CEST user's local day " <>
+               "reading at UTC yesterday 23:30"
     end
   end
 end
