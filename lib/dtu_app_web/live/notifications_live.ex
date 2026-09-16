@@ -53,6 +53,20 @@ defmodule DtuAppWeb.NotificationsLive do
   import DtuAppWeb.NotificationPreferencesForm, only: [notification_preferences_form: 1]
   import DtuAppWeb.NotificationRegenerateCard, only: [notification_regenerate_card: 1]
 
+  # The Regenerate-summary card and its handler should both honour
+  # the *user's* "today" — the same one the dispatcher's normal
+  # sun_down fire uses via `DtuAppWeb.DashboardLive.TimeHelpers`.
+  # Anchoring on `Date.utc_today()` produced two bugs:
+  #   1. The form's `min=`/`max=` attributes greyed out the wrong
+  #      day for any user not on UTC (so a CEST user at 23:00 local
+  #      lost the ability to pick "yesterday" through the picker).
+  #   2. The handler's `today` baseline mismatched the dispatcher's,
+  #      so a user on a positive offset who picked a calendar day
+  #      that *was* a valid local yesterday got a bogus "past dates
+  #      only" flash.
+  # The shared `local_today/1` helper unifies all three sites.
+  import DtuAppWeb.DashboardLive.TimeHelpers, only: [local_today: 1]
+
   require Logger
 
   # The five event types that the `notifications.event` column can
@@ -139,12 +153,16 @@ defmodule DtuAppWeb.NotificationsLive do
      |> assign(:history_filters, Enum.map(@event_filters, &{&1, FilterHelpers.filter_label(&1)}))
      # The Regenerate-summary card's date input `min=` / `max=`
      # bounds — same [today-30, today-1] window the server enforces.
-     # Anchored at mount so the bounds don't drift during a long-lived
-     # socket (a midnight rollover mid-session would otherwise let the
-     # user pick a date that's now the future, then have the server
-     # reject it as "past dates only").
-     |> assign(:regenerate_min_date, Date.add(Date.utc_today(), -30))
-     |> assign(:regenerate_max_date, Date.add(Date.utc_today(), -1))
+     # Anchored at the *user's* local "today" (via `tz_offset_seconds`)
+     # so the picker matches the dispatcher's local-day convention;
+     # a UTC-anchored value would grey out the wrong day for any
+     # non-UTC user near the midnight boundary. Re-anchored at mount
+     # only — a long-lived socket that crosses midnight would let
+     # the user pick a date that's "now the future" until reload;
+     # the server-side handler still rejects those, so the
+     # staleness is a UX hint, not a correctness bug.
+     |> assign(:regenerate_min_date, Date.add(local_today(user.tz_offset_seconds || 0), -30))
+     |> assign(:regenerate_max_date, Date.add(local_today(user.tz_offset_seconds || 0), -1))
      |> assign_history(user, 1, "all")
      |> assign_form(Accounts.User.notification_settings_changeset(user, %{}))}
   end
@@ -378,7 +396,13 @@ defmodule DtuAppWeb.NotificationsLive do
         socket
       ) do
     user = socket.assigns.current_scope.user
-    today = Date.utc_today()
+    # Must use the user's local "today", not `Date.utc_today()` —
+    # the same day the dispatcher uses for `sun_down_fires` and the
+    # date-bucketing inside `build_payload/3`. A UTC-anchored
+    # baseline here would mismatch the dispatcher's notion of
+    # "past today" for any user whose local day differs from UTC's,
+    # which is most of them near the midnight boundary.
+    today = local_today(user.tz_offset_seconds || 0)
 
     cond do
       not is_binary(date_str) or date_str == "" ->
