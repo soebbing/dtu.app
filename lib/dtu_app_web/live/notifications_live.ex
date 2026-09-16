@@ -498,7 +498,25 @@ defmodule DtuAppWeb.NotificationsLive do
             # toggle. Channel routing + email fallback + history
             # row insert still run normally; only the gate is
             # skipped. See `Dispatcher.fire/4` moduledoc.
-            _ = Notifications.broadcast(user.id, payload, force: true)
+            #
+            # Augment via the shared `Payload.decorate_for_dispatch/3`
+            # helper — same shape the producer-side fan-out applies
+            # before broadcasting. Without this the regenerated
+            # payload arrives at `SunDownEmail.render/2` as the bare
+            # `build_payload/3` output (no `yesterday_yield_kwh`,
+            # no `chart_svg`, no `dashboard_path`), so the user gets
+            # an email showing today's yield but "Yesterday: — kWh"
+            # and "No chart available" — a real regression for any
+            # user who tries the regenerate button for a day with
+            # readings. PR fix.
+            augmented =
+              DtuApp.Notifications.SunDown.Payload.decorate_for_dispatch(
+                payload,
+                user,
+                parsed_date
+              )
+
+            _ = Notifications.broadcast(user.id, augmented, force: true)
 
             {:noreply,
              socket

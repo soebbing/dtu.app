@@ -116,8 +116,8 @@ defmodule DtuApp.Notifications.SunDown do
   alias DtuApp.Devices
   alias DtuApp.Devices.Dtu
   alias DtuApp.Devices.Reading
-  alias DtuApp.Emails.SunDownChart
   alias DtuApp.Notifications
+  alias DtuApp.Notifications.SunDown.Payload
   alias DtuApp.Notifications.Dispatcher
   alias DtuApp.Notifications.SunDownFire
   alias DtuApp.Repo
@@ -626,27 +626,18 @@ defmodule DtuApp.Notifications.SunDown do
         payload ->
           case insert_fire(user.id, today) do
             :ok ->
-              # Augment the payload with the email-specific keys.
-              # `build_payload/2` retains the in-page JS shape
-              # (`today_yield_yesterday_kwh` /
+              # Augment the payload with the email-specific keys via
+              # the shared `Payload.decorate_for_dispatch/3` helper
+              # so the producer and the regenerate handler stay in
+              # lockstep — any future email-renderer shape change
+              # happens in one place. `build_payload/3` retains the
+              # in-page JS shape (`today_yield_yesterday_kwh` /
               # `peak_power_yesterday_w`) for the JS hook's
-              # `formatPayload` consumer; the email renderer
-              # (`SunDownEmail`) reads the renamed keys
-              # (`yesterday_yield_kwh` / `peak_yesterday_w`) and
-              # the inline chart + dashboard CTA. Both shapes ride
-              # along in the dispatcher's payload. `body` is
-              # wrapped in a list to match the dispatcher's email
-              # / layout contract — SunDownEmail accepts either
-              # shape but the JS hook + history-row insert are
-              # consistent with the other producers' list shape.
-              full =
-                Map.merge(payload, %{
-                  body: [payload[:body]],
-                  yesterday_yield_kwh: payload[:today_yield_yesterday_kwh],
-                  peak_yesterday_w: payload[:peak_power_yesterday_w],
-                  chart_svg: SunDownChart.render(user, today),
-                  dashboard_path: "/dashboard"
-                })
+              # `formatPayload` consumer; the helper renames them
+              # for `SunDownEmail`, attaches the inline chart + the
+              # dashboard CTA, and wraps `body` in a list to match
+              # the dispatcher's email / layout contract.
+              full = Payload.decorate_for_dispatch(payload, user, today)
 
               # In-page PubSub broadcast for the dashboard LiveView
               # hook (`Notifications.subscribe(user.id)` →
