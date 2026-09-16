@@ -8,6 +8,15 @@
 //
 // Dedup keys are namespaced per user (server-provided) so we
 // don't conflict across accounts on a shared device.
+//
+// The stateless formatter (`formatPayload` + the `compare` /
+// `formatNum` / `bodyToString` helpers it leans on) lives in
+// `./notifications_format.js` so it can be unit-tested via Node's
+// built-in test runner (`node --test
+// assets/js/notifications_format.test.js`) without a browser.
+// The hook only owns the lifecycle glue here.
+
+import {formatPayload, todayIso} from "./notifications_format.js"
 
 // Notification firing hook. Mounted on every page that should
 // receive notifications. The server pushes events with a
@@ -235,94 +244,6 @@ function storageMark(key) {
   } catch (_err) {
     // ignore: storage may be disabled
   }
-}
-
-function todayIso() {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function formatPayload(payload) {
-  if (payload.event === "sun_down") {
-    const yieldDiff = compare(payload.today_yield_kwh, payload.today_yield_yesterday_kwh, "kWh")
-    const peakDiff = compare(payload.peak_power_w, payload.peak_power_yesterday_w, "W")
-    return {
-      title: "Sun's down — daily summary",
-      body: `Today: ${formatNum(payload.today_yield_kwh)} kWh${yieldDiff}, peak ${formatNum(payload.peak_power_w)} W${peakDiff}.`,
-      tag: `sun_down:${todayIso()}`
-    }
-  }
-
-  if (payload.event === "dtu_offline") {
-    return {
-      title: `${payload.inverter_name || "Inverter"} went offline`,
-      body: `Lost connection to ${payload.inverter_name || "(unnamed inverter)"}${payload.dtu_name ? " on " + payload.dtu_name : ""}.`,
-      tag: `dtu_offline:${payload.dtu_id}:${payload.inverter_serial}`
-    }
-  }
-
-  if (payload.event === "dtu_online") {
-    return {
-      title: `${payload.inverter_name || "Inverter"} is back online`,
-      body: `Reconnected to ${payload.inverter_name || "(unnamed inverter)"}${payload.dtu_name ? " on " + payload.dtu_name : ""}.`,
-      tag: `dtu_online:${payload.dtu_id}:${payload.inverter_serial}`
-    }
-  }
-
-  // For events the server fills with `title` / `body` / `tag` (e.g.
-  // `event: "test"` from the test-notification button, or
-  // `event: "dtu_connection"` from `broadcast_dtu_connection/3`),
-  // trust the server's fields. The dashboard's `dtu_connection`
-  // payload includes a server-rendered `tag` like "dtu:<name>" which
-  // we want the OS notification to use verbatim — `misc:<date>` would
-  // collide with other generic notifications and break OS-level
-  // grouping. Pre-fix this fell through to a hard-coded "dtu.app"
-  // title and a JSON-stringified body, which is what users saw when
-  // they enabled the test button.
-  //
-  // `body` from the producer side is a list of paragraphs (per the
-  // dispatcher's email/layout contract). The browser's
-  // `Notification` constructor expects a string, so we join the
-  // list with newlines for the OS-level banner — same visual as
-  // the email renderer.
-  if (payload.title || payload.body) {
-    return {
-      title: payload.title || "dtu.app",
-      body: bodyToString(payload.body),
-      tag: payload.tag || `misc:${todayIso()}`
-    }
-  }
-
-  return {
-    title: "dtu.app",
-    body: JSON.stringify(payload),
-    tag: `misc:${todayIso()}`
-  }
-}
-
-// Coerce the producer-supplied `body` into the string shape the
-// browser's `Notification` constructor expects. The producer sends
-// a list of paragraphs (matching the email/layout contract); we
-// join with newlines for the OS-level banner. Anything else
-// (string, null, undefined) falls back to "" so the field is
-// always a string when handed to the Notification constructor.
-function bodyToString(body) {
-  if (Array.isArray(body)) return body.filter((s) => typeof s === "string").join("\n")
-  if (typeof body === "string") return body
-  return ""
-}
-
-function compare(today, yesterday, unit) {
-  if (yesterday === null || yesterday === undefined) return ""
-  if (today === yesterday) return " (same as yesterday)"
-  const diff = today - yesterday
-  const sign = diff > 0 ? "+" : ""
-  return ` (${sign}${formatNum(diff)} ${unit} vs yesterday)`
-}
-
-function formatNum(n) {
-  if (n === null || n === undefined) return "—"
-  if (typeof n !== "number") return String(n)
-  return n.toFixed(1)
 }
 
 export default Notifications
