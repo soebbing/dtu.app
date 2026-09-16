@@ -99,7 +99,13 @@ defmodule DtuAppWeb.SharedDashboardLive do
     today_local = local_today(tz_offset_seconds)
     {utc_start, utc_end} = Devices.local_day_utc_range(today_local, tz_offset_seconds)
 
-    stats = Devices.get_daily_stats(user, nil, Date.utc_today())
+    # Use the user's local-day window (already computed above as
+    # `utc_start`/`utc_end`) instead of `Date.utc_today()` so the
+    # stat card's `today_yield` matches the chart above it. The
+    # old UTC-date query silently dropped readings in the
+    # `[UTC yesterday 22:00, UTC today 00:00)` overlap window for
+    # a CEST user — see `get_daily_stats_for_local_day/4`.
+    stats = Devices.get_daily_stats_for_local_day(user, nil, today_local, tz_offset_seconds)
 
     chart_points =
       Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end, nil)
