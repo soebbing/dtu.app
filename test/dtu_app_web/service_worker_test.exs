@@ -71,6 +71,65 @@ defmodule DtuAppWeb.ServiceWorkerTest do
                "fingerprinted asset URLs change on every release and the SW " <>
                "serves stale bytes from the prior cache."
     end
+
+    test "calls self.skipWaiting() BEFORE the precache IIFE", %{sw: sw} do
+      # iOS PWA installed + background push: when the backend ships a
+      # new SW that fixes a payload-shape bug (or any other reason the
+      # server is updated mid-session), iOS may deliver a push to the
+      # device while the precache is still running. If we wait for the
+      # precache before calling `skipWaiting()`, the *old* SW (still
+      # in `waiting` state) handles the push and the user sees the
+      # old behaviour — pushes from the freshly-deployed backend are
+      # silently dropped until the next app launch.
+      #
+      # The fix is structural: `self.skipWaiting()` must run
+      # synchronously in the install handler body, *outside* the
+      # `event.waitUntil(async () => ...)` block that runs the
+      # precache. We extract the install handler body by splitting on
+      # the listener boundary (the next `addEventListener("activate"`)
+      # — regex on the body alone is too brittle because the body
+      # contains `});` from inner IIFEs.
+      install_start =
+        case :binary.match(sw, ~s(self.addEventListener("install")) do
+          {pos, _} -> pos
+          nil -> flunk("expected addEventListener(\"install\") in service-worker.js")
+        end
+
+      activate_start =
+        case :binary.match(sw, ~s(self.addEventListener("activate")) do
+          {pos, _} -> pos
+          nil -> flunk("expected addEventListener(\"activate\") in service-worker.js")
+        end
+
+      # The install handler body lives between the install listener
+      # open and the activate listener open. Anything past
+      # activate_start belongs to the activate handler and shouldn't
+      # influence this assertion.
+      install_body =
+        sw
+        |> binary_part(install_start, activate_start - install_start)
+
+      assert install_body =~ ~r/self\.skipWaiting\(\)/,
+             "expected install handler to call self.skipWaiting() — without it, " <>
+               "iOS background push may be handled by the old SW during slow " <>
+               "precaches."
+
+      # The skipWaiting call must happen *before* any await on the
+      # precache. We anchor on `await fetchDigestManifest()` — the
+      # `await ` prefix excludes the textual reference to
+      # `fetchDigestManifest()` in the explanatory comment above
+      # the call site.
+      {skip_pos, _} =
+        :binary.match(install_body, "self.skipWaiting()")
+
+      {precache_pos, _} =
+        :binary.match(install_body, "await fetchDigestManifest()")
+
+      assert skip_pos < precache_pos,
+             "self.skipWaiting() must run BEFORE the precache's `await " <>
+               "fetchDigestManifest()` — otherwise a slow precache delays " <>
+               "activation and iOS drops background pushes."
+    end
   end
 
   describe "service-worker.js — activate handler" do

@@ -28,6 +28,16 @@ defmodule DtuApp.PushTest do
   path (HTTP success / 404 / 410 / transport) is verified by the
   integration with `web_push`'s own tests.
   """
+
+  # The `WebPush.send/3` call-site assertions (TTL + Urgency opts) live
+  # in `describe "WebPush.send call-site"` and are string/regex matches
+  # against `lib/dtu_app/push.ex` on disk — same pattern as
+  # `DtuAppWeb.ServiceWorkerTest`. We don't mock `WebPush` because Meck
+  # isn't in the dep tree, and the call-site itself is the contract we
+  # care about: a future refactor that drops the explicit opts would
+  # re-introduce the iOS background-push drop.
+  @push_path "lib/dtu_app/push.ex"
+
   use ExUnit.Case, async: false
 
   alias DtuApp.Accounts.User
@@ -221,6 +231,77 @@ defmodule DtuApp.PushTest do
 
     test "malformed payload passes through" do
       assert Push.native_enabled?(user_with(), %{})
+    end
+  end
+
+  describe "WebPush.send call-site (iOS background-push contract)" do
+    # The whole point of native Web Push (vs. in-page PubSub) is
+    # background delivery — a user with the PWA installed but the
+    # tab closed expects a banner on the lock screen. iOS APNs is
+    # the most common push service for this app's users; it
+    # interprets the `Urgency` and `TTL` headers very specifically:
+    #
+    #   * `Urgency: high`  → wake-up notification (sound + banner
+    #                        even when the device is locked).
+    #                        `normal` is rate-limited and coalesced.
+    #   * `TTL: 24h`       → past this, APNs drops the push. Shorter
+    #                        TTL = "deliver only if I'm online right
+    #                        now". We want background delivery, so
+    #                        24h is the upper bound that still
+    #                        aligns with user expectation.
+    #
+    # `web_push` library defaults happen to match these values
+    # (TTL=86_400, Urgency="normal" — the latter is *not* what we
+    # want), but the call site is what a future maintainer reads.
+    # Assert the call site is explicit so a refactor can't silently
+    # drop an opt back to the library default.
+
+    setup do
+      {:ok, src} = File.read(@push_path)
+      %{src: src}
+    end
+
+    test "send_to/2 calls WebPush.send with an explicit ttl: 86_400", %{src: src} do
+      assert src =~ ~r/WebPush\.send\([\s\S]*?ttl:\s*86_400[\s\S]*?\)/,
+             "expected WebPush.send/3 call site to pass ttl: 86_400 explicitly. " <>
+               "Without it, a library default change silently shortens or extends " <>
+               "the push TTL, breaking the 24h user expectation."
+    end
+
+    test "send_to/2 calls WebPush.send with an explicit urgency: \"high\"", %{src: src} do
+      # iOS APNs treats `Urgency: high` as a wake-up push (sound +
+      # banner even when the device is locked). `normal` is
+      # rate-limited and coalesced, which silently breaks the
+      # background-delivery contract for users who installed the
+      # PWA specifically to get lock-screen banners.
+      assert src =~ ~r/WebPush\.send\([\s\S]*?urgency:\s*["']high["'][\s\S]*?\)/,
+             "expected WebPush.send/3 call site to pass urgency: \"high\" explicitly. " <>
+               "The web_push library default is \"normal\", which iOS APNs rate-limits " <>
+               "and coalesces — that's exactly the silent-drop behaviour this fix targets."
+    end
+
+    test "send_to/2 keeps the third argument as an opts keyword list (not a map)", %{src: src} do
+      # Sanity-check: opts must be a keyword list (or a literal call
+      # without wrapping brackets — Elixir treats the trailing
+      # `key: value` pairs as the call's keyword args). A map would
+      # still compile but would silently drop the urgency key
+      # (atom vs string) and break the test above without breaking
+      # production — so we anchor on the keyword-list syntax
+      # (`payload,` followed by `ttl:`) to make sure the call shape
+      # is right.
+      #
+      # The shape under test:
+      #
+      #   WebPush.send(
+      #     PushSubscription.to_web_push(sub),
+      #     payload,
+      #     ttl: 86_400,
+      #     urgency: "high"
+      #   )
+      assert src =~ ~r/payload,[\s\S]*?ttl:\s*86_400,[\s\S]*?urgency:\s*["']high["']/,
+             "expected WebPush.send/3 third arg to be the keyword list " <>
+               "`ttl: 86_400, urgency: \"high\"`. A future refactor that " <>
+               "drops the keyword list shape (e.g. passing a map) would silently drop the opts."
     end
   end
 end

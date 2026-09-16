@@ -162,7 +162,29 @@ defmodule DtuApp.Push do
   # at least one device — purely `:ok`-returning callers (the old
   # contract) couldn't tell "delivered" from "all subs were dead".
   defp send_to(%PushSubscription{} = sub, payload) do
-    case WebPush.send(PushSubscription.to_web_push(sub), payload) do
+    case WebPush.send(
+           PushSubscription.to_web_push(sub),
+           payload,
+           # TTL: 24h. The `web_push` library default is 24h, but we
+           # make it explicit here so a future library bump or a
+           # grep for "ttl:" surfaces the contract — without an
+           # explicit value the call site silently depends on a
+           # default that lives in another file. APNs treats pushes
+           # with a TTL past the device's offline window as
+           # droppable; 24h is the upper bound that still aligns
+           # with the user expectation "if my inverter was offline
+           # overnight, I want a banner when I open my phone".
+           ttl: 86_400,
+           # Urgency: high. The library default is `normal`, but the
+           # whole point of native Web Push (vs. in-page PubSub) is
+           # background delivery — iOS APNs treats `high` as a
+           # wake-up notification (sound + banner even when the
+           # device is locked), while `normal` is rate-limited and
+           # can be coalesced. Users opted into this channel
+           # because they want a heads-up the moment an event
+           # fires; honour that.
+           urgency: "high"
+         ) do
       :ok ->
         :ok
 
