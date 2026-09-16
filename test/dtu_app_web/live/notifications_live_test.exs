@@ -820,4 +820,120 @@ defmodule DtuAppWeb.NotificationsLiveTest do
 
   defp inactive_chip_with_value(html, value),
     do: chip_with_pressed(html, value, "false")
+
+  describe "SunDown regenerate-summary handler" do
+    # The "Regenerate" affordance on /notifications lets the user request
+    # a daily sun_down summary for any past date in the last 30 days.
+    # Re-firing for a missed day is the UX resolution recommended by
+    # `docs/debug/2026-09-16-sun-down-silent-skip.md` (Bug 3 conclusion):
+    # producer-side retro-fire was rejected as too brittle, so the user
+    # gets a button to ask the dispatcher to compute the payload for a
+    # chosen date and broadcast it. The producer's `sun_down_fires`
+    # dedup table is NOT touched here (only `try_fire/1` writes it), so
+    # a regenerate won't disturb the producer's normal arming cycle.
+    setup :register_and_log_in_user
+
+    test "valid date with readings broadcasts the sun_down payload", %{
+      conn: conn,
+      user: user
+    } do
+      # Subscribe so we can assert the broadcast actually reaches the
+      # per-user topic — exactly what would land in the dashboard hook.
+      :ok = Notifications.subscribe(user.id)
+
+      # A device + a non-trivial reading inside "yesterday's local day"
+      # is enough for `build_payload/3` to return non-nil. Local date
+      # uses `tz_offset_seconds`; the fixture user has the schema
+      # default 0 (UTC), so `yesterday_local == yesterday_utc`.
+      device = DtuApp.DevicesFixtures.device_fixture(user)
+
+      yesterday =
+        Date.utc_today()
+        |> Date.add(-1)
+
+      yesterday_noon =
+        yesterday
+        |> DateTime.new!(~T[12:00:00.000000])
+        |> DateTime.truncate(:microsecond)
+
+      DtuApp.DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-Y",
+        mppt_index: 0,
+        ac_power: 150.0,
+        yield_day: 1500.0,
+        inserted_at: yesterday_noon
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(yesterday)})
+
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_down"
+      assert payload[:tag] == "sun_down:#{Date.to_iso8601(yesterday)}"
+      assert render(view) =~ "Summary for"
+    end
+
+    test "valid date with no readings surfaces a 'no data' flash (not a broadcast)", %{
+      conn: conn,
+      user: user
+    } do
+      :ok = Notifications.subscribe(user.id)
+
+      yesterday = Date.utc_today() |> Date.add(-1)
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(yesterday)})
+
+      assert render(view) =~ "No data for"
+      refute_receive {:notification, _}, 200
+    end
+
+    test "today's date is rejected (form max = yesterday)", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(Date.utc_today())})
+
+      assert render(view) =~ "past dates only"
+    end
+
+    test "a date more than 30 days back is rejected", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{
+        "date" => Date.to_iso8601(Date.add(Date.utc_today(), -31))
+      })
+
+      assert render(view) =~ "30 days"
+    end
+
+    test "an unparseable date is rejected without broadcasting", %{conn: conn, user: user} do
+      :ok = Notifications.subscribe(user.id)
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => "not-a-date"})
+
+      refute render(view) =~ "Summary for"
+      refute_receive {:notification, _}, 200
+    end
+
+    test "30-second cooldown rejects a second click within the window", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      # First click — bump the assign by sending any valid (no-data)
+      # request and accept the "No data for" flash.
+      render_submit(view, "regenerate_sun_down", %{
+        "date" => Date.to_iso8601(Date.add(Date.utc_today(), -1))
+      })
+
+      # Second click within the cooldown — should flash the cooldown
+      # message rather than running another build_payload.
+      render_submit(view, "regenerate_sun_down", %{
+        "date" => Date.to_iso8601(Date.add(Date.utc_today(), -2))
+      })
+
+      assert render(view) =~ ~r/wait|cooldown|seconds/i
+    end
+  end
 end

@@ -321,6 +321,132 @@ defmodule DtuAppWeb.NotificationsLive do
     {:noreply, put_flash(socket, :info, gettext("Test notification sent."))}
   end
 
+  # User-initiated re-fire of a previously-missed daily `sun_down`
+  # summary. Triggered by the "Regenerate summary" form on
+  # `/notifications` (rendered via the
+  # `DtuAppWeb.NotificationRegenerateCard` component). The
+  # designer-side rationale lives in
+  # `docs/debug/2026-09-16-sun-down-silent-skip.md` (Bug 3
+  # conclusion): producer-side retro-fire was rejected as too
+  # brittle, so the user can ask the dispatcher to compute the
+  # payload for any past date in the last 30 days.
+  #
+  # Why no `sun_down_fires` dedup row? Only
+  # `DtuApp.Notifications.SunDown.try_fire/1` writes that table;
+  # `Notifications.broadcast/2` doesn't, so a regenerate doesn't
+  # suppress the producer's *next* normal fire if the date happens
+  # to overlap. The `tag` carries the user-chosen date so the JS
+  # hook's localStorage dedup also stays correct per-date.
+  #
+  # Cooldown: 30 s in-process (a single-user-per-socket handler
+  # doesn't need an external rate limiter — the assign guards the
+  # only vector, a stuck double-click). Tests cover the cooldown
+  # at `notifications_live_test.exs`.
+  @regenerate_cooldown_ms 30_000
+
+  @impl true
+  def handle_event(
+        "regenerate_sun_down",
+        %{"date" => date_str},
+        socket
+      ) do
+    user = socket.assigns.current_scope.user
+    today = Date.utc_today()
+
+    cond do
+      not is_binary(date_str) or date_str == "" ->
+        {:noreply, put_flash(socket, :error, gettext("Pick a date first."))}
+
+      # Cooldown check: refuse a re-click within `30 s` of the last
+      # regeneration. The timestamp is set on success and on every
+      # attempt that produces a flash, so click-spam is bounded
+      # even when the underlying build_payload is fast.
+      cooldown_active?(socket) ->
+        {:noreply, put_flash(socket, :error, cooldown_flash())}
+
+      Date.from_iso8601(date_str) |> elem(0) != :ok ->
+        {:noreply,
+         socket
+         |> assign(:last_regenerated_at, monotonic_ms())
+         |> put_flash(:error, gettext("Couldn't parse that date. Use YYYY-MM-DD."))}
+
+      true ->
+        handle_regenerate(socket, user, today, date_str)
+    end
+  end
+
+  # LiveView dispatches this when the form is submitted with a date
+  # that passed syntactic + cooldown gates. Parses the date (already
+  # `:ok` from the calling clause), enforces the [today-30, today-1]
+  # window, calls `SunDown.Payload.build_payload/3` (already takes a
+  # date — no producer changes), and either broadcasts or flashes
+  # "no data". Records `:last_regenerated_at` on every terminal
+  # branch so the next click respects the cooldown.
+  defp handle_regenerate(socket, user, today, date_str) do
+    {:ok, parsed_date} = Date.from_iso8601(date_str)
+    now = monotonic_ms()
+
+    cond do
+      Date.compare(parsed_date, today) in [:gt, :eq] ->
+        {:noreply,
+         socket
+         |> assign(:last_regenerated_at, now)
+         |> put_flash(:error, gettext("Pick past dates only — today's summary will fire on its own."))}
+
+      Date.compare(parsed_date, Date.add(today, -30)) == :lt ->
+        {:noreply,
+         socket
+         |> assign(:last_regenerated_at, now)
+         |> put_flash(
+           :error,
+           gettext("Pick a date within the last 30 days — earlier days no longer have their reading cache in memory.")
+         )}
+
+      true ->
+        tz_offset = user.tz_offset_seconds || 0
+
+        case DtuApp.Notifications.SunDown.Payload.build_payload(user, parsed_date, tz_offset) do
+          nil ->
+            {:noreply,
+             socket
+             |> assign(:last_regenerated_at, now)
+             |> put_flash(
+               :info,
+               gettext("No data for %{date} — your inverters didn't report anything that day.",
+                 date: Date.to_iso8601(parsed_date)
+               )
+             )}
+
+          payload ->
+            _ = Notifications.broadcast(user.id, payload)
+
+            {:noreply,
+             socket
+             |> assign(:last_regenerated_at, now)
+             |> put_flash(
+               :info,
+               gettext("Summary for %{date} sent.", date: Date.to_iso8601(parsed_date))
+             )}
+        end
+    end
+  end
+
+  defp cooldown_active?(socket) do
+    case socket.assigns[:last_regenerated_at] do
+      nil -> false
+      last -> monotonic_ms() - last < @regenerate_cooldown_ms
+    end
+  end
+
+  # `System.monotonic_time/0` is what GenServer timeouts use; the
+  # 30 s window doesn't need wall-clock accuracy (a click spanning
+  # a leap-second correction is acceptable).
+  defp monotonic_ms, do: System.monotonic_time(:millisecond)
+
+  defp cooldown_flash do
+    gettext("Please wait a few seconds before regenerating another summary.")
+  end
+
   defp assign_form(socket, %Ecto.Changeset{} = changeset) do
     assign(socket, :form, to_form(changeset, as: :user))
   end
