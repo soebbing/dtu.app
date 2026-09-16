@@ -86,6 +86,51 @@ defmodule DtuApp.Notifications.SunDown.Payload do
   end
 
   @doc """
+  Augment the bare `build_payload/3` output with the keys the email
+  renderer + dispatcher fan-out expect, so a sun_down broadcast
+  reaches the user with a complete email (yesterday yield, peak
+  yesterday, inline chart, dashboard CTA) — not just the
+  browser-hook text.
+
+  Two audience-specific shapes ride along on the same map:
+
+    * **In-page JS hook** reads `today_yield_yesterday_kwh` /
+      `peak_power_yesterday_w` (the build_payload keys) and the
+      `body` string. These are kept untouched.
+    * **Email renderer (`SunDownEmail.render/2`)** reads
+      `yesterday_yield_kwh` / `peak_yesterday_w` (the renamed
+      keys), `chart_svg` (the inline SVG produced by
+      `SunDownChart.render/2`), and `dashboard_path`. `body` is
+      wrapped in a single-element list to match the dispatcher's
+      email / layout contract (other producers use the list shape
+      too — keeps the renderer lenient only for the legacy path).
+
+  Pure-ish: takes the user + date so it can call
+  `SunDownChart.render/2`, but does not hit the DB (chart render
+  reads the cached daily series; if the cache is empty it returns
+  an empty SVG string and the email falls back to "No chart
+  available" — same behaviour the producer had inline).
+
+  Both the producer (`DtuApp.Notifications.SunDown.try_fire/1`)
+  and the regenerate handler
+  (`DtuAppWeb.NotificationsLive.handle_regenerate/4`) call this
+  before broadcasting — duplication would let the regenerate path
+  silently drop the email keys (which it did, pre-extraction —
+  PR fix).
+  """
+  @spec decorate_for_dispatch(map(), User.t(), Date.t()) :: map()
+  def decorate_for_dispatch(payload, %User{} = user, %Date{} = local_date)
+      when is_map(payload) do
+    Map.merge(payload, %{
+      body: [payload[:body]],
+      yesterday_yield_kwh: payload[:today_yield_yesterday_kwh],
+      peak_yesterday_w: payload[:peak_power_yesterday_w],
+      chart_svg: DtuApp.Emails.SunDownChart.render(user, local_date),
+      dashboard_path: "/dashboard"
+    })
+  end
+
+  @doc """
   Format the body string for the `sun_down` notification.
   Composes today's kWh + peak W with the day-over-day diff
   string. Pure — takes two daily-stats maps and returns the

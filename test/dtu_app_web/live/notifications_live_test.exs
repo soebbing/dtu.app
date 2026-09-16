@@ -930,6 +930,73 @@ defmodule DtuAppWeb.NotificationsLiveTest do
       assert render(view) =~ "Summary for"
     end
 
+    test "broadcast payload carries the email-augmentation keys (chart, yesterday, dashboard)",
+         %{conn: conn, user: user} do
+      # The producer-side path (`DtuApp.Notifications.SunDown`) augments
+      # the bare `build_payload/3` output with the email-renderer keys
+      # (`yesterday_yield_kwh`, `peak_yesterday_w`, `chart_svg`,
+      # `dashboard_path`, list-wrapped `body`) before broadcasting.
+      # Pre-fix the regenerate handler skipped that augmentation —
+      # the dispatched payload was the bare shape, so the
+      # SunDownEmail email rendered "Yesterday: — kWh" / "No chart
+      # available" for the regenerated day even when readings existed.
+      # The fix: the regenerate handler runs the same augmentation as
+      # the producer. This test subscribes to the per-user topic and
+      # asserts the regenerated broadcast payload carries all four
+      # augmentation keys (with the JS-shape fields the browser hook
+      # also still consumes — same field rides along, not stripped).
+      :ok = Notifications.subscribe(user.id)
+
+      device = DtuApp.DevicesFixtures.device_fixture(user)
+
+      yesterday =
+        Date.utc_today()
+        |> Date.add(-1)
+
+      yesterday_noon =
+        yesterday
+        |> DateTime.new!(~T[12:00:00.000000])
+        |> DateTime.truncate(:microsecond)
+
+      DtuApp.DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-Y2",
+        mppt_index: 0,
+        ac_power: 150.0,
+        yield_day: 1500.0,
+        inserted_at: yesterday_noon
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(yesterday)})
+
+      assert_receive {:notification, payload}, 1_000
+
+      # Email-renderer keys (the producer-side augmentation):
+      assert payload[:yesterday_yield_kwh] == payload[:today_yield_yesterday_kwh],
+             "expected `yesterday_yield_kwh` to mirror `today_yield_yesterday_kwh` " <>
+               "(the key the email renderer reads)"
+
+      assert payload[:peak_yesterday_w] == payload[:peak_power_yesterday_w],
+             "expected `peak_yesterday_w` to mirror `peak_power_yesterday_w` " <>
+               "(the key the email renderer reads)"
+
+      assert is_binary(payload[:chart_svg]) or is_nil(payload[:chart_svg]),
+             "expected `chart_svg` to be a string (the rendered inline SVG) " <>
+               "or nil when the chart builder can't render — never the bare payload"
+
+      assert payload[:dashboard_path] == "/dashboard"
+
+      # The producer's augmentation also wraps `body` in a single-element
+      # list (the email layout contract). The JS hook's `formatPayload`
+      # handles either shape, but the history row insert and email
+      # renderer expect the list shape for consistency with other
+      # producers.
+      assert is_list(payload[:body]),
+             "expected `body` to be a single-element list (the email " <>
+               "layout contract), got: #{inspect(payload[:body])}"
+    end
+
     test "valid date with no readings surfaces a 'no data' flash (not a broadcast)", %{
       conn: conn,
       user: user
