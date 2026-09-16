@@ -155,6 +155,39 @@ defmodule DtuApp.Notifications.SunDown.DetectionTest do
     test "is true for a vanished user id (deletion race)" do
       assert Detection.past_sunset?(999_999_999, DateTime.utc_now()) == true
     end
+
+    # Negative-UTC-offset regression: a PDT user (Los Angeles,
+    # UTC-7) at UTC 03:00 Sep 15 is on LOCAL Sep 14 20:00, which
+    # is 30 minutes past their local sunset (~19:30 PDT). The
+    # current code uses `DateTime.to_date(now)` → UTC Sep 15 and
+    # then computes LA's Sep 15 sunset (UTC Sep 16 02:30) — so
+    # `now < future_sunset` and the gate blocks. The gate should
+    # translate `now` to the user's local date first and use that
+    # for the sunset lookup, mirroring the fix for the SunDown
+    # fire date in `Notifications.SunDown`.
+    test "is true for a negative-offset user in their local evening (UTC morning)" do
+      user = user_fixture()
+      # LA: ~34.05°N, ~-118.24°E (negative longitude)
+      :ok = Accounts.update_user_location(user, %{latitude: 34.05, longitude: -118.24})
+      user = Repo.get!(User, user.id)
+
+      # UTC Sep 15 03:00 = PDT Sep 14 20:00. PDT sunset on Sep 14
+      # is around UTC Sep 15 02:30 (PDT 19:30), so the user is
+      # ~30 minutes past local sunset.
+      now = ~U[2026-09-15 03:00:00Z]
+      assert Detection.past_sunset?(user.id, now) == true
+    end
+
+    test "is false for a negative-offset user in their local mid-afternoon (UTC late evening)" do
+      user = user_fixture()
+      :ok = Accounts.update_user_location(user, %{latitude: 34.05, longitude: -118.24})
+      user = Repo.get!(User, user.id)
+
+      # UTC Sep 15 22:00 = PDT Sep 15 15:00 — mid-afternoon local,
+      # ~4.5 hours before PDT sunset (~19:30). Gate must return false.
+      now = ~U[2026-09-15 22:00:00Z]
+      assert Detection.past_sunset?(user.id, now) == false
+    end
   end
 
   describe "read_now/0" do
