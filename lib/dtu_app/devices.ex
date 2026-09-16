@@ -177,6 +177,8 @@ defmodule DtuApp.Devices do
   defdelegate get_daily_stats(user, dtu_id), to: __MODULE__.Stats
   defdelegate get_daily_stats(user, dtu_id, date), to: __MODULE__.Stats
   defdelegate get_daily_stats(user, dtu_id, date, chart_points), to: __MODULE__.Stats
+  defdelegate get_daily_stats_for_local_day(user, dtu_id, local_date, tz_offset_seconds),
+    to: __MODULE__.Stats
   defdelegate get_consumption_daily_stats(user), to: __MODULE__.Stats
   defdelegate get_consumption_daily_stats(user, dtu_id), to: __MODULE__.Stats
   defdelegate get_consumption_daily_stats(user, dtu_id, opts), to: __MODULE__.Stats

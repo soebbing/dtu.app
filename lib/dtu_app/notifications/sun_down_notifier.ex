@@ -128,13 +128,49 @@ defmodule DtuApp.Notifications.SunDown do
   # notifier's call sites stay unchanged and the existing test
   # surface (e.g. `SunDown.build_payload/2`, `SunDown.reading_topic/0`)
   # continues to work without edits.
-  defdelegate build_payload(user, date), to: __MODULE__.Payload
+  defdelegate build_payload(user, date, tz_offset_seconds), to: __MODULE__.Payload
   defdelegate reading_dtu_id(reading), to: __MODULE__.Detection
   defdelegate reading_ac_power(reading), to: __MODULE__.Detection
   defdelegate active_fleet_w(devices, now), to: __MODULE__.Detection
   defdelegate all_devices_silent?(user_state, now), to: __MODULE__.Detection
   defdelegate past_sunset?(user_id, now), to: __MODULE__.Detection
   defdelegate read_now(), to: __MODULE__.Detection
+
+  @doc """
+  Compute the user's local `Date` for `now_utc`.
+
+  Subtracts the user's `tz_offset_seconds` from the UTC instant
+  and takes the resulting calendar date. A user with
+  `tz_offset_seconds: 7200` (CEST = UTC+2) at 2026-09-15T22:00Z
+  gets `2026-09-16` (their local tomorrow). Mirrors
+  `DtuApp.Notifications.SunUp.local_date/2` so the two producers
+  agree on offset semantics; exposed publicly for the test suite
+  and any other caller that needs the same shift.
+  """
+  @spec local_date(DateTime.t(), integer()) :: Date.t()
+  def local_date(%DateTime{} = now_utc, offset_seconds) when is_integer(offset_seconds) do
+    shifted = DateTime.add(now_utc, offset_seconds, :second)
+    DateTime.to_date(shifted)
+  end
+
+  # Resolve the user's "today" with the test override applied.
+  # `Application.put_env(:dtu_app, :sun_down_offset_seconds, N)` makes
+  # the producer pretend every user has offset N (useful for the
+  # date-rollover tests). `nil` clears it. Mirrors
+  # `DtuApp.Notifications.SunUp.user_today/1` so the two producers
+  # share a single test-override env-key convention (one per
+  # producer, to keep test isolation between them — SunDown tests
+  # don't have to know about the SunUp env-key).
+  defp user_today(%User{tz_offset_seconds: stored_offset}) do
+    offset =
+      case Application.get_env(:dtu_app, :sun_down_offset_seconds, :__unset__) do
+        :__unset__ -> stored_offset || 0
+        nil -> 0
+        n when is_integer(n) -> n
+      end
+
+    local_date(DateTime.utc_now(), offset)
+  end
 
   @reading_topic "dtu:reading"
 
@@ -529,7 +565,16 @@ defmodule DtuApp.Notifications.SunDown do
   # windows fire in close succession and both compute `today` before
   # either insert has been committed.
   defp try_fire(%User{} = user) do
-    today = Date.utc_today()
+    # Resolve the user's local "today" from `User.tz_offset_seconds`
+    # rather than `Date.utc_today()`. For CEST (UTC+2) users this
+    # matters when the producer fires at UTC times that land on a
+    # different local date — e.g. UTC 23:30 on Sep 15 is already
+    # local Sep 16 in CEST. Without this shift, the dedup row,
+    # history tag, and stats query all key off the wrong day.
+    # Mirrors the `user_today/1` pattern in
+    # `DtuApp.Notifications.SunUp` so the two producers agree on
+    # offset semantics.
+    today = user_today(user)
 
     # The SunDown producer runs as a long-lived GenServer
     # without a request context, so `gettext/1` would default to
@@ -541,18 +586,18 @@ defmodule DtuApp.Notifications.SunDown do
     # rendering (handled inside `Dispatcher.fire/3` via its own
     # `Gettext.with_locale/2` wrapper) carry that locale.
     #
-    # Order matters: `build_payload/2` runs FIRST so the dedup
+    # Order matters: `build_payload/3` runs FIRST so the dedup
     # `sun_down_fires` row is only written when there is
     # something to dispatch. A user with devices but no
     # readings inside today's date range (silent-inverter
     # overnight / post-deploy-at-night seed scenario) makes
-    # `build_payload/2` return `nil` — writing the dedup row
+    # `build_payload/3` return `nil` — writing the dedup row
     # before that check would silently swallow the day's
     # notification AND lock out any later retry (the row's
     # unique constraint blocks every subsequent fire attempt
     # until tomorrow).
     Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-      case build_payload(user, today) do
+      case build_payload(user, today, user.tz_offset_seconds || 0) do
         nil ->
           # No payload — log a warning so an operator can spot
           # silent-inverter installs in production logs. The
