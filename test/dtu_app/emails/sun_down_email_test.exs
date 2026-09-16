@@ -56,15 +56,16 @@ defmodule DtuApp.Emails.SunDownEmailTest do
   end
 
   describe "render/2 — basic contract" do
-    test "returns {html, text} where html starts with <html", %{user: user, payload: p} do
-      {html, text} = SunDownEmail.render(user, p)
+    test "returns {html, text, attachments} where html starts with <html", %{user: user, payload: p} do
+      {html, text, attachments} = SunDownEmail.render(user, p)
       assert is_binary(html)
       assert html =~ "<html"
       assert is_binary(text)
+      assert is_list(attachments)
     end
 
     test "html includes the title from the payload", %{user: user, payload: p} do
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ "Sun down"
     end
 
@@ -72,26 +73,21 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       user: user,
       payload: p
     } do
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ "12.4"
       assert html =~ "10.1"
       assert html =~ "3,250"
       assert html =~ "2,840"
     end
 
-    test "html includes the chart svg when chart_svg is present", %{user: user, payload: p} do
-      {html, _} = SunDownEmail.render(user, p)
-      assert html =~ "<svg"
-    end
-
     test "html includes the dashboard button label and url", %{user: user, payload: p} do
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ "/dashboard"
       assert html =~ "View dashboard"
     end
 
     test "text body includes the title and the stat values", %{user: user, payload: p} do
-      {_html, text} = SunDownEmail.render(user, p)
+      {_html, text, _attachments} = SunDownEmail.render(user, p)
       assert text =~ "Sun down"
       assert text =~ "12.4"
       assert text =~ "10.1"
@@ -101,37 +97,236 @@ defmodule DtuApp.Emails.SunDownEmailTest do
     end
   end
 
+  describe "render/2 — chart as cid-attached PNG" do
+    # The chart must render in Gmail, which strips inline `<svg>` from
+    # the email HTML body. The fix is to convert the SVG to a PNG and
+    # attach it as a `cid:`-referenced image so the HTML body contains
+    # a single `<img src="cid:chart@sundo">` reference. Tests exercise
+    # the success path via an injected fake CLI (drains stdin, emits a
+    # 1x1 PNG to stdout) and the fallback path by setting the CLI path
+    # to `nil`.
+
+    # 1x1 transparent PNG — smallest valid PNG, the canonical byte
+    # sequence (89 50 4E 47 0D 0A 1A 0A + IHDR + IDAT + IEND). Stored as
+    # a list of integers so the module attribute is unambiguous (the
+    # `<<...>>` syntax for module attributes has bitten this pattern in
+    # the past, and the byte values themselves don't change between
+    # runs).
+    @png_1x1_byte_list [
+                        137,
+                        80,
+                        78,
+                        71,
+                        13,
+                        10,
+                        26,
+                        10,
+                        0,
+                        0,
+                        0,
+                        13,
+                        73,
+                        72,
+                        68,
+                        82,
+                        0,
+                        0,
+                        0,
+                        1,
+                        0,
+                        0,
+                        0,
+                        1,
+                        8,
+                        6,
+                        0,
+                        0,
+                        0,
+                        31,
+                        21,
+                        196,
+                        137,
+                        0,
+                        0,
+                        0,
+                        11,
+                        73,
+                        68,
+                        65,
+                        84,
+                        24,
+                        87,
+                        99,
+                        248,
+                        255,
+                        255,
+                        63,
+                        0,
+                        5,
+                        254,
+                        2,
+                        254,
+                        164,
+                        171,
+                        207,
+                        7,
+                        0,
+                        0,
+                        0,
+                        0,
+                        73,
+                        69,
+                        78,
+                        68,
+                        174,
+                        66,
+                        96,
+                        130
+                      ]
+
+    setup do
+      # Write the fake CLI to a tmp file so each test gets its own.
+      fake =
+        Path.join(
+          System.tmp_dir!(),
+          "rsvg-convert-fake-#{System.unique_integer([:positive])}.sh"
+        )
+
+      # rsvg-convert real API: positional input file + `-o output.png`.
+      # The fake CLI accepts that exact shape, writes the same byte
+      # sequence to the `-o` path, and exits 0.
+      octal =
+        @png_1x1_byte_list
+        |> Enum.map(&("\\" <> Integer.to_string(&1, 8)))
+        |> Enum.join()
+
+      script =
+        "#!/bin/sh\n" <>
+          "# fake rsvg-convert: copy the positional input to /dev/null,\n" <>
+          "# write a fixed 1x1 PNG to the -o output, exit 0.\n" <>
+          "INPUT=\"$@\"\n" <>
+          "# the input is the last arg; find it\n" <>
+          "for arg in \"$@\"; do\n" <>
+          "  if [ -f \"$arg\" ]; then INPUT=\"$arg\"; fi\n" <>
+          "done\n" <>
+          "OUT=\"\"\n" <>
+          "while [ $# -gt 0 ]; do\n" <>
+          "  case \"$1\" in\n" <>
+          "    -o) OUT=\"$2\"; shift 2;;\n" <>
+          "    *) shift;;\n" <>
+          "  esac\n" <>
+          "done\n" <>
+          "printf '" <> octal <> "' > \"$OUT\"\n"
+
+      File.write!(fake, script)
+      File.chmod!(fake, 0o755)
+
+      on_exit(fn -> File.rm(fake) end)
+
+      {:ok, fake_cli: fake, png_bytes: :erlang.list_to_binary(@png_1x1_byte_list)}
+    end
+
+    test "html contains <img src=\"cid:chart@sundo\">, no raw <svg> (success path)",
+         %{user: user, payload: p, fake_cli: fake} do
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, _text, attachments} = SunDownEmail.render(user, p)
+
+      assert html =~ ~s(<img src="cid:chart@sundo")
+      refute html =~ "<svg"
+      assert length(attachments) == 1
+    end
+
+    test "attachments list contains a single Swoosh.Attachment image/png with PNG bytes",
+         %{user: user, payload: p, fake_cli: fake, png_bytes: png_bytes} do
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {_html, _text, attachments} = SunDownEmail.render(user, p)
+
+      assert length(attachments) == 1
+      [att] = attachments
+      assert att.__struct__ == Swoosh.Attachment
+      assert att.content_type == "image/png"
+      assert att.data == png_bytes
+    end
+
+    test "text body never contains <img> or <svg> on the success path",
+         %{user: user, payload: p, fake_cli: fake} do
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {_html, text, _attachments} = SunDownEmail.render(user, p)
+
+      refute text =~ "<img"
+      refute text =~ "<svg"
+      # But the text body MUST mention the chart so the user has a hint.
+      assert text =~ "power curve" or text =~ ~s(today)
+    end
+
+    test "fallback path: html is a plain paragraph + URL, no attachment, when CLI missing",
+         %{user: user, payload: p} do
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, nil)
+
+      {html, text, attachments} = SunDownEmail.render(user, p)
+
+      assert html =~ "View today's power curve"
+      assert html =~ "/dashboard"
+      refute html =~ "<svg"
+      refute html =~ "<img"
+
+      assert text =~ "View today's power curve"
+      assert text =~ "/dashboard"
+      refute text =~ "<svg"
+      refute text =~ "<img"
+
+      assert attachments == []
+    end
+
+    test "chart_svg nil still produces the empty-state fallback (regression guard)",
+         %{user: user, payload: p, fake_cli: fake} do
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, _text, attachments} = SunDownEmail.render(user, %{p | chart_svg: nil})
+
+      assert html =~ "No chart available"
+      refute html =~ "<svg"
+      refute html =~ "<img"
+      assert attachments == []
+    end
+  end
+
   describe "render/2 — <html lang> attribute" do
     test "matches the user's locale (de)", %{payload: p} do
       user = %User{email: "u@example.com", locale: "de"}
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ ~s(<html lang="de")
     end
 
     test "matches the user's locale (fr)", %{payload: p} do
       user = %User{email: "u@example.com", locale: "fr"}
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ ~s(<html lang="fr")
     end
 
     test "falls back to lang=en when user.locale is nil", %{payload: p} do
       user = %User{email: "u@example.com", locale: nil}
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ ~s(<html lang="en")
     end
   end
 
-  describe "render/2 — chart fallback" do
+  describe "render/2 — chart fallback (empty-state)" do
     test "degrades to 'No chart available' when chart_svg is nil", %{user: user, payload: p} do
-      {html, _} = SunDownEmail.render(user, %{p | chart_svg: nil})
+      {html, _, attachments} = SunDownEmail.render(user, %{p | chart_svg: nil})
       assert html =~ "No chart available"
       refute html =~ "<svg"
+      refute html =~ "<img"
+      assert attachments == []
     end
   end
 
   describe "render/2 — missing-yesterday fallback" do
     test "renders '—' when yesterday yield + peak are missing", %{user: user, payload: p} do
-      {html, _} =
+      {html, _, _} =
         SunDownEmail.render(user, %{
           p
           | yesterday_yield_kwh: nil,
@@ -143,7 +338,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
 
     test "renders the 'same as yesterday' label when today equals yesterday",
          %{user: user, payload: p} do
-      {html, _} =
+      {html, _, _} =
         SunDownEmail.render(user, %{
           p
           | today_yield_kwh: 10.1,
@@ -174,7 +369,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
           Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
         end)
 
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ localised_label
     end
 
@@ -186,7 +381,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
           Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
         end)
 
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ localised_label
     end
 
@@ -198,7 +393,7 @@ defmodule DtuApp.Emails.SunDownEmailTest do
           Gettext.gettext(DtuAppWeb.Gettext, @sun_down_yield_label_msgid)
         end)
 
-      {html, _} = SunDownEmail.render(user, p)
+      {html, _, _} = SunDownEmail.render(user, p)
       assert html =~ localised_label
     end
   end

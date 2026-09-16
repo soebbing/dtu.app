@@ -57,7 +57,16 @@ FROM alpine:3.19.1
 # healthchecks against services inside the same container; for `app`
 # the HTTP probe must hit localhost, so the tool needs to be IN the
 # container.
-RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget
+#
+# `rsvg-convert` is the SVG → PNG CLI used by the sun-down email
+# notifier (`DtuApp.Emails.SunDownEmail.chart_attachment/1`). Gmail
+# strips inline `<svg>` from email HTML bodies, so the chart is
+# rendered to PNG and attached via `cid:` instead. The runtime image
+# MUST carry the binary (not just the librsvg library), because the
+# email module shells out via `System.cmd/3`. On Alpine 3.19 the
+# `rsvg-convert` binary lives in its own community package — `librsvg`
+# ships only the shared library.
+RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget rsvg-convert
 
 WORKDIR "/app"
 RUN chown nobody /app

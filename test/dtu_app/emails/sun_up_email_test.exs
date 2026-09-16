@@ -44,29 +44,31 @@ defmodule DtuApp.Emails.SunUpEmailTest do
   end
 
   describe "render/2 — basic contract" do
-    test "returns {html, text}", %{user: user, payload: p} do
-      {html, text} = SunUpEmail.render(user, p)
+    test "returns {html, text, attachments}", %{user: user, payload: p} do
+      {html, text, attachments} = SunUpEmail.render(user, p)
       assert is_binary(html)
       assert is_binary(text)
+      assert is_list(attachments)
+      assert attachments == []
     end
 
     test "html includes the title verbatim from the payload", %{user: user, payload: p} do
-      {html, _} = SunUpEmail.render(user, p)
+      {html, _, _} = SunUpEmail.render(user, p)
       assert html =~ "Sun is up — first power of the day"
     end
 
     test "html includes the body paragraphs verbatim", %{user: user, payload: p} do
-      {html, _} = SunUpEmail.render(user, p)
+      {html, _, _} = SunUpEmail.render(user, p)
       assert html =~ "Your array just woke up at 06:14 local time."
     end
 
     test "html includes the dashboard URL in the CTA", %{user: user, payload: p} do
-      {html, _} = SunUpEmail.render(user, p)
+      {html, _, _} = SunUpEmail.render(user, p)
       assert html =~ "/dashboard"
     end
 
     test "text body includes the title and body", %{user: user, payload: p} do
-      {_html, text} = SunUpEmail.render(user, p)
+      {_html, text, _} = SunUpEmail.render(user, p)
       assert text =~ "Sun is up — first power of the day"
       assert text =~ "Your array just woke up at 06:14 local time."
     end
@@ -74,19 +76,19 @@ defmodule DtuApp.Emails.SunUpEmailTest do
 
   describe "render/2 — <html lang> attribute" do
     test "matches the user's locale", %{user: user, payload: p} do
-      {html, _} = SunUpEmail.render(%{user | locale: "de"}, p)
+      {html, _, _} = SunUpEmail.render(%{user | locale: "de"}, p)
       assert html =~ ~s(<html lang="de")
     end
 
     test "renders fr with lang=fr", %{payload: p} do
       user = %User{email: "u@example.com", locale: "fr"}
-      {html, _} = SunUpEmail.render(user, p)
+      {html, _, _} = SunUpEmail.render(user, p)
       assert html =~ ~s(<html lang="fr")
     end
 
     test "falls back to lang=en when user.locale is nil", %{payload: p} do
       user = %User{email: "u@example.com", locale: nil}
-      {html, _} = SunUpEmail.render(user, p)
+      {html, _, _} = SunUpEmail.render(user, p)
       assert html =~ ~s(<html lang="en")
     end
   end
@@ -109,7 +111,7 @@ defmodule DtuApp.Emails.SunUpEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = SunUpEmail.render(user, payload)
+      {html, _, _} = SunUpEmail.render(user, payload)
       assert html =~ localised_body
     end
 
@@ -122,7 +124,7 @@ defmodule DtuApp.Emails.SunUpEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = SunUpEmail.render(user, payload)
+      {html, _, _} = SunUpEmail.render(user, payload)
       assert html =~ localised_body
     end
 
@@ -135,7 +137,7 @@ defmodule DtuApp.Emails.SunUpEmailTest do
         end)
 
       payload = %{p | body: [localised_body]}
-      {html, _} = SunUpEmail.render(user, payload)
+      {html, _, _} = SunUpEmail.render(user, payload)
       assert html =~ localised_body
     end
   end

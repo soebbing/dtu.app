@@ -84,7 +84,7 @@ defmodule DtuApp.Accounts.UserNotifier do
   # relies on `Plugs.Locale` setting the process-wide locale before it runs
   # (which it does on every request that flows through the :browser pipeline).
   defp deliver(user, subject, opts) do
-    {html, text} = Layout.render(Keyword.put(opts, :lang, user.locale || "en"))
+    {html, text, _attachments} = Layout.render(Keyword.put(opts, :lang, user.locale || "en"))
 
     email =
       new()
