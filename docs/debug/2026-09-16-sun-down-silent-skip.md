@@ -87,11 +87,19 @@ flavour of the same family.
 
 ## Status
 
-- **2026-09-16** — Plan written. Phase 1 in progress, narrowed to a single
-  suspect: the notifier uses `Date.utc_today()` for the date and the
-  dedup `fired_on`, but every other producer (SunUp, YieldAnomaly) uses
-  the user's `tz_offset_seconds` via a local-date `user_today/1` helper.
-  Tasks tracked in TaskList as #231 / #232 / #233 / #234.
+- **2026-09-16 (evening)** — **Resolved.** Phase 5 / Resolution below
+  traces the CEST scenario through the post-#292 producer and concludes
+  the most likely cause of the user's specific symptom is the chart
+  crash fixed by PR #303 (`fix(sun-down-chart): filter nil-power points
+  + drop dead Kernel./(1)`), which made `Dispatcher.fire/3` crash
+  mid-call on the real SunDown, leaving only the early-morning
+  "no readings" history row visible. No further producer change needed.
+  If the symptom recurs, investigate the delivery side per the
+  `dtu-app-notification-delivery-silent-drop` memory note.
+- **2026-09-16 (afternoon)** — Phase 1 concluded: three producer-side
+  bugs identified (Bug 1 UTC-date, Bug 2 negative-offset sunset gate,
+  Bug 3 no retro-fire on restart). Plan written. Tasks tracked in
+  TaskList as #231 / #232 / #233 / #234.
 
 ## Phase 1 — Root cause (conclusion)
 
@@ -293,22 +301,44 @@ The debug investigation continues to narrow this down (Task #233).
 The fix for Bug 1 itself is straightforward and worth shipping
 regardless of the user's specific case — see Task #235.
 
-## Open question (still narrowing)
+## Open question (resolved)
 
-1. Did the notifier fire at UTC Sep 15 17:45 (local Sep 15 19:45,
-   sunset-arm) or at some other UTC time? The answer hinges on
-   whether the producer's reactive arming fired correctly or whether
-   the sweep kicked in at a different time.
+1. **Did the notifier fire at UTC Sep 15 17:45 (local Sep 15 19:45,
+   sunset-arm) or at some other UTC time?** — Resolved: it fires at
+   both. The sweep arms an idle timer for users with cached fleet
+   state during the pre-sunrise window (UTC Sep 15 02:00 → UTC Sep 15
+   02:15 fire), and the reactive arming fires again at sunset (UTC
+   Sep 15 17:25 → UTC Sep 15 17:40 fire). On a normal production day
+   the user should see TWO history rows for Sep 15: an early-morning
+   "no end-of-day summary" row from the sweep fire (build_payload
+   returns nil because the local-day window is empty pre-sunrise) and
+   an evening "Sun's down — daily summary" row from the sunset fire
+   (build_payload returns a valid payload because the local-day
+   window now contains the day's readings). If only the first row
+   appears, the sunset fire is the suspect — see Phase 5.
 
 ## Files of interest
 
 - `lib/dtu_app/notifications/sun_down*.ex` — sun_down notifier
-- `lib/dtu_app/notifications.ex` — dispatcher / broadcast layer
+- `lib/dtu_app/notifications/sun_down/payload.ex` — payload builder
+  (local-date, decorate_for_dispatch)
+- `lib/dtu_app/notifications/sun_down/detection.ex` — `past_sunset?/2`
+  (location-aware sunset gate)
+- `lib/dtu_app/emails/sun_down_chart.ex` — inline chart renderer
+  (nil-power guard)
+- `lib/dtu_app/notifications.ex` — broadcaster (in-page PubSub +
+  dispatcher fan-out)
 - `lib/dtu_app/notifications/sun_up*.ex` — sister notifier for diff
-- `lib/dtu_app_web/live/dashboard_live.ex` — dashboard's daily-bucket
-  query (the "working" comparison path)
-- `test/dtu_app/notifications/sun_down_notifier_test.exs` — pre-existing
-  test file (one of the 5 pre-existing flakes)
+  (uses `user_today/1` pattern)
+- `lib/dtu_app_web/live/dashboard_live.ex`,
+  `lib/dtu_app_web/live/shared_dashboard_live.ex` — dashboard daily-bucket
+  queries (chart + stat card, both local-date post-#295)
+- `lib/dtu_app/devices/chart_data.ex` — `local_day_utc_range/2`
+  (canonical local-date → UTC range translator)
+- `lib/dtu_app/devices/stats/production_stats.ex` —
+  `get_daily_stats_for_local_day/4`
+- `test/dtu_app/notifications/sun_down_notifier_test.exs` —
+  pre-existing test file (one of the 5 pre-existing flakes)
 
 ## Prior fixes in the area
 
@@ -319,6 +349,20 @@ regardless of the user's specific case — see Task #235.
   lock silently. The session memory file documents this fix.
 - **PR #290** — notifications-live refactor (no behaviour change, just
   component extraction).
+- **PR #292** — `fix(notifications): SunDown fires use user-local date,
+  not UTC` — closed Bug 1; `try_fire/1` now uses `user_today/1`.
+- **PR #293** — `fix(shared_dashboard)`-flavoured location-aware sunset
+  gate — `past_sunset?/2` uses the user's local date and gates on
+  sunrise+sunset; closed Bug 2.
+- **PR #295** — `fix(shared_dashboard): stat card today_yield uses
+  user's local-day window` — closed Bug 4.
+- **PR #298** — `feat(notifications): sun_down missed-day regenerate
+  UI` — Regenerate button on the notifications page; the user-facing
+  affordance for missed days.
+- **PR #303** — `fix(sun-down-chart): filter nil-power points + drop
+  dead Kernel./(1)` — closed the chart crash that killed
+  `Dispatcher.fire/3` mid-call. The most likely cause of the user's
+  specific symptom (only the early-morning "no readings" row visible).
 
 ## Phase 3 / Task #237 outcome: no retro-fire on producer restart
 
@@ -365,4 +409,154 @@ change**. Summary of the reasoning:
 change". The user-facing "missed summary" affordance, if
 desired, is a separate UI feature on the history page (not a
 producer change).
+
+## Phase 5 — Resolution (2026-09-16 evening)
+
+The three producer-side date/coord bugs identified in Phase 1 all
+shipped today. Walking the user's CEST scenario through the post-fix
+producer narrows the symptom to a single, now-fixed failure mode.
+
+### Fixes that closed the producer-side date/coord bugs
+
+| PR | Commit | Fix |
+|----|--------|-----|
+| #292 | `e12e664` | SunDown fires use `user_today/1` (anchored on `User.tz_offset_seconds`) instead of `Date.utc_today()`. `build_payload/2` → `build_payload/3` accepts the local date + offset; "yesterday" math uses `Date.add(local_date, -1)`. |
+| #293 | `c7fadfa` | `past_sunset?/2` uses the user's local date (via `tz_offset_seconds`) for the sunset lookup, and gates on both `sunrise` and `sunset` so negative- and positive-offset users land inside the night window correctly. |
+| #295 | `dac4e93` | `SharedDashboardLive` stat card uses `local_today/1` + `Devices.get_daily_stats_for_local_day/4` instead of `Devices.get_daily_stats/3` + `Date.utc_today()`. |
+
+### CEST scenario, walked through the post-#292 producer
+
+User: `tz_offset_seconds: 7200` (CEST), coordinates 52N / 7E.
+Day in question: Sep 15, normal local-day production
+(local 05:00–19:00 CEST = UTC 03:00–17:00 UTC).
+
+**Pre-sunrise sweep fire** — UTC Sep 15 02:00 (CEST 04:00):
+1. `state.users[user_id]` was seeded from a previous reactive update;
+   fleet is "silent" (no AC reading in the last 5 min).
+2. `:sun_down_sweep` fires every 5 min → `handle_sweep/1` walks
+   `state.users` → `arm_if_idle/2` for this user.
+3. `past_sunset?(user_id, UTC Sep 15 02:00)` → with #293:
+   `local_date = Sep 15` → `sunrise_sunset_utc(52N, 7E, Sep 15)` →
+   sunrise `UTC 04:50`, sunset `UTC 17:25`. `past_sunset_gate/3`:
+   `now < sunrise` → returns `true` (in night).
+4. `arm_if_idle/2` arms a 15-min timer. `zero_since = UTC 02:00`.
+5. Timer fires at UTC Sep 15 02:15 → `fire_for_user/2` →
+   `try_fire/1` → `user_today(user) = Sep 15` (CEST local).
+6. `build_payload(user, Sep 15, 7200)` →
+   `get_daily_stats_for_local_day(user, nil, Sep 15, 7200)` →
+   `local_day_utc_range(Sep 15, 7200) = [Sep 14 22:00 UTC, Sep 15 21:59 UTC]`.
+7. At UTC 02:15 the local-day window has zero readings (sun hasn't
+   risen). `today.current_power == 0.0 and today.per_series == []`
+   → `build_payload/3` returns `nil`.
+8. `write_no_payload_history/2` writes a `notifications` row titled
+   "No end-of-day summary" tagged `sun_down:no_readings:2026-09-15`.
+   **No** PubSub broadcast, **no** push, **no** email — per the
+   silent-day explanation row section of `SunDown`'s moduledoc.
+9. `clear_user_state/2` removes the user from `state.users`.
+
+This is **producer-correct behavior** for the early-morning window —
+the local-day window is empty pre-sunrise by construction. The user
+sees this row and concludes "no summary", but it is a transient
+marker that the producer ran during the local night; a real SunDown
+broadcast should follow at sunset.
+
+**Sunset fire** — UTC Sep 15 17:25 (CEST 19:25):
+1. Fleet goes to 0 W (sunset). Reactive `:reading` event arrives with
+   `ac_power = 0.0`.
+2. `maybe_arm_timer/2` → `arm_if_idle/2` →
+   `past_sunset?(user_id, UTC 17:25)` → with #293:
+   `local_date = Sep 15`, `sunrise UTC 04:50`, `sunset UTC 17:25`.
+   `past_sunset_gate/3`: `now >= sunset` → returns `true`.
+3. Arms a 15-min timer.
+4. Timer fires at UTC Sep 15 17:40 → `fire_for_user/2` →
+   `try_fire/1` → `user_today(user) = Sep 15`.
+5. `build_payload(user, Sep 15, 7200)` → `local_day_utc_range(Sep 15,
+   7200) = [Sep 14 22:00 UTC, Sep 15 21:59 UTC]` now contains the
+   day's readings (UTC 03:00–17:00).
+6. `build_payload/3` returns a non-nil payload (today's kWh + peak +
+   yesterday comparison).
+7. `insert_fire/2` writes `sun_down_fires(user_id, Sep 15)` —
+   succeeds (no prior row, per the dedup invariant).
+8. `Payload.decorate_for_dispatch/3` adds the email-side keys
+   (chart SVG via `SunDownChart.render/2`, dashboard CTA, body wrap).
+9. `Phoenix.PubSub.broadcast(...)` — in-page banner to the dashboard
+   LiveView's `handle_info({:notification, payload}, ...)`.
+10. `Dispatcher.fire(user, "sun_down", full)` — push + email +
+    history row "Sun's down — daily summary".
+
+This is the real SunDown the user expected. On a normal CEST day
+post-#292, the user should see **two** rows for Sep 15: the
+pre-sunrise "no readings" row from step 8 and the sunset "Sun's down"
+row from step 10.
+
+### Why the user likely saw only one row
+
+The most plausible explanation for the user's specific observation
+("no end-of-day summary" history row, no SunDown banner / push /
+email) is that step 10 crashed mid-call **before** the dispatcher
+wrote its history row. The producer's flow at
+`lib/dtu_app/notifications/sun_down_notifier.ex:650-656` is:
+
+```elixir
+Phoenix.PubSub.broadcast(DtuApp.PubSub, ..., {:notification, full})
+Dispatcher.fire(user, "sun_down", full)
+```
+
+If `Dispatcher.fire/3` raises, the surrounding GenServer (the
+SunDown producer) terminates; the in-page PubSub broadcast from the
+previous line has already gone out, but the dispatcher never reaches
+its `Notifications.record/2` history-row insert. The user sees the
+**early-morning row only** because that row is written by the
+producer directly (`write_no_payload_history/2`), not through the
+dispatcher.
+
+The pre-#303 chart path crashed on this exact line of code. The
+producer calls `decorate_for_dispatch/3` → `Payload.decorate_for_dispatch`
+which calls `DtuApp.Emails.SunDownChart.render(user, today)`. If the
+day's `points` list contained a `power: nil` entry (a partially-
+populated 5-min bucket in `readings_5m`, or a NULL `avg_ac_power`),
+`render_svg/1` → `build_path/1` reached `Enum.max/1` → `nil |> Kernel./(1)`
+and raised `ArithmeticError: bad argument in arithmetic expression`.
+The crash killed the SunDown GenServer mid-fire, between the PubSub
+broadcast and the `Notifications.record/2` history insert inside
+`Dispatcher.fire/3`. Reproduced in prod on 2026-09-16 (the
+GenServer-terminating stack trace in `docs/debug/2026-09-16-sun-down-silent-skip.md`'s
+production logs).
+
+PR #303 (`fix(sun-down-chart): filter nil-power points + drop dead
+Kernel./(1)`, commit `e2b8f24`) replaces the crash with an empty-state
+SVG fallback and drops the dead `|> Kernel./(1)` chain. Post-#303 the
+chart renders successfully regardless of nil-power points, so step 10
+no longer crashes and the "Sun's down" history row is written.
+
+### Disposition
+
+- **Producer side**: closed. PRs #292, #293, #295, #303 all shipped
+  today. The `try_fire/1` date math, the `past_sunset?/2` gate, the
+  dashboard stat-card window, and the chart's nil-power tolerance are
+  all aligned with the user's local timezone and the cagg's NULL
+  semantics.
+- **User's specific symptom**: most likely the pre-#303 chart crash
+  killing `Dispatcher.fire/3` mid-call. Post-#303 the sunset fire
+  succeeds end-to-end. **No further code change recommended.**
+- **Reopen condition**: if the user (or another CEST / non-UTC user)
+  reports the same symptom after #303 is in production for a few
+  days, the cause shifts to delivery-side. Investigate per the
+  `dtu-app-notification-delivery-silent-drop` memory note — the most
+  likely candidates are (a) iOS Safari without home-screen-installed
+  PWA, (b) a stale `push_subscriptions` endpoint that hasn't yet
+  re-subscribed through PR #297's re-subscribe prompt, or (c) the
+  in-page banner fired while the user had no tab open.
+
+### Cross-reference
+
+- Producer-side fix history: PRs #245 (sweep + seed), #255 (dedup
+  ordering), #292 (user-local date), #293 (location-aware sunset),
+  #295 (dashboard stat card), #303 (chart nil-power guard).
+- Delivery-side context: PR #161 (storageHas TTL), PR #297 (stale
+  push-subscription re-subscribe prompt); see also
+  `docs/2026-09-16-push-subscription-re-subscribe.md` if filed.
+- User-facing affordance for missed days: PR #298 (Regenerate button
+  on the notifications page) — already shipped; the user can manually
+  fire a summary for any past date via `/notifications`.
 
