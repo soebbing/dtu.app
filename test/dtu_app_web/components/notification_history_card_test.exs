@@ -53,6 +53,11 @@ defmodule DtuAppWeb.NotificationHistoryCardTest do
         event: "dtu_connection",
         title: "Inverter went offline",
         body: "Living Room Inverter disconnected at 14:23.",
+        # Pinned to a fixed UTC instant so the row's `title`
+        # attribute (rendered via `Calendar.strftime(n.delivered_at, ...)`)
+        # is deterministic across runs. Tests that care about the
+        # exact title string override this via `Map.put`.
+        delivered_at: ~U[2026-09-16 14:30:45Z],
         delivered_label: "5 minutes ago"
       },
       Map.new(attrs)
@@ -232,6 +237,44 @@ defmodule DtuAppWeb.NotificationHistoryCardTest do
       assert html =~ ~s(phx-value-id="1")
       assert html =~ ~s(phx-value-id="2")
       assert html =~ ~s(phx-click="delete_notification")
+    end
+
+    # The visible `delivered_label` ("5 minutes ago") loses
+    # precision past a day and can't disambiguate between two
+    # notifications that landed close together. The browser's
+    # native `title` tooltip exposes the exact `delivered_at`
+    # as UTC ISO so a user hovering the row sees the timestamp
+    # they actually need for triage.
+    test "each row carries a title attribute with the exact UTC delivered_at" do
+      html =
+        render_history(%{
+          items: [
+            item(%{
+              id: 1,
+              delivered_at: ~U[2026-09-16 14:30:45Z]
+            }),
+            item(%{
+              id: 2,
+              delivered_at: ~U[2026-09-15 09:00:00Z]
+            })
+          ],
+          total: 2,
+          total_pages: 1,
+          page: 1,
+          event_filter: "all",
+          filters: @default_filters
+        })
+
+      # Pin the per-row markup: `<li id="notification-row-N" ...>`
+      # followed by a `title="..."` carrying the UTC timestamp.
+      # The exact date string mirrors `device_status_card`'s
+      # `Calendar.strftime(.., "%Y-%m-%d %H:%M:%S UTC")` format so
+      # the user gets one consistent timestamp style across the app.
+      assert html =~
+               ~r{<li id="notification-row-1"\s+class="[^"]*"[^>]*title="2026-09-16 14:30:45 UTC"}
+
+      assert html =~
+               ~r{<li id="notification-row-2"\s+class="[^"]*"[^>]*title="2026-09-15 09:00:00 UTC"}
     end
   end
 

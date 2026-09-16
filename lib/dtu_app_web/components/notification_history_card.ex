@@ -175,6 +175,7 @@ defmodule DtuAppWeb.NotificationHistoryCard do
             <li
               id={"notification-row-#{n.id}"}
               class="flex items-start gap-3 py-3"
+              title={Calendar.strftime(n.delivered_at, "%Y-%m-%d %H:%M:%S UTC")}
             >
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
