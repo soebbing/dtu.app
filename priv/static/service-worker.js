@@ -79,6 +79,28 @@ function swVersionFromUrl() {
 }
 
 self.addEventListener("install", (event) => {
+  // Activate immediately, BEFORE the precache runs.
+  //
+  // iOS may deliver a push to the installed PWA while we're still
+  // precaching the new shell — a slow network (or a slow
+  // `fetchDigestManifest()`) means the precache can take seconds.
+  // If we waited for it to finish before calling `skipWaiting()`,
+  // the *old* SW (still in `waiting` state) would handle the push
+  // event — and the old SW doesn't know about the new payload
+  // shape, the new tag rules, or (more importantly) the new
+  // server-side payload contract that arrived in this release.
+  // The result from the user's perspective: pushes from the
+  // freshly-deployed backend are silently dropped until the next
+  // app launch, which defeats the whole point of background
+  // delivery for an installed PWA.
+  //
+  // Calling `skipWaiting()` synchronously here means the new SW
+  // moves to `active` on the next microtask, the activate handler's
+  // `clients.claim()` picks up the already-open clients, and the
+  // new `push` listener takes over from there. The precache below
+  // is a UX nicety (offline shell); activation is not.
+  self.skipWaiting();
+
   event.waitUntil(
     (async () => {
       const latest = await fetchDigestManifest();
@@ -118,8 +140,6 @@ self.addEventListener("install", (event) => {
           }
         }),
       );
-
-      await self.skipWaiting();
     })(),
   );
 });
