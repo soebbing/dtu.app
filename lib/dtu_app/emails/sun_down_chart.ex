@@ -82,22 +82,43 @@ defmodule DtuApp.Emails.SunDownChart do
     """
   end
 
-  # Render an SVG with a single `<path>` for the AC-aggregate line.
-  # Defensive against the populated-but-missing-points edge case (user
-  # owns devices but the day window has no readings): treat as empty.
-  defp render_svg([]), do: empty_svg()
+  # Pure points → SVG. Public-but-internal (`@doc false`) so tests can
+  # exercise the nil-power guard without going through the DB. Pre-PR
+  # this was `render_svg/1`, a private function that called
+  # `build_path/1` on the input list verbatim. The list can contain
+  # `%{power: nil}` entries when a 5-minute bucket in the
+  # `readings_5m` continuous aggregate has zero production rows but
+  # the SELECT still returns a row (NULL avg_ac_power); same for a
+  # partially-populated live-tail bucket. `Enum.max/1` of a list with
+  # mixed `nil` + numbers raises ArgumentError, but `Enum.max/1` of a
+  # list with **only** nil entries (or a single non-number) returns
+  # without raising, then `Kernel./(1)` on that nil/non-number raises
+  # `ArithmeticError: bad argument in arithmetic expression` and kills
+  # the GenServer (PR regression — observed in prod on
+  # 2026-09-16 for the sun_down regenerate handler, but the same path
+  # exists on the daily producer). Defensively filter to numeric
+  # powers, and fall back to `empty_svg/0` when nothing usable
+  # survives the filter — the email renders "No chart available"
+  # instead of crashing the dispatcher.
+  @doc false
+  @spec render_svg([map()]) :: String.t()
+  def render_svg(points) when is_list(points) do
+    case Enum.filter(points, &match?(%{power: v} when is_number(v), &1)) do
+      [] ->
+        empty_svg()
 
-  defp render_svg(points) when is_list(points) do
-    path_d = build_path(points)
-    axis_labels = axis_labels_svg()
+      renderable ->
+        path_d = build_path(renderable)
+        axis_labels = axis_labels_svg()
 
-    """
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 #{@viewbox_w} #{@viewbox_h}" role="img" aria-label="#{escape(gettext("Today's power curve"))}">
-      <rect x="0" y="0" width="#{@viewbox_w}" height="#{@viewbox_h}" fill="#f8fafc" stroke="#e2e8f0"/>
-      <path d="#{path_d}" fill="none" stroke="#{@brand_emerald}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      #{axis_labels}
-    </svg>
-    """
+        """
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 #{@viewbox_w} #{@viewbox_h}" role="img" aria-label="#{escape(gettext("Today's power curve"))}">
+          <rect x="0" y="0" width="#{@viewbox_w}" height="#{@viewbox_h}" fill="#f8fafc" stroke="#e2e8f0"/>
+          <path d="#{path_d}" fill="none" stroke="#{@brand_emerald}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+          #{axis_labels}
+        </svg>
+        """
+    end
   end
 
   # Ascii axis labels are deliberately NOT gettext'd — they're
@@ -111,13 +132,22 @@ defmodule DtuApp.Emails.SunDownChart do
 
   # Build the `d=` attribute for the chart path. The chart runs from
   # the top of the inner area (max power) to the bottom (zero), so
-  # each point's `y` is `viewBox_h - padding_bottom - (power / max) * inner_h`.
+  # each point's `y` is `viewbox_h - padding_bottom - (power / max) * inner_h`.
+  #
+  # Pre-PR this had `|> Kernel./(1) |> max(1.0)` to coerce the
+  # `Enum.max/1` result to a float and clamp the lower bound. The
+  # `Kernel./(1)` is a no-op for floats (`x / 1 == x`) and was only
+  # needed because, in older Elixir versions, `max(integer, float)`
+  # raised. In current Elixir (≥ 1.10) `:erlang.max/2` accepts mixed
+  # numeric types, so the `Kernel./(1)` chain is dead code AND a
+  # crash vector: if a non-numeric slips past the `render_svg/1`
+  # filter (a regression we haven't imagined yet), `nil / 1` raises
+  # `ArithmeticError`. Drop the no-op, clamp with `max/2` directly.
   defp build_path(points) do
     max_power =
       points
       |> Enum.map(& &1.power)
       |> Enum.max()
-      |> Kernel./(1)
       |> max(1.0)
 
     n = max(length(points) - 1, 1)

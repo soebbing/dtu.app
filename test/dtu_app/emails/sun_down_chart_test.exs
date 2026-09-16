@@ -125,4 +125,84 @@ defmodule DtuApp.Emails.SunDownChartTest do
       assert is_binary(svg)
     end
   end
+
+  # `render_svg/1` is the pure points → SVG renderer (public-but-internal
+  # so the nil-power guard can be unit-tested without the DB). The
+  # pre-PR version crashed with `ArithmeticError: bad argument in
+  # arithmetic expression` from `Kernel./(1)` when the points list
+  # contained nil-power entries (a partially-populated live-tail
+  # bucket, or a NULL `avg_ac_power` from the `readings_5m`
+  # continuous aggregate). Reproduced in prod on 2026-09-16 against
+  # CEST user picking 2026-09-15 via the Regenerate button; the same
+  # path exists on the daily producer's `try_fire/1` and would have
+  # crashed silently.
+  describe "render_svg/1 — nil-power guard" do
+    test "filters nil-power entries and renders the surviving points" do
+      # Mixed list — the nil-power entry must be dropped, the
+      # numeric entries must render the same SVG as a pure list.
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: nil},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:10:00Z], series: {1, "INV-A", 0, "Garage"}, power: nil},
+        %{time: ~U[2026-09-15 10:15:00Z], series: {1, "INV-A", 0, "Garage"}, power: 200.0}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      assert is_binary(svg)
+      assert svg =~ ~r|<svg[^>]+viewBox="0 0 800 280"|
+      # Two surviving points → one `<path>` with two `L` segments.
+      assert svg =~ ~r|<path d="M[^"]+"|
+      assert svg =~ ~r|L\d+\.\d+,\d+\.\d+ L\d+\.\d+,\d+\.\d+|
+    end
+
+    test "all-nil-power list falls back to the empty-state SVG (no crash)" do
+      # The pre-PR crash signature: a list where every entry has
+      # `power: nil`. `Enum.max/1` of `[nil, nil]` raises
+      # `ArgumentError` (comparison); `Enum.max/1` of `[nil]`
+      # raises `ArgumentError` too. The crash path that hit prod
+      # was a list where one entry's `power` decoded to a
+      # non-numeric (e.g. NULL → `:unsupported` representation, or
+      # an `avg_ac_power` returning `:undefined` in some PG
+      # decoder path). Whatever the exact type, the contract is:
+      # never raise, always return a usable SVG.
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: nil},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-A", 0, "Garage"}, power: nil}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      assert is_binary(svg)
+      assert svg =~ "No chart available"
+      # Empty state has NO `<path>` (only the empty-state label).
+      refute svg =~ ~r|<path d="M|
+    end
+
+    test "empty list falls back to the empty-state SVG (regression guard)" do
+      # The pre-PR private `render_svg/1` already handled `[]` via
+      # a dedicated clause; pinning the public version does the
+      # same so a future refactor that drops the filter keeps the
+      # empty-list path intact.
+      svg = SunDownChart.render_svg([])
+
+      assert is_binary(svg)
+      assert svg =~ "No chart available"
+      refute svg =~ ~r|<path d="M|
+    end
+
+    test "all-numeric list renders the populated SVG (regression guard)" do
+      # Sanity check: the filter must not regress the happy path.
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-A", 0, "Garage"}, power: 200.0}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      assert is_binary(svg)
+      assert svg =~ ~r|<path d="M[^"]+"|
+      refute svg =~ "No chart available"
+    end
+  end
 end
