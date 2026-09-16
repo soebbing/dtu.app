@@ -177,13 +177,23 @@ defmodule DtuApp.Notifications do
   user's `notify_*` flags, and the dispatcher skips email when the
   address is unconfirmed.
 
+  Pass `force: true` to skip the per-event preference gate — the
+  fire still honours the user's `notification_channel` (push / email
+  / both) and the email-fallback logic, but does not consult the
+  `notify_sun_down` (or analogous) toggle. The only call site
+  passing `force: true` today is the `/notifications` "Regenerate"
+  handler (UX resolution for the missed-day bug documented in
+  `docs/debug/2026-09-16-sun-down-silent-skip.md`): a user who
+  asked for a summary should get one, regardless of having opted
+  out of the *automatic* daily fire.
+
   Returns `:ok` once the in-page broadcast has been scheduled; the
   push + email fan-out runs on the calling process and is
   best-effort. Per-channel failures are logged inside
   `Dispatcher.fire/3` and never bubble up.
   """
-  @spec broadcast(non_neg_integer(), map()) :: :ok | {:error, term()}
-  def broadcast(user_id, payload) when is_integer(user_id) and is_map(payload) do
+  @spec broadcast(non_neg_integer(), map(), keyword()) :: :ok | {:error, term()}
+  def broadcast(user_id, payload, opts \\ []) when is_integer(user_id) and is_map(payload) do
     PubSub.broadcast(@pubsub, user_topic(user_id), {:notification, payload})
 
     case safe_get_user(user_id) do
@@ -194,8 +204,17 @@ defmodule DtuApp.Notifications do
         # The dispatcher reads `user.notification_channel` to
         # decide whether to invoke push, email, or both. Per-event
         # preference gating (notify_sun_down etc.) is applied
-        # inside the dispatcher via `Push.native_enabled?/2`.
-        Dispatcher.fire(user, payload[:event] || payload["event"], payload)
+        # inside the dispatcher via `Push.native_enabled?/2` —
+        # UNLESS `opts[:force] == true`, in which case the
+        # preference gate is bypassed (the dispatcher still honours
+        # channel routing, email-fallback logic, and the history
+        # row insert).
+        Dispatcher.fire(
+          user,
+          payload[:event] || payload["event"],
+          payload,
+          Keyword.take(opts, [:force])
+        )
 
         :ok
     end

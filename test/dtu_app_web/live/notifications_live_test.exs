@@ -1070,5 +1070,69 @@ defmodule DtuAppWeb.NotificationsLiveTest do
 
       assert render(view) =~ ~r/wait|cooldown|seconds/i
     end
+
+    # A user with `notify_sun_down: false` has explicitly opted out of
+    # the AUTOMATIC daily fire — but the /notifications regenerate
+    # button is a USER-INITIATED fire. The "Summary for ... sent."
+    # flash the handler emits must reflect a real fan-out. The
+    # dispatcher's per-event preference gate would otherwise swallow
+    # the push, the email, AND the history row, so the user sees the
+    # success flash but nothing actually fires and nothing lands in
+    # their history page.
+    test "regenerate fires the dispatcher even when notify_sun_down is disabled", %{
+      conn: conn,
+      user: user
+    } do
+      # Opt the user out of daily sun_down summaries. `Accounts.update_notification_settings/2`
+      # is the only path that writes the toggle (the register_user / email_changeset
+      # cast drops anything but :email).
+      {:ok, _user} =
+        DtuApp.Accounts.update_notification_settings(user, %{notify_sun_down: false})
+
+      # Refresh the user + session so the dispatcher's
+      # `push_enabled?` re-evaluates against the new toggle.
+      user = DtuApp.Repo.reload!(user)
+      conn = DtuAppWeb.ConnCase.log_in_user(conn, user)
+
+      :ok = Notifications.subscribe(user.id)
+
+      # Seed a reading for "yesterday" so `build_payload/3` returns
+      # non-nil. Without this the handler hits the "No data for ..."
+      # branch and the dispatcher is never reached, which would
+      # mask the regression we're trying to catch.
+      device = DtuApp.DevicesFixtures.device_fixture(user)
+
+      yesterday = DtuApp.Time.utc_now() |> DateTime.add(-86_400, :second) |> DateTime.to_date()
+
+      yesterday_noon =
+        yesterday
+        |> DateTime.new!(~T[12:00:00.000000])
+        |> DateTime.truncate(:microsecond)
+
+      DtuApp.DevicesFixtures.reading_fixture(device, %{
+        inverter_serial: "INV-Y",
+        mppt_index: 0,
+        ac_power: 150.0,
+        yield_day: 1500.0,
+        inserted_at: yesterday_noon
+      })
+
+      {:ok, view, _html} = live(conn, ~p"/notifications")
+
+      render_submit(view, "regenerate_sun_down", %{"date" => Date.to_iso8601(yesterday)})
+
+      # 1. In-page PubSub fire — confirms the LiveView end of the
+      #    pipeline ran.
+      assert_receive {:notification, payload}, 1_000
+      assert payload.event == "sun_down"
+
+      # 2. Dispatcher wrote a history row — this is what proves the
+      #    preference bypass worked. Without the bypass, the
+      #    dispatcher would silently no-op on a `notify_sun_down: false`
+      #    user and `list_user_notifications/2` would return [].
+      [history_row] = Notifications.list_user_notifications(user, 1, 50, "sun_down")
+      assert history_row.event == "sun_down"
+      assert history_row.tag == "sun_down:#{Date.to_iso8601(yesterday)}"
+    end
   end
 end
