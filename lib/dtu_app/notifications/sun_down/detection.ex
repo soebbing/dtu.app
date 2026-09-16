@@ -73,10 +73,20 @@ defmodule DtuApp.Notifications.SunDown.Detection do
 
   @doc """
   Sunset gate: returns `true` iff the user's fleet should be
-  considered idle AND the current instant is past today's
-  sunset for the user's geographic position. A daily summary
-  fired at noon (under cloud cover) is the wrong signal —
-  that's `YieldAnomaly`'s job.
+  considered idle AND the current instant is inside the user's
+  local "night" window (past today's sunset OR before today's
+  sunrise). A daily summary fired at noon (under cloud cover) is
+  the wrong signal — that's `YieldAnomaly`'s job.
+
+  Uses the user's local calendar date (via `tz_offset_seconds`)
+  rather than `DateTime.to_date(now)` (UTC date) for the sunset
+  lookup. The UTC date is wrong for users in negative-UTC-offset
+  timezones at UTC morning hours — a PDT user at UTC 03:00 Sep 15
+  is on local Sep 14 20:00, already past local sunset, but the
+  UTC-date lookup computes LA's Sep 15 sunset (UTC Sep 16 02:30)
+  and the gate blocks. Mirrors the `local_date/2` fix in
+  `Notifications.SunDown` so the fire date and the gate date
+  agree on offset semantics.
 
   Fallback contract: when the user has no coordinates
   (`latitude` / `longitude` nil) `past_sunset?/2` returns
@@ -100,16 +110,26 @@ defmodule DtuApp.Notifications.SunDown.Detection do
       %DtuApp.Accounts.User{longitude: nil} ->
         true
 
-      %DtuApp.Accounts.User{latitude: lat, longitude: lon}
+      %DtuApp.Accounts.User{latitude: lat, longitude: lon, tz_offset_seconds: offset}
       when not is_nil(lat) and not is_nil(lon) ->
-        date = DateTime.to_date(now)
+        # Translate `now` to the user's local date so the sunset
+        # lookup matches the day the user is actually
+        # experiencing. `tz_offset_seconds` defaults to 0 if the
+        # user's record is missing the field (shouldn't happen
+        # with the current schema but defensive against future
+        # schemas / fixtures that don't set it).
+        local_date = DateTime.to_date(DateTime.add(now, offset || 0, :second))
 
-        case DtuApp.SunCalc.sunrise_sunset_utc(lat, lon, date) do
-          {_, %DateTime{} = sunset} -> DateTime.compare(now, sunset) in [:gt, :eq]
+        case DtuApp.SunCalc.sunrise_sunset_utc(lat, lon, local_date) do
+          {%DateTime{} = sunrise, %DateTime{} = sunset} ->
+            past_sunset_gate(now, sunrise, sunset)
+
           # Polar day (`{_, nil}`), polar night (`{nil, _}`) and
-          # unknown shapes: no sunset known for this location/date,
-          # so conservatively block the fire rather than guess.
-          _ -> false
+          # unknown shapes: missing one of the bounds — can't
+          # decide whether `now` is in night, conservatively
+          # block the fire rather than guess.
+          _ ->
+            false
         end
 
       _ ->
@@ -141,6 +161,31 @@ defmodule DtuApp.Notifications.SunDown.Detection do
       DtuApp.Repo.get(DtuApp.Accounts.User, user_id)
     rescue
       _ -> nil
+    end
+  end
+
+  # Decide whether `now` falls inside the user's local "night"
+  # window for the day the user is experiencing. A user is in
+  # night iff they're past today's sunset OR before today's
+  # sunrise. The pre-fix version only checked sunset and used
+  # the UTC date — which left a hole for positive-offset users
+  # in the small hours (UTC late evening = local past-midnight,
+  # which is technically still the night following yesterday's
+  # sunset) and a regression for negative-offset users in UTC
+  # morning (= local late evening of the previous day, which
+  # is well past local sunset). Using both bounds + the user's
+  # local date closes both gaps without changing behaviour for
+  # the well-formed "user is in daylight" case.
+  defp past_sunset_gate(now, sunrise, sunset) do
+    cond do
+      DateTime.compare(now, sunset) in [:gt, :eq] ->
+        true
+
+      DateTime.compare(now, sunrise) == :lt ->
+        true
+
+      true ->
+        false
     end
   end
 end
