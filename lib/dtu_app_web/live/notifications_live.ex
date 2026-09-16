@@ -87,6 +87,14 @@ defmodule DtuAppWeb.NotificationsLive do
     user = socket.assigns.current_scope.user
     has_subscriptions = PushSubscriptions.list_for_user(user) != []
 
+    # Server-side signal: did the dispatcher recently soft-delete
+    # one of this user's push subscriptions (FCM/APNS returned 404/410)?
+    # The capability card uses this to surface a "your browser cleared
+    # its push subscription" prompt when permission is still `granted`
+    # but no live row exists. Refreshed on `push_subscribed` so the
+    # prompt disappears the moment the user re-subscribes.
+    recently_revoked = PushSubscriptions.revoked_within_days?(user, 7)
+
     # The event-filter URL param is read in `handle_params/3` (not
     # `mount/3`) so that `push_patch/2` from the chip-row handler
     # re-fires the read on every URL change — `mount/3` only runs
@@ -108,6 +116,7 @@ defmodule DtuAppWeb.NotificationsLive do
      # hook's first push lands.
      |> assign(:notification_state, %{"state" => "loading", "device" => nil})
      |> assign(:has_push_subscriptions, has_subscriptions)
+     |> assign(:recently_revoked_subscription, recently_revoked)
      # `:event_filters` is the chip-row's source of truth — the
      # list of values the template iterates to render one chip
      # each. Assigning it (rather than reading it from the module
@@ -282,9 +291,18 @@ defmodule DtuAppWeb.NotificationsLive do
   # permission but no service-worker subscription (e.g. iOS Safari
   # ≥ 16.4 granted permission but `PushManager` is undefined), and
   # we don't want to claim native push is on when it isn't.
+  #
+  # Recomputes `recently_revoked_subscription` too: `upsert/2` clears
+  # `deleted_at` on the re-activated endpoint, so the prompt should
+  # stop firing on this same render.
   @impl true
   def handle_event("push_subscribed", %{"endpoint" => _endpoint}, socket) do
-    {:noreply, assign(socket, :has_push_subscriptions, true)}
+    user = socket.assigns.current_scope.user
+
+    {:noreply,
+     socket
+     |> assign(:has_push_subscriptions, true)
+     |> assign(:recently_revoked_subscription, PushSubscriptions.revoked_within_days?(user, 7))}
   end
 
   def handle_event("save", %{"user" => user_params}, socket) do

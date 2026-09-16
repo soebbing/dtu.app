@@ -26,8 +26,14 @@ defmodule DtuAppWeb.NotificationCapabilityCardTest do
           → amber inset (iOS edge case)
         * `:granted + has_push_subscriptions + anything-else`
           → "Native push is on" emerald text
+        * `:granted + no-subscriptions + desktop + recently_revoked_subscription`
+          → amber inset + re-subscribe button
+          (overrides the "keep tab open" hint)
         * `:granted + no-subscriptions + desktop`
           → "Keep this tab open" emerald text
+        * `:granted + no-subscriptions + mobile + recently_revoked_subscription`
+          → amber inset + re-subscribe button
+          (overrides the base-copy-only fallback)
         * `:granted + no-subscriptions + mobile`
           → just the base "Notifications are enabled…" line, no
             inner hint
@@ -231,6 +237,76 @@ defmodule DtuAppWeb.NotificationCapabilityCardTest do
       refute html =~ "Keep this tab open to receive notifications"
       refute html =~ "Native push is on for this device"
       refute html =~ "iOS only fires OS notifications"
+    end
+  end
+
+  describe ":granted variant — recently-revoked subscription prompt" do
+    test "granted + no-subscriptions + recently_revoked_subscription=true → amber inset + re-subscribe button" do
+      html =
+        render_card(%{
+          state: state(%{"state" => "granted", "device" => "desktop"}),
+          has_push_subscriptions: false,
+          recently_revoked_subscription: true,
+          user_id: 1
+        })
+
+      assert html =~ "Your browser cleared its push subscription"
+      assert html =~ "border-amber-300"
+      # Replaces the existing "Keep this tab open" hint — silent
+      # drop is more urgent than a tab-open reminder.
+      refute html =~ "Keep this tab open to receive notifications"
+      # Wires the existing PushSubscribe JS hook to re-subscribe
+      # without the user having to revoke + re-grant permission.
+      assert html =~ ~s(id="notifications-re-subscribe")
+    end
+
+    test "granted + no-subscriptions + recently_revoked_subscription=true + mobile → still amber inset" do
+      html =
+        render_card(%{
+          state: state(%{"state" => "granted", "device" => "mobile"}),
+          has_push_subscriptions: false,
+          recently_revoked_subscription: true,
+          user_id: 1
+        })
+
+      assert html =~ "Your browser cleared its push subscription"
+      assert html =~ ~s(id="notifications-re-subscribe")
+    end
+
+    test "granted + no-subscriptions + recently_revoked_subscription=false → existing green hint (no regression)" do
+      html =
+        render_card(%{
+          state: state(%{"state" => "granted", "device" => "desktop"}),
+          has_push_subscriptions: false,
+          recently_revoked_subscription: false,
+          user_id: 1
+        })
+
+      assert html =~ "Keep this tab open to receive notifications"
+      refute html =~ "Your browser cleared its push subscription"
+      refute html =~ ~s(id="notifications-re-subscribe")
+    end
+
+    test "granted + subscriptions + recently_revoked_subscription=true → no amber inset (iOS edge case still wins)" do
+      # If the user has a live subscription, the recently-revoked
+      # signal is irrelevant — they're still getting push. Only the
+      # iOS edge case applies.
+      html =
+        render_card(%{
+          state:
+            state(%{
+              "state" => "granted",
+              "device" => "mobile",
+              "installed" => false
+            }),
+          has_push_subscriptions: true,
+          recently_revoked_subscription: true,
+          user_id: 1
+        })
+
+      assert html =~ "iOS only fires OS notifications from the home-screen app"
+      refute html =~ "Your browser cleared its push subscription"
+      refute html =~ ~s(id="notifications-re-subscribe")
     end
   end
 end

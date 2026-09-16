@@ -112,6 +112,30 @@ defmodule DtuApp.PushSubscriptionsTest do
       refute user_id == user_a.id
     end
 
+    test "re-subscribing a soft-deleted endpoint clears deleted_at and brings the row back into list_for_user/1" do
+      # Endpoints are stable across browser restarts when the push
+      # service hasn't fully revoked them. If the dispatcher hit a
+      # 404/410 and we soft-deleted, then the browser comes back
+      # with the same endpoint, we trust it — clear the soft-delete
+      # so the dispatcher fans out to it again and the capability
+      # card's "recently revoked" prompt stops firing.
+      user = user_fixture()
+      attrs = sub_attrs(endpoint: "https://push.example/revived")
+
+      {:ok, _first} = PushSubscriptions.upsert(user, attrs)
+      :ok = PushSubscriptions.delete_by_endpoint("https://push.example/revived")
+
+      # After the dispatcher's :gone, list_for_user/1 hides the row.
+      assert PushSubscriptions.list_for_user(user) == []
+      assert PushSubscriptions.revoked_within_days?(user, 7) == true
+
+      {:ok, revived} = PushSubscriptions.upsert(user, attrs)
+
+      assert revived.deleted_at == nil
+      assert PushSubscriptions.list_for_user(user) == [revived]
+      assert PushSubscriptions.revoked_within_days?(user, 7) == false
+    end
+
     test "rejects an endpoint that is not an https URL" do
       user = user_fixture()
       attrs = sub_attrs(endpoint: "http://insecure.example/foo")
@@ -164,16 +188,84 @@ defmodule DtuApp.PushSubscriptionsTest do
   end
 
   describe "delete_by_endpoint/1" do
-    test "removes the row regardless of owner" do
+    test "soft-deletes the row (sets deleted_at, keeps the row for the recently-revoked prompt)" do
       user = user_fixture()
       insert_sub(user, endpoint: "https://push.example/gone")
 
       assert :ok = PushSubscriptions.delete_by_endpoint("https://push.example/gone")
+
+      # Row stays in the DB (so the capability card can still detect
+      # "your subscription was just revoked"). The row is hidden from
+      # the dispatcher's list, not physically removed.
+      [persisted] =
+        Repo.all(from(s in PushSubscription, where: s.endpoint == ^"https://push.example/gone"))
+
+      assert persisted.deleted_at != nil
+    end
+
+    test "filters soft-deleted rows out of list_for_user/1" do
+      user = user_fixture()
+      insert_sub(user, endpoint: "https://push.example/soft-gone")
+      PushSubscriptions.delete_by_endpoint("https://push.example/soft-gone")
+
       assert PushSubscriptions.list_for_user(user) == []
     end
 
     test "is a no-op for an unknown endpoint" do
       assert :ok = PushSubscriptions.delete_by_endpoint("https://push.example/never-existed")
+    end
+
+    test "removes the row regardless of owner" do
+      # Kept as a regression test for the owner-agnostic contract:
+      # the dispatcher calls this without a user context, so it must
+      # prune any owner's row (not just the calling user's).
+      user_a = user_fixture()
+      user_b = user_fixture()
+      insert_sub(user_a, endpoint: "https://push.example/cross-owner")
+
+      assert :ok = PushSubscriptions.delete_by_endpoint("https://push.example/cross-owner")
+      assert PushSubscriptions.list_for_user(user_a) == []
+      assert PushSubscriptions.list_for_user(user_b) == []
+    end
+  end
+
+  describe "revoked_within_days?/2" do
+    test "returns true when a subscription was soft-deleted within the window" do
+      user = user_fixture()
+      insert_sub(user, endpoint: "https://push.example/recent")
+
+      PushSubscriptions.delete_by_endpoint("https://push.example/recent")
+
+      assert PushSubscriptions.revoked_within_days?(user, 7) == true
+    end
+
+    test "returns false when the most-recent soft-delete is older than the window" do
+      user = user_fixture()
+      insert_sub(user, endpoint: "https://push.example/old")
+
+      PushSubscriptions.delete_by_endpoint("https://push.example/old")
+
+      # Backdate `deleted_at` to 30 days ago — outside the 7-day window.
+      Repo.update_all(
+        from(s in PushSubscription, where: s.endpoint == ^"https://push.example/old"),
+        set: [deleted_at: DateTime.add(DateTime.utc_now(:second), -30 * 86_400, :second)]
+      )
+
+      assert PushSubscriptions.revoked_within_days?(user, 7) == false
+    end
+
+    test "returns false when the user has no soft-deleted subscriptions" do
+      user = user_fixture()
+      assert PushSubscriptions.revoked_within_days?(user, 7) == false
+    end
+
+    test "does not count another user's revoked subscriptions" do
+      user_a = user_fixture()
+      user_b = user_fixture()
+      insert_sub(user_b, endpoint: "https://push.example/other-users-row")
+      PushSubscriptions.delete_by_endpoint("https://push.example/other-users-row")
+
+      assert PushSubscriptions.revoked_within_days?(user_a, 7) == false
     end
   end
 

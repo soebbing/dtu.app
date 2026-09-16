@@ -40,6 +40,13 @@ defmodule DtuApp.PushSubscriptions.PushSubscription do
     # subscribe POST so the settings UI can show "Firefox on macOS"
     # etc. Diagnostic only; never sent to the push service.
     field :user_agent, :string
+    # Soft-delete marker. Set by `DtuApp.PushSubscriptions.delete_by_endpoint/1`
+    # when the push service returns 404/410 for this endpoint — we
+    # keep the row so the capability card can detect "your
+    # subscription was revoked recently" and prompt the user to
+    # re-subscribe. `list_for_user/1` filters these rows out so the
+    # dispatcher's hot path is unaffected.
+    field :deleted_at, :utc_datetime
 
     timestamps(type: :utc_datetime)
   end
