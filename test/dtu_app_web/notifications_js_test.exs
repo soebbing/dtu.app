@@ -58,12 +58,14 @@ defmodule DtuAppWeb.NotificationsJsTest do
   use ExUnit.Case, async: true
 
   @js_path "assets/js/notifications.js"
+  @format_path "assets/js/notifications_format.js"
   @bundled_path "priv/static/assets/js/app.js"
 
   setup do
     {:ok, source} = File.read(@js_path)
+    {:ok, formatter} = File.read(@format_path)
     bundled = if File.exists?(@bundled_path), do: File.read!(@bundled_path), else: ""
-    %{source: source, bundled: bundled}
+    %{source: source, formatter: formatter, bundled: bundled}
   end
 
   describe "handleNotify — the test event must always fire" do
@@ -155,7 +157,17 @@ defmodule DtuAppWeb.NotificationsJsTest do
   end
 
   describe "formatPayload — must honor server-provided title/body" do
-    test "honors payload.title for events outside the hard-coded taxonomy", %{source: source} do
+    # `formatPayload` lives in `@format_path` (extracted from
+    # `notifications.js` so it can be unit-tested via Node's built-in
+    # test runner without a browser — see
+    # `assets/js/notifications_format.test.js` for the strict
+    # behavioural tests). The substring pins below guard the
+    # contract *from* the formatter module so a future refactor that
+    # re-inlines the formatter back into `notifications.js` (and
+    # drops the import) fails this test loudly.
+    test "honors payload.title for events outside the hard-coded taxonomy", %{
+      formatter: formatter
+    } do
       # The test-notification button (and the dashboard's
       # `dtu_connection` events) ship a server-rendered
       # `title` / `body` / `tag` payload. Pre-fix the hook only
@@ -163,29 +175,31 @@ defmodule DtuAppWeb.NotificationsJsTest do
       # fell through to a hard-coded `"dtu.app"` title with a
       # `JSON.stringify(payload)` body, so the test button
       # rendered as "dtu.app" instead of "Test notification".
-      assert source =~ ~r/if\s*\(\s*payload\.title\s*\|\|\s*payload\.body\s*\)\s*\{/,
+      assert formatter =~ ~r/if\s*\(\s*payload\.title\s*\|\|\s*payload\.body\s*\)\s*\{/,
              "expected `formatPayload` to trust server-provided " <>
                "title/body when present (for the test button and the " <>
                "dashboard's dtu_connection events)."
     end
 
-    test "server-supplied title is preferred over the hard-coded 'dtu.app'", %{source: source} do
+    test "server-supplied title is preferred over the hard-coded 'dtu.app'", %{
+      formatter: formatter
+    } do
       # After the new branch is taken, the returned object's
       # `title` must be the server's title, not the hard-coded
       # fallback. This is what users see in the OS notification
       # banner.
-      assert source =~ ~r/title:\s*payload\.title\s*\|\|\s*["']dtu\.app["']/,
+      assert formatter =~ ~r/title:\s*payload\.title\s*\|\|\s*["']dtu\.app["']/,
              "expected `formatPayload`'s fallback branch to use the " <>
                "server's title verbatim."
     end
 
-    test "server-supplied tag is used for OS-level grouping", %{source: source} do
+    test "server-supplied tag is used for OS-level grouping", %{formatter: formatter} do
       # The server's `tag` is what the OS uses to coalesce
       # multiple notifications into one (e.g. the dashboard's
       # `dtu:<name>` tag groups all state changes for the same
       # inverter). Pre-fix the fallthrough used `misc:<date>`
       # which broke OS-level grouping.
-      assert source =~ ~r/tag:\s*payload\.tag\s*\|\|\s*`misc:/,
+      assert formatter =~ ~r/tag:\s*payload\.tag\s*\|\|\s*`misc:/,
              "expected `formatPayload` to honor the server's tag " <>
                "for OS-level notification grouping."
     end

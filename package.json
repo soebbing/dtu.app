@@ -4,7 +4,8 @@
   "description": "E2E Acceptance tests for DTU app using Playwright",
   "main": "index.js",
   "scripts": {
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:js": "node --test assets/js/**/*.test.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0"
