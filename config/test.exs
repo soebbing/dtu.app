@@ -104,12 +104,12 @@ config :phoenix,
 # tries to subscribe.
 config :web_push,
   finch: DtuAppWeb.WebPushFinch,
-  vapid: %{
+  vapid: [
     public_key:
       "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0",
     private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
     subject: "mailto:test@localhost"
-  }
+  ]
 
 # Explicit test value for the WebAuthn relying-party ID. Mirrors the
 # dev/prod default ("localhost") and forces a known value regardless of
