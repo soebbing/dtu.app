@@ -295,6 +295,65 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       refute html =~ "<img"
       assert attachments == []
     end
+
+    # Regression: some `rsvg-convert` builds on Alpine 3.19 exit 0 but
+    # write 0 bytes to the `-o` path (the PNG ends up on stdout instead).
+    # Pre-fix the email shipped with `attachment.data == ""` — the
+    # `cid:chart@sundo` reference was present but the MIME image part
+    # had an empty body, so Gmail rendered a broken-image icon and the
+    # text body LIED with "Today's power curve is attached as an image."
+    # Post-fix this falls through to the dashboard-link fallback (no
+    # attachment, no `cid:` reference, no misleading text).
+    test "falls back to the dashboard-link path when rsvg-convert exits 0 but writes 0 bytes",
+         %{user: user, payload: p} do
+      fake =
+        Path.join(
+          System.tmp_dir!(),
+          "rsvg-convert-empty-#{System.unique_integer([:positive])}.sh"
+        )
+
+      # Same arg-parse shape as the success-path fake, but truncate
+      # the output file to 0 bytes instead of writing PNG bytes.
+      # Exit 0, no error output — exactly what a "PNG went to stdout
+      # by accident" rsvg-convert invocation looks like to the caller.
+      script =
+        "#!/bin/sh\n" <>
+          "OUT=\"\"\n" <>
+          "while [ $# -gt 0 ]; do\n" <>
+          "  case \"$1\" in\n" <>
+          "    -o) OUT=\"$2\"; shift 2;;\n" <>
+          "    *) shift;;\n" <>
+          "  esac\n" <>
+          "done\n" <>
+          ": > \"$OUT\"\n"
+
+      File.write!(fake, script)
+      File.chmod!(fake, 0o755)
+      on_exit(fn -> File.rm(fake) end)
+
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, text, attachments} = SunDownEmail.render(user, p)
+
+      # No cid-attachment should ship — empty bytes would render as a
+      # broken image in Gmail and the text body would falsely claim an
+      # image is attached.
+      assert attachments == []
+
+      refute html =~ ~s(<img src="cid:),
+             "html must not reference a cid-attachment when the PNG bytes are empty"
+
+      # Fallback text — both the HTML body and the plain text body
+      # point the user at the dashboard URL.
+      assert html =~ "View today's power curve"
+      assert html =~ "/dashboard"
+      assert text =~ "View today's power curve"
+      assert text =~ "/dashboard"
+
+      # And critically: the misleading "attached as an image" line
+      # from the cid-attachment path must NOT appear.
+      refute text =~ "attached as an image"
+    end
   end
 
   describe "render/2 — <html lang> attribute" do

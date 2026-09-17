@@ -87,7 +87,33 @@ defmodule DtuApp.Emails.SunDownEmail do
               stderr_to_stdout: true
             )
 
-          {:ok, File.read!(tmp_out)}
+          # `rsvg-convert` exits 0 but writes 0 bytes to `-o` on some
+          # Alpine builds (the PNG ends up on stdout instead — the
+          # captured `_stdout` above would have it). Pre-fix the
+          # `Swoosh.Attachment` shipped with `data: ""`, the
+          # `Content-Transfer-Encoding: base64` part arrived at Gmail
+          # with an empty body, the `<img src="cid:chart@sundo">`
+          # rendered as a broken-image icon, and the text body LIED
+          # with "Today's power curve is attached as an image."
+          # Treat the empty case as a CLI failure and fall through to
+          # the dashboard-link fallback so the email at least tells
+          # the truth. Logged at :warning so an operator can spot a
+          # broken rsvg-convert install without waiting for a
+          # "chart missing" report.
+          case File.read!(tmp_out) do
+            "" ->
+              require Logger
+
+              Logger.warning(
+                "[sun_down_email] rsvg-convert #{cli} exited 0 but wrote 0 bytes; " <>
+                  "falling back to dashboard-link chart"
+              )
+
+              :unavailable
+
+            png ->
+              {:ok, png}
+          end
         rescue
           _ -> :unavailable
         catch
