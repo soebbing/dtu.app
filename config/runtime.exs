@@ -293,11 +293,11 @@ case config_env() do
 
     config :web_push,
       finch: DtuAppWeb.WebPushFinch,
-      vapid: %{
+      vapid: [
         public_key: vapid_pub,
         private_key: vapid_priv,
         subject: vapid_sub
-      }
+      ]
 end
 
 # ── Release / git version ──────────────────────────────────────────────────

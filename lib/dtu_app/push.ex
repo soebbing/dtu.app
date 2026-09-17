@@ -45,11 +45,25 @@ defmodule DtuApp.Push do
   Reads from `config :web_push, :vapid, :public_key`. Returns `nil`
   if no VAPID keypair is configured — callers should treat that as
   "native push is disabled in this deployment" rather than raising.
+
+  Accepts both shapes:
+
+    * keyword list — `[public_key: …, private_key: …, subject: …]`
+    * map          — `%{public_key: …, private_key: …, subject: …}`
+
+  The runtime config writes the keyword-list shape because
+  `web_push` 0.1's `Vapid.config!/0` calls `Keyword.get/3` on the
+  value (which only matches keyword lists, not maps). We accept
+  both here so test fixtures can use either — without a tolerant
+  wrapper, switching the runtime to the shape `web_push` expects
+  would silently disable push delivery (the dispatcher would
+  short-circuit on `public_key/0 == nil`).
   """
   @spec public_key() :: String.t() | nil
   def public_key do
     case Application.get_env(:web_push, :vapid) do
       %{public_key: pk} when is_binary(pk) and pk != "" -> pk
+      [{:public_key, pk} | _] when is_binary(pk) and pk != "" -> pk
       _ -> nil
     end
   end

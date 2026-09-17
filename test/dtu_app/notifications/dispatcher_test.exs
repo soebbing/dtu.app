@@ -716,6 +716,166 @@ defmodule DtuApp.Notifications.DispatcherTest do
     end
   end
 
+  describe "fire/3 push path with VAPID configured" do
+    # Regression for the production warning
+    #
+    #     [dispatcher] push failed event=sun_down user=1
+    #       reason=no function clause matching in Keyword.get/3
+    #
+    # The `web_push` 0.1 dependency's `Vapid.config!/0` calls
+    # `Keyword.get/3` on the `:vapid` application config — which
+    # only matches keyword lists. Our `config/runtime.exs` was
+    # writing it as a map (`%{public_key: …, private_key: …,
+    # subject: …}`), so the moment a user had a live
+    # `PushSubscription` row and a SunDown event fired, the
+    # dispatcher's `try_push/3` rescue caught a
+    # `FunctionClauseError` and logged the warning above. Every
+    # push silently fell through to email-only delivery.
+    #
+    # We exercise the crash path by calling
+    # `WebPush.Vapid.authorization_header/1` directly — the
+    # function the `web_push` library calls internally to build
+    # the VAPID Authorization header. This isolates the bug to
+    # the Vapid config-shape layer (the dispatcher's rescue just
+    # re-emits whatever `web_push` raises as a `[dispatcher] push
+    # failed ...` warning).
+    #
+    # The full dispatch-level regression is covered by the
+    # "no Keyword.get/3 warning in dispatcher" test below —
+    # which seeds a real subscription so the dispatcher actually
+    # reaches the Vapid path, and uses valid p256dh/auth bytes so
+    # the crash, if any, is unambiguously the Vapid one and not
+    # an Encryption length assertion.
+
+    test "Vapid.config!/0 raises on map-shaped :vapid config (proves bug exists)" do
+      original = Application.get_env(:web_push, :vapid)
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        %{public_key: "x", private_key: "y", subject: "mailto:t@x"}
+      )
+
+      try do
+        assert_raise FunctionClauseError, ~r/Keyword.get\/3/, fn ->
+          WebPush.Vapid.authorization_header("https://push.example/x")
+        end
+      after
+        if original,
+          do: Application.put_env(:web_push, :vapid, original),
+          else: Application.delete_env(:web_push, :vapid)
+      end
+    end
+
+    test "Vapid.config!/0 succeeds on keyword-list :vapid config (regression fixed)" do
+      original = Application.get_env(:web_push, :vapid)
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key:
+          "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0",
+        private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
+        subject: "mailto:test@localhost"
+      )
+
+      try do
+        header = WebPush.Vapid.authorization_header("https://push.example/x")
+        assert is_binary(header)
+        assert String.starts_with?(header, "vapid t=")
+        assert String.contains?(header, ", k=")
+      after
+        if original,
+          do: Application.put_env(:web_push, :vapid, original),
+          else: Application.delete_env(:web_push, :vapid)
+      end
+    end
+
+    test "dispatcher fire/3 with live subscription logs no Keyword.get/3 warning (full path regression)" do
+      # Full integration: real user, real subscription, VAPID set
+      # to the fixed shape. The dispatcher's try_push/3 rescue
+      # must NOT log a `[dispatcher] push failed ... reason=
+      # ...Keyword.get/3` warning — which is the literal warning
+      # the user reported in production. We use a real P-256
+      # public key in `p256dh` (87-char base64url → 65-byte
+      # uncompressed point) so encryption doesn't trip its own
+      # length assertion and obscure the Vapid result.
+      #
+      # We also assert the dispatcher actually REACHED the push
+      # path — `Push.public_key/0` returns a key (so the
+      # short-circuit branch is skipped), but the push itself
+      # fails for a TRANSPORT reason (Finch can't reach
+      # `push.example`). The telemetry outcome will be :push_error
+      # (transport), NOT :push_zero (which would mean VAPID was
+      # treated as unset — i.e. the wrapper still only matched
+      # maps). This is what proves the regression: with the
+      # map-shaped config, every push was a :push_error from
+      # `Vapid.config!/0`; with the keyword-list config + fixed
+      # wrapper, it's a :push_error from a downstream transport
+      # failure, which is the correct behaviour.
+      u = user_with("push", down: true)
+
+      {:ok, _sub} =
+        DtuApp.PushSubscriptions.upsert(u, %{
+          "endpoint" => "https://push.example/regression",
+          "p256dh" =>
+            "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0",
+          "auth" => "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
+          "user_agent" => "test"
+        })
+
+      original = Application.get_env(:web_push, :vapid)
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key:
+          "BJTUEpHLN69OMVAoFchd_RCm7kzXYyiGLhj-yHFwp0dCHciZUh6XRChhfY6R0cEm4CZ5whrZPaNszMPlWkBMuy0",
+        private_key: "xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc",
+        subject: "mailto:test@localhost"
+      )
+
+      try do
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            Dispatcher.fire(u, "sun_down", %{
+              event: "sun_down",
+              title: "T",
+              body: ["b"],
+              tag: "t",
+              today_yield_kwh: 0.0,
+              peak_power_w: 0.0
+            })
+          end)
+
+        refute log =~ "Keyword.get/3",
+               "dispatcher push path crashed inside web_push's Vapid.config!/0 — the runtime config is still writing the legacy map shape"
+
+        # The dispatcher reached the push path (VAPID was not
+        # treated as unset). Telemetry emits :push_error for the
+        # transport failure, NOT :push_zero (which would mean the
+        # wrapper still only matched maps).
+        events = captured_events()
+
+        push_events = Enum.filter(events, &(&1.channel == "push"))
+
+        assert [push_ev] = push_events
+        assert push_ev.outcome in [:push_error, :push_ok, :push_zero]
+
+        if push_ev.outcome == :push_zero do
+          flunk(
+            "dispatcher treated VAPID as unset (short-circuit on `public_key/0 == nil`) — " <>
+              "the wrapper likely still only matches the legacy map shape"
+          )
+        end
+      after
+        if original,
+          do: Application.put_env(:web_push, :vapid, original),
+          else: Application.delete_env(:web_push, :vapid)
+      end
+    end
+  end
+
   defp captured_events do
     :persistent_term.get({__MODULE__, :events}, [])
   end

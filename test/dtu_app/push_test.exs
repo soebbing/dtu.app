@@ -109,6 +109,61 @@ defmodule DtuApp.PushTest do
         end
       end
     end
+
+    test "accepts a keyword-list VAPID config (regression for web_push 0.1's Keyword.get/3 crash)" do
+      # `web_push` 0.1's `Vapid.config!/0` only matches keyword
+      # lists; our `config/runtime.exs` writes the VAPID keys as
+      # a keyword list (the only shape that makes `web_push`
+      # happy). Our wrapper must therefore also accept the
+      # keyword-list shape — otherwise switching the runtime
+      # config to the shape `web_push` expects would silently
+      # disable push delivery (the dispatcher would short-
+      # circuit on `public_key/0 == nil`).
+      original = Application.get_env(:web_push, :vapid)
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: "BKeywordListShape",
+        private_key: "TestPrivateKey",
+        subject: "mailto:test@example.com"
+      )
+
+      try do
+        assert Push.public_key() == "BKeywordListShape"
+      after
+        if original do
+          Application.put_env(:web_push, :vapid, original)
+        else
+          Application.delete_env(:web_push, :vapid)
+        end
+      end
+    end
+
+    test "keyword-list VAPID with empty public_key still returns nil" do
+      # Same defensive guard as the map variant: an empty string
+      # in the `:public_key` slot means "operator forgot to set
+      # the env var", not "valid deployment".
+      original = Application.get_env(:web_push, :vapid)
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: "",
+        private_key: "TestPrivateKey",
+        subject: "mailto:test@example.com"
+      )
+
+      try do
+        assert Push.public_key() == nil
+      after
+        if original do
+          Application.put_env(:web_push, :vapid, original)
+        else
+          Application.delete_env(:web_push, :vapid)
+        end
+      end
+    end
   end
 
   describe "deliver/2" do
