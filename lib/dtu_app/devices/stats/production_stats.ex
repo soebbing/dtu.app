@@ -16,6 +16,18 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   metering; the consumption-side integration is private to this
   module as `integrate_export_kwh/4`.
 
+  The returned struct carries a `has_readings: boolean` field —
+  true iff at least one row exists in `readings` for any of the
+  user's `dtu_ids` within `[today_start, today_end]` (any
+  `mppt_index`). This is the canonical "did the user publish any
+  reading today?" signal that downstream predicates (notably
+  `Notifications.SunDown.Payload.build_payload/3`) consume; it
+  intentionally does NOT filter on `mppt_index = 0` because some
+  firmware (AhoyDTU's per-MPPT-only config) never synthesises the
+  AC aggregate row, and the older `per_series == []`-based
+  predicate would otherwise fire a misleading "Your devices haven't
+  reported any readings today" history row for those fleets.
+
   Re-exported through `DtuApp.Devices.Stats` via `defdelegate` so
   existing call sites continue to work unchanged.
   """
@@ -150,7 +162,17 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
         total_yield: 0.0,
         peak_power: 0.0,
         peak_time: nil,
-        per_series: []
+        per_series: [],
+        # Has ANY reading been written for this user inside today's
+        # window? `false` is the correct answer when the user owns
+        # no devices — there's no row that could match. The
+        # predicate in `Notifications.SunDown.Payload.build_payload/3`
+        # short-circuits to `nil` when this is `false`, which is
+        # what suppresses the "no readings today" history row for
+        # users with no devices. (See
+        # `silent drop when build_payload/2 returns nil` in
+        # `sun_down_notifier_test.exs`.)
+        has_readings: false
       }
     else
       # "Recent" reads against `readings.inserted_at`, which is written
@@ -168,6 +190,36 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
       # bounds the DISTINCT ON + chart-points queries use below.
       today_start = utc_start
       today_end = utc_end
+
+      # `has_readings` is the canonical "did this user publish any
+      # reading inside today's window?" signal — consumed by
+      # `Notifications.SunDown.Payload.build_payload/3`'s predicate
+      # so the producer doesn't write a misleading
+      # "Your devices haven't reported any readings today"
+      # history row for fleets whose firmware only emits per-MPPT
+      # rows (`mppt_index >= 1`) and never the synthesised AC
+      # aggregate row (`mppt_index = 0`). Unlike `per_series` —
+      # which is built off `ac_latest_per_inverter`'s DISTINCT ON
+      # with an `mppt_index = 0` filter — this check is
+      # mppt_index-agnostic and `inverter_serial`-agnostic (a
+      # legacy `_fleet` row still counts as a reading; that path
+      # has its own data-shape consequences but a silent-drop is
+      # strictly worse than a noisy day-zero entry).
+      #
+      # The query is bounded on both `dtu_id` (via the `in ^dtu_ids`
+      # list, which the planner turns into an index seek per id)
+      # AND on `inserted_at` (via the day's `[today_start,
+      # today_end]` window, which keeps the scan inside a single
+      # hypertable chunk). Postgres' native `EXISTS` short-circuits
+      # on the first match — the planner never walks the whole
+      # chunk even if the user has thousands of readings today.
+      has_readings =
+        Repo.exists?(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end
+        )
 
       # Perf #12: a single DISTINCT ON returns the per-inverter "latest
       # reading of the day" row (one per (dtu, serial), filtered to
@@ -394,7 +446,14 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
               today_yield: Float.round((row.yield_day || 0.0) / 1000, 3),
               peak_power: Float.round(Map.get(per_series_peak, series, 0.0), 1)
             }
-          end)
+          end),
+
+        # Mppt_index-agnostic "any readings today?" flag. See the
+        # `has_readings` query above for the rationale (per-MPPT
+        # fleets with no synthesised AC aggregate row would
+        # otherwise trip the `per_series == []` predicate in
+        # `Notifications.SunDown.Payload.build_payload/3`).
+        has_readings: has_readings
       }
     end
   end

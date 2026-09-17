@@ -191,4 +191,101 @@ defmodule DtuApp.Notifications.SunDown.PayloadTest do
       assert augmented.event == bare.event
     end
   end
+
+  describe "build_payload/3 — silent-drop regression (per-MPPT-only fleet)" do
+    # Regression: a user with devices whose firmware publishes
+    # per-MPPT rows (`mppt_index >= 1`) but never the synthesised
+    # AC-aggregate row (`mppt_index = 0`) used to get a
+    # "Your devices haven't reported any readings today" history
+    # row on every sunset — even though their devices were
+    # actively reporting all day. The producer's
+    # `try_fire/1` writes that row when `build_payload/3` returns
+    # `nil`, and the OLD predicate
+    # (`current_power == 0.0 and per_series == []`) tripped
+    # exactly when:
+    #
+    #   * `current_power == 0.0` — true at sunset (idle window
+    #     has elapsed, the inverter's last AC uplink is past the
+    #     2-minute "recent" slice), AND
+    #   * `per_series == []` — `ac_latest_per_inverter` filters
+    #     to `mppt_index = 0` (the AC aggregate row); on a
+    #     per-MPPT-only fleet that DISTINCT ON is empty even when
+    #     the per-MPPT rows are flowing.
+    #
+    # The corrected predicate checks `today.has_readings` from the
+    # stats struct, which runs the same DISTINCT ON without the
+    # `mppt_index = 0` filter — so a per-MPPT-only fleet correctly
+    # reports `has_readings == true` and the producer no longer
+    # writes the misleading "no readings" row.
+
+    # Pick a timestamp that's reliably within today's local-day
+    # window (UTC for the test environment). Wall-clock-agnostic
+    # via the same `< today_start ? bump forward : keep` shim used
+    # by the chart-regression tests — straddling midnight UTC is
+    # the failure mode, not the happy path.
+    defp reading_within_today_local(seconds_ago) do
+      reading_at =
+        DateTime.utc_now()
+        |> DateTime.truncate(:second)
+        |> DateTime.add(-seconds_ago, :second)
+
+      case DateTime.compare(reading_at, DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")) do
+        :lt -> DateTime.add(reading_at, 2 * 3600, :second)
+        _ -> reading_at
+      end
+    end
+
+    test "returns a non-nil payload when the fleet only emitted per-MPPT rows today (no mppt_index = 0)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      dtu = DtuApp.DevicesFixtures.device_fixture(user, %{name: "Per-MPPT Inverter"})
+
+      # Per-MPPT row (`mppt_index: 1`) — what AhoyDTU-style
+      # firmware emits when it has multiple MPPT channels but no
+      # synthesised AC aggregate row. `ac_power` is still
+      # populated on the ch1 row in the parser's current
+      # implementation (AhoyDTU's `ACPower` field is mapped onto
+      # `ac_power` regardless of channel), but the
+      # `ac_latest_per_inverter` DISTINCT ON inside
+      # `production_stats.ex` filters it out via
+      # `r.mppt_index == 0`. That's exactly the bug: a fleet with
+      # 100 W of per-MPPT data registers as "no readings today"
+      # to the producer.
+      reading_at = reading_within_today_local(15 * 60)
+
+      {:ok, _} =
+        DtuApp.Devices.create_reading(%{
+          dtu_id: dtu.id,
+          inverter_serial: "INV",
+          mppt_index: 1,
+          ac_power: 100.0,
+          inserted_at: reading_at
+        })
+
+      payload = Payload.build_payload(user, Date.utc_today(), 0)
+
+      assert payload != nil,
+             "expected build_payload/3 to return a real payload — " <>
+               "the device reported per-MPPT rows earlier today; " <>
+               "the OLD `per_series == []` predicate tripped on the " <>
+               "mppt_index = 0 filter even though readings exist"
+
+      assert payload.event == "sun_down"
+      assert payload.tag == "sun_down:#{Date.to_iso8601(Date.utc_today())}"
+    end
+
+    test "still returns nil when the user has devices but no readings at all today" do
+      # Negative control for the regression above: when there are
+      # genuinely no readings, `has_readings == false` MUST still
+      # short-circuit to `nil`. A user with a freshly-created
+      # device that never uplinked is the canonical case — the
+      # silent-day history row is the correct UX here (see
+      # `silent drop when build_payload/2 returns nil` in the
+      # notifier test), the regression is only that the predicate
+      # was firing it for fleets that DID report.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      _dtu = DtuApp.DevicesFixtures.device_fixture(user, %{name: "Silent DTU"})
+
+      assert Payload.build_payload(user, Date.utc_today(), 0) == nil
+    end
+  end
 end

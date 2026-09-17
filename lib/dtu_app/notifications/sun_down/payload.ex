@@ -42,20 +42,40 @@ defmodule DtuApp.Notifications.SunDown.Payload do
   schema stores Wh; the JS formatter expects kWh). `peak_power` is
   already W.
 
-  Returns `nil` when the user has no devices (no point firing a
-  summary that reads "0.0 kWh today" — the user has nothing to
-  summarise). Caller is expected to no-op on `nil`.
+  Returns `nil` when the user has no readings today at all (no
+  devices, OR devices that never uplinked today — the user has
+  nothing to summarise). Caller is expected to no-op on `nil`.
   """
   @spec build_payload(User.t(), Date.t(), integer()) :: map() | nil
   def build_payload(%User{} = user, %Date{} = local_date, tz_offset_seconds)
       when is_integer(tz_offset_seconds) do
     today = Devices.get_daily_stats_for_local_day(user, nil, local_date, tz_offset_seconds)
 
-    # A user with no devices / no readings at all returns
-    # `current_power: 0.0` and `per_series: []`. Skip the notification
-    # — the user has nothing to summarise, so the OS banner would
-    # just read "Today: 0.0 kWh, peak 0.0 W." (annoying and useless).
-    if today.current_power == 0.0 and today.per_series == [] do
+    # `today.has_readings` is the canonical "did this user publish
+    # any reading inside today's window?" signal — it runs an
+    # `EXISTS` query against `readings` without an `mppt_index`
+    # filter (so per-MPPT-only fleets, where the synthesised
+    # `mppt_index = 0` AC aggregate row is never written, register
+    # correctly) and without an `inverter_serial` filter (so a
+    # legacy `_fleet` row still counts as a reading). When the user
+    # has nothing to summarise, return `nil` so the producer's
+    # `try_fire/1` writes the silent-day history row (the
+    # user-visible "Your devices haven't reported any readings
+    # today" message) without locking the day away via a
+    # `sun_down_fires` dedup insert — see the
+    # `silent drop when build_payload/2 returns nil` describe block
+    # in `sun_down_notifier_test.exs` for that contract.
+    #
+    # Pre-fix predicate `current_power == 0.0 and per_series == []`
+    # had the same intent but `per_series` is sourced from
+    # `ac_latest_per_inverter`'s DISTINCT ON, which filters to
+    # `mppt_index = 0` — AhoyDTU-style firmware that publishes
+    # only per-MPPT channels had `per_series == []` despite
+    # reading all day, and the producer wrote the misleading
+    # "no readings today" row for them every sunset. See
+    # `payload_test.exs` regression under
+    # `build_payload/3 — silent-drop regression (per-MPPT-only fleet)`.
+    if today.has_readings == false do
       nil
     else
       yesterday =
