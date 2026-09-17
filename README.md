@@ -46,7 +46,7 @@ Grafana + an auth layer. dtu.app is the single BEAM release that does all of it:
 
 | Layer        | Choice                                                      |
 | ------------ | ----------------------------------------------------------- |
-| Language     | Elixir (~1.16) on the BEAM                                  |
+| Language     | Elixir (~1.18) on the BEAM                                  |
 | Web          | Phoenix 1.8 + LiveView, served by Bandit                    |
 | Realtime     | Embedded MQTT broker (MqttX) over Thousand Island           |
 | Database     | PostgreSQL 16 + TimescaleDB (hypertables + caggs)           |
