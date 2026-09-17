@@ -52,6 +52,20 @@ defmodule DtuApp.Emails.SunDownEmail do
   so tests can inject a fake (success path) or `nil` (fallback path)
   without touching the host filesystem.
   """
+  # The PNG signature every valid PNG starts with (RFC 2083). Any
+  # bytes without this prefix at offset 0 are not a PNG — likely
+  # an `rsvg-convert` failure mode that leaked stderr or wrote
+  # a partial/empty placeholder to `-o`.
+  @png_signature <<137, 80, 78, 71, 13, 10, 26, 10>>
+
+  # Healthy floor for an 800-px-wide chart SVG. The empty-state
+  # placeholder compresses to ~1.4 KB; the real chart compresses to
+  # ~6 KB. Anything under this either means rsvg-convert bailed
+  # silently mid-encode (truncated IHDR/IDAT), or the chart is so
+  # sparse it would render as effectively blank — both produce a
+  # broken-image experience in Gmail.
+  @min_png_byte_size 1024
+
   @spec chart_attachment(String.t()) :: {:ok, binary()} | :unavailable
   def chart_attachment(svg) when is_binary(svg) do
     cli_path =
@@ -87,32 +101,45 @@ defmodule DtuApp.Emails.SunDownEmail do
               stderr_to_stdout: true
             )
 
-          # `rsvg-convert` exits 0 but writes 0 bytes to `-o` on some
-          # Alpine builds (the PNG ends up on stdout instead — the
-          # captured `_stdout` above would have it). Pre-fix the
-          # `Swoosh.Attachment` shipped with `data: ""`, the
-          # `Content-Transfer-Encoding: base64` part arrived at Gmail
-          # with an empty body, the `<img src="cid:chart@sundo">`
-          # rendered as a broken-image icon, and the text body LIED
-          # with "Today's power curve is attached as an image."
-          # Treat the empty case as a CLI failure and fall through to
-          # the dashboard-link fallback so the email at least tells
-          # the truth. Logged at :warning so an operator can spot a
-          # broken rsvg-convert install without waiting for a
-          # "chart missing" report.
-          case File.read!(tmp_out) do
-            "" ->
+          # Defense-in-depth on the PNG output. `rsvg-convert` can
+          # exit 0 and still produce a broken attachment:
+          #
+          #   * writes 0 bytes to `-o` (some Alpine 3.19 builds emit
+          #     the PNG to stdout instead — the captured `_stdout`
+          #     above has it, but `-o` ends up empty)
+          #   * writes a non-PNG payload (truncated output, or a
+          #     stderr fragment captured into `-o` via some CLI
+          #     mis-parsing)
+          #   * writes a pathologically-small PNG (encoder aborted
+          #     mid-write, or the chart is so sparse the rendered
+          #     image would be effectively blank)
+          #
+          # Pre-fix each of these arrived at Gmail as a valid
+          # `Content-Transfer-Encoding: base64` image/png part —
+          # either with an empty body (case 1) or with bytes that
+          # don't decode to a usable image (cases 2/3). In every
+          # case the `<img src="cid:chart@sundo">` rendered as a
+          # broken-image icon AND the text body LIED with
+          # "Today's power curve is attached as an image."
+          # Reject all three at the source so the email falls
+          # through to the dashboard-link fallback and the text
+          # body tells the truth.
+          png = File.read!(tmp_out)
+          reason = classify_png_failure(png)
+
+          case reason do
+            nil ->
+              {:ok, png}
+
+            _ ->
               require Logger
 
               Logger.warning(
-                "[sun_down_email] rsvg-convert #{cli} exited 0 but wrote 0 bytes; " <>
-                  "falling back to dashboard-link chart"
+                "[sun_down_email] rsvg-convert #{cli} produced a #{reason} PNG " <>
+                  "(#{byte_size(png)} bytes); falling back to dashboard-link chart"
               )
 
               :unavailable
-
-            png ->
-              {:ok, png}
           end
         rescue
           _ -> :unavailable
@@ -349,4 +376,22 @@ defmodule DtuApp.Emails.SunDownEmail do
       |> String.replace(">", "&gt;")
 
   defp escape(_), do: ""
+
+  # Returns a short failure tag when the bytes don't look like a
+  # usable PNG, or `nil` when they're acceptable. Three classes —
+  # `:empty`, `:no_png_signature`, `:too_small` — line up with the
+  # three failure modes described at the call site; the tag is the
+  # only thing logged, so an operator triaging a "chart missing"
+  # report knows which rsvg-convert install to inspect.
+  @spec classify_png_failure(binary()) :: atom() | nil
+  defp classify_png_failure(png) when png == <<>>, do: :empty
+  defp classify_png_failure(png) when byte_size(png) < @min_png_byte_size, do: :too_small
+
+  defp classify_png_failure(png) do
+    if :binary.part(png, 0, 8) == @png_signature do
+      nil
+    else
+      :no_png_signature
+    end
+  end
 end
