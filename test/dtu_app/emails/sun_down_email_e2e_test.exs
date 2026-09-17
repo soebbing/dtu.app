@@ -101,14 +101,20 @@ defmodule DtuApp.Emails.SunDownEmailE2ETest do
         "rsvg-convert-fake-e2e-#{System.unique_integer([:positive])}.sh"
       )
 
+    # Pad the 1x1 PNG to > @min_png_byte_size (1024) so the fake passes
+    # the success-path classifier. Same trick as the unit test fixture —
+    # the e2e test only cares about MIME structure, not PNG decodability.
+    padded_bytes = @png_1x1_byte_list ++ List.duplicate(0, 1000)
+
     octal =
-      @png_1x1_byte_list
+      padded_bytes
       |> Enum.map(&("\\" <> Integer.to_string(&1, 8)))
       |> Enum.join()
 
     script =
       "#!/bin/sh\n" <>
-        "# fake rsvg-convert for e2e tests: read input file, write fixed PNG\n" <>
+        "# fake rsvg-convert for e2e tests: read input file, write " <>
+        "padded 1x1 PNG (1069 bytes) to pass the success-path classifier\n" <>
         "OUT=\"\"\n" <>
         "INPUT=\"\"\n" <>
         "while [ $# -gt 0 ]; do\n" <>
@@ -124,7 +130,8 @@ defmodule DtuApp.Emails.SunDownEmailE2ETest do
 
     on_exit(fn -> File.rm(fake) end)
 
-    {:ok, fake_cli: fake, png_bytes: :erlang.list_to_binary(@png_1x1_byte_list)}
+    padded_png = :erlang.list_to_binary(@png_1x1_byte_list ++ List.duplicate(0, 1000))
+    {:ok, fake_cli: fake, png_bytes: padded_png}
   end
 
   defp build_email(user, payload, fake_cli) do

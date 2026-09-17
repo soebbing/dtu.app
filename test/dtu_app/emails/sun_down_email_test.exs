@@ -198,20 +198,27 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       # rsvg-convert real API: positional input file + `-o output.png`.
       # The fake CLI accepts that exact shape, writes the same byte
       # sequence to the `-o` path, and exits 0.
+      # Pad the 1x1 PNG to > @min_png_byte_size (1024) so the bytes pass
+      # the success-path fake's classifier. The 1x1 byte list is only
+      # 69 bytes — well under the healthy 800x280-chart floor — but the
+      # success-path fake represents "rsvg-convert actually converted a
+      # chart", so the fixture has to look like one. Append 1000 zero
+      # bytes to the valid 1x1 PNG header (PNG magic + IHDR + IDAT +
+      # IEND); the resulting blob is 1069 bytes, starts with the PNG
+      # signature, and passes chart_attachment/1's classifier. The test
+      # never decodes the PNG — it just verifies the function passed
+      # the bytes through to the Swoosh.Attachment.
+      padded_bytes = @png_1x1_byte_list ++ List.duplicate(0, 1000)
+
       octal =
-        @png_1x1_byte_list
+        padded_bytes
         |> Enum.map(&("\\" <> Integer.to_string(&1, 8)))
         |> Enum.join()
 
       script =
         "#!/bin/sh\n" <>
-          "# fake rsvg-convert: copy the positional input to /dev/null,\n" <>
-          "# write a fixed 1x1 PNG to the -o output, exit 0.\n" <>
-          "INPUT=\"$@\"\n" <>
-          "# the input is the last arg; find it\n" <>
-          "for arg in \"$@\"; do\n" <>
-          "  if [ -f \"$arg\" ]; then INPUT=\"$arg\"; fi\n" <>
-          "done\n" <>
+          "# fake rsvg-convert: write a padded 1x1 PNG (1069 bytes, " <>
+          "starts with PNG magic) to -o, exit 0.\n" <>
           "OUT=\"\"\n" <>
           "while [ $# -gt 0 ]; do\n" <>
           "  case \"$1\" in\n" <>
@@ -226,7 +233,8 @@ defmodule DtuApp.Emails.SunDownEmailTest do
 
       on_exit(fn -> File.rm(fake) end)
 
-      {:ok, fake_cli: fake, png_bytes: :erlang.list_to_binary(@png_1x1_byte_list)}
+      padded_png = :erlang.list_to_binary(@png_1x1_byte_list ++ List.duplicate(0, 1000))
+      {:ok, fake_cli: fake, png_bytes: padded_png}
     end
 
     test "html contains <img src=\"cid:chart@sundo\">, no raw <svg> (success path)",
@@ -352,6 +360,113 @@ defmodule DtuApp.Emails.SunDownEmailTest do
 
       # And critically: the misleading "attached as an image" line
       # from the cid-attachment path must NOT appear.
+      refute text =~ "attached as an image"
+    end
+
+    # Defense-in-depth: rsvg-convert can also write non-empty bytes
+    # that AREN'T a PNG (truncated output, wrong-format output, a
+    # stderr leak captured into `-o` because of some CLI quirk). The
+    # success-path check `png != ""` lets those bytes through, the
+    # email ships with a non-PNG "image/png" attachment, and Gmail
+    # renders a broken-image icon — exactly the original bug with
+    # different bytes. Reject anything that doesn't start with the
+    # 8-byte PNG signature (`\x89PNG\r\n\x1a\n`) and fall back to
+    # the dashboard-link path so the email at least tells the truth.
+    test "falls back to the dashboard-link path when rsvg-convert writes non-PNG bytes",
+         %{user: user, payload: p} do
+      fake =
+        Path.join(
+          System.tmp_dir!(),
+          "rsvg-convert-garbage-#{System.unique_integer([:positive])}.sh"
+        )
+
+      # Exit 0, write a handful of ASCII bytes to `-o` (mimics a
+      # CLI that wrote the PNG to stdout and left a stderr fragment
+      # in the output file via some `2>&1` mis-parsing).
+      script =
+        "#!/bin/sh\n" <>
+          "OUT=\"\"\n" <>
+          "while [ $# -gt 0 ]; do\n" <>
+          "  case \"$1\" in\n" <>
+          "    -o) OUT=\"$2\"; shift 2;;\n" <>
+          "    *) shift;;\n" <>
+          "  esac\n" <>
+          "done\n" <>
+          "printf 'rsvg-convert: error: no input file\\n' > \"$OUT\"\n"
+
+      File.write!(fake, script)
+      File.chmod!(fake, 0o755)
+      on_exit(fn -> File.rm(fake) end)
+
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, text, attachments} = SunDownEmail.render(user, p)
+
+      assert attachments == [],
+             "non-PNG bytes must not be shipped as an image/png attachment"
+
+      refute html =~ ~s(<img src="cid:),
+             "html must not reference a cid-attachment when bytes are not a valid PNG"
+
+      assert html =~ "View today's power curve"
+      assert html =~ "/dashboard"
+      assert text =~ "View today's power curve"
+      assert text =~ "/dashboard"
+      refute text =~ "attached as an image"
+    end
+
+    # Defense-in-depth: even a structurally-valid PNG that's
+    # pathologically small for an 800px-wide chart is suspect — a
+    # healthy 800x280 chart compresses to a few KB at minimum
+    # (the empty-state SVG alone produces ~1.4 KB; the real chart
+    # SVG produces ~6 KB). Anything under 1 KB either means the
+    # decoder gave up early, the SVG was so sparse that the chart
+    # is effectively blank, or rsvg-convert bailed silently — all
+    # cases where the cid attachment would render as a broken or
+    # blank image. Treat as a CLI failure and fall back.
+    test "falls back to the dashboard-link path when rsvg-convert writes a suspiciously small PNG",
+         %{user: user, payload: p} do
+      fake =
+        Path.join(
+          System.tmp_dir!(),
+          "rsvg-convert-tiny-#{System.unique_integer([:positive])}.sh"
+        )
+
+      # Same byte sequence as the success-path fake, but truncated to
+      # 32 bytes (well under the 1 KB minimum for an 800-wide chart).
+      # This corresponds to a real failure mode where the PNG was
+      # written but the encoder aborted after the IHDR/IDAT headers
+      # and the file got cut short — looks valid to `File.read!/1`\'s
+      # `!= ""` check but renders as a broken or zero-pixel image.
+      truncated =
+        @png_1x1_byte_list
+        |> Enum.take(32)
+        |> Enum.map(&("\\" <> Integer.to_string(&1, 8)))
+        |> Enum.join()
+
+      script =
+        "#!/bin/sh\n" <>
+          "OUT=\"\"\n" <>
+          "while [ $# -gt 0 ]; do\n" <>
+          "  case \"$1\" in\n" <>
+          "    -o) OUT=\"$2\"; shift 2;;\n" <>
+          "    *) shift;;\n" <>
+          "  esac\n" <>
+          "done\n" <>
+          "printf \'" <> truncated <> "\' > \"$OUT\"\n"
+
+      File.write!(fake, script)
+      File.chmod!(fake, 0o755)
+      on_exit(fn -> File.rm(fake) end)
+
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, text, attachments} = SunDownEmail.render(user, p)
+
+      assert attachments == []
+      refute html =~ ~s(<img src="cid:)
+      assert html =~ "View today's power curve"
+      assert text =~ "View today's power curve"
       refute text =~ "attached as an image"
     end
   end
