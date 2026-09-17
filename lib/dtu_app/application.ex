@@ -28,6 +28,25 @@ defmodule DtuApp.Application do
     # never back up unrelated HTTP work. `config :web_push, finch:
     # DtuAppWeb.WebPushFinch` (in `runtime.exs`) tells the library
     # which pool to use.
+    #
+    # Protocol choice matters: APNs (`web.push.apple.com`) requires
+    # HTTP/2 since iOS 16.4 (March 2023). Finch defaults to
+    # `protocols: [:http1]` — against an HTTP/2-only server, ALPN
+    # negotiation fails and the request times out, surfacing as
+    # `[web_push] transport failure: %Finch.TransportError{reason: :timeout}`
+    # in prod (the regression that PR #310 unmasked after it
+    # unblocked the prior `Keyword.get/3` crash). Listing both
+    # `[:http1, :http2]` lets Finch pick via ALPN — older push
+    # services (FCM/Mozilla) still negotiate HTTP/1 if they prefer
+    # it, modern ones get the h2 stream-multiplexing they need.
+    #
+    # `conn_opts: [timeout: 15_000]` widens Finch's 5-second
+    # connect_timeout. APNs cold-TLS to a remote region can eat 3-4 s
+    # before the handshake completes; 5 s is enough most of the time
+    # but the tail produces intermittent `Mint.TransportError{reason: :timeout}`
+    # even with HTTP/2 enabled. 15 s gives the cold-start path
+    # headroom while still failing fast on genuinely unreachable
+    # hosts (which fail in <1 s).
     # 15-min TTL cache for Open-Meteo responses, keyed by
     # 1°-rounded coords + local date. Drives the cloud-cover
     # band + stat card on the dashboard; pure in-memory, so the
@@ -60,7 +79,14 @@ defmodule DtuApp.Application do
          DtuApp.Repo,
          {DNSCluster, query: Application.get_env(:dtu_app, :dns_cluster_query) || :ignore},
          {Phoenix.PubSub, name: DtuApp.PubSub},
-         {Finch, name: DtuAppWeb.WebPushFinch},
+         {Finch,
+          name: DtuAppWeb.WebPushFinch,
+          pools: %{
+            default: [
+              protocols: [:http1, :http2],
+              conn_opts: [timeout: 15_000]
+            ]
+          }},
          {DtuApp.Accounts.PasskeyChallengeCache, []},
          {DtuApp.Weather.Cache, []},
          {DtuApp.Time.Cache, []},

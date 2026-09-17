@@ -44,4 +44,38 @@ defmodule DtuApp.ApplicationTest do
              "release boot script, so any call site crashes production boot. " <>
              "Use `Application.get_env/3` against a config key instead."
   end
+
+  test "WebPushFinch Finch pool configures HTTP/2 for APNs compatibility" do
+    # APNs at web.push.apple.com requires HTTP/2 since iOS 16.4 (March 2023).
+    # Without `:http2` in the pool's `:protocols`, Finch defaults to `[:http1]`,
+    # ALPN negotiation fails against the h2-only APNs endpoint, and the
+    # outbound request eventually times out — surfaced in prod as
+    # `[web_push] transport failure: %Finch.TransportError{reason: :timeout, …}`
+    # (the bug PR #310 unmasked after fixing the prior `Keyword.get/3` crash
+    # that was short-circuiting the push before it ever reached the network).
+    #
+    # Source-level assertion (matching the `Mix`-atom-check pattern above):
+    # Finch's public introspection only exposes runtime pool metrics, not the
+    # validated `:protocols` config, so reading `:sys.get_state/1` on a pool
+    # worker would couple this test to Finch internals. A regex on the source
+    # file catches the regression — anyone simplifying the child spec back to
+    # the bare `{Finch, name: DtuAppWeb.WebPushFinch}` form (HTTP/1 default)
+    # will trip the assertion.
+    #
+    # The regex uses `/s` (dotall) so `.` matches newlines, since the Finch
+    # child spec spans multiple lines once the `:pools` map is added.
+    source = File.read!("lib/dtu_app/application.ex")
+
+    assert Regex.match?(
+             ~r/name:\s*DtuAppWeb\.WebPushFinch.*:http2/s,
+             source
+           ),
+           "WebPushFinch Finch pool must include `:http2` in `:protocols` so " <>
+             "APNs (web.push.apple.com, HTTP/2-only since iOS 16.4) can negotiate " <>
+             "the protocol via ALPN. Add `protocols: [:http1, :http2]` (or " <>
+             "`[:http2]`) to the `{Finch, name: DtuAppWeb.WebPushFinch, …}` " <>
+             "child spec in `lib/dtu_app/application.ex`. The default of " <>
+             "`[:http1]` produces `Mint.TransportError{reason: :timeout}` " <>
+             "against any HTTP/2-only push service."
+  end
 end
