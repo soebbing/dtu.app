@@ -858,7 +858,7 @@ sign-in. Number formatting (`format_number/3`) is locale-aware:
 
 | Layer        | Choice                                                          |
 | ------------ | --------------------------------------------------------------- |
-| Language     | Elixir 1.16.2 / OTP 26.2.2                                      |
+| Language     | Elixir 1.18.5 / OTP 27.3.4.17                                      |
 | Web          | Phoenix 1.8 + LiveView 1.2, served by Bandit                    |
 | Realtime     | Embedded MQTT broker (`mqttx`) over `thousand_island`           |
 | Database     | PostgreSQL 16 + TimescaleDB (hypertables + caggs)               |
@@ -974,7 +974,7 @@ bin/gen-vapid                 Generate VAPID keypair, write to .env
 
 ### 4.1 Prerequisites
 
-- **Erlang/OTP 26.2.2** and **Elixir 1.16.2**. CI uses
+- **Erlang/OTP 27.3.4.17** and **Elixir 1.18.5**. CI uses
   `erlef/setup-beam@v1` to pin; locally, asdf or kiex works fine.
 - **Node.js 20** (CI uses `actions/setup-node@v4`).
 - **PostgreSQL 16 with TimescaleDB**, either the
@@ -1164,7 +1164,7 @@ Behind TLS (Traefik / Caddy / nginx / cloud LB). `PHX_SCHEME=https` +
 
 ### 6.5 Dockerfile (multi-stage release)
 
-- **Builder stage** on `hexpm/elixir:1.16.2-erlang-26.2.1-alpine-3.19.1`:
+- **Builder stage** on `hexpm/elixir:1.18.5-erlang-27.3.4.17-alpine-3.21.7`:
   installs `build-base git curl ca-certificates`,
   `mix deps.get --only $MIX_ENV` with `MIX_ENV=prod`, copies
   `config/config.exs` + `config/prod.exs` for dep compilation, runs
@@ -1173,7 +1173,7 @@ Behind TLS (Traefik / Caddy / nginx / cloud LB). `PHX_SCHEME=https` +
   `config/runtime.exs`, `ARG RELEASE_VERSION="dev"` →
   `ENV RELEASE_VERSION=…`, then `mix release` produces
   `_build/prod/rel/dtu_app`.
-- **Runtime stage** on `alpine:3.19.1`: `libstdc++ openssl
+- **Runtime stage** on `alpine:3.21`: `libstdc++ openssl
   ncurses-libs ca-certificates`, copies only the final release,
   copies `rel/docker-entrypoint.sh`, `USER nobody`, `ENV HOME=/app`,
   `ENTRYPOINT ["/app/docker-entrypoint.sh"]`.

@@ -2458,7 +2458,7 @@ defmodule DtuAppWeb.DashboardLiveTest do
     #
     #   request_id=… [error] ** (FunctionClauseError) no function clause
     #     matching in Float.ceil/2
-    #       (elixir 1.16.2) lib/float.ex:285: Float.ceil(nil, 0)
+    #       (elixir 1.18.5) lib/float.ex:285: Float.ceil(nil, 0)
     #       (dtu_app 0.1.0) lib/dtu_app_web/live/dashboard_live.ex:512:
     #         DtuAppWeb.DashboardLive.assign_line_chart_data/5
     #       (dtu_app 0.1.0) lib/dtu_app_web/live/dashboard_live.ex:87:

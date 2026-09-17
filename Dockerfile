@@ -1,5 +1,16 @@
-# Find eligible builder image
-FROM hexpm/elixir:1.16.2-erlang-26.2.1-alpine-3.19.1 AS builder
+# Find eligible builder image.
+#
+# Pinned to Elixir 1.18+ because `web_push ~> 0.1` calls the bare
+# `JSON.encode!/1` / `JSON.encode!/0` modules — that's Elixir 1.18's
+# built-in JSON stdlib module, NOT OTP's `:json` (Erlang 27+) and NOT
+# the third-party `Jason`. Elixir < 1.18 has no top-level `JSON`
+# module, so any `WebPush.send/3` call raises
+# `function JSON.encode!/1 is undefined (module JSON is not available)`,
+# which our `DtuApp.Notifications.Dispatcher` rescue turns into the
+# `[dispatcher] push failed ... reason=function JSON.encode!/1 is
+# undefined (module JSON is not available)` warning.
+# https://hexdocs.pm/elixir/1.18.0/JSON.html
+FROM hexpm/elixir:1.18.5-erlang-27.3.4.17-alpine-3.21.7 AS builder
 
 # install build dependencies
 RUN apk add --no-cache build-base git curl ca-certificates
@@ -43,7 +54,13 @@ RUN mix release
 
 # start a new build stage so that the final image will only contain
 # the compiled release and other runtime necessities
-FROM alpine:3.19.1
+#
+# Must track the builder's Alpine minor (3.21.x) so the libstdc++
+# / openssl / ncurses-libs runtime libs we copy in below are the
+# same abi as what the builder linked against. Mixing a newer
+# builder with an older runtime base gives missing-symbol surprises
+# at `bin/dtu_app` startup, not at build time.
+FROM alpine:3.21
 
 # `wget` is here for the docker-compose healthcheck
 # (`wget --spider http://localhost:4000/healthz`). It's the
@@ -63,9 +80,10 @@ FROM alpine:3.19.1
 # strips inline `<svg>` from email HTML bodies, so the chart is
 # rendered to PNG and attached via `cid:` instead. The runtime image
 # MUST carry the binary (not just the librsvg library), because the
-# email module shells out via `System.cmd/3`. On Alpine 3.19 the
-# `rsvg-convert` binary lives in its own community package — `librsvg`
-# ships only the shared library.
+# email module shells out via `System.cmd/3`. On Alpine 3.21 the
+# `rsvg-convert` binary still lives in its own community package —
+# `librsvg` ships only the shared library — so this explicit package
+# list stays unchanged across the 3.20 → 3.21 bump.
 RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget rsvg-convert
 
 WORKDIR "/app"

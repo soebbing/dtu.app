@@ -174,9 +174,10 @@ defmodule DtuApp.MqttBroker.Broker do
   #
   # Extracted into a helper (rather than inlining as a multi-line
   # `if`) so the predicate reads as a single boolean expression;
-  # the Elixir 1.18 formatter adds parens around `&&` clauses that
-  # also use `and` continuations, which doesn't match the project's
-  # CI-pinned Elixir 1.16 formatter. Keep this as one expression.
+  # the Elixir formatter inserts parens around `&&` clauses that
+  # also use `and` continuations on multi-line predicates, which
+  # doesn't match the project's CI-pinned formatter. Keep this as
+  # one expression.
   defp forwards_to?(%{device: %{kind: :mqtt_ro_sink, user_id: uid}}, %{
          user_id: uid,
          kind: source_kind
