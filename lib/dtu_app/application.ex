@@ -73,6 +73,19 @@ defmodule DtuApp.Application do
     # the 1D live branch still picks up fresh readings via
     # `handle_info({:reading, ...})` → `invalidate/1`.
     # See `DtuAppWeb.DashboardLive.TodayDataCache`.
+    #
+    # Boot-time VAPID keypair integrity check. Runs once, BEFORE
+    # the supervision tree starts, so a mismatched
+    # VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY pair fails the container
+    # at startup with a clear, actionable error rather than
+    # silently shipping pushes that all come back 403 BadJwtToken
+    # from APNs. The validator is a no-op when VAPID isn't
+    # configured (`:test` env, dev mode without env vars), so
+    # this is safe to call unconditionally — see
+    # `DtuApp.Push.VapidKeypairValidator` moduledoc for the
+    # full rationale.
+    :ok = DtuApp.Push.VapidKeypairValidator.validate!()
+
     children =
       ([
          DtuAppWeb.Telemetry,
