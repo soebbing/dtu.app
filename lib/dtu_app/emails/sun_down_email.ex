@@ -58,6 +58,19 @@ defmodule DtuApp.Emails.SunDownEmail do
   # a partial/empty placeholder to `-o`.
   @png_signature <<137, 80, 78, 71, 13, 10, 26, 10>>
 
+  # The IEND chunk (RFC 2083) is the last chunk in every structurally
+  # complete PNG: 4-byte length (always 0) + "IEND" type + 4-byte CRC
+  # (always `0xAE 0x42 0x60 0x82`, the CRC of the literal "IEND"
+  # string). A PNG without a terminating IEND chunk is missing its
+  # end-of-image marker — PNG decoders bail mid-decode and Gmail
+  # renders the cid-attachment as a flat grey rectangle exactly the
+  # size of the chart slot (the user-visible 2026-09-18 regression on
+  # tag 2026-09-17-7: rsvg-convert exited 0 with a PNG-shaped blob
+  # whose first 8 bytes were the PNG signature and whose size was
+  # over the 1024-byte floor, but whose IDAT chunks were truncated
+  # before the IEND terminator was written).
+  @png_iend_chunk <<0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82>>
+
   # Healthy floor for an 800-px-wide chart SVG. The empty-state
   # placeholder compresses to ~1.4 KB; the real chart compresses to
   # ~6 KB. Anything under this either means rsvg-convert bailed
@@ -378,20 +391,38 @@ defmodule DtuApp.Emails.SunDownEmail do
   defp escape(_), do: ""
 
   # Returns a short failure tag when the bytes don't look like a
-  # usable PNG, or `nil` when they're acceptable. Three classes —
-  # `:empty`, `:no_png_signature`, `:too_small` — line up with the
-  # three failure modes described at the call site; the tag is the
-  # only thing logged, so an operator triaging a "chart missing"
-  # report knows which rsvg-convert install to inspect.
+  # usable PNG, or `nil` when they're acceptable. Four classes —
+  # `:empty`, `:no_png_signature`, `:too_small`, `:truncated` — line
+  # up with the failure modes described at the call site; the tag
+  # is the only thing logged, so an operator triaging a "chart
+  # missing" report knows which rsvg-convert install to inspect.
   @spec classify_png_failure(binary()) :: atom() | nil
   defp classify_png_failure(png) when png == <<>>, do: :empty
   defp classify_png_failure(png) when byte_size(png) < @min_png_byte_size, do: :too_small
 
   defp classify_png_failure(png) do
-    if :binary.part(png, 0, 8) == @png_signature do
-      nil
-    else
-      :no_png_signature
+    cond do
+      not valid_png_signature?(png) -> :no_png_signature
+      not ends_with_iend_chunk?(png) -> :truncated
+      true -> nil
     end
   end
+
+  defp valid_png_signature?(png),
+    do: :binary.part(png, 0, 8) == @png_signature
+
+  # RFC 2083: every structurally-complete PNG ends with the 12-byte
+  # IEND chunk `00 00 00 00 49 45 4E 44 AE 42 60 82`. A file that
+  # starts with the PNG signature but doesn't terminate with IEND is
+  # missing its end-of-image marker — PNG decoders refuse the file,
+  # Gmail renders a flat grey rectangle in the img slot, and the
+  # `<img src="cid:chart@sundo">` element collapses silently. The
+  # check is O(1) (a 12-byte `binary.part/3` tail comparison) so it's
+  # safe to run on every chart conversion.
+  defp ends_with_iend_chunk?(png) when byte_size(png) >= 12 do
+    iend_offset = byte_size(png) - 12
+    :binary.part(png, iend_offset, 12) == @png_iend_chunk
+  end
+
+  defp ends_with_iend_chunk?(_), do: false
 end

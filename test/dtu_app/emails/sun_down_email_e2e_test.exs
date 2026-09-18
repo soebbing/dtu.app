@@ -104,7 +104,11 @@ defmodule DtuApp.Emails.SunDownEmailE2ETest do
     # Pad the 1x1 PNG to > @min_png_byte_size (1024) so the fake passes
     # the success-path classifier. Same trick as the unit test fixture —
     # the e2e test only cares about MIME structure, not PNG decodability.
-    padded_bytes = @png_1x1_byte_list ++ List.duplicate(0, 1000)
+    # Insert 1000 zero bytes BEFORE the trailing IEND chunk so the blob
+    # stays structurally complete (`chart_attachment/1` rejects PNG
+    # bytes that lack the terminating IEND — see `classify_png_failure/1`).
+    {png_body, iend_chunk} = Enum.split(@png_1x1_byte_list, -12)
+    padded_bytes = png_body ++ List.duplicate(0, 1000) ++ iend_chunk
 
     octal =
       padded_bytes
@@ -130,7 +134,8 @@ defmodule DtuApp.Emails.SunDownEmailE2ETest do
 
     on_exit(fn -> File.rm(fake) end)
 
-    padded_png = :erlang.list_to_binary(@png_1x1_byte_list ++ List.duplicate(0, 1000))
+    {png_body, iend_chunk} = Enum.split(@png_1x1_byte_list, -12)
+    padded_png = :erlang.list_to_binary(png_body ++ List.duplicate(0, 1000) ++ iend_chunk)
     {:ok, fake_cli: fake, png_bytes: padded_png}
   end
 
