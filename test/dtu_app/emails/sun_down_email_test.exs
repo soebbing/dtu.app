@@ -202,13 +202,17 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       # the success-path fake's classifier. The 1x1 byte list is only
       # 69 bytes — well under the healthy 800x280-chart floor — but the
       # success-path fake represents "rsvg-convert actually converted a
-      # chart", so the fixture has to look like one. Append 1000 zero
-      # bytes to the valid 1x1 PNG header (PNG magic + IHDR + IDAT +
-      # IEND); the resulting blob is 1069 bytes, starts with the PNG
-      # signature, and passes chart_attachment/1's classifier. The test
-      # never decodes the PNG — it just verifies the function passed
-      # the bytes through to the Swoosh.Attachment.
-      padded_bytes = @png_1x1_byte_list ++ List.duplicate(0, 1000)
+      # chart", so the fixture has to look like one. The 1x1 PNG already
+      # carries a terminating IEND chunk in its last 12 bytes; insert
+      # 1000 zero bytes BEFORE the IEND so the blob stays structurally
+      # complete (`chart_attachment/1`'s classifier checks for a
+      # trailing IEND chunk, see `classify_png_failure/1`). The
+      # resulting blob is 1069 bytes, starts with the PNG signature,
+      # ends with IEND, and passes the classifier. The test never
+      # decodes the PNG — it just verifies the function passed the
+      # bytes through to the Swoosh.Attachment.
+      {png_body, iend_chunk} = Enum.split(@png_1x1_byte_list, -12)
+      padded_bytes = png_body ++ List.duplicate(0, 1000) ++ iend_chunk
 
       octal =
         padded_bytes
@@ -233,7 +237,8 @@ defmodule DtuApp.Emails.SunDownEmailTest do
 
       on_exit(fn -> File.rm(fake) end)
 
-      padded_png = :erlang.list_to_binary(@png_1x1_byte_list ++ List.duplicate(0, 1000))
+      {png_body, iend_chunk} = Enum.split(@png_1x1_byte_list, -12)
+      padded_png = :erlang.list_to_binary(png_body ++ List.duplicate(0, 1000) ++ iend_chunk)
       {:ok, fake_cli: fake, png_bytes: padded_png}
     end
 
@@ -467,6 +472,75 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       refute html =~ ~s(<img src="cid:)
       assert html =~ "View today's power curve"
       assert text =~ "View today's power curve"
+      refute text =~ "attached as an image"
+    end
+
+    # Defense-in-depth, take 4: rsvg-convert can also exit 0 and
+    # write a PNG-sized blob that STARTS with the PNG signature but
+    # is structurally incomplete (no terminating IEND chunk). The
+    # success-path checks (`png != ""`, byte_size > 1024, first 8
+    # bytes == PNG signature) all pass for such a blob — but the
+    # email client cannot decode a PNG without an IEND chunk, and
+    # renders the broken image as a flat grey rectangle exactly
+    # the size of the chart slot. That was the user-visible
+    # 2026-09-18 regression on tag 2026-09-17-7 (PRs #307/#308
+    # already covered empty / non-PNG / stub-sized output).
+    # Reject any PNG that doesn't end with the canonical IEND
+    # chunk and fall back to the dashboard-link path so the email
+    # body tells the truth instead of carrying a broken-image
+    # attachment.
+    test "falls back to the dashboard-link path when rsvg-convert writes a truncated PNG (no IEND chunk)",
+         %{user: user, payload: p} do
+      fake =
+        Path.join(
+          System.tmp_dir!(),
+          "rsvg-convert-truncated-#{System.unique_integer([:positive])}.sh"
+        )
+
+      # 8-byte PNG signature + ~2000 zero bytes. Starts with the
+      # signature, well over the 1024-byte floor, but no IEND
+      # chunk at the tail — exactly the failure mode a real
+      # rsvg-convert hit when it crashed mid-encode (truncated
+      # IDAT, no terminating chunks written).
+      truncated_png_bytes =
+        [137, 80, 78, 71, 13, 10, 26, 10] ++ List.duplicate(0, 2000)
+
+      octal =
+        truncated_png_bytes
+        |> Enum.map(&("\\" <> Integer.to_string(&1, 8)))
+        |> Enum.join()
+
+      script =
+        "#!/bin/sh\n" <>
+          "# fake rsvg-convert: emit a PNG-shaped blob with a valid\n" <>
+          "# signature but no IEND chunk, exit 0.\n" <>
+          "OUT=\"\"\n" <>
+          "while [ $# -gt 0 ]; do\n" <>
+          "  case \"$1\" in\n" <>
+          "    -o) OUT=\"$2\"; shift 2;;\n" <>
+          "    *) shift;;\n" <>
+          "  esac\n" <>
+          "done\n" <>
+          "printf '" <> octal <> "' > \"$OUT\"\n"
+
+      File.write!(fake, script)
+      File.chmod!(fake, 0o755)
+      on_exit(fn -> File.rm(fake) end)
+
+      Application.put_env(:dtu_app, :swoosh_email_chart_cli, fake)
+
+      {html, text, attachments} = SunDownEmail.render(user, p)
+
+      assert attachments == [],
+             "truncated PNG (signature but no IEND) must not be shipped as image/png"
+
+      refute html =~ ~s(<img src="cid:),
+             "html must not reference a cid-attachment when the PNG is truncated"
+
+      assert html =~ "View today's power curve"
+      assert html =~ "/dashboard"
+      assert text =~ "View today's power curve"
+      assert text =~ "/dashboard"
       refute text =~ "attached as an image"
     end
   end
