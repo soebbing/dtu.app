@@ -145,28 +145,32 @@ if config_env() == :prod do
   #
   # Three delivery modes, picked in order of precedence:
   #
-  #   1. RESEND_API_KEY set  -> Swoosh.Adapters.SMTP talking to Resend's
-  #                              SMTP endpoint (smtp.resend.com:587, STARTTLS,
-  #                              username "resend", password = API key).
-  #                              We deliberately use SMTP rather than
-  #                              Swoosh.Adapters.Resend (the JSON API)
-  #                              because the JSON path drops inline cid:
-  #                              image bodies on the way to Gmail — the
-  #                              `image/png` MIME part arrives with all
-  #                              the right headers (`Content-ID`,
-  #                              `Content-Disposition: inline`,
-  #                              `Content-Transfer-Encoding: base64`)
-  #                              but an empty body, so Gmail renders the
-  #                              chart slot as a flat grey rectangle.
-  #                              (Reproduced on tags 2026-09-17-4,
-  #                              2026-09-18-2, 2026-09-18-3 against the
-  #                              same payload that Swoosh hands to
-  #                              Resend — see
-  #                              test/dtu_app/emails/sun_down_email_resend_payload_test.exs
-  #                              for the JSON shape.)
-  #                              SMTP forwards our raw multipart/related
-  #                              bytes verbatim; Resend can't drop what
-  #                              it never re-assembled.
+  #   1. RESEND_API_KEY set  -> Swoosh.Adapters.Resend (production email via
+  #                              the Resend transactional API).
+  #
+  #                              History note (2026-09-18): tag 2026-09-18-4
+  #                              tried switching this to Swoosh.Adapters.SMTP
+  #                              against smtp.resend.com:587 to bypass what
+  #                              looked like Resend's JSON→MIME
+  #                              reconstruction dropping inline cid: image
+  #                              bodies on the way to Gmail. The SMTP path
+  #                              was reverted in tag 2026-09-18-5 because it
+  #                              did not actually deliver emails end-to-end
+  #                              (no proof the chart was preserved — only
+  #                              proof that Swoosh built correct wire MIME
+  #                              bytes locally). We are back on the JSON
+  #                              path, accepting the empty-chart regression
+  #                              until the diagnostic surface that proves
+  #                              which transport + which config actually
+  #                              works is in place.
+  #
+  #                              See test/dtu_app/emails/sun_down_email_resend_payload_test.exs
+  #                              for the JSON envelope shape, and
+  #                              test/dtu_app/emails/sun_down_email_smtp_payload_test.exs
+  #                              for the wire-MIME shape that the abandoned
+  #                              SMTP path produced (dormant — kept so the
+  #                              next SMTP attempt has a contract to compare
+  #                              against).
   #   2. MAIL_DELIVERY=mailpit -> Swoosh.Adapters.SMTP pointed at a local
   #                              Mailpit server (see docker-compose.yml) so
   #                              magic-link emails can be inspected in a web
@@ -180,17 +184,10 @@ if config_env() == :prod do
   # for Resend, and a domain Mailpit will accept for the SMTP fallback
   # (anything works locally).
   cond do
-    (resend_key = System.get_env("RESEND_API_KEY", "")) != "" ->
+    System.get_env("RESEND_API_KEY", "") != "" ->
       config :dtu_app, DtuApp.Mailer,
-        adapter: Swoosh.Adapters.SMTP,
-        relay: "smtp.resend.com",
-        port: 587,
-        username: "resend",
-        password: resend_key,
-        tls: :always,
-        auth: :always,
-        domain: System.get_env("SMTP_DOMAIN", "resend.dev"),
-        retries: 2
+        adapter: Swoosh.Adapters.Resend,
+        api_key: System.fetch_env!("RESEND_API_KEY")
 
     System.get_env("MAIL_DELIVERY", "") == "mailpit" ->
       config :dtu_app, DtuApp.Mailer,
