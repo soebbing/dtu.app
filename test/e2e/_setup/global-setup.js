@@ -59,6 +59,15 @@ function runSeed() {
     VAPID_PRIVATE_KEY:
       process.env.VAPID_PRIVATE_KEY || 'xE0IOv4yhbso6voJbQkZj2X9kEr8zsh9yTZouFU9cYc',
     VAPID_SUBJECT: process.env.VAPID_SUBJECT || 'mailto:e2e@example.com',
+    // `config/runtime.exs` refuses to boot in :prod without SMTP_RELAY
+    // even for the seed command, which never actually delivers mail.
+    // Set a placeholder so the seed starts; the SMTP path is exercised
+    // separately by the unit tests (Swoosh.Adapters.Test adapter in
+    // :test, Swoosh.Adapters.SMTP against mailpit in :dev/prod).
+    SMTP_RELAY: process.env.SMTP_RELAY || 'localhost',
+    SMTP_PORT: process.env.SMTP_PORT || '1025',
+    SMTP_TLS: process.env.SMTP_TLS || 'never',
+    SMTP_AUTH_MODE: process.env.SMTP_AUTH_MODE || 'never',
     MIX_ENV: process.env.MIX_ENV || 'prod',
   };
 

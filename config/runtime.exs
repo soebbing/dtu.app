@@ -140,67 +140,172 @@ if config_env() == :prod do
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
+end
 
-  # ## Mailer
-  #
-  # Three delivery modes, picked in order of precedence:
-  #
-  #   1. RESEND_API_KEY set  -> Swoosh.Adapters.Resend (production email via
-  #                              the Resend transactional API).
-  #
-  #                              History note (2026-09-18): tag 2026-09-18-4
-  #                              tried switching this to Swoosh.Adapters.SMTP
-  #                              against smtp.resend.com:587 to bypass what
-  #                              looked like Resend's JSON→MIME
-  #                              reconstruction dropping inline cid: image
-  #                              bodies on the way to Gmail. The SMTP path
-  #                              was reverted in tag 2026-09-18-5 because it
-  #                              did not actually deliver emails end-to-end
-  #                              (no proof the chart was preserved — only
-  #                              proof that Swoosh built correct wire MIME
-  #                              bytes locally). We are back on the JSON
-  #                              path, accepting the empty-chart regression
-  #                              until the diagnostic surface that proves
-  #                              which transport + which config actually
-  #                              works is in place.
-  #
-  #                              See test/dtu_app/emails/sun_down_email_resend_payload_test.exs
-  #                              for the JSON envelope shape, and
-  #                              test/dtu_app/emails/sun_down_email_smtp_payload_test.exs
-  #                              for the wire-MIME shape that the abandoned
-  #                              SMTP path produced (dormant — kept so the
-  #                              next SMTP attempt has a contract to compare
-  #                              against).
-  #   2. MAIL_DELIVERY=mailpit -> Swoosh.Adapters.SMTP pointed at a local
-  #                              Mailpit server (see docker-compose.yml) so
-  #                              magic-link emails can be inspected in a web
-  #                              UI at http://localhost:8025 without an
-  #                              external account
-  #   3. fallback            -> Swoosh.Adapters.Local (in-memory; emails are
-  #                              swallowed, the magic-link URL appears in the
-  #                              server logs / IEx session)
-  #
-  # MAIL_FROM must be an address on a domain verified in your Resend account
-  # for Resend, and a domain Mailpit will accept for the SMTP fallback
-  # (anything works locally).
-  cond do
-    System.get_env("RESEND_API_KEY", "") != "" ->
-      config :dtu_app, DtuApp.Mailer,
-        adapter: Swoosh.Adapters.Resend,
-        api_key: System.fetch_env!("RESEND_API_KEY")
-
-    System.get_env("MAIL_DELIVERY", "") == "mailpit" ->
-      config :dtu_app, DtuApp.Mailer,
-        adapter: Swoosh.Adapters.SMTP,
-        relay: System.get_env("SMTP_RELAY", "mailpit"),
-        port: String.to_integer(System.get_env("SMTP_PORT", "1025")),
-        domain: System.get_env("SMTP_DOMAIN", "localhost"),
-        authentication: :none,
-        tls: :never
-
-    true ->
-      :ok
+# ## Mailer — SMTP transport, configured entirely via env vars
+#
+# Single Swoosh.Adapters.SMTP config; the local Mailpit sidecar (see
+# docker-compose.yml) and a real production relay (SES, Mailgun,
+# Postmark, Fastmail, ...) use the same code path — the only
+# difference is the relay/port/auth/TLS values, which are all
+# environment-driven. No JSON API path: Resend's JSON→MIME
+# reconstruction drops inline `image/png` attachment bodies, which is
+# what produced the grey rectangle in the SunDown chart email. SMTP
+# forwards raw multipart bytes, so cid-attached PNGs survive.
+#
+# Per-env resolution:
+#
+#   :test  -> Swoosh.Adapters.Test is set in config/test.exs; this
+#             block does not run for :test.
+#   :dev   -> falls back to localhost:1025 (Mailpit) when SMTP_RELAY
+#             is unset, so `mix phx.server` Just Works against the
+#             compose sidecar.
+#   :prod  -> refuses to start without SMTP_RELAY (env validation
+#             here, in addition to whatever the Swoosh SMTP adapter
+#             itself raises on a nil relay).
+#
+# Env vars:
+#
+#   SMTP_RELAY       (reqd in :prod)  Hostname / IP of the SMTP server.
+#   SMTP_PORT        (default 587)    Standard submission port. Use 465
+#                                     when SMTP_TLS=always.
+#   SMTP_DOMAIN      (default PHX_HOST) HELO/EHLO domain.
+#   SMTP_USERNAME    (optional)       Set when the relay requires
+#                                     authentication. Pair with
+#                                     SMTP_PASSWORD.
+#   SMTP_PASSWORD    (optional)       Required iff SMTP_USERNAME is set.
+#   SMTP_TLS         (default :if_available)
+#                                     :always        — implicit TLS,
+#                                                      usually :465.
+#                                     :if_available  — opportunistic
+#                                                      STARTTLS,
+#                                                      usually :587.
+#                                     :never         — plain SMTP, no
+#                                                      TLS (Mailpit,
+#                                                      internal relays).
+#   SMTP_AUTH_MODE   (default :auto)  :auto  -> :username_password if
+#                                            both SMTP_USERNAME and
+#                                            SMTP_PASSWORD are set,
+#                                            else :none.
+#                                     :always -> always use the
+#                                            credentials (errors if
+#                                            either is empty).
+#                                     :never  -> never authenticate.
+#
+# MAIL_FROM must be an address the relay accepts. For SES/Mailgun/
+# Postmark that means a verified-sender (or verified-domain) address;
+# for Mailpit anything works.
+if config_env() != :test do
+  if config_env() == :prod and System.get_env("SMTP_RELAY", "") == "" do
+    raise """
+    environment variable SMTP_RELAY is missing.
+    Set SMTP_RELAY (and SMTP_PORT/SMTP_USERNAME/SMTP_PASSWORD/SMTP_TLS as
+    required by your relay) before starting in :prod. See .env.example
+    for the full list.
+    """
   end
+
+  smtp_relay_env = System.get_env("SMTP_RELAY", "") |> String.trim()
+  is_dev = config_env() == :dev
+
+  smtp_relay =
+    cond do
+      smtp_relay_env == "" and is_dev -> "localhost"
+      smtp_relay_env == "" -> ""
+      true -> smtp_relay_env
+    end
+
+  smtp_port =
+    case System.get_env("SMTP_PORT", "") |> String.trim() do
+      "" -> 587
+      port -> String.to_integer(port)
+    end
+
+  smtp_domain =
+    System.get_env("SMTP_DOMAIN", "")
+    |> String.trim()
+    |> case do
+      "" -> System.get_env("PHX_HOST", "localhost")
+      domain -> domain
+    end
+
+  # SMTP_TLS default is env-aware: :dev/:test defaults to :never (Mailpit,
+  # internal relays don't do TLS); :prod defaults to :if_available
+  # (opportunistic STARTTLS, the standard for production relays).
+  smtp_tls_default = if config_env() == :prod, do: "if_available", else: "never"
+
+  smtp_tls =
+    case System.get_env("SMTP_TLS", smtp_tls_default) |> String.trim() do
+      "" ->
+        String.to_atom(smtp_tls_default)
+
+      "always" ->
+        :always
+
+      "if_available" ->
+        :if_available
+
+      "never" ->
+        :never
+
+      other ->
+        raise "SMTP_TLS must be one of always / if_available / never, got: #{inspect(other)}"
+    end
+
+  smtp_username = System.get_env("SMTP_USERNAME", "") |> String.trim()
+  smtp_password = System.get_env("SMTP_PASSWORD", "") |> String.trim()
+
+  smtp_auth_mode =
+    case System.get_env("SMTP_AUTH_MODE", "auto") |> String.trim() do
+      "" ->
+        if smtp_username != "" and smtp_password != "",
+          do: :username_password,
+          else: :none
+
+      "auto" ->
+        if smtp_username != "" and smtp_password != "",
+          do: :username_password,
+          else: :none
+
+      "always" ->
+        if smtp_username == "" or smtp_password == "",
+          do:
+            raise("SMTP_AUTH_MODE=always requires both SMTP_USERNAME and SMTP_PASSWORD to be set")
+
+        :username_password
+
+      "never" ->
+        :none
+
+      other ->
+        raise "SMTP_AUTH_MODE must be one of auto / always / never, got: #{inspect(other)}"
+    end
+
+  # Add :username/:password only when auth is actually enabled. Swoosh's
+  # SMTP adapter raises if `:username` is set with `authentication: :none`,
+  # so this guards against a common misconfiguration (paste a username,
+  # leave SMTP_AUTH_MODE on :auto and password blank — :auto then picks
+  # :none and the orphan :username trips the adapter on first send).
+  smtp_opts =
+    [
+      adapter: Swoosh.Adapters.SMTP,
+      relay: smtp_relay,
+      port: smtp_port,
+      domain: smtp_domain,
+      tls: smtp_tls,
+      authentication: smtp_auth_mode
+    ]
+    |> then(fn opts ->
+      if smtp_auth_mode == :username_password do
+        opts
+        |> Keyword.put(:username, smtp_username)
+        |> Keyword.put(:password, smtp_password)
+      else
+        opts
+      end
+    end)
+
+  config :dtu_app, DtuApp.Mailer, smtp_opts
 
   config :dtu_app, :mail_from, System.get_env("MAIL_FROM", "dtu.app <noreply@localhost>")
 end

@@ -137,10 +137,14 @@ jobs:
           PHX_SCHEME: http
           PHX_PORT: "4000"
           # Use the Mailpit sidecar so the magic-link E2E test can read the
-          # captured email from Mailpit's JSON API at :8025.
-          MAIL_DELIVERY: mailpit
+          # captured email from Mailpit's JSON API at :8025. Mailpit is a
+          # plain SMTP server — no STARTTLS, no AUTH — so we override TLS and
+          # auth explicitly (the prod defaults would attempt STARTTLS and
+          # fail against Mailpit).
           SMTP_RELAY: localhost
           SMTP_PORT: "1025"
+          SMTP_TLS: never
+          SMTP_AUTH_MODE: never
 
       - name: Setup & Seed E2E Database
         run: |
@@ -155,9 +159,10 @@ jobs:
           PHX_HOST: localhost
           PHX_SCHEME: http
           PHX_PORT: "4000"
-          MAIL_DELIVERY: mailpit
           SMTP_RELAY: localhost
           SMTP_PORT: "1025"
+          SMTP_TLS: never
+          SMTP_AUTH_MODE: never
 
       - name: Start Phoenix Server
         run: |
@@ -171,9 +176,10 @@ jobs:
           PHX_HOST: localhost
           PHX_SCHEME: http
           PHX_PORT: "4000"
-          MAIL_DELIVERY: mailpit
           SMTP_RELAY: localhost
           SMTP_PORT: "1025"
+          SMTP_TLS: never
+          SMTP_AUTH_MODE: never
           # Flip the passkey kill switch on for the E2E suite. `:prod` defaults
           # to OFF for the 24h monitor window after launch (see
           # `DtuAppWeb.Passkeys.KillSwitch`); the e2e tests need the card to

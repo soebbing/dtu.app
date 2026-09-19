@@ -39,7 +39,8 @@ Grafana + an auth layer. dtu.app is the single BEAM release that does all of it:
 - **Per-device MQTT credentials** — generated and Argon2-hashed server-side; the
   username is globally unique so a connection resolves to exactly one device.
 - **Passwordless auth** — magic-link sign-in (and email confirmation) via
-  transactional email through Resend.
+  transactional email through SMTP (any standard relay: SES, Mailgun,
+  Postmark, Fastmail, self-hosted Postfix, ...).
 - **i18n** — English, German, and French out of the box.
 
 ## Tech stack
@@ -52,7 +53,7 @@ Grafana + an auth layer. dtu.app is the single BEAM release that does all of it:
 | Database     | PostgreSQL 16 + TimescaleDB (hypertables + caggs)           |
 | ORM / schema | Ecto                                                        |
 | Auth         | Generated `phx.gen.auth` (magic link) + Argon2              |
-| Mail         | Swoosh → Resend API                                         |
+| Mail         | Swoosh → SMTP (any standard relay)                          |
 | Assets       | Tailwind CSS v4, esbuild, Heroicons                         |
 | Tests        | ExUnit (server) + Playwright (browser E2E)                  |
 
@@ -120,9 +121,14 @@ See [`.env.example`](./.env.example) for every knob. The important ones:
 | `PHX_PORT`          | `443`            | Public port; included in links only when non-standard.        |
 | `MQTT_HOST`         | _(= `PHX_HOST`)_ | Host shown as the MQTT broker. Set when MQTT is on its own domain. |
 | `MQTT_BROKER_PORT`  | `1883`           | Port the embedded broker listens on.                          |
-| `RESEND_API_KEY`    | _(empty)_        | Transactional email via Resend when set.                     |
-| `MAIL_DELIVERY`     | _(empty)_        | `mailpit` routes email to the local SMTP capture server (see below). |
-| `MAIL_FROM`         | _…localhost_     | Sender address (must be a Resend-verified domain).            |
+| `SMTP_RELAY`        | _(required in :prod, defaults to `localhost` in :dev)_ | Hostname of the SMTP relay. |
+| `SMTP_PORT`         | `587`            | Standard submission port. Use `465` with `SMTP_TLS=always`.   |
+| `SMTP_DOMAIN`       | _(= `PHX_HOST`)_ | HELO/EHLO domain.                                            |
+| `SMTP_USERNAME`     | _(empty)_        | Set when the relay requires authentication.                   |
+| `SMTP_PASSWORD`     | _(empty)_        | Pair with `SMTP_USERNAME`.                                   |
+| `SMTP_TLS`          | `if_available`   | `always` / `if_available` / `never`.                         |
+| `SMTP_AUTH_MODE`    | `auto`           | `auto` / `always` / `never`.                                 |
+| `MAIL_FROM`         | _…localhost_     | Sender address (must be accepted by the relay).              |
 
 ## Local development
 
@@ -138,13 +144,19 @@ too). The embedded broker binds `:1883`; the broker is disabled in the test env.
 ### Capturing email locally with Mailpit
 
 For local development you'd usually want to see the magic-link / confirmation
-emails instead of having them swallowed by the in-memory adapter. The Docker
-compose file ships a [Mailpit](https://github.com/axllent/mailpit) sidecar:
+emails instead of having them silently swallowed. The Docker compose file ships
+a [Mailpit](https://github.com/axllent/mailpit) sidecar, and the compose
+defaults already point the app at it via `SMTP_RELAY=mailpit:1025`:
 
 ```sh
 docker compose up -d mailpit
-MAIL_DELIVERY=mailpit mix phx.server
+SMTP_RELAY=localhost SMTP_PORT=1025 SMTP_TLS=never SMTP_AUTH_MODE=never mix phx.server
 ```
+
+The compose file uses `SMTP_RELAY=mailpit` (the docker service name) when the
+app runs inside compose; if you're running `mix phx.server` on the host you
+need `SMTP_RELAY=localhost` instead, since Mailpit's SMTP port is published to
+the host as `:1025`.
 
 Sign in at <http://localhost:8025> to inspect the emails. `MAIL_FROM` can be any
 address — Mailpit accepts everything.
