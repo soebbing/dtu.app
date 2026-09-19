@@ -281,6 +281,60 @@ if config_env() != :test do
         raise "SMTP_AUTH_MODE must be one of auto / always / never, got: #{inspect(other)}"
     end
 
+  # When TLS is enabled (`:always` / `:if_available`), pin the TLS protocol
+  # versions + CA file location that gen_smtp / Erlang `:ssl` will use.
+  #
+  # Why explicit:
+  #
+  #   * `versions:` — `:ssl.connect/3` defaults differ by OTP release. Some
+  #     builds default to TLS 1.2 only; Gmail (and most modern relays) prefer
+  #     TLS 1.3 and will reject the 1.2-only handshake with a generic
+  #     `:tls_failed` from gen_smtp. Pinning both versions keeps the
+  #     handshake compatible with every common relay.
+  #
+  #   * `cacertfile:` — `:ssl` defaults to whatever path OTP was *built*
+  #     with, not whatever OpenSSL on the system finds. On Alpine/Debian
+  #     slim containers that's often `/etc/ssl/certs/ca-bundle.crt`, which
+  #     may not exist even when `/etc/ssl/certs/ca-certificates.crt`
+  #     (which `openssl s_client` uses) does. Pinning both common paths
+  #     with a fallback makes the choice explicit and container-portable.
+  #
+  #   * `verify: :verify_peer` + `customize_hostname_check:` — gen_smtp
+  #     defaults to `verify_none`, which means a misissued / impersonated
+  #     cert is silently accepted. We want verification.
+  smtp_ssl_opts =
+    if smtp_tls == :never do
+      []
+    else
+      # `:ssl.connect/3` fails the handshake silently if `cacertfile` is
+      # missing, so probe the three common container paths and pick the
+      # first one that exists at startup. `/etc/ssl/certs/ca-certificates.crt`
+      # is Debian/Ubuntu + Alpine (`apk add ca-certificates`),
+      # `/etc/ssl/certs/ca-bundle.crt` is older RHEL/CentOS,
+      # `/etc/pki/tls/certs/ca-bundle.crt` is current RHEL/Fedora.
+      cacert =
+        Enum.find(
+          [
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/ssl/certs/ca-bundle.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt"
+          ],
+          &File.regular?/1
+        )
+
+      [
+        ssl: [
+          versions: [:"tlsv1.2", :"tlsv1.3"],
+          verify: :verify_peer,
+          cacertfile: cacert,
+          depth: 3,
+          customize_hostname_check: [
+            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+          ]
+        ]
+      ]
+    end
+
   # Add :username/:password only when auth is actually enabled. Swoosh's
   # SMTP adapter raises if `:username` is set with `authentication: :none`,
   # so this guards against a common misconfiguration (paste a username,
@@ -295,6 +349,9 @@ if config_env() != :test do
       tls: smtp_tls,
       authentication: smtp_auth_mode
     ]
+    |> then(fn opts ->
+      opts ++ smtp_ssl_opts
+    end)
     |> then(fn opts ->
       if smtp_auth_mode == :username_password do
         opts
