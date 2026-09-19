@@ -245,6 +245,76 @@ defmodule DtuApp.Emails.SunDownChartTest do
     end
   end
 
+  # Localization: every user-facing string in the chart (y-axis unit,
+  # x-axis time labels, peak marker, rotated axis title) is wrapped in
+  # `gettext/1`. DE/FR share the same msgid for SI units ("%{n} W")
+  # and 24h times but differ on the axis title and peak-marker label.
+  # These tests lock the per-locale msgstrs so a future change that
+  # drops a translation fails loudly.
+  describe "render/2 — localization" do
+    setup do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      base =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00.000000])
+
+      for i <- 0..3 do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-A",
+          mppt_index: 0,
+          ac_power: 100.0 + i * 100.0,
+          inserted_at: DateTime.add(base, i * 60, :second)
+        })
+      end
+
+      {:ok, user: user}
+    end
+
+    test "renders English (default locale) chart text", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      assert svg =~ ~s(>0 W</text>)
+      assert svg =~ ~r|>\s*Peak:\s*\d[\d,]*\s*W\s*</text>|
+      assert svg =~ ~s(>Power</text>)
+
+      for label <- ["00:00", "06:00", "12:00", "18:00"] do
+        assert svg =~ ~s(>#{label}</text>)
+      end
+    end
+
+    test "renders German chart text under locale=de", %{user: user} do
+      svg =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          SunDownChart.render(user, Date.utc_today())
+        end)
+
+      assert svg =~ ~s(>Leistung</text>)
+      assert svg =~ ~r|>\s*Spitze:\s*\d[\d,]*\s*W\s*</text>|
+      # SI unit and 24h times are identical across DE/EN/FR.
+      assert svg =~ ~s(>0 W</text>)
+
+      for label <- ["00:00", "06:00", "12:00", "18:00"] do
+        assert svg =~ ~s(>#{label}</text>)
+      end
+    end
+
+    test "renders French chart text under locale=fr", %{user: user} do
+      svg =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          SunDownChart.render(user, Date.utc_today())
+        end)
+
+      assert svg =~ ~s(>Puissance</text>)
+      assert svg =~ ~r|>\s*Pic :\s*\d[\d,]*\s*W\s*</text>|
+      assert svg =~ ~s(>0 W</text>)
+
+      for label <- ["00:00", "06:00", "12:00", "18:00"] do
+        assert svg =~ ~s(>#{label}</text>)
+      end
+    end
+  end
+
   # `render_svg/1` is the pure points → SVG renderer (public-but-internal
   # so the nil-power guard can be unit-tested without the DB). The
   # pre-PR version crashed with `ArithmeticError: bad argument in
