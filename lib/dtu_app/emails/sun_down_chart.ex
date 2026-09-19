@@ -44,6 +44,20 @@ defmodule DtuApp.Emails.SunDownChart do
   @tick_label_color "#64748b"
   @axis_title_color "#475569"
   @yesterday_color "#6b7280"
+
+  # Font fallback chain. `Liberation Sans` ships in the runtime image
+  # via `ttf-liberation` (Alpine 3.21 main repo, OFL-1.1, ~3 MB) — it
+  # covers all the ASCII glyphs the chart uses (digits, colon,
+  # comma, "W", "Peak:", "Power") and is metric-compatible with
+  # Microsoft Arial so layout doesn't shift. `sans-serif` is the
+  # pango/fontconfig generic fallback; `Liberation Sans` resolves
+  # FIRST so the chain is deterministic regardless of what other
+  # fonts the container happens to carry. Pre-PR `ui-sans-serif` /
+  # `system-ui` are CSS-only names that pango can't resolve against
+  # the container's fontconfig database — they triggered the
+  # □□□□ square-rectangle rendering bug in prod (rsvg-convert
+  # couldn't find a glyph for any character and emitted `.notdef`).
+  @font_family "Liberation Sans, sans-serif"
   @yesterday_stroke_opacity "0.35"
   @yesterday_stroke_dasharray "4 3"
   @gridline_count 5
@@ -90,7 +104,7 @@ defmodule DtuApp.Emails.SunDownChart do
     """
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 #{@viewbox_w} #{@viewbox_h}" role="img" aria-label="#{escape(gettext("Today's power curve"))}">
       <rect x="0" y="0" width="#{@viewbox_w}" height="#{@viewbox_h}" fill="#f8fafc" stroke="#e2e8f0"/>
-      <text x="#{@viewbox_w / 2}" y="#{@viewbox_h / 2}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#64748b" text-anchor="middle">
+      <text x="#{@viewbox_w / 2}" y="#{@viewbox_h / 2}" font-family="#{@font_family}" font-size="13" fill="#64748b" text-anchor="middle">
         #{escape(gettext("No chart available"))}
       </text>
     </svg>
@@ -251,7 +265,7 @@ defmodule DtuApp.Emails.SunDownChart do
       watts = Float.round(max_power * ratio, 1)
       y = inner_bottom - ratio * (inner_bottom - inner_top)
 
-      ~s/<text x="#{1.0 * @padding_left - 4}" y="#{y - 4}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#{@tick_label_color}" text-anchor="end">#{escape(Devices.format_number(watts, 0, locale))} W<\/text>/
+      ~s/<text x="#{1.0 * @padding_left - 4}" y="#{y - 4}" font-family="#{@font_family}" font-size="10" fill="#{@tick_label_color}" text-anchor="end">#{escape(Devices.format_number(watts, 0, locale))} W<\/text>/
     end)
   end
 
@@ -268,7 +282,7 @@ defmodule DtuApp.Emails.SunDownChart do
       x = inner_left + ratio * (inner_right - inner_left)
       anchor = if ratio == 0.0, do: "start", else: "middle"
 
-      ~s/<text x="#{x}" y="#{y}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#{@tick_label_color}" text-anchor="#{anchor}">#{label}<\/text>/
+      ~s/<text x="#{x}" y="#{y}" font-family="#{@font_family}" font-size="11" fill="#{@tick_label_color}" text-anchor="#{anchor}">#{label}<\/text>/
     end)
   end
 
@@ -292,7 +306,7 @@ defmodule DtuApp.Emails.SunDownChart do
 
         """
         <circle cx="#{Float.round(x, 1)}" cy="#{Float.round(y, 1)}" r="3" fill="#{@brand_emerald}" stroke="#ffffff" stroke-width="1"/>
-        <text x="#{Float.round(label_x, 1)}" y="#{Float.round(label_y, 1)}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#{@axis_title_color}" text-anchor="end">Peak: #{escape(Devices.format_number(max_power, 0, locale))} W</text>
+        <text x="#{Float.round(label_x, 1)}" y="#{Float.round(label_y, 1)}" font-family="#{@font_family}" font-size="10" font-weight="600" fill="#{@axis_title_color}" text-anchor="end">Peak: #{escape(Devices.format_number(max_power, 0, locale))} W</text>
         """
     end
   end
@@ -304,7 +318,7 @@ defmodule DtuApp.Emails.SunDownChart do
     # `x = 12` keeps the rotated text inside the viewBox after the -90°
     # pivot at the same coordinate — pre-PR used `x = 0` and the text
     # ended up half-clipped outside the visible area.
-    ~s/<text x="12" y="#{inner_mid_y}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#{@axis_title_color}" text-anchor="middle" transform="rotate(-90 12 #{inner_mid_y})">Power<\/text>/
+    ~s/<text x="12" y="#{inner_mid_y}" font-family="#{@font_family}" font-size="10" fill="#{@axis_title_color}" text-anchor="middle" transform="rotate(-90 12 #{inner_mid_y})">Power<\/text>/
   end
 
   # Escape user-facing strings (gettext msgids ship as source strings

@@ -84,7 +84,18 @@ FROM alpine:3.21
 # `rsvg-convert` binary still lives in its own community package —
 # `librsvg` ships only the shared library — so this explicit package
 # list stays unchanged across the 3.20 → 3.21 bump.
-RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget rsvg-convert
+#
+# `ttf-liberation` ships the Liberation Sans/Serif/Mono fonts that
+# rsvg-convert + pango + fontconfig resolve when rendering the
+# chart SVG. Without it, every glyph in the SVG (axis labels,
+# peak marker, "Power" title) renders as the `.notdef` square
+# rectangle — the bug observed in prod on 2026-09-19 after the
+# chart-enrichment PR (#320) shipped. Liberation Sans covers all
+# ASCII glyphs the chart uses (digits, ":", ",", "W", "Peak:",
+# "Power") and is metric-compatible with Microsoft Arial, so
+# layout positions don't shift. Lives in Alpine 3.21's `main` repo
+# (no extra `apk repos` enable), OFL-1.1 licensed, ~3 MB.
+RUN apk add --no-cache libstdc++ openssl ncurses-libs ca-certificates wget rsvg-convert ttf-liberation
 
 WORKDIR "/app"
 RUN chown nobody /app
