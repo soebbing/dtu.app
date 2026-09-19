@@ -76,7 +76,7 @@ defmodule DtuApp.Emails.SunDownChartTest do
         })
       end
 
-      {:ok, user: user}
+      {:ok, user: user, device: device}
     end
 
     test "rendered SVG starts with the brand viewBox prefix", %{user: user} do
@@ -101,6 +101,8 @@ defmodule DtuApp.Emails.SunDownChartTest do
     test "axis labels are ASCII literals, not gettext'd" do
       # The empty-state SVG (no devices) intentionally drops the axis;
       # only render it when there are actually points to plot.
+      # Post-PR the x-axis has four evenly-spaced labels (00:00, 06:00,
+      # 12:00, 18:00) — the pre-PR "24:00" corner label is gone.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -114,8 +116,125 @@ defmodule DtuApp.Emails.SunDownChartTest do
       })
 
       svg = SunDownChart.render(user, Date.utc_today())
-      assert svg =~ "00:00"
-      assert svg =~ "24:00"
+
+      for label <- ["00:00", "06:00", "12:00", "18:00"] do
+        assert svg =~ ~s(>#{label}</text>),
+               "expected x-axis label #{inspect(label)} in SVG"
+      end
+    end
+
+    # ── Visual enrichment: filled area, gridlines, peak marker ──────────
+    #
+    # Pre-PR the chart was a single polyline with two corner time
+    # labels — useful for a glance, useless for reading magnitudes.
+    # These tests pin the post-PR enrichment: the area under the
+    # curve is filled at low opacity so the visual weight matches
+    # the dashboard chart; horizontal gridlines + y-axis watt
+    # labels let the eye read magnitudes; a peak marker highlights
+    # the day's max with both a dot and a label.
+    test "path is filled under the curve (not just stroked)", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      # The single `<path>` now closes back to the baseline so it
+      # accepts a fill. Pre-PR this was `fill="none"`.
+      assert svg =~ ~r|<path[^>]*fill="#10b981"[^>]*fill-opacity="0\.\d+"|
+    end
+
+    test "renders horizontal gridlines for y-axis", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      # Five horizontal gridlines: 0 W, max/4, max/2, 3max/4, max.
+      # Each is rendered as a `<line>` element with stroke="#e2e8f0".
+      gridline_count =
+        svg
+        |> String.split(~r|<line[^>]*stroke="#e2e8f0"|)
+        |> length()
+        |> Kernel.-(1)
+
+      assert gridline_count == 5,
+             "expected 5 horizontal gridlines, got #{gridline_count}"
+    end
+
+    test "y-axis tick labels show watt values (locale-formatted)", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      # The y-axis tick labels include "0" (zero baseline) and the
+      # peak watt formatted via `Devices.format_number/3`. The test
+      # reads the test locale (no .po loaded → falls through to the
+      # source msgid / default locale formatting), so we assert on
+      # the unit suffix rather than exact digits.
+      assert svg =~ ~r|<text[^>]*>0\s*W</text>|
+      assert svg =~ ~r|<text[^>]*>\d[\d,]*\s*W</text>|
+    end
+
+    test "x-axis shows four time labels across the bottom", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      # Pre-PR had only "00:00" + "24:00" at the corners. Post-PR
+      # shows 00:00, 06:00, 12:00, 18:00 evenly spaced. The corner
+      # labels are dropped because the evenly-spaced quartet is
+      # more useful for reading the time of day.
+      for label <- ["00:00", "06:00", "12:00", "18:00"] do
+        assert svg =~ ~s(>#{label}</text>),
+               "expected x-axis label #{inspect(label)} in SVG"
+      end
+
+      # The pre-PR corner label "24:00" is gone.
+      refute svg =~ ~s(>24:00</text>)
+    end
+
+    test "renders a peak-power marker (circle + label) at the day's max", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      # The fixture seeds 4 readings going up: 100, 200, 300, 400 W.
+      # The max is 400 W at the last point. Post-PR the chart draws
+      # a small filled `<circle>` at that point and a label like
+      # "Peak: 400 W".
+      assert svg =~ ~r|<circle[^>]*r="3"[^>]*fill="#10b981"|
+
+      assert svg =~ ~r|<text[^>]*>\s*Peak:\s*\d[\d,]*\s*W\s*</text>|
+    end
+
+    test "axis title 'Power' appears on the left side", %{user: user} do
+      svg = SunDownChart.render(user, Date.utc_today())
+      assert svg =~ ~r|<text[^>]*>\s*Power\s*</text>|
+    end
+
+    test "renders a dashed gray yesterday overlay when yesterday has data", %{
+      user: user,
+      device: device
+    } do
+      # The populated-state setup seeds today's data only; the dashboard
+      # ghost line is rendered when `list_yesterday_chart_data_for_dashboard/4`
+      # returns a non-empty list, so we need to seed yesterday too.
+      # The dashboard uses `stroke-dasharray="4 3"` + `stroke-opacity="0.35"`
+      # + a zinc-400 / gray-500 fallback (`#6b7280`) — pin those three
+      # so the email chart composites visually with the dashboard.
+      yesterday_base =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00.000000])
+        |> DateTime.add(-86_400, :second)
+
+      for i <- 0..3 do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-A",
+          mppt_index: 0,
+          ac_power: 80.0 + i * 80.0,
+          inserted_at: DateTime.add(yesterday_base, i * 60, :second)
+        })
+      end
+
+      svg = SunDownChart.render(user, Date.utc_today())
+
+      assert svg =~ ~r|<path[^>]*stroke="#6b7280"|
+      assert svg =~ ~r|stroke-dasharray="4 3"|
+      assert svg =~ ~r|stroke-opacity="0.35"|
+    end
+
+    test "omits the yesterday overlay when yesterday has no data", %{user: user} do
+      # Pre-PR-equivalent: today's readings exist (from the populated-state
+      # setup) but yesterday's are absent. The overlay MUST be dropped
+      # entirely — a degenerate `<path>` with a single point would still
+      # be stroked by Chromium and look like an accidental dot.
+      svg = SunDownChart.render(user, Date.utc_today())
+
+      refute svg =~ ~r|stroke="#6b7280"|
+      refute svg =~ ~r|stroke-dasharray="4 3"|
     end
   end
 

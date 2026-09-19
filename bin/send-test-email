@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+# bin/send-test-email — render and deliver a SunDownEmail through the
+# real Swoosh SMTP transport to a local mailpit capture server.
+#
+# Why a bash wrapper?
+#
+#   The bug we are debugging — "Gmail shows the chart as a grey
+#   rectangle" — has at least three candidate layers: the chart PNG
+#   itself, the MIME wire shape (Swoosh's Helpers.body/2 → gen_smtp
+#   DATA section), and the mail recipient (Gmail's image proxy /
+#   caching). The fastest way to triage is to capture the actual
+#   bytes that hit the SMTP server and view them in a real mail
+#   client (mailpit's web UI is Chromium and renders cid: images).
+#
+#   This script:
+#
+#     1. Starts a mailpit container if one isn't already running on
+#        :1025 / :8025 (no-op when it is).
+#     2. Boots the Elixir bits we need (Swoosh, gen_smtp) without
+#        starting the full app — we don't need Phoenix, Repo, or the
+#        MQTT broker for this test.
+#     3. Renders a SunDownEmail with a synthetic payload (a real
+#        chart_svg that's converted by the local rsvg-convert — see
+#        the rsvg-convert Nix note in README) and delivers it via
+#        DtuApp.Mailer.deliver/1 to mailpit.
+#     4. Prints the mailpit URL + message-id so the operator can
+#        open the captured message in a browser and see whether
+#        the cid:chart@sundo PNG renders as an image or a grey
+#        rectangle.
+#
+# Usage:
+#
+#     bin/send-test-email                       # default receiver
+#     bin/send-test-email --to test@example.com # custom receiver
+#     bin/send-test-email --no-mailpit          # skip the container start
+#                                                (use when you've already
+#                                                got mailpit running)
+#     bin/send-test-email --subject "test 1"    # custom subject
+#
+# Exit codes:
+#     0  mail delivered, mailpit URL printed
+#     1  rsvg-convert missing (the chart path falls back to a dashboard
+#        link, no cid: attachment to inspect)
+#     2  mailpit container failed to start
+#     3  Swoosh deliver returned {:error, _} (printed to stderr)
+#
+# See test/dtu_app/emails/sun_down_email_smtp_wire_test.exs for the
+# byte-level contract this script is meant to exercise end-to-end.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+# Defaults. We default to mailpit because that's what docker-compose.yml
+# already declares for the dtu.app stack. If a different SMTP capture
+# (MailHog from a sibling stack) is already listening on :1025, we
+# reuse it and just point the operator at its existing UI.
+MAILPIT_NAME="dtuapp-mailpit-test"
+MAILPIT_PORT_SMTP=1025
+MAILPIT_PORT_UI=8025
+TO_ADDR="hendrik@hello.dtu.app"
+SUBJECT="Sun down (TEST)"
+START_CAPTURE=1
+
+usage() {
+  cat <<'EOF'
+bin/send-test-email — deliver a synthetic SunDownEmail to a local SMTP capture
+
+Usage:
+  bin/send-test-email [options]
+
+Options:
+  --to ADDR         Recipient address (default: hendrik@hello.dtu.app)
+  --subject TEXT    Email subject (default: "Sun down (TEST)")
+  --no-mailpit      Skip capture start (assumes one is already running on :1025)
+  -h, --help        Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --to) TO_ADDR="$2"; shift 2 ;;
+    --subject) SUBJECT="$2"; shift 2 ;;
+    --no-mailpit) START_CAPTURE=0; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "bin/send-test-email: unknown option: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+
+# 1) Ensure an SMTP capture is listening on :1025.
+#
+#    We don't care WHICH one — mailpit (from this project's
+#    docker-compose) and MailHog (from sibling stacks) both speak
+#    plain SMTP on :1025 and serve a web UI on :8025. The script
+#    reuses whichever is already up, falling back to starting a
+#    mailpit container of our own.
+if [[ "$START_CAPTURE" -eq 1 ]]; then
+  if (echo >"/dev/tcp/127.0.0.1/${MAILPIT_PORT_SMTP}") >/dev/null 2>&1; then
+    echo "[send-test-email] :${MAILPIT_PORT_SMTP} already has an SMTP capture, reusing it"
+  elif command -v docker >/dev/null 2>&1; then
+    echo "[send-test-email] starting mailpit sidecar..."
+    docker run -d --rm \
+      --name "${MAILPIT_NAME}" \
+      -p "${MAILPIT_PORT_SMTP}:1025" \
+      -p "${MAILPIT_PORT_UI}:8025" \
+      axllent/mailpit:latest >/dev/null
+
+    for i in {1..30}; do
+      if (echo >"/dev/tcp/127.0.0.1/${MAILPIT_PORT_SMTP}") >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.2
+    done
+
+    if ! (echo >"/dev/tcp/127.0.0.1/${MAILPIT_PORT_SMTP}") >/dev/null 2>&1; then
+      echo "bin/send-test-email: mailpit didn't start on :${MAILPIT_PORT_SMTP}." >&2
+      exit 2
+    fi
+    echo "[send-test-email] mailpit ready on :${MAILPIT_PORT_SMTP} / :${MAILPIT_PORT_UI}"
+  else
+    echo "bin/send-test-email: no SMTP capture on :${MAILPIT_PORT_SMTP} and 'docker' not found." >&2
+    exit 2
+  fi
+fi
+
+# 2) Sanity: rsvg-convert on PATH? Without it chart_attachment/1 falls
+# back to the dashboard-link text path and there's no cid: attachment
+# to inspect — exactly what we don't want.
+if ! command -v rsvg-convert >/dev/null 2>&1; then
+  echo "bin/send-test-email: rsvg-convert not found on PATH." >&2
+  echo "  The chart attachment path falls back to a dashboard link, which" >&2
+  echo "  doesn't exercise the bug we're trying to observe." >&2
+  echo "  Install with: nix profile add nixpkgs#librsvg" >&2
+  echo "  Or on Debian/Ubuntu: apt install librsvg2-bin" >&2
+  exit 1
+fi
+
+# 3) Run the Elixir sender. Boot the full app under MIX_ENV=dev so
+# DtuAppWeb.Endpoint.url/0 resolves and Repo / Endpoint are live; we
+# point the Mailer at mailpit regardless of what .env says, and
+# disable the MQTT broker so the broker doesn't try to bind :1883
+# in parallel with whatever else is running on the host.
+export MIX_ENV=dev
+export MQTT_BROKER_ENABLED=false
+
+exec mix run --no-start --eval '
+{:ok, _} = Application.ensure_all_started(:swoosh)
+{:ok, _} = Application.ensure_all_started(:gen_smtp)
+{:ok, _} = Application.ensure_all_started(:dtu_app)
+
+# Override the deployed Mailer config so this script is environment-
+# agnostic: regardless of what config/runtime.exs reads from .env,
+# point at mailpit on localhost.
+Application.put_env(:dtu_app, DtuApp.Mailer, [
+  adapter: Swoosh.Adapters.SMTP,
+  relay: "localhost",
+  port: 1025,
+  tls: :never,
+  auth: :never,
+  hostname: "localhost"
+])
+
+# Synthetic SunDown payload. The chart_svg is built by calling
+# `DtuApp.Emails.SunDownChart.render_svg/2` directly so the cid
+# attachment in the captured email exercises the SAME SVG that
+# `DtuApp.Emails.SunDownEmail.render/2` produces in prod — including
+# the enriched fill / gridlines / peak marker / axis title / dashed
+# yesterday overlay.
+#
+# The today point list is shaped like real 5-minute-bucket telemetry:
+# 288 samples per day (one every 5 minutes from 04:00 to 19:55), with
+# a sine-arc baseline clipped to zero outside daylight hours, plus a
+# random cloud-cover dip every ~30 minutes. The yesterday list is
+# the same shape but shifted back 1 day and scaled to a lower peak
+# (~80 percent of today peak), which is what makes the dashboard
+# ghost line readable behind today curve.
+build_points = fn date, peak_w, dip_seed ->
+  base = DateTime.new!(date, ~T[00:00:00.000000])
+  # 192 buckets from 04:00 to 19:55 (covers the active day window).
+  minutes = Enum.to_list(240..1195) |> Enum.filter(&(rem(&1, 5) == 0))
+
+  Enum.map(minutes, fn minute ->
+    ts = DateTime.add(base, minute * 60, :second)
+    # Sine arc baseline — peak at noon, zero outside 06:00-18:00.
+    h = minute / 60.0
+    baseline = :math.sin(max(min((h - 6.0) / 6.0, 1.0), 0.0) * :math.pi()) * peak_w
+    # Cloud-cover dip every 30 minutes — drops baseline to 30-60%.
+    phase = rem(minute + dip_seed, 30)
+    dip_factor = if phase == 0, do: 0.4 + :rand.uniform() * 0.2, else: 1.0
+    power = if baseline < 1.0, do: nil, else: Float.round(baseline * dip_factor, 1)
+
+    %{time: ts, series: {1, "INV-A", 0, "Garage"}, power: power}
+  end)
+end
+
+today = Date.utc_today()
+yesterday = Date.add(today, -1)
+
+points = build_points.(today, 3250.0, 0)
+yesterday_points = build_points.(yesterday, 2840.0, 17)
+
+svg = DtuApp.Emails.SunDownChart.render_svg(points, yesterday_points)
+IO.puts("[send-test-email] chart SVG: #{byte_size(svg)} bytes, has peak=#{String.contains?(svg, "Peak:")}, has fill=#{String.contains?(svg, "fill-opacity")}, has gridlines=#{String.contains?(svg, "stroke=\"#e2e8f0\"")}, has yesterday=#{String.contains?(svg, "stroke-dasharray")}")
+
+payload = %{
+  title: "'"${SUBJECT//\'/\'\\\'\'}"'",
+  body: ["Today: 12.4 kWh, peak 3,250 W."],
+  event: "sun_down",
+  today_yield_kwh: 12.4,
+  yesterday_yield_kwh: 10.1,
+  peak_power_w: 3250,
+  peak_yesterday_w: 2840,
+  chart_svg: svg,
+  dashboard_path: "/dashboard"
+}
+
+user = %{locale: "en", email: "'"${TO_ADDR//\'/\'\\\'\'}"'"}
+
+{html, text, attachments} = DtuApp.Emails.SunDownEmail.render(user, payload)
+
+IO.puts("[send-test-email] chart attachments: #{length(attachments)}")
+Enum.each(attachments, fn att ->
+  IO.puts("  - cid=#{att.cid} type=#{att.type} content_type=#{att.content_type} bytes=#{byte_size(att.data || <<>>)}")
+end)
+
+email =
+  Swoosh.Email.new()
+  |> Swoosh.Email.to({"Test", user.email})
+  |> Swoosh.Email.from({"DtuApp", "noreply@localhost"})
+  |> Swoosh.Email.subject(payload.title)
+  |> Swoosh.Email.html_body(html)
+  |> Swoosh.Email.text_body(text)
+  |> then(fn e -> Enum.reduce(attachments, e, &Swoosh.Email.attachment(&2, &1)) end)
+
+case DtuApp.Mailer.deliver(email) do
+  {:ok, meta} ->
+    IO.puts("[send-test-email] delivered: #{inspect(meta)}")
+    IO.puts("")
+    IO.puts("Open http://localhost:'"${MAILPIT_PORT_UI}"' to view the captured message.")
+    IO.puts("Look for: cid:chart@sundo renders as a chart (good) or grey rectangle (bug).")
+    IO.puts("If the UI is MailHog rather than mailpit, that is the sibling-stack capture.")
+
+  {:error, reason} ->
+    IO.puts(:stderr, "[send-test-email] delivery failed: #{inspect(reason)}")
+    System.halt(3)
+end
+'

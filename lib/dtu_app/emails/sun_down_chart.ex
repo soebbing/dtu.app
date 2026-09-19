@@ -40,6 +40,14 @@ defmodule DtuApp.Emails.SunDownChart do
   @padding_top 16
   @padding_bottom 32
   @brand_emerald "#10b981"
+  @gridline_color "#e2e8f0"
+  @tick_label_color "#64748b"
+  @axis_title_color "#475569"
+  @yesterday_color "#6b7280"
+  @yesterday_stroke_opacity "0.35"
+  @yesterday_stroke_dasharray "4 3"
+  @gridline_count 5
+  @fill_opacity "0.12"
 
   @doc """
   Render today's power curve for `user` on `date` as an inline SVG
@@ -65,7 +73,14 @@ defmodule DtuApp.Emails.SunDownChart do
       points =
         Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end)
 
-      render_svg(points)
+      # Yesterday's ghost line — same scope (fleet-wide, since the
+      # `dtu_id` argument defaults to `nil`) and the same window shape,
+      # just shifted -1 day. Empty list when there's no data; the
+      # overlay helper renders an empty string in that case.
+      yesterday_points =
+        Devices.list_yesterday_chart_data_for_dashboard(user, utc_start, utc_end)
+
+      render_svg(points, yesterday_points)
     end
   end
 
@@ -100,34 +115,47 @@ defmodule DtuApp.Emails.SunDownChart do
   # powers, and fall back to `empty_svg/0` when nothing usable
   # survives the filter — the email renders "No chart available"
   # instead of crashing the dispatcher.
+  #
+  # `yesterday_points` is an optional second list (defaults to `[]`)
+  # rendered behind today's curve as a dashed gray ghost line — the
+  # same recipe the dashboard's line chart uses for the "yesterday"
+  # reference overlay (`stroke-opacity="0.35"`, `stroke-dasharray="4 3"`).
+  # When the list is empty the overlay is omitted entirely.
   @doc false
-  @spec render_svg([map()]) :: String.t()
-  def render_svg(points) when is_list(points) do
+  @spec render_svg([map()], [map()]) :: String.t()
+  def render_svg(points, yesterday_points \\ [])
+      when is_list(points) and is_list(yesterday_points) do
     case Enum.filter(points, &match?(%{power: v} when is_number(v), &1)) do
       [] ->
         empty_svg()
 
       renderable ->
-        path_d = build_path(renderable)
-        axis_labels = axis_labels_svg()
+        max_power = renderable |> Enum.map(& &1.power) |> Enum.max() |> max(1.0)
+        path_d = build_path(renderable, max_power)
+        gridlines = y_gridlines_svg(max_power)
+        y_labels = y_axis_labels_svg(max_power)
+        x_labels = x_axis_labels_svg()
+        peak = peak_marker_svg(renderable, max_power)
+        title = axis_title_svg()
+        yesterday_overlay = yesterday_overlay_svg(yesterday_points, max_power)
+        chart_label = gettext("Today's power curve")
 
-        """
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 #{@viewbox_w} #{@viewbox_h}" role="img" aria-label="#{escape(gettext("Today's power curve"))}">
-          <rect x="0" y="0" width="#{@viewbox_w}" height="#{@viewbox_h}" fill="#f8fafc" stroke="#e2e8f0"/>
-          <path d="#{path_d}" fill="none" stroke="#{@brand_emerald}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-          #{axis_labels}
-        </svg>
-        """
+        Enum.join(
+          [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 #{@viewbox_w} #{@viewbox_h}\" role=\"img\" aria-label=\"#{escape(chart_label)}\">",
+            "<rect x=\"0\" y=\"0\" width=\"#{@viewbox_w}\" height=\"#{@viewbox_h}\" fill=\"#f8fafc\" stroke=\"#e2e8f0\"/>",
+            gridlines,
+            yesterday_overlay,
+            "<path d=\"#{path_d}\" fill=\"#{@brand_emerald}\" fill-opacity=\"#{@fill_opacity}\" stroke=\"#{@brand_emerald}\" stroke-width=\"2\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>",
+            y_labels,
+            x_labels,
+            peak,
+            title,
+            "</svg>"
+          ],
+          "\n  "
+        )
     end
-  end
-
-  # Ascii axis labels are deliberately NOT gettext'd — they're
-  # language-neutral HH:MM markers.
-  defp axis_labels_svg do
-    """
-    <text x="#{@padding_left}" y="#{@viewbox_h - 8}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748b">00:00</text>
-    <text x="#{@viewbox_w - @padding_right}" y="#{@viewbox_h - 8}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748b" text-anchor="end">24:00</text>
-    """
   end
 
   # Build the `d=` attribute for the chart path. The chart runs from
@@ -143,25 +171,140 @@ defmodule DtuApp.Emails.SunDownChart do
   # crash vector: if a non-numeric slips past the `render_svg/1`
   # filter (a regression we haven't imagined yet), `nil / 1` raises
   # `ArithmeticError`. Drop the no-op, clamp with `max/2` directly.
-  defp build_path(points) do
-    max_power =
-      points
-      |> Enum.map(& &1.power)
-      |> Enum.max()
-      |> max(1.0)
-
+  defp build_path(points, max_power) do
     n = max(length(points) - 1, 1)
     inner_w = @viewbox_w - @padding_left - @padding_right
     inner_h = @viewbox_h - @padding_top - @padding_bottom
+    baseline_y = 1.0 * @viewbox_h - @padding_bottom
 
+    line_segments = line_segments_for(points, n, inner_w, inner_h, baseline_y, max_power)
+
+    first_x = 1.0 * @padding_left
+    last_x = 1.0 * @padding_left + n * inner_w / n
+
+    "M#{first_x},#{baseline_y} #{line_segments} L#{last_x},#{baseline_y} Z"
+  end
+
+  # Build the `Lx1,y1 Lx2,y2 ...` segment string for a list of points.
+  # Shared between `build_path/2` (today's filled area) and
+  # `yesterday_overlay_svg/2` (the dashed ghost line) so the geometry
+  # stays in lock-step — if the y-mapping changes, both update together.
+  defp line_segments_for(points, n, inner_w, inner_h, baseline_y, max_power) do
     points
     |> Enum.with_index()
     |> Enum.map_join(" ", fn {p, i} ->
-      x = @padding_left + i * inner_w / n
-      y = @viewbox_h - @padding_bottom - p.power / max_power * inner_h
+      x = 1.0 * @padding_left + i * inner_w / n
+      y = baseline_y - p.power / max_power * inner_h
       "L#{Float.round(x, 1)},#{Float.round(y, 1)}"
     end)
-    |> then(fn cmd -> "M" <> cmd end)
+  end
+
+  # Yesterday ghost line: a dashed, low-opacity gray overlay matching
+  # the dashboard's `line_chart_panel.ex` styling. When yesterday has
+  # no data points the function returns an empty string — the
+  # overlay is silently dropped rather than rendering an empty `<path>`
+  # that would still be stroked by Chromium as a degenerate dot at
+  # the first point.
+  defp yesterday_overlay_svg(yesterday_points, max_power) do
+    case Enum.filter(yesterday_points, &match?(%{power: v} when is_number(v), &1)) do
+      [] ->
+        ""
+
+      renderable ->
+        n = max(length(renderable) - 1, 1)
+        inner_w = @viewbox_w - @padding_left - @padding_right
+        inner_h = @viewbox_h - @padding_top - @padding_bottom
+        baseline_y = 1.0 * @viewbox_h - @padding_bottom
+
+        line_segments =
+          line_segments_for(renderable, n, inner_w, inner_h, baseline_y, max_power)
+
+        first_x = 1.0 * @padding_left
+
+        ~s/<path d="M#{first_x},#{baseline_y} #{line_segments}" fill="none" stroke="#{@yesterday_color}" stroke-width="1.5" stroke-opacity="#{@yesterday_stroke_opacity}" stroke-dasharray="#{@yesterday_stroke_dasharray}" stroke-linecap="round" stroke-linejoin="round"\/>/
+    end
+  end
+
+  # ── Gridlines ─────────────────────────────────────────────────────────
+
+  defp y_gridlines_svg(_max_power) do
+    inner_top = 1.0 * @padding_top
+    inner_bottom = 1.0 * @viewbox_h - @padding_bottom
+
+    Enum.map_join(0..(@gridline_count - 1), "\n  ", fn i ->
+      ratio = i / (@gridline_count - 1)
+      y = inner_bottom - ratio * (inner_bottom - inner_top)
+
+      ~s/<line x1="#{1.0 * @padding_left}" y1="#{y}" x2="#{1.0 * @viewbox_w - @padding_right}" y2="#{y}" stroke="#{@gridline_color}" stroke-width="1"\/>/
+    end)
+  end
+
+  # ── Y-axis labels ──────────────────────────────────────────────────────
+
+  defp y_axis_labels_svg(max_power) do
+    inner_top = 1.0 * @padding_top
+    inner_bottom = 1.0 * @viewbox_h - @padding_bottom
+    locale = Gettext.get_locale(DtuAppWeb.Gettext)
+
+    Enum.map_join(0..(@gridline_count - 1), "\n  ", fn i ->
+      ratio = i / (@gridline_count - 1)
+      watts = Float.round(max_power * ratio, 1)
+      y = inner_bottom - ratio * (inner_bottom - inner_top)
+
+      ~s/<text x="#{1.0 * @padding_left - 4}" y="#{y - 4}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#{@tick_label_color}" text-anchor="end">#{escape(Devices.format_number(watts, 0, locale))} W<\/text>/
+    end)
+  end
+
+  # ── X-axis labels ──────────────────────────────────────────────────────
+
+  defp x_axis_labels_svg do
+    inner_left = 1.0 * @padding_left
+    inner_right = 1.0 * @viewbox_w - @padding_right
+    y = 1.0 * @viewbox_h - 8
+
+    times = [{"00:00", 0.0}, {"06:00", 0.25}, {"12:00", 0.5}, {"18:00", 0.75}]
+
+    Enum.map_join(times, "\n  ", fn {label, ratio} ->
+      x = inner_left + ratio * (inner_right - inner_left)
+      anchor = if ratio == 0.0, do: "start", else: "middle"
+
+      ~s/<text x="#{x}" y="#{y}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#{@tick_label_color}" text-anchor="#{anchor}">#{label}<\/text>/
+    end)
+  end
+
+  # ── Peak marker ────────────────────────────────────────────────────────
+
+  defp peak_marker_svg(points, max_power) do
+    case Enum.find_index(points, &(&1.power == max_power)) do
+      nil ->
+        ""
+
+      idx ->
+        n = max(length(points) - 1, 1)
+        inner_w = @viewbox_w - @padding_left - @padding_right
+        inner_h = @viewbox_h - @padding_top - @padding_bottom
+
+        x = 1.0 * @padding_left + idx * inner_w / n
+        y = 1.0 * @viewbox_h - @padding_bottom - max_power / max_power * inner_h
+        label_x = max(x - 8, 1.0 * @padding_left)
+        label_y = max(y - 8, 1.0 * @padding_top + 12)
+        locale = Gettext.get_locale(DtuAppWeb.Gettext)
+
+        """
+        <circle cx="#{Float.round(x, 1)}" cy="#{Float.round(y, 1)}" r="3" fill="#{@brand_emerald}" stroke="#ffffff" stroke-width="1"/>
+        <text x="#{Float.round(label_x, 1)}" y="#{Float.round(label_y, 1)}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#{@axis_title_color}" text-anchor="end">Peak: #{escape(Devices.format_number(max_power, 0, locale))} W</text>
+        """
+    end
+  end
+
+  # ── Axis title ─────────────────────────────────────────────────────────
+
+  defp axis_title_svg do
+    inner_mid_y = (@padding_top + (@viewbox_h - @padding_bottom)) / 2
+    # `x = 12` keeps the rotated text inside the viewBox after the -90°
+    # pivot at the same coordinate — pre-PR used `x = 0` and the text
+    # ended up half-clipped outside the visible area.
+    ~s/<text x="12" y="#{inner_mid_y}" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#{@axis_title_color}" text-anchor="middle" transform="rotate(-90 12 #{inner_mid_y})">Power<\/text>/
   end
 
   # Escape user-facing strings (gettext msgids ship as source strings
