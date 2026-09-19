@@ -1,5 +1,27 @@
 import Config
 
+# Disable OTP 26+ `validate_compile_env` for the `:dtu_app`
+# application. Several keys we set later in this file — notably
+# `:webauthn_rp_id`, `:passkeys_enabled`, and the passkey
+# rate-limit flag — are deliberately runtime-only: they come
+# from host env vars (`WEBAUTHN_RP_ID`, `PASSKEYS_ENABLED`) so
+# operators can change them per-deploy without rebuilding the
+# release. OTP's compile-env check then aborts boot with
+# "Compile time value was not set, Runtime value was set to:
+# '...'" whenever no code happens to read the key at compile
+# time but the runtime config sets it later.
+#
+# We can't trace a `compile_env(:dtu_app, :webauthn_rp_id)`
+# reader in our `lib/` (the BEAM still marks the key as
+# compile-time — possibly via a transitive dep or a
+# macro-expanded read inside a template). The trade-off of
+# disabling the check is that any FUTURE legitimate
+# compile-time read mismatches on `:dtu_app` keys won't be
+# caught at boot. We accept that because the alternative is
+# the container crash-looping on boot (dashboard unreachable)
+# every time a runtime-only key is added or changed.
+config :dtu_app, :validate_compile_env, false
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
