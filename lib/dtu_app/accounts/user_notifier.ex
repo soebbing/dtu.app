@@ -100,9 +100,10 @@ defmodule DtuApp.Accounts.UserNotifier do
   end
 
   # Sender address, configured via MAIL_FROM (see config/runtime.exs). Must be
-  # on a domain verified by the transactional provider (Resend). Accepts a
-  # plain address ("a@b.com") or a named form ("Name <a@b.com"); the latter is
-  # parsed into the {"Name", "a@b.com"} tuple Swoosh's from/1 expects.
+  # accepted by the SMTP relay — for SES/Mailgun/Postmark that means a
+  # verified-sender (or verified-domain) address. Accepts a plain address
+  # ("a@b.com") or a named form ("Name <a@b.com"); the latter is parsed into
+  # the {"Name", "a@b.com"} tuple Swoosh's from/1 expects.
   defp mail_from do
     mail_from = Application.get_env(:dtu_app, :mail_from, "dtu.app <noreply@localhost>")
 

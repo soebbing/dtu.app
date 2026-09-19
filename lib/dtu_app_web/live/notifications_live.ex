@@ -243,12 +243,12 @@ defmodule DtuAppWeb.NotificationsLive do
   # regenerate handler runs synchronously in the LiveView process and
   # the dispatcher's email-fallback branch fires (because the user has
   # no live push subscriptions to receive the banner), the swoosh email
-  # lands in the LV mailbox. Production adapters (`Swoosh.Adapters.Local`
-  # / SMTP / etc.) don't send back, so this clause is purely a test
-  # defence — but the LV shouldn't crash on a stray `:email` message
-  # regardless. The history refresh above is the user-facing reaction
-  # to a fan-out; the swoosh payload itself is for `Swoosh.TestAssertions`
-  # to inspect on the test process.
+  # lands in the LV mailbox. Production adapters (`Swoosh.Adapters.SMTP`)
+  # don't send back, so this clause is purely a test defence — but the LV
+  # shouldn't crash on a stray `:email` message regardless. The history
+  # refresh above is the user-facing reaction to a fan-out; the swoosh
+  # payload itself is for `Swoosh.TestAssertions` to inspect on the test
+  # process.
   @impl true
   def handle_info({:email, _swoosh_email}, socket) do
     {:noreply, socket}
