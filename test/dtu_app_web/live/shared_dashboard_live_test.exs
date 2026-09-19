@@ -16,17 +16,17 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       device + readings fixture).
   """
 
-  # `ExUnit.Callbacks.skip/1` is a private macro; silencing the
-  # undefined-function warning it raises under `require` keeps the
-  # late-UTC guard below quiet while still letting the macro expand
-  # at runtime.
-  @compile {:no_warn_undefined, ExUnit.Callbacks}
-
   use DtuAppWeb.ConnCase, async: false
 
   use Gettext, backend: DtuAppWeb.Gettext
 
-  require ExUnit.Callbacks
+  # `ExUnit.Case.skip/1` is used by the late-UTC guard below to keep
+  # the local-day-boundary assertion deterministic — once UTC has
+  # rolled past 22:00, a +02:00 user's local day has already advanced
+  # to tomorrow, and the boundary reading the test seeds at 23:30 UTC
+  # yesterday is no longer in local today. `ConnCase` uses
+  # `ExUnit.CaseTemplate` (not `ExUnit.Case`), so the unqualified
+  # `skip/1` form isn't in scope; we qualify with `ExUnit.Case`.
 
   import Phoenix.LiveViewTest
 
@@ -384,7 +384,7 @@ defmodule DtuAppWeb.SharedDashboardLiveTest do
       # chart then matches the (buggy) stats by returning 0. Skip
       # the late-UTC window so the assertion stays deterministic.
       if now.hour >= 22 do
-        ExUnit.Callbacks.skip(
+        ExUnit.Case.skip(
           "Late-UTC run: a +02:00 user's local day has rolled to tomorrow " <>
             "before #{now.hour}:00 UTC, so the boundary reading is no longer " <>
             "in local today. Re-run before 22:00 UTC."
