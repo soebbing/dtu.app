@@ -212,4 +212,152 @@ defmodule DtuApp.Push.VapidKeypairValidatorTest do
              "error message must explain WHY this matters (APNs will reject pushes)"
     end
   end
+
+  # RFC 8292 § 2: the JWT `sub` claim MUST be a `mailto:` or `https://`
+  # URL — the push service uses it to contact the operator about
+  # abuse. APNs (Apple) returns `403 BadJwtToken` for any other value.
+  # Caught in prod on 2026-09-19: the `VAPID_SUBJECT` env var was
+  # set to a bare email address (`mailto:admin@localhost` without the
+  # `mailto:` prefix — i.e. just `mailto:admin@localhost` got
+  # truncated somewhere in the host env), and the resulting JWT
+  # contained `sub: "madmin@localhost"`. Every push to web.push.apple.com
+  # came back 403 until the env was fixed. The guard below prevents
+  # that misconfiguration from reaching prod in the first place by
+  # failing the boot with a clear error.
+  describe "validate!/1 — VAPID_SUBJECT must be a mailto: or https:// URL (RFC 8292 §2)" do
+    test "passes when subject is a mailto: URL" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: "mailto:admin@yourdomain.com"
+      )
+
+      assert :ok = VapidKeypairValidator.validate!()
+    end
+
+    test "passes when subject is an https:// URL" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: "https://yourdomain.com/contact"
+      )
+
+      assert :ok = VapidKeypairValidator.validate!()
+    end
+
+    test "raises when subject is a bare email (no mailto: prefix) — the prod bug" do
+      # The exact value captured from the prod JWT on 2026-09-19:
+      # base64url-decoded from the live Authorization header. Without
+      # the `mailto:` prefix this is rejected by Apple's APNs as a
+      # malformed JWT (403 BadJwtToken). The guard catches it at boot.
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: "madmin@localhost"
+      )
+
+      assert_raise ArgumentError, ~r/VAPID_SUBJECT/, fn ->
+        VapidKeypairValidator.validate!()
+      end
+    end
+
+    test "raises when subject is the bare string 'mailto' (missing colon)" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: "mailto"
+      )
+
+      assert_raise ArgumentError, ~r/VAPID_SUBJECT/, fn ->
+        VapidKeypairValidator.validate!()
+      end
+    end
+
+    test "raises when subject is empty string" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: ""
+      )
+
+      assert_raise ArgumentError, ~r/VAPID_SUBJECT/, fn ->
+        VapidKeypairValidator.validate!()
+      end
+    end
+
+    test "raises when subject is nil" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: nil
+      )
+
+      assert_raise ArgumentError, ~r/VAPID_SUBJECT/, fn ->
+        VapidKeypairValidator.validate!()
+      end
+    end
+
+    test "the error message names the env var, the spec, and the fix" do
+      kp = fresh_keypair()
+
+      Application.put_env(
+        :web_push,
+        :vapid,
+        public_key: kp.public_key,
+        private_key: kp.private_key,
+        subject: "madmin@localhost"
+      )
+
+      error =
+        try do
+          VapidKeypairValidator.validate!()
+          nil
+        rescue
+          e in ArgumentError -> Exception.message(e)
+        end
+
+      assert error =~ "VAPID_SUBJECT",
+             "error message must name the env var"
+
+      assert error =~ "mailto:" or error =~ "https://",
+             "error message must show the valid prefix shape"
+
+      assert error =~ "BadJwtToken" or error =~ "RFC 8292" or error =~ "Apple",
+             "error message must explain why this matters"
+    end
+
+    test "skips subject validation when keys are missing entirely" do
+      # `:test` env / dev mode without env vars — the validator already
+      # returns :ok without touching anything, and the subject check
+      # must NOT run in that case (the deploy has opted out of VAPID
+      # entirely, and there's nothing to validate against).
+      clear_vapid()
+
+      assert :ok = VapidKeypairValidator.validate!()
+    end
+  end
 end
