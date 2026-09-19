@@ -281,79 +281,137 @@ if config_env() != :test do
         raise "SMTP_AUTH_MODE must be one of auto / always / never, got: #{inspect(other)}"
     end
 
-  # When TLS is enabled (`:always` / `:if_available`), pin the TLS protocol
-  # versions + CA file location that gen_smtp / Erlang `:ssl` will use.
+  # Map the SMTP_TLS env setting to gen_smtp_client's two distinct
+  # triggers:
   #
-  # Why explicit:
+  #   * `ssl: true`  — implicit TLS (start TLS right after TCP connect,
+  #                    before any SMTP command). Use with port 465.
+  #   * `tls: <mode>` — STARTTLS upgrade after EHLO. Use with port 587.
+  #                    `:always` = require STARTTLS; `:if_available` =
+  #                    opportunistic; `:never` = no STARTTLS.
   #
-  #   * `versions:` — `:ssl.connect/3` defaults differ by OTP release. Some
-  #     builds default to TLS 1.2 only; Gmail (and most modern relays) prefer
-  #     TLS 1.3 and will reject the 1.2-only handshake with a generic
-  #     `:tls_failed` from gen_smtp. Pinning both versions keeps the
-  #     handshake compatible with every common relay.
+  # These are independent: with `ssl: true` we set `tls: :never` because
+  # we're already inside TLS — STARTTLS after EHLO would be nonsensical.
+  # For STARTTLS (`ssl: false`), `tls: :always` / `:if_available` controls
+  # whether the upgrade happens.
   #
-  #   * `cacertfile:` — `:ssl` defaults to whatever path OTP was *built*
-  #     with, not whatever OpenSSL on the system finds. On Alpine/Debian
-  #     slim containers that's often `/etc/ssl/certs/ca-bundle.crt`, which
-  #     may not exist even when `/etc/ssl/certs/ca-certificates.crt`
-  #     (which `openssl s_client` uses) does. Pinning both common paths
-  #     with a fallback makes the choice explicit and container-portable.
+  # The TLS option list goes via `tls_options:` (NOT `sockopts:` — that's
+  # `gen_tcp:connect_option()` for socket-level tuning like `{:nodelay,
+  # true}`, not SSL options). `tls_options` is passed to `:ssl.connect/3`
+  # for both implicit and STARTTLS paths.
+  #
+  # Critical defaults we override:
+  #
+  #   * `versions:` — gen_smtp_client's default is
+  #     `[{versions, ['tlsv1', 'tlsv1.1', 'tlsv1.2']}]`. Gmail (and most
+  #     modern relays) prefer TLS 1.3 and reject a TLS 1.2-only handshake
+  #     with a generic `:tls_failed`. Pinning both keeps us compatible
+  #     with every common relay.
   #
   #   * `verify: :verify_peer` + `customize_hostname_check:` — gen_smtp
-  #     defaults to `verify_none`, which means a misissued / impersonated
-  #     cert is silently accepted. We want verification.
-  smtp_ssl_opts =
-    if smtp_tls == :never do
-      []
-    else
-      # `:ssl.connect/3` fails the handshake silently if `cacertfile` is
-      # missing, so probe the three common container paths and pick the
-      # first one that exists at startup. `/etc/ssl/certs/ca-certificates.crt`
-      # is Debian/Ubuntu + Alpine (`apk add ca-certificates`),
-      # `/etc/ssl/certs/ca-bundle.crt` is older RHEL/CentOS,
-      # `/etc/pki/tls/certs/ca-bundle.crt` is current RHEL/Fedora.
-      cacert =
-        Enum.find(
-          [
-            "/etc/ssl/certs/ca-certificates.crt",
-            "/etc/ssl/certs/ca-bundle.crt",
-            "/etc/pki/tls/certs/ca-bundle.crt"
-          ],
-          &File.regular?/1
-        )
+  #     defaults to `verify_none`, so a misissued / impersonated cert is
+  #     silently accepted. We want verification.
+  #
+  #   * `cacerts: :public_key.cacerts_get()` — OTP 25+ API that reads the
+  #     CA bundle Erlang was compiled with (better than `cacertfile` +
+  #     path probing, because OTP finds its own bundle reliably regardless
+  #     of the host filesystem layout).
+  #
+  #   * `server_name_indication:` — Gmail (and any shared-IP TLS
+  #     terminator) requires SNI to pick the right cert; without it the
+  #     server may serve a default / wrong cert and the verification
+  #     step fails.
+  {ssl_trigger, tls_options} =
+    case smtp_tls do
+      :never ->
+        {[ssl: false, tls: :never], []}
 
-      [
-        ssl: [
-          versions: [:"tlsv1.2", :"tlsv1.3"],
-          verify: :verify_peer,
-          cacertfile: cacert,
-          depth: 3,
-          customize_hostname_check: [
-            match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-          ]
-        ]
-      ]
+      :always when smtp_port == 465 ->
+        # Implicit TLS (port 465): connect with TLS immediately. We do
+        # NOT also send STARTTLS after EHLO — `tls: :never` keeps the
+        # post-EHLO behaviour as "stay on the existing TLS connection".
+        {[ssl: true, tls: :never],
+         [
+           tls_options: [
+             versions: [:"tlsv1.2", :"tlsv1.3"],
+             verify: :verify_peer,
+             cacerts: :public_key.cacerts_get(),
+             depth: 99,
+             server_name_indication: String.to_charlist(smtp_relay),
+             customize_hostname_check: [
+               match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+             ]
+           ]
+         ]}
+
+      :always ->
+        # STARTTLS (typically port 587): connect plaintext, send EHLO,
+        # then upgrade via STARTTLS. `ssl: false` keeps the initial
+        # connection plaintext; `tls: :always` forces the upgrade.
+        {[ssl: false, tls: :always],
+         [
+           tls_options: [
+             versions: [:"tlsv1.2", :"tlsv1.3"],
+             verify: :verify_peer,
+             cacerts: :public_key.cacerts_get(),
+             depth: 99,
+             server_name_indication: String.to_charlist(smtp_relay),
+             customize_hostname_check: [
+               match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+             ]
+           ]
+         ]}
+
+      :if_available ->
+        # STARTTLS, opportunistic: try the upgrade if the server
+        # advertises it, otherwise fall back to plaintext.
+        {[ssl: false, tls: :if_available],
+         [
+           tls_options: [
+             versions: [:"tlsv1.2", :"tlsv1.3"],
+             verify: :verify_peer,
+             cacerts: :public_key.cacerts_get(),
+             depth: 99,
+             server_name_indication: String.to_charlist(smtp_relay),
+             customize_hostname_check: [
+               match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+             ]
+           ]
+         ]}
     end
 
-  # Add :username/:password only when auth is actually enabled. Swoosh's
-  # SMTP adapter raises if `:username` is set with `authentication: :none`,
+  # Map our high-level SMTP_AUTH_MODE values to gen_smtp_client's
+  # `auth:` field, which accepts `:always` / `:never` / `:if_available`.
+  #
+  # `auth: :always`  — always authenticate; gen_smtp errors out if
+  #                     username/password are missing.
+  # `auth: :never`   — never authenticate.
+  # `auth: :if_available` — authenticate only if the server advertises
+  #                     AUTH and we have credentials. The default.
+  smtp_gen_auth =
+    case smtp_auth_mode do
+      :username_password -> :always
+      :none -> :never
+      _ -> :if_available
+    end
+
+  # Add `:username`/`:password` only when auth is actually enabled.
+  # gen_smtp_client raises if `:username` is set with `auth: :never`,
   # so this guards against a common misconfiguration (paste a username,
-  # leave SMTP_AUTH_MODE on :auto and password blank — :auto then picks
-  # :none and the orphan :username trips the adapter on first send).
+  # leave SMTP_AUTH_MODE on :auto and password blank — :auto picks
+  # `:none` and the orphan :username trips the adapter on first send).
   smtp_opts =
     [
       adapter: Swoosh.Adapters.SMTP,
       relay: smtp_relay,
       port: smtp_port,
-      domain: smtp_domain,
-      tls: smtp_tls,
-      authentication: smtp_auth_mode
+      hostname: smtp_domain
     ]
+    |> then(fn opts -> opts ++ ssl_trigger end)
+    |> then(fn opts -> opts ++ tls_options end)
+    |> then(fn opts -> Keyword.put(opts, :auth, smtp_gen_auth) end)
     |> then(fn opts ->
-      opts ++ smtp_ssl_opts
-    end)
-    |> then(fn opts ->
-      if smtp_auth_mode == :username_password do
+      if smtp_gen_auth == :always do
         opts
         |> Keyword.put(:username, smtp_username)
         |> Keyword.put(:password, smtp_password)
