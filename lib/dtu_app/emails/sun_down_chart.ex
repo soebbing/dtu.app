@@ -265,7 +265,13 @@ defmodule DtuApp.Emails.SunDownChart do
       watts = Float.round(max_power * ratio, 1)
       y = inner_bottom - ratio * (inner_bottom - inner_top)
 
-      ~s/<text x="#{1.0 * @padding_left - 4}" y="#{y - 4}" font-family="#{@font_family}" font-size="10" fill="#{@tick_label_color}" text-anchor="end">#{escape(Devices.format_number(watts, 0, locale))} W<\/text>/
+      # Y-axis watt label: locale-formatted number + the SI unit " W".
+      # Both pieces are wrapped in a single gettext msgid so a locale
+      # that flips the unit order ("1,700 W" vs "W 1,700") has a hook
+      # to localize. Current locales (en/de/fr) keep "W" as a suffix
+      # and the msgstr is identical to the msgid — see
+      # priv/gettext/{de,fr}/LC_MESSAGES/default.po.
+      ~s/<text x="#{1.0 * @padding_left - 4}" y="#{y - 4}" font-family="#{@font_family}" font-size="10" fill="#{@tick_label_color}" text-anchor="end">#{escape(gettext("%{n} W", n: Devices.format_number(watts, 0, locale)))}<\/text>/
     end)
   end
 
@@ -276,7 +282,19 @@ defmodule DtuApp.Emails.SunDownChart do
     inner_right = 1.0 * @viewbox_w - @padding_right
     y = 1.0 * @viewbox_h - 8
 
-    times = [{"00:00", 0.0}, {"06:00", 0.25}, {"12:00", 0.5}, {"18:00", 0.75}]
+    # X-axis times. The dashboard uses the SAME four msgids
+    # (shared_dashboard_live.ex:325 ff.) so DE/FR translations stay
+    # in lockstep — and for these locales the msgstr is identical to
+    # the msgid (24h notation, no AM/PM, no leading-zero variants).
+    # The gettext wrap is here so a future locale that wants, say,
+    # "06 Uhr" or 12-hour AM/PM has a hook to localize without
+    # changing the chart code.
+    times = [
+      {gettext("00:00"), 0.0},
+      {gettext("06:00"), 0.25},
+      {gettext("12:00"), 0.5},
+      {gettext("18:00"), 0.75}
+    ]
 
     Enum.map_join(times, "\n  ", fn {label, ratio} ->
       x = inner_left + ratio * (inner_right - inner_left)
@@ -306,7 +324,7 @@ defmodule DtuApp.Emails.SunDownChart do
 
         """
         <circle cx="#{Float.round(x, 1)}" cy="#{Float.round(y, 1)}" r="3" fill="#{@brand_emerald}" stroke="#ffffff" stroke-width="1"/>
-        <text x="#{Float.round(label_x, 1)}" y="#{Float.round(label_y, 1)}" font-family="#{@font_family}" font-size="10" font-weight="600" fill="#{@axis_title_color}" text-anchor="end">Peak: #{escape(Devices.format_number(max_power, 0, locale))} W</text>
+        <text x="#{Float.round(label_x, 1)}" y="#{Float.round(label_y, 1)}" font-family="#{@font_family}" font-size="10" font-weight="600" fill="#{@axis_title_color}" text-anchor="end">#{escape(gettext("Peak: %{n} W", n: Devices.format_number(max_power, 0, locale)))}</text>
         """
     end
   end
@@ -318,7 +336,7 @@ defmodule DtuApp.Emails.SunDownChart do
     # `x = 12` keeps the rotated text inside the viewBox after the -90°
     # pivot at the same coordinate — pre-PR used `x = 0` and the text
     # ended up half-clipped outside the visible area.
-    ~s/<text x="12" y="#{inner_mid_y}" font-family="#{@font_family}" font-size="10" fill="#{@axis_title_color}" text-anchor="middle" transform="rotate(-90 12 #{inner_mid_y})">Power<\/text>/
+    ~s/<text x="12" y="#{inner_mid_y}" font-family="#{@font_family}" font-size="10" fill="#{@axis_title_color}" text-anchor="middle" transform="rotate(-90 12 #{inner_mid_y})">#{escape(gettext("Power"))}<\/text>/
   end
 
   # Escape user-facing strings (gettext msgids ship as source strings

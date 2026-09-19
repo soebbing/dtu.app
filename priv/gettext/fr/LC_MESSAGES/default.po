@@ -2199,3 +2199,28 @@ msgstr "Vos panneaux ont cessé de produire pendant plus de 15 minutes alors que
 #, elixir-autogen, elixir-format
 msgid "⚠️ Production has stalled"
 msgstr "⚠️ La production s'est arrêtée"
+
+#: lib/dtu_app/emails/sun_down_chart.ex:275
+#, elixir-autogen, elixir-format
+msgid "%{n} W"
+msgstr "%{n} W"
+
+#: lib/dtu_app/emails/sun_down_chart.ex:295
+#, elixir-autogen, elixir-format
+msgid "06:00"
+msgstr "06:00"
+
+#: lib/dtu_app/emails/sun_down_chart.ex:297
+#, elixir-autogen, elixir-format
+msgid "18:00"
+msgstr "18:00"
+
+#: lib/dtu_app/emails/sun_down_chart.ex:328
+#, elixir-autogen, elixir-format
+msgid "Peak: %{n} W"
+msgstr "Pic : %{n} W"
+
+#: lib/dtu_app/emails/sun_down_chart.ex:340
+#, elixir-autogen, elixir-format
+msgid "Power"
+msgstr "Puissance"
