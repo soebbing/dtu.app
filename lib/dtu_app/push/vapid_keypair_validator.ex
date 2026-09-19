@@ -63,6 +63,7 @@ defmodule DtuApp.Push.VapidKeypairValidator do
     cfg = Application.get_env(:web_push, :vapid, [])
 
     with {:present, public_b64, private_b64} <- fetch_keys(cfg),
+         :ok <- validate_subject(cfg),
          {:ok, public_bytes} <- decode_key(public_b64, "public_key", @public_key_byte_size),
          {:ok, private_bytes} <- decode_key(private_b64, "private_key", @private_key_byte_size),
          :ok <- verify_pair(public_bytes, private_bytes) do
@@ -92,6 +93,58 @@ defmodule DtuApp.Push.VapidKeypairValidator do
       String.trim(to_string(public)) == "" -> :missing
       String.trim(to_string(private)) == "" -> :missing
       true -> {:present, public, private}
+    end
+  end
+
+  # RFC 8292 §2 requires the JWT `sub` claim to be a `mailto:` or
+  # `https://` URL — the push service uses it to contact the operator
+  # about abuse. Apple (APNs) is the strictest of the bunch and returns
+  # `403 BadJwtToken` for ANY other value, including bare email
+  # addresses (the most common typo — operators set
+  # `VAPID_SUBJECT=mailto:admin@yourdomain.com` and end up with
+  # `mailto:admin@yourdomain.com` in the JWT, but if the `mailto:` /
+  # `https://` prefix is missing Apple rejects the whole push).
+  #
+  # We caught this in prod on 2026-09-19: the env var was set to a
+  # bare email address (`mailto:admin@localhost` got truncated to
+  # `madmin@localhost` somewhere), and every push to
+  # web.push.apple.com came back 403 BadJwtToken until the env was
+  # fixed. Failing the boot at this point means a misconfigured
+  # deploy rolls back instead of silently shipping 403s.
+  #
+  # Runs only after `fetch_keys/1` returns `:present` — when no
+  # VAPID is configured at all (`:test` env, dev mode without env
+  # vars), we skip the check entirely because there's nothing to
+  # validate against and the deploy has opted out of native push.
+  defp validate_subject(cfg) do
+    # Use `Keyword.fetch/2` rather than `Keyword.get/2` so an absent
+    # `:subject` key is treated as `:missing` (skip), distinct from
+    # an explicit `subject: ""` or `subject: nil` (raise). The
+    # absent case is the `:test` env / dev-without-VAPID path —
+    # runtime.exs has a default in production but the validator
+    # doesn't depend on that default. The explicit-empty case is
+    # a real misconfiguration (operator set VAPID_SUBJECT="" in
+    # the host env) and must fail loudly.
+    case Keyword.fetch(cfg, :subject) do
+      :error ->
+        :ok
+
+      {:ok, raw} ->
+        subject = if is_binary(raw), do: String.trim(raw), else: ""
+
+        cond do
+          subject == "" ->
+            {:error, :invalid_subject}
+
+          String.starts_with?(subject, "mailto:") ->
+            :ok
+
+          String.starts_with?(subject, "https://") ->
+            :ok
+
+          true ->
+            {:error, :invalid_subject}
+        end
     end
   end
 
@@ -232,6 +285,39 @@ defmodule DtuApp.Push.VapidKeypairValidator do
       3. Restart the app
       4. Have iOS users re-enable push notifications (new public
          key invalidates the old subscription)
+    """
+  end
+
+  # RFC 8292 §2 requires the JWT `sub` claim to be a `mailto:` or
+  # `https://` URL. Apple's APNs rejects everything else with
+  # `403 BadJwtToken` — see `validate_subject/1` for the prod
+  # incident this guards against.
+  defp error_message(:invalid_subject) do
+    """
+    VAPID_SUBJECT env var must be a `mailto:` or `https://` URL.
+
+    RFC 8292 §2 requires the JWT `sub` claim to be a URL the push
+    service can use to contact the operator about abuse. Apple
+    APNs returns `403 BadJwtToken` for ANY other value — bare
+    email addresses (the most common typo, missing the
+    `mailto:` prefix) and the literal string `mailto` (missing
+    the colon) are the two failure modes seen so far. Every push
+    to web.push.apple.com comes back 403 until this is fixed.
+
+    Operational fix:
+
+      1. Set VAPID_SUBJECT to a mailto: URL on the prod host:
+
+           VAPID_SUBJECT=mailto:admin@yourdomain.com
+
+         (`https://yourdomain.com/contact` is also accepted by
+         every RFC 8292-compliant push service — both shapes
+         keep existing iOS subscriptions valid)
+
+      2. Restart the app container.
+
+      3. Have iOS users re-enable push notifications once, so
+         the new subject propagates into existing subscriptions.
     """
   end
 end
