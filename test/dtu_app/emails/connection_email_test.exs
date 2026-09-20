@@ -155,6 +155,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
       assert html =~ "Inverter was offline for"
       assert text =~ "Inverter was offline for"
     end
+
     setup %{payload: p} do
       # Build a localised diagnostic paragraph the same way the
       # producer does, so the assertion anchors on real catalog
@@ -181,7 +182,10 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
           )
         end)
 
-      went_offline_payload = %{p | body: ["Inverter Shed has gone offline.", localised_diagnostic]}
+      went_offline_payload = %{
+        p
+        | body: ["Inverter Shed has gone offline.", localised_diagnostic]
+      }
 
       back_online_payload = %{
         p

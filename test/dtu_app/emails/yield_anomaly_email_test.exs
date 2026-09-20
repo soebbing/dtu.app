@@ -43,7 +43,9 @@ defmodule DtuApp.Emails.YieldAnomalyEmailTest do
 
     payload = %{
       title: "⚠️ Production has stalled",
-      body: ["Your panels stopped producing for 1 hour while the sun was up — the fleet sum stayed below 15 W even though no inverter reported an outage. Worth a look at the array."],
+      body: [
+        "Your panels stopped producing for 1 hour while the sun was up — the fleet sum stayed below 15 W even though no inverter reported an outage. Worth a look at the array."
+      ],
       event: "yield_anomaly",
       tag: "yield_anomaly:2026-09-20",
       since: ~U[2026-09-20 14:23:00Z]
@@ -53,7 +55,10 @@ defmodule DtuApp.Emails.YieldAnomalyEmailTest do
   end
 
   describe "render/2 — basic contract" do
-    test "returns {html, text, attachments} where html starts with <html", %{user: user, payload: p} do
+    test "returns {html, text, attachments} where html starts with <html", %{
+      user: user,
+      payload: p
+    } do
       {html, text, attachments} = YieldAnomalyEmail.render(user, p)
       assert is_binary(html)
       assert html =~ "<html"
@@ -166,7 +171,8 @@ defmodule DtuApp.Emails.YieldAnomalyEmailTest do
 
       payload_with_localised_body = %{p | body: [localised_body]}
 
-      {:ok, localised_body: localised_body, payload_with_localised_body: payload_with_localised_body}
+      {:ok,
+       localised_body: localised_body, payload_with_localised_body: payload_with_localised_body}
     end
 
     test "renders the diagnostic duration in the html body",
