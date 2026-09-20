@@ -83,13 +83,85 @@ defmodule DtuApp.Notifications.DtuConnection.Payload do
   def body(_status, _name), do: nil
 
   @doc """
+  Diagnostic second paragraph for the `:went_offline` body —
+  "last reading from the inverter was HH:MM (X min/h ago)".
+
+  `nil` when no `last_seen_at` is available (the very first
+  sighting of the device was the disconnect — no reading
+  history to report on).
+  """
+  def last_seen_paragraph(%DateTime{} = last_seen_at, %DateTime{} = now) do
+    seconds = DateTime.diff(now, last_seen_at, :second)
+
+    {amount, unit} =
+      cond do
+        seconds < 60 -> {seconds, "second"}
+        seconds < 3600 -> {div(seconds, 60), "minute"}
+        true -> {div(seconds, 3600), "hour"}
+      end
+
+    unit_plural = pluralize(unit, amount)
+    time_str = Calendar.strftime(last_seen_at, "%H:%M")
+
+    gettext(
+      "Last reading from the inverter was at %{time} (%{amount} %{unit} ago).",
+      time: time_str,
+      amount: amount,
+      unit: unit_plural
+    )
+  end
+
+  def last_seen_paragraph(_last_seen_at, _now), do: nil
+
+  @doc """
+  Diagnostic second paragraph for the `:back_online` body —
+  "the inverter was offline for X minutes/hours".
+
+  `nil` when no `:since` value is supplied (the notifier
+  passes the prior disconnect timestamp here so the user can
+  see how long the outage was).
+  """
+  def offline_duration_paragraph(%DateTime{} = offline_at, %DateTime{} = now) do
+    seconds = max(DateTime.diff(now, offline_at, :second), 0)
+
+    {amount, unit} =
+      cond do
+        seconds < 60 -> {seconds, "second"}
+        seconds < 3600 -> {div(seconds, 60), "minute"}
+        true -> {div(seconds, 3600), "hour"}
+      end
+
+    unit_plural = pluralize(unit, amount)
+
+    gettext(
+      "Inverter was offline for %{amount} %{unit}.",
+      amount: amount,
+      unit: unit_plural
+    )
+  end
+
+  def offline_duration_paragraph(_offline_at, _now), do: nil
+
+  defp pluralize(unit, 1), do: unit
+  defp pluralize(unit, _amount), do: unit <> "s"
+
+  @doc """
   Build the full `dtu_connection` payload map the dispatcher
   and the in-page PubSub broadcast consume.
 
   `name` is the device name (e.g. `"Garage Inverter"`); `status`
   is `:went_offline` / `:back_online`; `now` is stamped on the
   `:since` field so tests can pass a fixed `DateTime` rather
-  than racing the system clock.
+  than racing the system clock. `opts` carries the diagnostic
+  timestamps the producer threads through:
+
+    * `:last_seen_at` — for `:went_offline`, the most recent
+      reading timestamp we observed before the disconnect.
+      Drives the "last reading was at HH:MM (X min ago)" second
+      paragraph. `nil` to omit the diagnostic.
+    * `:since` — for `:back_online`, the time the disconnect
+      fired. Drives the "was offline for X min" second paragraph.
+      Falls back to `now` if not provided.
 
   The `body` field is a list (the email/layout pipeline expects
   a list of paragraphs; the dispatcher's history-row insert
@@ -100,16 +172,35 @@ defmodule DtuApp.Notifications.DtuConnection.Payload do
   within a single offline period, so a status-suffixed tag
   would be redundant.
   """
-  @spec build(atom(), String.t(), DateTime.t()) :: map()
-  def build(status, name, %DateTime{} = now) do
+  @spec build(atom(), String.t(), DateTime.t(), keyword()) :: map()
+  def build(status, name, %DateTime{} = now, opts \\ []) do
     %{
       event: "dtu_connection",
       title: title(status, name),
-      body: [body(status, name)],
+      body: body_paragraphs(status, name, now, opts),
       tag: "dtu:#{name}",
       dtu_name: name,
       status: status,
       since: now
     }
   end
+
+  defp body_paragraphs(status, name, now, opts) do
+    base = body(status, name)
+
+    case diagnostic_paragraph(status, name, now, opts) do
+      nil -> [base]
+      para -> [base, para]
+    end
+  end
+
+  defp diagnostic_paragraph(:went_offline, _name, now, opts) do
+    last_seen_paragraph(Keyword.get(opts, :last_seen_at), now)
+  end
+
+  defp diagnostic_paragraph(:back_online, _name, now, opts) do
+    offline_duration_paragraph(Keyword.get(opts, :since, now), now)
+  end
+
+  defp diagnostic_paragraph(_status, _name, _now, _opts), do: nil
 end

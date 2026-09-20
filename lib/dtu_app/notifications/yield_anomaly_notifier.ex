@@ -3,8 +3,8 @@ defmodule DtuApp.Notifications.YieldAnomaly do
   Server-side producer for `event: "yield_anomaly"` notifications.
 
   Fires once per user per local day when the user's fleet
-  output collapses mid-day for longer than `@collapse_seconds`
-  (default 15 min) AND the collapse happens *between local
+  output collapses mid-day for longer than `@default_collapse_ms`
+  (default 1 h) AND the collapse happens *between local
   sunrise and local sunset* — i.e. the "panels stopped producing
   while the sun is up, but no inverter went offline to explain it"
   case the three existing producers (`SunUp`, `SunDown`,
@@ -74,21 +74,20 @@ defmodule DtuApp.Notifications.YieldAnomaly do
   day raises `Ecto.ConstraintError`, which we swallow.
 
   Test override:
-  `Application.put_env(:dtu_app, :yield_anomaly_collapse_seconds,
-  N)` makes the GenServer arm a N-second timer instead of the
-  15-min default. The notification_test.exs suite uses this to
+  `Application.put_env(:dtu_app, :yield_anomaly_collapse_ms,
+  N)` makes the GenServer arm a N-millisecond timer instead of
+  the 1-h default. The notification_test.exs suite uses this to
   drive an immediate fire without `Process.sleep`.
   """
 
   use GenServer
-
-  use Gettext, backend: DtuAppWeb.Gettext
 
   require Logger
 
   alias DtuApp.Accounts.User
   alias DtuApp.Notifications
   alias DtuApp.Notifications.Dispatcher
+  alias DtuApp.Notifications.YieldAnomaly.Payload
   alias DtuApp.Notifications.YieldAnomalyFire
   alias DtuApp.Repo
   alias DtuApp.SunCalc
@@ -99,21 +98,28 @@ defmodule DtuApp.Notifications.YieldAnomaly do
   @doc "The PubSub topic this producer subscribes to. Exposed for tests."
   def reading_topic, do: @reading_topic
 
+  # Forward the payload builders to the sibling `Payload` module.
+  defdelegate build(now, collapse_minutes, threshold_w, tag_date), to: Payload
+
   # Lazy-resolved on every timer arm so tests can swap the value
   # at runtime via `Application.put_env/3` without recompiling.
-  # 15 minutes (in milliseconds — `Process.send_after/3` is
-  # millisecond-native) matches `SunDown`'s
-  # `@default_idle_seconds` so a user reading the code can carry
-  # the same mental model across both producers.
-  @default_collapse_ms 15 * 60 * 1000
+  # Bumped from 15 min to 1 h after user reports that the
+  # 15-min window let through short daytime gaps (a cloud
+  # passing over the array, a partial inverter outage followed
+  # by a quick restart) that the user did not consider alert-
+  # worthy. 1 h requires a sustained mid-day dark window before
+  # we notify.
+  @default_collapse_ms 60 * 60 * 1000
 
   # The yield threshold below which we consider the fleet
-  # "collapsed". 5 W absorbs inverter self-consumption noise
-  # (most OpenDTU/AhoyDTU firmwares keep the gateway itself
-  # sipping a couple of watts even when the panels are dark)
-  # without tripping on a real low-yield setup (a small
-  # string at dawn / dusk can sit at 1–3 W for a few minutes).
-  @collapse_threshold_w 5.0
+  # "collapsed". Bumped from 5 W to 15 W after user feedback
+  # that 5 W still let through alerts on small overnight dips
+  # just past sunrise / just before sunset, when a partial
+  # array can legitimately produce single-digit watts. 15 W
+  # is comfortably above the inverter self-consumption noise
+  # floor and below any realistic morning / evening yield on
+  # an array with more than one panel.
+  @collapse_threshold_w 15.0
 
   # Staleness cap for the per-device reading cache. Matches
   # `SunDown`'s `@fleet_reading_stale_seconds`. Devices that
@@ -306,7 +312,7 @@ defmodule DtuApp.Notifications.YieldAnomaly do
               user = safe_get_user(user_id)
 
               if in_sun_window?(user, now) do
-                new_user_state = arm_timer(user_id, user_state)
+                new_user_state = arm_timer(user_id, user_state, now)
                 put_in(state, [:users, user_id], new_user_state)
               else
                 # Out of sun-window: do nothing. SunDown owns
@@ -385,10 +391,18 @@ defmodule DtuApp.Notifications.YieldAnomaly do
     DateTime.add(base, -offset, :second)
   end
 
-  defp arm_timer(user_id, user_state) do
+  # Stamp `collapse_since` on the user state the first time we
+  # arm a collapse-window timer. The diagnostic paragraph in the
+  # payload uses this to tell the user how long the fleet was
+  # below threshold before the alert fired (see
+  # `do_fire_for_user/3` — it diffs `collapse_since` against
+  # the fire-time `now`). Re-arming (timer already pending) is
+  # a no-op; `maybe_arm_timer/2` handles that branch above by
+  # only reaching this function when `timer: nil`.
+  defp arm_timer(user_id, user_state, now) do
     collapse_ms = read_collapse_ms()
     timer = Process.send_after(self(), {:fire_yield_anomaly, user_id}, collapse_ms)
-    %{user_state | timer: timer}
+    %{user_state | timer: timer, collapse_since: now}
   end
 
   defp cancel_timer(user_state) do
@@ -435,7 +449,18 @@ defmodule DtuApp.Notifications.YieldAnomaly do
     if is_nil(user) or user.notify_yield_anomaly != true do
       state
     else
-      case try_fire(user) do
+      # `collapse_minutes` is the floor-rounded minutes the
+      # fleet stayed below threshold before the timer fired.
+      # `read_now/0` honors the `:yield_anomaly_now` test
+      # override the same way the arming path does, so the
+      # diagnostic always matches the time-of-day the timer
+      # saw when it was armed. `nil` collapse_since (e.g. a
+      # timer re-armed against already-stale state) collapses
+      # to 0 — the user sees "for 0 minutes" rather than a
+      # crash, which is acceptable for the dedup-race edge.
+      collapse_minutes = collapse_duration_minutes(user_state.collapse_since, read_now())
+
+      case try_fire(user, collapse_minutes, @collapse_threshold_w) do
         :fired ->
           %{state | users: Map.put(state.users, user_id, %{user_state | collapse_since: nil})}
 
@@ -445,21 +470,33 @@ defmodule DtuApp.Notifications.YieldAnomaly do
     end
   end
 
+  defp collapse_duration_minutes(nil, _now), do: 0
+
+  defp collapse_duration_minutes(%DateTime{} = since, %DateTime{} = now) do
+    max(DateTime.diff(now, since, :second), 0) |> div(60)
+  end
+
   # Insert into `yield_anomaly_fires`. The unique
   # `(user_id, fired_on)` constraint makes a duplicate insert
   # a no-op for our purposes (any second fire on the same day
   # raises `Ecto.ConstraintError`, which we swallow). The
-  # actual `fire/2` call happens *only* when the insert
+  # actual `fire/4` call happens *only* when the insert
   # succeeded — that prevents a race where two timer fires
   # arrive in close succession and both compute `today`
   # before either insert has been committed.
-  defp try_fire(%User{} = user) do
+  #
+  # `collapse_minutes` and `threshold_w` thread into the
+  # payload's diagnostic paragraph so the user sees a
+  # concrete "collapsed for 60 min while the sun was up,
+  # stayed below 15 W" sentence instead of the old hard-
+  # coded copy. See `DtuApp.Notifications.YieldAnomaly.Payload`.
+  defp try_fire(%User{} = user, collapse_minutes, threshold_w) do
     today = user_today(user)
 
     case insert_fire(user.id, today) do
       :ok ->
         Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
-          fire(user, today)
+          fire(user, today, collapse_minutes, threshold_w)
         end)
 
         :fired
@@ -521,25 +558,25 @@ defmodule DtuApp.Notifications.YieldAnomaly do
     end
   end
 
-  # The user-visible payload. Title + body are gettext
-  # strings, but they're wrapped in `Gettext.with_locale/2`
-  # at the call site (see `try_fire/1`) so they pick up the
-  # user's locale — the YieldAnomaly GenServer has no
-  # request context, so a bare `gettext/1` would default to
-  # whatever Gettext was initialized with (≈ "en")
-  # regardless of preference.
-  defp fire(%User{} = user, %Date{} = today) do
-    payload = %{
-      event: "yield_anomaly",
-      title: gettext("⚠️ Production has stalled"),
-      # `body` is a list (the email/layout pipeline expects a
-      # list of paragraphs). The dispatcher's history-row
-      # insert coerces it back to a single string for the
-      # `:body` column. The in-page JS hook accepts either
-      # string or array body via the Notification API.
-      body: [yield_anomaly_body()],
-      tag: "yield_anomaly:#{Date.to_iso8601(today)}"
-    }
+  # The user-visible payload. The Payload module owns the
+  # title/body/build shape; we just hand it the diagnostic
+  # data (`collapse_minutes` + `threshold_w`) and stamp
+  # `:since` on the same instant the producer used to compute
+  # `collapse_minutes` so the diagnostic and the timestamp
+  # line up. Title + body are gettext strings, but they're
+  # wrapped in `Gettext.with_locale/2` at the call site (see
+  # `try_fire/3`) so they pick up the user's locale — the
+  # YieldAnomaly GenServer has no request context, so a bare
+  # `gettext/1` would default to whatever Gettext was
+  # initialized with (≈ "en") regardless of preference.
+  #
+  # `today` (user-local date) is the dedup key for both the
+  # tag and the `yield_anomaly_fires` row — passing it
+  # independently keeps the two in sync for users in
+  # non-UTC zones whose collapse fires around midnight UTC.
+  defp fire(%User{} = user, %Date{} = today, collapse_minutes, threshold_w) do
+    now = read_now()
+    payload = Payload.build(now, collapse_minutes, threshold_w, today)
 
     # In-page PubSub broadcast for the dashboard LiveView
     # hook (`Notifications.subscribe(user.id)` →
@@ -553,11 +590,5 @@ defmodule DtuApp.Notifications.YieldAnomaly do
     )
 
     Dispatcher.fire(user, "yield_anomaly", payload)
-  end
-
-  defp yield_anomaly_body do
-    gettext(
-      "Your panels stopped producing for over 15 minutes while the sun was up — even though no inverter reported an outage. Worth a look at the array."
-    )
   end
 end

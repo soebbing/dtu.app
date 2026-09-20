@@ -61,7 +61,7 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
     end
 
     test "returns a map with all expected keys for :went_offline", %{now: now} do
-      payload = Payload.build(:went_offline, "Garage Inverter", now)
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
 
       assert payload.event == "dtu_connection"
       assert payload.status == :went_offline
@@ -70,7 +70,7 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
     end
 
     test "returns a map with all expected keys for :back_online", %{now: now} do
-      payload = Payload.build(:back_online, "Garage Inverter", now)
+      payload = Payload.build(:back_online, "Garage Inverter", now, last_seen_at: nil)
 
       assert payload.event == "dtu_connection"
       assert payload.status == :back_online
@@ -79,25 +79,71 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
     end
 
     test "title matches the :went_offline gettext title", %{now: now} do
-      payload = Payload.build(:went_offline, "Garage Inverter", now)
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
       assert payload.title == "DTU went offline"
     end
 
     test "title matches the :back_online gettext title", %{now: now} do
-      payload = Payload.build(:back_online, "Garage Inverter", now)
+      payload = Payload.build(:back_online, "Garage Inverter", now, last_seen_at: nil)
       assert payload.title == "DTU back online"
     end
 
-    test "body is a list with one element (email/layout pipeline contract)", %{now: now} do
-      payload = Payload.build(:went_offline, "Garage Inverter", now)
+    test ":went_offline body contains a diagnostic paragraph with the last reading time", %{
+      now: now
+    } do
+      last_seen_at = DateTime.add(now, -12 * 60, :second)
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: last_seen_at)
+
+      assert is_list(payload.body)
+      assert length(payload.body) == 2
+      # Second paragraph is the diagnostic — case-insensitive on
+      # "reading" to match both the en ("Last reading") and the
+      # de/fr catalogs (where the noun may differ).
+      assert Enum.any?(payload.body, &String.downcase(&1) =~ "reading")
+    end
+
+    test ":back_online body contains a diagnostic paragraph with the offline duration", %{
+      now: now
+    } do
+      # The notifier passes `since` for the back-online path as
+      # "when did the disconnect happen" — see
+      # `DtuConnection.fire_for_status/2`. The diagnostic paragraph
+      # should reference that duration so the user knows how long
+      # the outage was.
+      disconnected_at = DateTime.add(now, -7 * 60, :second)
+      payload = Payload.build(:back_online, "Garage Inverter", now, since: disconnected_at)
+
+      assert is_list(payload.body)
+      assert length(payload.body) == 2
+      assert Enum.any?(payload.body, &String.downcase(&1) =~ "offline")
+    end
+
+    test ":went_offline body omits the diagnostic paragraph when no last_seen_at is provided", %{
+      now: now
+    } do
+      # Edge case: if the producer never had a live reading for
+      # this device (e.g. the very first sighting was the
+      # disconnect), the diagnostic paragraph has no useful data
+      # and is omitted — the user gets a one-line body that still
+      # says "your inverter has gone offline".
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
 
       assert is_list(payload.body)
       assert length(payload.body) == 1
-      assert hd(payload.body) == "Your inverter Garage Inverter has gone offline."
+      refute Enum.any?(payload.body, &String.downcase(&1) =~ "reading")
     end
 
-    test "body list element matches the :back_online gettext body", %{now: now} do
-      payload = Payload.build(:back_online, "Garage Inverter", now)
+    test "body list first element matches the :went_offline gettext body", %{now: now} do
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
+
+      assert is_list(payload.body)
+
+      assert hd(payload.body) ==
+               "Your inverter Garage Inverter has gone offline."
+    end
+
+    test "body list first element matches the :back_online gettext body", %{now: now} do
+      payload = Payload.build(:back_online, "Garage Inverter", now, last_seen_at: nil)
 
       assert is_list(payload.body)
 
@@ -108,15 +154,15 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
     test "tag is 'dtu:<name>' without the :status suffix (dedup relies on producer gates)", %{
       now: now
     } do
-      payload = Payload.build(:went_offline, "Garage Inverter", now)
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
       assert payload.tag == "dtu:Garage Inverter"
     end
 
     test ":since is the caller-supplied now, not DateTime.utc_now()", %{now: now} do
-      # If `build/3` ignored its `now` arg and stamped `DateTime.utc_now()`
+      # If `build/4` ignored its `now` arg and stamped `DateTime.utc_now()`
       # inline, this assertion would fail (the two clocks diverge within
       # seconds).
-      payload = Payload.build(:went_offline, "Garage Inverter", now)
+      payload = Payload.build(:went_offline, "Garage Inverter", now, last_seen_at: nil)
       assert payload.since == now
     end
   end

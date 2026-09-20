@@ -43,10 +43,12 @@ defmodule DtuApp.Emails.YieldAnomalyEmail do
   end
 
   # `payload.body` is normally a list (e.g.
-  # `[ "Your panels stopped producing for over 15 minutes…" ]`).
-  # The producer may pass a string for legacy reasons. Coerce
-  # defensively so the layout's `:body` requirement (a list of
-  # paragraph strings) is met either way.
+  # `[ "Your panels stopped producing for 1 hour while the
+  # sun was up — the fleet sum stayed below 15 W even though
+  # no inverter reported an outage. Worth a look at the
+  # array." ]`). The producer may pass a string for legacy
+  # reasons. Coerce defensively so the layout's `:body`
+  # requirement (a list of paragraph strings) is met either way.
   defp payload_body(%{body: body}) when is_list(body), do: body
   defp payload_body(%{body: body}) when is_binary(body), do: [body]
   defp payload_body(_), do: []

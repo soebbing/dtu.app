@@ -376,6 +376,11 @@ msgstr "Impressum"
 msgid "Information provided in accordance with § 5 TMG (Germany) and applicable EU consumer-protection rules."
 msgstr "Angaben gemäß § 5 TMG (Deutschland) und geltenden EU-Verbraucherschutzvorschriften."
 
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:136
+#, elixir-autogen, elixir-format
+msgid "Inverter was offline for %{amount} %{unit}."
+msgstr "Wechselrichter war für %{amount} %{unit} offline."
+
 #: lib/dtu_app_web/live/notifications_live.ex:375
 #, elixir-autogen, elixir-format
 msgid "Inverter connection state"
@@ -390,6 +395,11 @@ msgstr "Isolierte Mandantenfähigkeit"
 #, elixir-autogen, elixir-format
 msgid "Last seen:"
 msgstr "Zuletzt gesehen:"
+
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:106
+#, elixir-autogen, elixir-format
+msgid "Last reading from the inverter was at %{time} (%{amount} %{unit} ago)."
+msgstr "Letzte Auslesung des Wechselrichters war um %{time} (vor %{amount} %{unit})."
 
 #: lib/dtu_app_web/controllers/page_html/privacy.html.heex:6
 #, elixir-autogen, elixir-format
@@ -1196,12 +1206,12 @@ msgstr "Netto-Import"
 msgid "Peak power"
 msgstr "Spitzenleistung"
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:586
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:64
 #, elixir-autogen, elixir-format
 msgid "DTU back online"
 msgstr "DTU wieder online"
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:585
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:63
 #, elixir-autogen, elixir-format
 msgid "DTU went offline"
 msgstr "DTU ist offline"
@@ -1227,7 +1237,7 @@ msgstr "Test-Benachrichtigung"
 msgid "Test notification sent."
 msgstr "Test-Benachrichtigung gesendet."
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:593
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:81
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} is publishing telemetry again."
 msgstr "Ihr Wechselrichter %{name} überträgt wieder Telemetriedaten."
@@ -1438,7 +1448,7 @@ msgstr "Bestätigen Sie Ihr Konto"
 msgid "Confirm your dtu.app account"
 msgstr "Bestätigen Sie Ihr dtu.app-Konto"
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:587
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:65
 #, elixir-autogen, elixir-format
 msgid "DTU status changed for %{name}"
 msgstr "DTU-Status für %{name} geändert"
@@ -1720,7 +1730,7 @@ msgstr "Vorheriger Zeitraum"
 msgid "Recent notifications"
 msgstr "Letzte Benachrichtigungen"
 
-#: lib/dtu_app/notifications/dtu_connection_notifier.ex:590
+#: lib/dtu_app/notifications/dtu_connection/payload.ex:78
 #, elixir-autogen, elixir-format
 msgid "Your inverter %{name} has gone offline."
 msgstr "Ihr Wechselrichter %{name} ist offline gegangen."
@@ -2156,8 +2166,8 @@ msgstr "teilweise bewölkt"
 
 #: lib/dtu_app_web/live/notifications_live.ex:432
 #, elixir-autogen, elixir-format
-msgid "A heads-up if your fleet stops producing for over 15 minutes while the sun is up — even when no inverter reports an outage. Fires once per local day."
-msgstr "Eine Benachrichtigung, falls Ihre Anlage länger als 15 Minuten nicht produziert, obwohl die Sonne scheint — auch wenn kein Wechselrichter einen Ausfall meldet. Wird einmal pro lokalem Tag ausgelöst."
+msgid "A heads-up if your fleet stops producing for over 1 hour while the sun is up — even when no inverter reports an outage. Fires once per local day."
+msgstr "Eine Benachrichtigung, falls Ihre Anlage länger als 1 Stunde nicht produziert, obwohl die Sonne scheint — auch wenn kein Wechselrichter einen Ausfall meldet. Wird einmal pro lokalem Tag ausgelöst."
 
 #: lib/dtu_app_web/live/dashboard_live.ex:3465
 #, elixir-autogen, elixir-format
@@ -2190,12 +2200,27 @@ msgstr "Dashboard anzeigen"
 msgid "Power (W)"
 msgstr "Leistung (W)"
 
-#: lib/dtu_app/notifications/yield_anomaly_notifier.ex:559
+#: lib/dtu_app/notifications/yield_anomaly/payload.ex:141
 #, elixir-autogen, elixir-format
-msgid "Your panels stopped producing for over 15 minutes while the sun was up — even though no inverter reported an outage. Worth a look at the array."
-msgstr "Ihre Anlage hat mehr als 15 Minuten lang nicht produziert, obwohl die Sonne schien — obwohl kein Wechselrichter einen Ausfall gemeldet hat. Ein Blick auf die Anlage lohnt sich."
+msgid "%{h} hours %{m} minutes"
+msgstr "%{h} Stunden %{m} Minuten"
 
-#: lib/dtu_app/notifications/yield_anomaly_notifier.ex:534
+#: lib/dtu_app/notifications/yield_anomaly/payload.ex:132
+#, elixir-autogen, elixir-format
+msgid "%{n} minutes"
+msgstr "%{n} Minuten"
+
+#: lib/dtu_app/notifications/yield_anomaly/payload.ex:140
+#, elixir-autogen, elixir-format
+msgid "%{n} hours"
+msgstr "%{n} Stunden"
+
+#: lib/dtu_app/notifications/yield_anomaly/payload.ex:86
+#, elixir-autogen, elixir-format
+msgid "Your panels stopped producing for %{duration} while the sun was up — the fleet sum stayed below %{threshold} even though no inverter reported an outage. Worth a look at the array."
+msgstr "Ihre Anlage hat %{duration} lang nicht produziert, obwohl die Sonne schien — die Anlagenleistung blieb unter %{threshold}, obwohl kein Wechselrichter einen Ausfall gemeldet hat. Ein Blick auf die Anlage lohnt sich."
+
+#: lib/dtu_app/notifications/yield_anomaly/payload.ex:68
 #, elixir-autogen, elixir-format
 msgid "⚠️ Production has stalled"
 msgstr "⚠️ Produktion stockt"
