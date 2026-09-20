@@ -854,6 +854,12 @@ msgstr "Lorsque vous ajoutez une DTU, le système génère un nom d'utilisateur 
 msgid "When you register, we store your email address and a hashed version of your password. The email address is used to log you in and (if enabled) to send transactional emails such as magic-link sign-in or account-change confirmations."
 msgstr "Lors de votre inscription, nous stockons votre adresse e-mail et une version hachée de votre mot de passe. L'adresse e-mail est utilisée pour vous connecter et (si activé) pour envoyer des e-mails transactionnels tels que la connexion par lien magique ou les confirmations de modification de compte."
 
+#: lib/dtu_app_web/components/line_chart_panel.ex:101
+#: lib/dtu_app_web/components/line_chart_panel.ex:169
+#, elixir-autogen, elixir-format
+msgid "W"
+msgstr "W"
+
 #: lib/dtu_app_web/live/dashboard_live/components.ex:308
 #, elixir-autogen, elixir-format
 msgid "Year"

@@ -409,6 +409,69 @@ defmodule DtuAppWeb.LineChartPanelTest do
     end
   end
 
+  describe "localization" do
+    test "renders the watt tick suffix in English by default" do
+      html =
+        render_component(&LineChartPanel.line_chart_panel/1, %{
+          chart: base_chart(),
+          locale: "en"
+        })
+
+      assert html =~ "0 W"
+      assert html =~ "1,000 W"
+    end
+
+    test "renders the watt tick suffix localized to German under locale=de" do
+      html =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          render_component(&LineChartPanel.line_chart_panel/1, %{
+            chart: base_chart(),
+            locale: "de"
+          })
+        end)
+
+      # DE uses "." as the thousands separator — "1.000 W" rather
+      # than the EN "1,000 W". The `W` symbol is the SI unit and
+      # stays identical across locales.
+      assert html =~ "1.000 W"
+      refute html =~ "1,000 W"
+    end
+
+    test "renders the watt tick suffix localized to French under locale=fr" do
+      html =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          render_component(&LineChartPanel.line_chart_panel/1, %{
+            chart: base_chart(),
+            locale: "fr"
+          })
+        end)
+
+      # FR uses NBSP (U+00A0) as the thousands separator — written
+      # as the literal NBSP character so the assertion matches
+      # the exact bytes the formatter emits. A regular ASCII
+      # space would also pass `=~` but would silently accept a
+      # future regression that swaps NBSP for a breaking space.
+      assert html =~ "1 000 W"
+    end
+
+    test "exposes the localized watt unit to the colocated JS hook via a data attribute" do
+      html =
+        render_component(&LineChartPanel.line_chart_panel/1, %{
+          chart: base_chart(),
+          locale: "en"
+        })
+
+      # The chart tooltip (rendered client-side by the colocated
+      # hook) appends the unit to every value; the server now
+      # passes the localized form so the JS doesn't need its own
+      # i18n catalog. The default gettext msgid is the SI symbol
+      # `W`, identical across EN/DE/FR — the attribute is still
+      # wired so future locale-specific unit changes land in one
+      # place.
+      assert html =~ ~s(data-watts-unit="W")
+    end
+  end
+
   describe "colocated hook" do
     test "the chart container binds the colocated hook FQN resolved to the component module" do
       # The full colocated hook body (`export default { ... }`) only
