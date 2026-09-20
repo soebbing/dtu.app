@@ -158,7 +158,7 @@ defmodule DtuAppWeb.NotificationPreferencesForm do
           </span>
           <span class="block text-sm text-zinc-500 dark:text-zinc-400">
             {gettext(
-              "A heads-up if your fleet stops producing for over 15 minutes while the sun is up — even when no inverter reports an outage. Fires once per local day."
+              "A heads-up if your fleet stops producing for over 1 hour while the sun is up — even when no inverter reports an outage. Fires once per local day."
             )}
           </span>
         </span>

@@ -42,19 +42,25 @@ defmodule DtuApp.Notifications.DtuConnection.Detection do
 
   # The "must have been online continuously for X before a
   # disconnect is notification-worthy" threshold. Raised from the
-  # historical `@recency_seconds` (5 min) after user reports that
-  # inverters which flap every few minutes (connect → ~10 min later
-  # → disconnect → reconnect → ~10 min later → disconnect …) still
-  # produced one push per cycle. 15 min catches the long-cycle
-  # flapper without dropping notifications on devices that genuinely
-  # reconnect and stay up.
-  @prior_uptime_seconds 900
+  # historical `@recency_seconds` (5 min) to 15 min after user
+  # reports that inverters which flap every few minutes (connect
+  # → ~10 min later → disconnect → reconnect → ~10 min later →
+  # disconnect …) still produced one push per cycle; raised again
+  # to 1 h after a follow-up report that even 15 min let through
+  # devices which were technically online for ~15 min but had a
+  # pattern of "connect just long enough, then drop, then come
+  # back". 1 h requires a genuinely stable session before a
+  # disconnect is notification-worthy.
+  @prior_uptime_seconds 3600
 
   # Per-device re-fire cooldown. After a `:went_offline` fires, the
   # same device is suppressed for this many seconds — even across
   # connect/disconnect cycles. See the notifier's moduledoc for the
-  # design rationale.
-  @cooldown_seconds 1800
+  # design rationale. Bumped from 30 min to 2 h to address a
+  # follow-up user report: a WiFi-fragile inverter that flapped
+  # every ~75 min produced one push per cycle under the 30-min
+  # threshold.
+  @cooldown_seconds 7200
 
   @doc """
   Connect-side recency guard: the `last_seen_at` reading must be

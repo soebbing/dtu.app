@@ -9,8 +9,7 @@ defmodule DtuAppWeb.NotificationsLive do
     * `:notify_sun_up` — a single morning ping when the fleet first
       produces power for the day (once per user per local day).
     * `:notify_yield_anomaly` — a single mid-day heads-up if the
-      fleet stops producing for over 15 minutes while the sun is
-      up.
+      fleet stops producing for over 1 hour while the sun is up.
 
   The browser-side permission state (allowed / blocked / not
   installed as PWA / not supported) is computed by the JS hook

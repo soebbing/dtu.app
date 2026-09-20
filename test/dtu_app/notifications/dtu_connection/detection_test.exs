@@ -48,13 +48,30 @@ defmodule DtuApp.Notifications.DtuConnection.DetectionTest do
 
   describe "prior_uptime?/1" do
     test "returns true for a DateTime older than @prior_uptime_seconds" do
-      # 30 minutes — well beyond the 15-minute @prior_uptime_seconds.
-      at = DateTime.add(Time.utc_now_usec(), -1_800, :second)
+      # 90 minutes — well beyond the 1-hour @prior_uptime_seconds.
+      at = DateTime.add(Time.utc_now_usec(), -5_400, :second)
       assert Detection.prior_uptime?(at) == true
     end
 
+    test "returns true for a DateTime just over @prior_uptime_seconds" do
+      # 1 hour + 1 minute — just outside the 1-hour window.
+      # 1 minute of buffer (not 1 second) because
+      # `DtuApp.Time.utc_now/0` is cached for 10 s, and in the
+      # full test suite the cache can be 1+ s stale by the time
+      # this test runs; 1 s past the threshold is too tight a
+      # margin and flakes the boundary check.
+      at = DateTime.add(Time.utc_now_usec(), -3_660, :second)
+      assert Detection.prior_uptime?(at) == true
+    end
+
+    test "returns false for a DateTime just inside @prior_uptime_seconds" do
+      # 30 minutes — well inside the 1-hour window.
+      at = DateTime.add(Time.utc_now_usec(), -1_800, :second)
+      assert Detection.prior_uptime?(at) == false
+    end
+
     test "returns false for a DateTime within @prior_uptime_seconds of now" do
-      # 5 minutes — well inside the 15-minute window.
+      # 5 minutes — well inside the 1-hour window.
       at = DateTime.add(Time.utc_now_usec(), -300, :second)
       assert Detection.prior_uptime?(at) == false
     end
@@ -74,13 +91,30 @@ defmodule DtuApp.Notifications.DtuConnection.DetectionTest do
     end
 
     test "returns true for a DateTime older than @cooldown_seconds" do
-      # 1 hour — well beyond the 30-minute @cooldown_seconds.
-      at = DateTime.add(Time.utc_now_usec(), -3_600, :second)
+      # 3 hours — well beyond the 2-hour @cooldown_seconds.
+      at = DateTime.add(Time.utc_now_usec(), -10_800, :second)
+      assert Detection.cooldown_over?(at) == true
+    end
+
+    test "returns true for a DateTime just over @cooldown_seconds" do
+      # 2 hours + 1 minute — just outside the 2-hour window.
+      # 1 minute of buffer (not 1 second) because
+      # `DtuApp.Time.utc_now/0` is cached for 10 s, and in the
+      # full test suite the cache can be 1+ s stale by the time
+      # this test runs; 1 s past the threshold is too tight a
+      # margin and flakes the boundary check.
+      at = DateTime.add(Time.utc_now_usec(), -7_260, :second)
       assert Detection.cooldown_over?(at) == true
     end
 
     test "returns false for a DateTime within @cooldown_seconds of now" do
-      # 5 minutes — well inside the 30-minute window.
+      # 30 minutes — well inside the 2-hour window.
+      at = DateTime.add(Time.utc_now_usec(), -1_800, :second)
+      assert Detection.cooldown_over?(at) == false
+    end
+
+    test "returns false for a DateTime just inside @cooldown_seconds" do
+      # 5 minutes — well inside the 2-hour window.
       at = DateTime.add(Time.utc_now_usec(), -300, :second)
       assert Detection.cooldown_over?(at) == false
     end

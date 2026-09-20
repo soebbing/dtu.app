@@ -71,8 +71,8 @@ defmodule DtuApp.Notifications.YieldAnomalyTest do
     Ecto.Adapters.SQL.Sandbox.allow(DtuApp.Repo, self(), pid)
 
     # Drive the collapse-window timer to fire fast so the
-    # tests don't have to sleep 15 minutes per scenario.
-    # Values are in milliseconds (matches `Process.send_after/3`).
+    # tests don't have to sleep 1 hour per scenario. Values
+    # are in milliseconds (matches `Process.send_after/3`).
     Application.put_env(:dtu_app, :yield_anomaly_collapse_ms, 50)
 
     on_exit(fn ->
@@ -122,7 +122,7 @@ defmodule DtuApp.Notifications.YieldAnomalyTest do
       # Tone is alert, not playful — production stalled.
       assert payload.title =~ "Production" or payload.title =~ "stalled"
       assert is_list(payload.body)
-      assert Enum.any?(payload.body, &(&1 =~ "15 minutes" or &1 =~ "panels"))
+      assert Enum.any?(payload.body, &(&1 =~ "panels"))
       assert payload.tag =~ "yield_anomaly:"
 
       # Dedup row inserted for the user's local date. With

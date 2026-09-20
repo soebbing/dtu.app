@@ -53,14 +53,15 @@ defmodule DtuApp.Notifications.DtuConnection do
       the user. Recent-active = "this is a real offline event"; stale =
       "the broker just reconnected to a DTU that was already dead."
     * `prior_uptime?(connected_at)` — the device must have been online
-      for at least `@prior_uptime_seconds` (15 min) before the
+      for at least `@prior_uptime_seconds` (1 h) before the
       disconnect. Without this guard, a brief WiFi reconnect storm
       (connect → 30s later disconnect) would fire "Your inverter has
       gone offline" on a device that was never actually online long
-      enough to merit one. 15 min was chosen over the original 5 min
-      after user reports of "dozens of offline pushes" from inverters
-      that flap every few minutes — a 5-min threshold still lets
-      long-cycle flappers through, a 15-min threshold requires a
+      enough to merit one. 1 h was chosen over the historical 15 min
+      (which was itself a bump from 5 min) after a follow-up user
+      report that even 15 min let through devices which were
+      technically online for ~15 min but had a pattern of "connect
+      just long enough, then drop, then come back". 1 h requires a
       genuinely stable session before a disconnect is notification-
       worthy.
     * `not was_disconnected?` — the prior `disconnected?` flag (read
@@ -195,7 +196,16 @@ defmodule DtuApp.Notifications.DtuConnection do
     # the case-match on `disconnected?: true` can never succeed
     # and the back-online path becomes a dead branch.
     case Map.get(state, device_id) do
+      %{disconnected?: true, last_seen_at: %DateTime{} = last_seen_at, disconnected_at: disconnected_at} ->
+        if recently_active?(last_seen_at) do
+          fire_for_status(device_id, :back_online, since: disconnected_at)
+        end
+
       %{disconnected?: true, last_seen_at: %DateTime{} = last_seen_at} ->
+        # Pre-`disconnected_at` cache entry (e.g. from a hydrate
+        # path that didn't stamp it). Treat as fire with no
+        # duration diagnostic — the user still gets the back-online
+        # notification, just without the "was offline for X" line.
         if recently_active?(last_seen_at) do
           fire_for_status(device_id, :back_online)
         end
@@ -244,9 +254,9 @@ defmodule DtuApp.Notifications.DtuConnection do
         # (connect → 30s later disconnect) would fire "Your inverter
         # has gone offline" — a misleading notification on a device
         # that was never actually online long enough to merit one.
-        # 15 min was chosen over the historical 5 min after user
-        # reports of long-cycle flap storms. `connected_at` is
-        # recorded in state at connect-time below.
+        # 1 h was chosen over the historical 15 min (itself a bump
+        # from 5 min) after user reports of long-cycle flap storms.
+        # `connected_at` is recorded in state at connect-time below.
         connected_at = get_connected_at(state, device_id)
 
         # Per-device re-fire cooldown. Read BEFORE the fire — the
@@ -297,16 +307,18 @@ defmodule DtuApp.Notifications.DtuConnection do
   # present — the disconnect-side C1 gate reads it to enforce the
   # "must have been online for >= @recency_seconds" rule.
   defp remember_disconnect(state, device_id) do
+    disconnected_at = Time.utc_now()
+
     state =
       case Map.get(state, device_id) do
         nil ->
           case safe_lookup(device_id) do
             nil -> state
-            info -> Map.put(state, device_id, Map.put(info, :disconnected?, true))
+            info -> Map.put(state, device_id, Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at}))
           end
 
         info ->
-          Map.put(state, device_id, Map.put(info, :disconnected?, true))
+          Map.put(state, device_id, Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at}))
       end
 
     # Mirror the marker to the DB so the next GenServer restart
@@ -333,7 +345,11 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   defp clear_disconnect_marker(state, device_id) do
     connected_at = Time.utc_now()
-    updated = %{disconnected?: false, connected_at: connected_at}
+    # Drop `disconnected_at` along with the `disconnected?` flag —
+    # the field is only meaningful between a `:dtu_disconnected`
+    # transition and the matching `:dtu_connected`, and the next
+    # disconnect stamps it fresh.
+    updated = %{disconnected?: false, connected_at: connected_at, disconnected_at: nil}
 
     state =
       case Map.get(state, device_id) do
@@ -435,13 +451,13 @@ defmodule DtuApp.Notifications.DtuConnection do
     end
   end
 
-  defp fire_for_status(device_id, status) do
+  defp fire_for_status(device_id, status, opts \\ []) do
     case safe_lookup(device_id) do
       nil ->
         :ok
 
-      %{user_id: user_id, name: name} ->
-        # Look up the User struct (not just the id) so `fire/3` can
+      %{user_id: user_id, name: name, last_seen_at: last_seen_at} ->
+        # Look up the User struct (not just the id) so `fire/4` can
         # wrap the gettext calls in the user's locale. The producer
         # runs as a long-lived GenServer without a request context,
         # so a bare `gettext/1` here would default to whatever
@@ -465,7 +481,7 @@ defmodule DtuApp.Notifications.DtuConnection do
             # behaviour so the history page still surfaces the
             # summary even when native push is off.
             if user.notify_dtu_connection == true do
-              fire(user, name, status)
+              fire(user, name, status, Keyword.put_new(opts, :last_seen_at, last_seen_at))
             end
 
             :ok
@@ -473,7 +489,7 @@ defmodule DtuApp.Notifications.DtuConnection do
     end
   end
 
-  defp fire(%User{} = user, name, status) do
+  defp fire(%User{} = user, name, status, opts) when is_list(opts) do
     Gettext.with_locale(DtuAppWeb.Gettext, user.locale || "en", fn ->
       # Status is the atom (`:went_offline` / `:back_online`) — the
       # dispatcher reads `Push.native_enabled?/2` (which has explicit
@@ -485,7 +501,7 @@ defmodule DtuApp.Notifications.DtuConnection do
       # both the in-page PubSub broadcast and the dispatcher see the
       # same value.
       now = DateTime.utc_now()
-      payload = Payload.build(status, name, now)
+      payload = Payload.build(status, name, now, opts)
 
       # In-page PubSub broadcast for the dashboard LiveView hook
       # (`Notifications.subscribe(user.id)` →

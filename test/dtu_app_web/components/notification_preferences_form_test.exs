@@ -83,7 +83,7 @@ defmodule DtuAppWeb.NotificationPreferencesFormTest do
       html = render_form(%{}, true)
 
       assert html =~ "Mid-day yield collapse"
-      assert html =~ "stops producing for over 15 minutes"
+      assert html =~ "stops producing for over 1 hour"
     end
 
     test "renders all four event-toggle form field names" do
