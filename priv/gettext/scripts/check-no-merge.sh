@@ -39,12 +39,19 @@ cd "$repo_root"
 
 # Touched files relative to repo root. Use the merge-base with the
 # PR's base branch so we see PR-only changes; on `pull_request` runs
-# GITHUB_BASE_REF is the target branch, on `push` it's empty so we
-# fall back to the previous commit.
+# GITHUB_BASE_REF is the target branch. CI's `actions/checkout@v4`
+# defaults to `fetch-depth: 1` so the base ref isn't fetched by
+# default — try to fetch it, fall back to HEAD's parent commit if
+# the ref isn't resolvable (e.g. a shallow clone or a `push` event
+# with no base).
 if [ -n "${GITHUB_BASE_REF:-}" ]; then
     base_ref="origin/${GITHUB_BASE_REF}"
     git fetch --depth=2 origin "$base_ref" >/dev/null 2>&1 || true
-    base_sha="$(git merge-base HEAD "$base_ref")"
+    if git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+        base_sha="$(git merge-base HEAD "$base_ref")"
+    else
+        base_sha="HEAD~1"
+    fi
 else
     base_sha="HEAD~1"
 fi
