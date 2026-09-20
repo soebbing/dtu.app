@@ -36,7 +36,10 @@ defmodule DtuApp.Notifications.YieldAnomaly.PayloadTest do
       {:ok, now: now, tag_date: ~D[2026-09-15]}
     end
 
-    test "returns a map with all expected keys for a fired collapse", %{now: now, tag_date: tag_date} do
+    test "returns a map with all expected keys for a fired collapse", %{
+      now: now,
+      tag_date: tag_date
+    } do
       payload = Payload.build(now, 60, 15.0, tag_date)
 
       assert payload.event == "yield_anomaly"

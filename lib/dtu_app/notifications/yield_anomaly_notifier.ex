@@ -24,11 +24,14 @@ defmodule DtuApp.Notifications.YieldAnomaly do
 
   Why a timer rather than firing on the first sub-threshold
   reading? A cloud passing over the array can drop fleet power
-  to 0 W for a few minutes mid-day; without a `@collapse_seconds`
+  to 0 W for a few minutes mid-day; without a `@default_collapse_ms`
   threshold, every such blip would fire a false alert. The
-  threshold matches `SunDown`'s `@default_idle_seconds`; the
-  receiver-side `tag` would coalesce repeats even without it,
-  but the threshold keeps the banner frequency sensible.
+  threshold sits above `SunDown`'s `@default_idle_seconds` so
+  that the night-fleet-zero signal (SunDown's domain) and the
+  mid-day-collapse signal (this producer's domain) don't fire
+  in the same window; the receiver-side `tag` would coalesce
+  repeats even without it, but the threshold keeps the banner
+  frequency sensible.
 
   Reading-payload tolerance: production broadcasts a full
   `DtuApp.Devices.Reading` struct; some tests broadcast a
