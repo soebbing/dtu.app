@@ -99,7 +99,7 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
       # Second paragraph is the diagnostic — case-insensitive on
       # "reading" to match both the en ("Last reading") and the
       # de/fr catalogs (where the noun may differ).
-      assert Enum.any?(payload.body, &String.downcase(&1) =~ "reading")
+      assert Enum.any?(payload.body, &(String.downcase(&1) =~ "reading"))
     end
 
     test ":back_online body contains a diagnostic paragraph with the offline duration", %{
@@ -115,7 +115,7 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
 
       assert is_list(payload.body)
       assert length(payload.body) == 2
-      assert Enum.any?(payload.body, &String.downcase(&1) =~ "offline")
+      assert Enum.any?(payload.body, &(String.downcase(&1) =~ "offline"))
     end
 
     test ":went_offline body omits the diagnostic paragraph when no last_seen_at is provided", %{
@@ -130,7 +130,7 @@ defmodule DtuApp.Notifications.DtuConnection.PayloadTest do
 
       assert is_list(payload.body)
       assert length(payload.body) == 1
-      refute Enum.any?(payload.body, &String.downcase(&1) =~ "reading")
+      refute Enum.any?(payload.body, &(String.downcase(&1) =~ "reading"))
     end
 
     test "body list first element matches the :went_offline gettext body", %{now: now} do

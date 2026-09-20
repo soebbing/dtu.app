@@ -196,7 +196,11 @@ defmodule DtuApp.Notifications.DtuConnection do
     # the case-match on `disconnected?: true` can never succeed
     # and the back-online path becomes a dead branch.
     case Map.get(state, device_id) do
-      %{disconnected?: true, last_seen_at: %DateTime{} = last_seen_at, disconnected_at: disconnected_at} ->
+      %{
+        disconnected?: true,
+        last_seen_at: %DateTime{} = last_seen_at,
+        disconnected_at: disconnected_at
+      } ->
         if recently_active?(last_seen_at) do
           fire_for_status(device_id, :back_online, since: disconnected_at)
         end
@@ -313,12 +317,23 @@ defmodule DtuApp.Notifications.DtuConnection do
       case Map.get(state, device_id) do
         nil ->
           case safe_lookup(device_id) do
-            nil -> state
-            info -> Map.put(state, device_id, Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at}))
+            nil ->
+              state
+
+            info ->
+              Map.put(
+                state,
+                device_id,
+                Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at})
+              )
           end
 
         info ->
-          Map.put(state, device_id, Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at}))
+          Map.put(
+            state,
+            device_id,
+            Map.merge(info, %{disconnected?: true, disconnected_at: disconnected_at})
+          )
       end
 
     # Mirror the marker to the DB so the next GenServer restart
