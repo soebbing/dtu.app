@@ -76,19 +76,20 @@ defmodule DtuApp.Notifications.DtuConnection do
       across producer restarts.
     * `cooldown_over?(last_offline_fired_at)` — the per-device
       `last_offline_fired_at` timestamp must be older than
-      `@cooldown_seconds` (30 min), OR nil (never fired). This is
+      `@cooldown_seconds` (2 h), OR nil (never fired). This is
       orthogonal to `was_disconnected?` — that gate only suppresses
       duplicate fires within ONE offline period; this gate suppresses
       re-fires across MANY offline periods when a device flaps in
       short cycles (connect → disconnect → reconnect → disconnect…)
       and each cycle is long enough to satisfy `prior_uptime?`. A
       user-reported failure mode: a WiFi-fragile inverter that drops
-      every 20 min generated one push per cycle. The 30-min cooldown
-      caps that at one push per 30-min window per device. The
-      timestamp is kept in the in-memory cache only — restart resets
-      it. We don't persist across deploys because a deploy landing
-      mid-flap-cycle shouldn't lock the user out of a genuine-outage
-      notification for 30 min post-deploy.
+      every ~75 min generated one push per cycle under the historical
+      30-min cooldown. The 2 h cooldown caps that at one push per
+      2-h window per device. The timestamp is kept in the in-memory
+      cache only — restart resets it. We don't persist across
+      deploys because a deploy landing mid-flap-cycle shouldn't
+      lock the user out of a genuine-outage notification for 2 h
+      post-deploy.
   """
 
   use GenServer
