@@ -98,6 +98,7 @@ defmodule DtuAppWeb.LineChartPanel do
         id="solar-chart-svg"
         data-x-min-seconds={@chart.x_min_seconds}
         data-x-max-seconds={@chart.x_max_seconds}
+        data-watts-unit={gettext("W")}
       >
         <!-- Cloud-cover area fill. Anchored in user-space
                  to chart y=20 (top) → y=250 (bottom) so the
@@ -165,7 +166,7 @@ defmodule DtuAppWeb.LineChartPanel do
             y={y_pixel + 12}
             class="text-[10px] font-medium fill-zinc-400"
           >
-            {Devices.format_number(watts, 0, @locale)} W
+            {Devices.format_number(watts, 0, @locale)} {gettext("W")}
           </text>
         <% end %>
 
@@ -815,6 +816,12 @@ defmodule DtuAppWeb.LineChartPanel do
 
           this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
           this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+          // Localized watt-unit suffix (server-rendered through
+          // gettext so the tooltip stays consistent with the
+          // y-axis labels). Defaults to the SI symbol "W" if the
+          // attribute is missing — e.g. older SSR snapshots cached
+          // before the data attribute landed.
+          this.wattsUnit = this.svg.dataset.wattsUnit || "W";
 
           // Track which series the user has hidden via the
           // legend so the tooltip can skip them on the next
@@ -946,6 +953,7 @@ defmodule DtuAppWeb.LineChartPanel do
           // tick hits the live DOM.
           this.xMin = parseFloat(this.svg.dataset.xMinSeconds);
           this.xMax = parseFloat(this.svg.dataset.xMaxSeconds);
+          this.wattsUnit = this.svg.dataset.wattsUnit || "W";
           this.refreshNowMarkerRefs();
         },
 
@@ -1173,7 +1181,8 @@ defmodule DtuAppWeb.LineChartPanel do
             "</div>";
           const body = rows
             .map((r) => {
-              const val = r.value == null ? "—" : Math.round(r.value) + " W";
+              const val =
+                r.value == null ? "—" : Math.round(r.value) + " " + this.wattsUnit;
               const swatch =
                 '<span class="inline-block h-2 w-2 rounded-sm mr-1.5" ' +
                 'style="background-color:' + r.color + '"></span>';
