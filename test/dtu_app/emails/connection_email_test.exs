@@ -26,6 +26,7 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
 
   alias DtuApp.Accounts.User
   alias DtuApp.Emails.ConnectionEmail
+  alias DtuApp.Notifications.DtuConnection.Payload, as: DtuPayload
 
   # The producer's gettext call — see `dtu_connection_notifier.ex:462`.
   # Pinned here as a module attribute so the tests document the
@@ -98,6 +99,124 @@ defmodule DtuApp.Emails.ConnectionEmailTest do
       user = %User{email: "u@example.com", locale: nil}
       {html, _, _} = ConnectionEmail.render(user, p)
       assert html =~ ~s(<html lang="en")
+    end
+  end
+
+  describe "render/2 — diagnostic paragraphs (post-PR-#325 collapse)" do
+    # The producer now threads diagnostic data (last_seen_at for
+    # went_offline, :since for back_online) into `payload.body` as a
+    # 2-element list — the base paragraph plus a diagnostic
+    # paragraph that explains *why* the user is getting the
+    # notification. These tests guard that the email renders BOTH
+    # paragraphs (not just the first one), so a future refactor of
+    # `ConnectionEmail.render/2` that drops or coalesces the
+    # diagnostic line fails the suite.
+
+    # End-to-end: build the payload the way the producer does
+    # (via `DtuConnection.Payload.build/4`), then hand it to
+    # `ConnectionEmail.render/2`. A change to the payload shape
+    # that breaks the email contract is caught here — without
+    # this test, the diagnostic paragraph could silently drop
+    # between producer and email and the per-locale assertions
+    # below would still pass (they construct the body by hand).
+
+    test "renders the diagnostic paragraph built by DtuConnection.Payload.build/4 for :went_offline",
+         %{user: user} do
+      now = ~U[2026-09-20 14:23:00.000000Z]
+      last_seen_at = ~U[2026-09-20 14:20:00.000000Z]
+
+      payload =
+        DtuPayload.build(:went_offline, "Shed", now, last_seen_at: last_seen_at)
+
+      {html, text, _} = ConnectionEmail.render(user, payload)
+
+      # Producer built a 2-paragraph body — both must reach the email.
+      assert is_list(payload.body)
+      assert length(payload.body) == 2
+      assert html =~ "Shed has gone offline"
+      assert html =~ "Last reading from the inverter was at"
+      assert html =~ "14:20"
+      assert text =~ "Last reading from the inverter was at"
+    end
+
+    test "renders the offline-duration paragraph for :back_online",
+         %{user: user} do
+      now = ~U[2026-09-20 14:23:00.000000Z]
+      disconnected_at = ~U[2026-09-20 13:18:00.000000Z]
+
+      payload =
+        DtuPayload.build(:back_online, "Shed", now, since: disconnected_at)
+
+      {html, text, _} = ConnectionEmail.render(user, payload)
+
+      assert is_list(payload.body)
+      assert length(payload.body) == 2
+      assert html =~ "Shed is publishing telemetry again"
+      assert html =~ "Inverter was offline for"
+      assert text =~ "Inverter was offline for"
+    end
+    setup %{payload: p} do
+      # Build a localised diagnostic paragraph the same way the
+      # producer does, so the assertion anchors on real catalog
+      # output instead of a hardcoded English string. The shape of
+      # these msgids is locked by
+      # `DtuApp.Notifications.DtuConnection.Payload`.
+      last_seen_msgid = "Last reading from the inverter was at %{time} (%{amount} %{unit} ago)."
+      offline_msgid = "Inverter was offline for %{amount} %{unit}."
+
+      localised_diagnostic =
+        Gettext.with_locale(DtuAppWeb.Gettext, "en", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, last_seen_msgid,
+            time: "14:23",
+            amount: 3,
+            unit: "minutes"
+          )
+        end)
+
+      localised_offline_duration =
+        Gettext.with_locale(DtuAppWeb.Gettext, "en", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, offline_msgid,
+            amount: 5,
+            unit: "minutes"
+          )
+        end)
+
+      went_offline_payload = %{p | body: ["Inverter Shed has gone offline.", localised_diagnostic]}
+
+      back_online_payload = %{
+        p
+        | body: ["Inverter Shed is publishing telemetry again.", localised_offline_duration],
+          status: "online"
+      }
+
+      {:ok, went_offline_payload: went_offline_payload, back_online_payload: back_online_payload}
+    end
+
+    test "renders BOTH the base and diagnostic paragraphs for :went_offline",
+         %{user: user, went_offline_payload: payload} do
+      {html, text, _} = ConnectionEmail.render(user, payload)
+
+      # Both paragraphs must reach the HTML body — coalescing or
+      # dropping the diagnostic fails here.
+      assert html =~ "Inverter Shed has gone offline."
+      assert html =~ "Last reading from the inverter was at"
+      assert html =~ "14:23"
+
+      # And the plain-text mirror too (push + non-HTML clients).
+      assert text =~ "Inverter Shed has gone offline."
+      assert text =~ "Last reading from the inverter was at"
+    end
+
+    test "renders BOTH the base and diagnostic paragraphs for :back_online",
+         %{user: user, back_online_payload: payload} do
+      {html, text, _} = ConnectionEmail.render(user, payload)
+
+      assert html =~ "Inverter Shed is publishing telemetry again."
+      assert html =~ "Inverter was offline for"
+      assert html =~ "5 minutes"
+
+      assert text =~ "Inverter Shed is publishing telemetry again."
+      assert text =~ "Inverter was offline for"
     end
   end
 
