@@ -95,6 +95,18 @@ jobs:
       - name: Check Code Formatting
         run: mix format --check-formatted
 
+      - name: Check gettext .po ordering
+        # Guard against `mix gettext.merge` being run as part of a PR —
+        # the documented way to import new msgids from the .pot template,
+        # but in practice it silently reorders entries and cross-
+        # contaminates locale catalogs (see memory note
+        # `dtu-app-gettext-merge-trap` and PR #322 for the original
+        # incident that broke 17 dashboard snapshot tests). The
+        # discipline is to hand-append new msgids at the bottom of the
+        # relevant locale's .po file; this script makes the rule a CI
+        # gate by detecting merge-style reordering of touched .po files.
+        run: bash priv/gettext/scripts/check-no-merge.sh
+
       - name: Compile Application (Warnings as Errors)
         run: mix compile --warnings-as-errors
         env:
