@@ -640,6 +640,11 @@ msgstr "Recevez des alertes dans votre navigateur lorsque vos onduleurs changent
 msgid "Register"
 msgstr "S'inscrire"
 
+#: lib/dtu_app_web/live/device_live/index.html.heex:70
+#, elixir-autogen, elixir-format
+msgid "Roof inverter"
+msgstr "Onduleur de toit"
+
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:50
 #: lib/dtu_app_web/live/device_live/index.html.heex:146
 #, elixir-autogen, elixir-format

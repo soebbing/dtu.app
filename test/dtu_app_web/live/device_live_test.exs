@@ -47,6 +47,97 @@ defmodule DtuAppWeb.DeviceLiveTest do
       assert html =~ "Supprimer"
     end
 
+    # The new-DTU form has a placeholder on the `name` input. Until
+    # PR #331 it was a hardcoded `placeholder="Roof inverter"` —
+    # a literal English string that bypassed the gettext catalog
+    # entirely, so a German or French user saw "Roof inverter" in
+    # their otherwise-localised form. The fix routes the placeholder
+    # through gettext and adds de/fr translations. These tests pin
+    # the catalog end-to-end: open the new-DTU form for each locale
+    # and assert the rendered placeholder equals the catalog value
+    # (resolved via Gettext.with_locale/2 so a future translation
+    # update flows through without re-pinning the literal).
+    test "new-DTU form placeholder is English when the user has English locale", %{
+      conn: conn,
+      user: user
+    } do
+      DtuApp.Accounts.update_user_settings(user, %{"locale" => "en"})
+
+      {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+      html =
+        index_live
+        |> element("a[href=\"/devices/new\"]")
+        |> render_click()
+
+      assert_patch(index_live, ~p"/devices/new")
+
+      expected =
+        Gettext.with_locale(DtuAppWeb.Gettext, "en", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "Roof inverter")
+        end)
+
+      assert html =~ ~s(placeholder=\"#{expected}\"),
+             "English new-DTU form should render the catalog-resolved placeholder"
+    end
+
+    test "new-DTU form placeholder is German when the user has German locale", %{
+      conn: conn,
+      user: user
+    } do
+      DtuApp.Accounts.update_user_settings(user, %{"locale" => "de"})
+
+      {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+      html =
+        index_live
+        |> element("a[href=\"/devices/new\"]")
+        |> render_click()
+
+      assert_patch(index_live, ~p"/devices/new")
+
+      expected =
+        Gettext.with_locale(DtuAppWeb.Gettext, "de", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "Roof inverter")
+        end)
+
+      assert html =~ ~s(placeholder=\"#{expected}\"),
+             "German new-DTU form should render the German catalog placeholder, " <>
+               "not the hardcoded English \"Roof inverter\""
+
+      # And the English literal MUST NOT appear — a regression of the
+      # original bug would let "Roof inverter" leak through.
+      refute html =~ ~s(placeholder=\"Roof inverter\"),
+             "English literal placeholder leaked into German rendering"
+    end
+
+    test "new-DTU form placeholder is French when the user has French locale", %{
+      conn: conn,
+      user: user
+    } do
+      DtuApp.Accounts.update_user_settings(user, %{"locale" => "fr"})
+
+      {:ok, index_live, _html} = live(conn, ~p"/devices")
+
+      html =
+        index_live
+        |> element("a[href=\"/devices/new\"]")
+        |> render_click()
+
+      assert_patch(index_live, ~p"/devices/new")
+
+      expected =
+        Gettext.with_locale(DtuAppWeb.Gettext, "fr", fn ->
+          Gettext.gettext(DtuAppWeb.Gettext, "Roof inverter")
+        end)
+
+      assert html =~ ~s(placeholder=\"#{expected}\"),
+             "French new-DTU form should render the French catalog placeholder"
+
+      refute html =~ ~s(placeholder=\"Roof inverter\"),
+             "English literal placeholder leaked into French rendering"
+    end
+
     test "saves new device with system-generated credentials", %{conn: conn, user: user} do
       {:ok, index_live, _html} = live(conn, ~p"/devices")
 
