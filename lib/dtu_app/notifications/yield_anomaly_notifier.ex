@@ -132,6 +132,26 @@ defmodule DtuApp.Notifications.YieldAnomaly do
   # single daytime reading would haunt the cache forever.
   @fleet_reading_stale_seconds 300
 
+  # Minimum solar elevation (degrees) at which we'll fire. The
+  # sunrise/sunset check above only confirms the sun has crossed
+  # the geometric horizon — but a panel with poor orientation
+  # produces single-digit watts at sun angles below ~10° (the
+  # sun has technically risen but its rays hit the array at
+  # such a glancing angle that the cells deliver almost no
+  # power). Firing a yield-anomaly alert during that 30-60
+  # minute ramp produces a steady stream of false positives
+  # for users with sub-optimally oriented arrays.
+  #
+  # 10° is conservative: a well-oriented array produces
+  # ~10-15% of nameplate at that angle, which sits above the
+  # 15 W inverter self-consumption floor, so a real anomaly
+  # (panel failure, inverter trip) at that elevation would
+  # still land below threshold and trigger a fire. Lowering
+  # this further risks losing real alerts during the morning
+  # ramp; raising it shrinks the safe window for small
+  # arrays.
+  @min_solar_elevation_deg 10.0
+
   def start_link(arg), do: GenServer.start_link(__MODULE__, arg, name: __MODULE__)
 
   @impl true
@@ -449,28 +469,82 @@ defmodule DtuApp.Notifications.YieldAnomaly do
   defp do_fire_for_user(state, user_id, user_state) do
     user = safe_get_user(user_id)
 
-    if is_nil(user) or user.notify_yield_anomaly != true do
-      state
-    else
-      # `collapse_minutes` is the floor-rounded minutes the
-      # fleet stayed below threshold before the timer fired.
-      # `read_now/0` honors the `:yield_anomaly_now` test
-      # override the same way the arming path does, so the
-      # diagnostic always matches the time-of-day the timer
-      # saw when it was armed. `nil` collapse_since (e.g. a
-      # timer re-armed against already-stale state) collapses
-      # to 0 — the user sees "for 0 minutes" rather than a
-      # crash, which is acceptable for the dedup-race edge.
-      collapse_minutes = collapse_duration_minutes(user_state.collapse_since, read_now())
+    cond do
+      is_nil(user) or user.notify_yield_anomaly != true ->
+        state
 
-      case try_fire(user, collapse_minutes, @collapse_threshold_w) do
-        :fired ->
-          %{state | users: Map.put(state.users, user_id, %{user_state | collapse_since: nil})}
+      # Belt-and-braces for the morning/evening ramp: the
+      # arming path already checks `in_sun_window?/2` but
+      # `in_sun_window?` only confirms the sun has crossed
+      # the horizon. A panel with poor orientation produces
+      # single-digit watts for the first ~30 min after
+      # sunrise, which would otherwise land in the firing
+      # window. The fire-time check here catches the
+      # arm-then-sun-drops edge that the arm-time check
+      # misses (consistent with how the existing
+      # `in_sun_window?` is re-checked at fire time via
+      # `fire_for_user/2` semantics — see the moduledoc
+      # "Sun-window check" section).
+      not in_sun_elevation_window?(user, read_now()) ->
+        state
 
-        :duplicate ->
-          state
-      end
+      true ->
+        # `collapse_minutes` is the floor-rounded minutes the
+        # fleet stayed below threshold before the timer fired.
+        # `read_now/0` honors the `:yield_anomaly_now` test
+        # override the same way the arming path does, so the
+        # diagnostic always matches the time-of-day the timer
+        # saw when it was armed. `nil` collapse_since (e.g. a
+        # timer re-armed against already-stale state) collapses
+        # to 0 — the user sees "for 0 minutes" rather than a
+        # crash, which is acceptable for the dedup-race edge.
+        collapse_minutes = collapse_duration_minutes(user_state.collapse_since, read_now())
+
+        case try_fire(user, collapse_minutes, @collapse_threshold_w) do
+          :fired ->
+            %{state | users: Map.put(state.users, user_id, %{user_state | collapse_since: nil})}
+
+          :duplicate ->
+            state
+        end
     end
+  end
+
+  # True iff the sun is high enough above the horizon that
+  # panels are expected to produce meaningful power. Below
+  # `@min_solar_elevation_deg` even a well-oriented array
+  # delivers single-digit watts — the alert would fire on
+  # the morning ramp before the panels have a chance to
+  # climb. Conservative on missing data: if either coord
+  # is nil, skip rather than fire (same defensive default
+  # as `in_sun_window?/2`).
+  defp in_sun_elevation_window?(%User{} = user, %DateTime{} = now) do
+    case solar_elevation(user, now) do
+      nil -> false
+      elev -> elev >= @min_solar_elevation_deg
+    end
+  end
+
+  defp in_sun_elevation_window?(_user, _now), do: false
+
+  # Resolve the user's solar elevation at `now`, honoring the
+  # `:yield_anomaly_now` test override the same way the
+  # arming path does (so test scenarios fire from a fixed
+  # instant). Returns `nil` for users without captured coords
+  # so the gate treats them as "undefined → skip".
+  defp solar_elevation(%User{latitude: nil}, _now), do: nil
+  defp solar_elevation(%User{longitude: nil}, _now), do: nil
+
+  defp solar_elevation(%User{} = user, %DateTime{} = now) do
+    effective_now =
+      case Application.get_env(:dtu_app, :yield_anomaly_now, :__unset__) do
+        :__unset__ -> now
+        %DateTime{} = configured -> configured
+      end
+
+    SunCalc.solar_elevation_deg(user.latitude, user.longitude, effective_now)
+  rescue
+    _ -> nil
   end
 
   defp collapse_duration_minutes(nil, _now), do: 0
