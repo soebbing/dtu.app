@@ -38,11 +38,11 @@ defmodule DtuAppWeb.NetworkStatusIndicator do
           "bg-emerald-500",
           "animate-pulse"
         ]}
-        aria-label="Network status indicator"
+        aria-label={gettext("Network status indicator")}
       />
       <%= if @show_text do %>
         <span class="network-status-text text-zinc-600 dark:text-zinc-400">
-          Online
+          {gettext("Online")}
         </span>
       <% end %>
 
@@ -50,16 +50,20 @@ defmodule DtuAppWeb.NetworkStatusIndicator do
         <div class="network-details hidden group-hover:block absolute top-full left-0 mt-2 p-3 bg-white dark:bg-zinc-900 rounded-lg shadow-lg border border-zinc-200 dark:border-zinc-800 text-xs min-w-[200px] z-50">
           <div class="space-y-1">
             <div class="flex justify-between">
-              <span class="text-zinc-500">Status:</span>
-              <span class="font-medium text-zinc-900 dark:text-zinc-100 network-detailed-status">Online</span>
+              <span class="text-zinc-500">{gettext("Status")}:</span>
+              <span class="font-medium text-zinc-900 dark:text-zinc-100 network-detailed-status">{gettext(
+                "Online"
+              )}</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-zinc-500">Connection:</span>
+              <span class="text-zinc-500">{gettext("Connection")}:</span>
               <span class="font-medium text-zinc-900 dark:text-zinc-100 network-detailed-connection">-</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-zinc-500">Updated:</span>
-              <span class="font-medium text-zinc-900 dark:text-zinc-100 network-detailed-time">Just now</span>
+              <span class="text-zinc-500">{gettext("Updated")}:</span>
+              <span class="font-medium text-zinc-900 dark:text-zinc-100 network-detailed-time">{gettext(
+                "Just now"
+              )}</span>
             </div>
           </div>
         </div>
