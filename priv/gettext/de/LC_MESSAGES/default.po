@@ -640,6 +640,11 @@ msgstr "Erhalten Sie Benachrichtigungen in Ihrem Browser, wenn sich der Status I
 msgid "Register"
 msgstr "Registrieren"
 
+#: lib/dtu_app_web/live/device_live/index.html.heex:70
+#, elixir-autogen, elixir-format
+msgid "Roof inverter"
+msgstr "Dach-Wechselrichter"
+
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:50
 #: lib/dtu_app_web/live/device_live/index.html.heex:146
 #, elixir-autogen, elixir-format
