@@ -648,4 +648,50 @@ defmodule DtuApp.Emails.SunDownEmailTest do
       assert html =~ localised_label
     end
   end
+
+  describe "render/2 — stat panel value text is dark-theme readable" do
+    # Bug report: in dark-mode email clients (Gmail dark, Apple Mail
+    # with system dark), the big numeric value (today's yield, peak
+    # power) disappears because the inline `color:#18181b` (zinc-900)
+    # sits on the dark canvas (#09090b zinc-950 in Layout's dark
+    # palette) at near-zero contrast. The smaller "kWh" / "W" unit
+    # spans and the "Yesterday: ..." line use #64748b (slate-500),
+    # which has enough mid-tone contrast to read on both backgrounds.
+    #
+    # Fix: the value text must opt into the email-text CSS class
+    # that Layout's `@media (prefers-color-scheme: dark)` rule already
+    # overrides (`.email-text { color: #fafafa !important }`). A
+    # bare inline `color:#18181b` will not be overridden by the
+    # media query — that's why the panel went dark.
+    test "both panel value divs (today-yield + peak-power) carry the email-text class", %{
+      user: user,
+      payload: p
+    } do
+      {html, _, _} = SunDownEmail.render(user, p)
+
+      # The bug: each 22px value div had a bare inline `color:#18181b`
+      # with no `class` attribute — so Layout's dark-mode media query
+      # (`.email-text { color: #fafafa !important }`) couldn't reach
+      # them and they stayed zinc-900 on a zinc-950 canvas.
+      #
+      # Pin the marker "class=\"email-text\" ... font-size:22px;font-weight:700"
+      # (with anything in between). The marker appears once per value
+      # div: today-yield and peak-power. If either reverts to a bare
+      # inline color without the class, both assertions fail.
+      opening_with_class = ~r/class="email-text"[^>]*font-size:22px;font-weight:700/
+      opening_after_style = ~r/font-size:22px;font-weight:700[^>]*class="email-text"/
+
+      class_before_count =
+        Regex.scan(opening_with_class, html, return: :index) |> length()
+
+      class_after_count =
+        Regex.scan(opening_after_style, html, return: :index) |> length()
+
+      assert class_before_count + class_after_count == 2,
+             "expected exactly 2 value divs to carry class=\"email-text\" " <>
+               "(today-yield + peak-power), got #{class_before_count} + #{class_after_count}. " <>
+               "Without the class, dark-mode clients render these at " <>
+               "color:#18181b on a #09090b canvas — invisible."
+    end
+  end
 end

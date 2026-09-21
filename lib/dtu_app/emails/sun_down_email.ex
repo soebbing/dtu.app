@@ -309,12 +309,12 @@ defmodule DtuApp.Emails.SunDownEmail do
       <tr>
         <td width="50%" style="padding:8px 4px;">
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;">#{escape(gettext("Today's yield"))}</div>
-          <div style="font-size:22px;font-weight:700;color:#18181b;margin-top:2px;">#{escape(today_yield)} <span style="font-size:14px;font-weight:500;color:#64748b;">kWh</span></div>
+          <div class="email-text" style="font-size:22px;font-weight:700;color:#18181b;margin-top:2px;">#{escape(today_yield)} <span style="font-size:14px;font-weight:500;color:#64748b;">kWh</span></div>
           <div style="font-size:12px;color:#64748b;margin-top:2px;">#{escape(gettext("Yesterday"))}: #{escape(yest_yield)} kWh (#{escape(delta(today_kwh, yest_kwh, "kWh"))})</div>
         </td>
         <td width="50%" style="padding:8px 4px;">
           <div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;">#{escape(gettext("Peak power"))}</div>
-          <div style="font-size:22px;font-weight:700;color:#18181b;margin-top:2px;">#{escape(peak)} <span style="font-size:14px;font-weight:500;color:#64748b;">W</span></div>
+          <div class="email-text" style="font-size:22px;font-weight:700;color:#18181b;margin-top:2px;">#{escape(peak)} <span style="font-size:14px;font-weight:500;color:#64748b;">W</span></div>
           <div style="font-size:12px;color:#64748b;margin-top:2px;">#{escape(gettext("Yesterday"))}: #{escape(yest_peak)} W (#{escape(delta(today_w, yest_w, "W"))})</div>
         </td>
       </tr>
