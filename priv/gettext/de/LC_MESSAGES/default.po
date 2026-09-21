@@ -199,6 +199,11 @@ msgstr "Konfigurieren Sie Ihre physische DTU-Hardware mit diesen systemgeneriert
 msgid "Confirm Delete"
 msgstr "Löschen bestätigen"
 
+#: lib/dtu_app_web/components/network_status_indicator.ex:60
+#, elixir-autogen, elixir-format
+msgid "Connection"
+msgstr "Verbindung"
+
 #: lib/dtu_app_web/controllers/page_html/imprint.html.heex:18
 #, elixir-autogen, elixir-format
 msgid "Contact"
@@ -547,6 +552,12 @@ msgstr "Benachrichtigungen sind in Ihren Browser-Einstellungen blockiert. Öffne
 #, elixir-autogen, elixir-format
 msgid "Notifications are enabled. Pick what you'd like to be notified about below."
 msgstr "Benachrichtigungen sind aktiviert. Wählen Sie unten aus, worüber Sie benachrichtigt werden möchten."
+
+#: lib/dtu_app_web/components/network_status_indicator.ex:46
+#: lib/dtu_app_web/components/network_status_indicator.ex:53
+#, elixir-autogen, elixir-format
+msgid "Online"
+msgstr "Online"
 
 #: lib/dtu_app_web/components/layouts/root.html.heex:170
 #, elixir-autogen, elixir-format
@@ -1018,6 +1029,11 @@ msgstr "Der Magic-Link ist ungültig oder abgelaufen."
 #, elixir-autogen, elixir-format
 msgid "Manage your account email address and password settings"
 msgstr "Verwalten Sie Ihre Konto-E-Mail-Adresse und Passworteinstellungen"
+
+#: lib/dtu_app_web/components/network_status_indicator.ex:43
+#, elixir-autogen, elixir-format
+msgid "Network status indicator"
+msgstr "Netzwerk-Statusanzeige"
 
 #: lib/dtu_app_web/controllers/user_settings_html/edit.html.heex:102
 #, elixir-autogen, elixir-format
@@ -1538,6 +1554,11 @@ msgstr "Morgendlicher Sonnenaufgang-Ping"
 msgid "Read-only MQTT sink — receives a real-time feed of this account's other devices"
 msgstr "Schreibgeschützter MQTT-Empfänger — empfängt einen Echtzeit-Datenstrom der anderen Geräte dieses Kontos"
 
+#: lib/dtu_app_web/components/network_status_indicator.ex:52
+#, elixir-autogen, elixir-format
+msgid "Status"
+msgstr "Status"
+
 #: lib/dtu_app/notifications/sun_down_notifier.ex:142
 #, elixir-autogen, elixir-format
 msgid "Sun's down — daily summary"
@@ -1547,6 +1568,11 @@ msgstr "Sonnenuntergang — Tageszusammenfassung"
 #, elixir-autogen, elixir-format
 msgid "Today: %{today_kwh} kWh%{yield_diff}, peak %{peak_w} W%{peak_diff}."
 msgstr "Heute: %{today_kwh} kWh%{yield_diff}, Spitze %{peak_w} W%{peak_diff}."
+
+#: lib/dtu_app_web/components/network_status_indicator.ex:62
+#, elixir-autogen, elixir-format
+msgid "Updated"
+msgstr "Aktualisiert"
 
 #: lib/dtu_app/accounts/user_notifier.ex:29
 #, elixir-autogen, elixir-format
