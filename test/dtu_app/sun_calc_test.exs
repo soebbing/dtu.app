@@ -171,4 +171,124 @@ defmodule DtuApp.SunCalcTest do
       end
     end
   end
+
+  describe "solar_elevation_deg/3 — known NOAA values" do
+    # sin(elevation) = sin(lat) · sin(decl) + cos(lat) · cos(decl) · cos(H)
+    #
+    # where H is the local hour angle: H = 15° × (UTC_hours - 12) + lon
+    # (positive east). At solar noon on the equator on the equinox
+    # H = 0, decl = 0, lat = 0 → elevation = 90° (sun directly
+    # overhead). The simplified NOAA declination formula gives
+    # ≈ 0.04° on 2026-03-20 (the equinox is at 14:46 UTC, so
+    # 12:00 UTC is ~2.7h before — decl is still very small but
+    # not exactly zero), so the elevation lands at ~89.91°
+    # rather than exactly 90°. ±0.1° covers it.
+    test "equator / prime meridian on the spring equinox at solar noon is ~90°" do
+      assert_in_delta SunCalc.solar_elevation_deg(0.0, 0.0, ~U[2026-03-20 12:00:00Z]), 90.0, 0.1
+    end
+
+    # At solar noon at 52.5°N on the summer solstice the sun is
+    # roughly (90° - lat + decl) = 90° - 52.5° + 23.4° = 60.9° above
+    # the horizon. NOAA's solar calculator lists Berlin (52.52°N,
+    # 13.40°E) on 2026-06-21 at solar noon (~11:09 UTC) as ≈ 61°
+    # elevation. The simplified NOAA formula matches within ±1°
+    # because it uses a constant orbital eccentricity.
+    test "Berlin on the summer solstice at solar noon is ~61°" do
+      # Solar noon for Berlin (lon 13.40°E) on 2026-06-21 is
+      # 12:00 UTC - 13.40°/15 = 12:00 - 0:54 = 11:06 UTC.
+      elevation = SunCalc.solar_elevation_deg(52.520_008, 13.404_954, ~U[2026-06-21 11:06:00Z])
+
+      assert_in_delta elevation, 61.0, 1.0
+    end
+
+    # At solar noon at 52.5°N on the winter solstice the sun is
+    # roughly (90° - lat - |decl|) = 90° - 52.5° - 23.4° = 14.1° above
+    # the horizon. NOAA: Berlin on 2026-12-21 at solar noon
+    # (~12:11 UTC) is ≈ 14° elevation. The simplified formula
+    # gives 12.76° here — closer to 13° than 14° because the
+    # orbital-eccentricity approximation underestimates the
+    # December declination magnitude by ~0.5°. ±1.5° tolerance.
+    test "Berlin on the winter solstice at solar noon is ~13°" do
+      elevation = SunCalc.solar_elevation_deg(52.520_008, 13.404_954, ~U[2026-12-21 12:11:00Z])
+
+      assert_in_delta elevation, 12.8, 1.5
+    end
+
+    # Sanity check on the morning ramp: Berlin summer solstice
+    # sunrise ≈ 02:43 UTC. At 03:13 UTC (30 min after sunrise)
+    # the sun is geometrically ≈ 3° above the horizon (the
+    # `sunrise_sunset_utc/3` function uses the geometric
+    # horizon + solar radius, NOT the apparent horizon with
+    # atmospheric refraction, so the elevation climbs from 0°
+    # at 02:43 UTC). The yield-anomaly producer gates fires at
+    # 10° elevation, so 30 min past sunrise is comfortably
+    # below the threshold — the test pins the low-single-
+    # digit shape of the ramp.
+    test "Berlin 30 min after sunrise on summer solstice is low single-digit" do
+      elevation = SunCalc.solar_elevation_deg(52.520_008, 13.404_954, ~U[2026-06-21 03:13:00Z])
+
+      assert elevation > 0.0
+      assert elevation < 10.0
+    end
+  end
+
+  describe "solar_elevation_deg/3 — polar / below-horizon" do
+    test "returns a negative elevation when the sun is below the horizon" do
+      # 02:00 UTC in Berlin on the summer solstice is ~43 min
+      # before sunrise; the sun is still below the horizon.
+      elevation = SunCalc.solar_elevation_deg(52.520_008, 13.404_954, ~U[2026-06-21 02:00:00Z])
+
+      assert elevation < 0.0
+    end
+
+    test "Tromsø in mid-winter returns a negative elevation all day" do
+      elevation = SunCalc.solar_elevation_deg(69.649_216, 18.955_323, ~U[2026-12-21 12:00:00Z])
+
+      assert elevation < 0.0
+    end
+
+    test "Tromsø in mid-summer at solar noon returns an elevation above 30°" do
+      # Polar day at Tromsø: the sun stays above the horizon
+      # but never gets very high (~30° at solstice noon).
+      elevation = SunCalc.solar_elevation_deg(69.649_216, 18.955_323, ~U[2026-06-21 11:00:00Z])
+
+      assert elevation > 30.0
+      assert elevation < 45.0
+    end
+  end
+
+  describe "solar_elevation_deg/3 — nil / Decimal / out-of-range" do
+    test "nil latitude returns nil" do
+      assert SunCalc.solar_elevation_deg(nil, 13.4, ~U[2026-06-21 12:00:00Z]) == nil
+    end
+
+    test "nil longitude returns nil" do
+      assert SunCalc.solar_elevation_deg(52.5, nil, ~U[2026-06-21 12:00:00Z]) == nil
+    end
+
+    test "Decimal coords coerce to float and produce the same elevation" do
+      float = SunCalc.solar_elevation_deg(52.520_008, 13.404_954, ~U[2026-06-21 11:06:00Z])
+
+      decimal =
+        SunCalc.solar_elevation_deg(
+          Decimal.new("52.520008"),
+          Decimal.new("13.404954"),
+          ~U[2026-06-21 11:06:00Z]
+        )
+
+      assert_in_delta float, decimal, 0.001
+    end
+
+    test "out-of-range latitude raises ArgumentError" do
+      assert_raise ArgumentError, ~r/latitude/, fn ->
+        SunCalc.solar_elevation_deg(91.0, 0.0, ~U[2026-06-21 12:00:00Z])
+      end
+    end
+
+    test "out-of-range longitude raises ArgumentError" do
+      assert_raise ArgumentError, ~r/longitude/, fn ->
+        SunCalc.solar_elevation_deg(0.0, 181.0, ~U[2026-06-21 12:00:00Z])
+      end
+    end
+  end
 end

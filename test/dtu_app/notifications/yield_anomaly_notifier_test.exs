@@ -325,4 +325,98 @@ defmodule DtuApp.Notifications.YieldAnomalyTest do
       assert user.notify_yield_anomaly == false
     end
   end
+
+  describe "suppress during low solar elevation (morning / evening ramp)" do
+    # The motivation: a user with low-yield, poorly-oriented panels
+    # gets a false-positive `yield_anomaly` 60 minutes after sunrise
+    # because the sun is technically up (≥ 0°) but the panels only
+    # produce single-digit watts at that sun angle. The producer
+    # should gate fires by solar elevation, not just by the
+    # horizon-crossing sunrise / sunset events.
+    #
+    # Berlin 2026-09-02:
+    #   * sunrise ≈ 04:25 UTC, sunset ≈ 18:53 UTC
+    #   * sun reaches 10° elevation ≈ 04:55 UTC (≈30 min after
+    #     sunrise — the geometric sunrise is at 0°, then the
+    #     sun climbs ~0.25°/min near the horizon)
+    test "collapse during the morning ramp does NOT fire" do
+      # 04:40 UTC — between sunrise (04:25) and the 10° threshold
+      # (~04:55). Geometric elevation ≈ 4°. We're in the sun
+      # window by the existing in_sun_window? check but BELOW the
+      # elevation gate. The producer must skip the fire.
+      Application.put_env(:dtu_app, :yield_anomaly_offset_seconds, 0)
+      Application.put_env(:dtu_app, :yield_anomaly_now, ~U[2026-09-02 04:40:00.000000Z])
+
+      user =
+        user_fixture(%{notify_yield_anomaly: true})
+        |> set_berlin_location()
+
+      dtu = device_fixture(user)
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      refute_receive {:notification, _}, 500
+
+      # No dedup row either — the fire was suppressed before insert.
+      assert Repo.one(from(f in YieldAnomalyFire, where: f.user_id == ^user.id, select: count())) ==
+               0
+    end
+
+    test "collapse during the evening ramp does NOT fire" do
+      # 18:30 UTC — between sunset (18:53) and the previous 10°
+      # crossing. Geometric elevation ≈ 7°. The existing
+      # in_sun_window? check would still be true here (sun has
+      # not crossed the geometric horizon yet), but the
+      # elevation gate kicks in and suppresses the fire.
+      Application.put_env(:dtu_app, :yield_anomaly_offset_seconds, 0)
+      Application.put_env(:dtu_app, :yield_anomaly_now, ~U[2026-09-02 18:30:00.000000Z])
+
+      user =
+        user_fixture(%{notify_yield_anomaly: true})
+        |> set_berlin_location()
+
+      dtu = device_fixture(user)
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      refute_receive {:notification, _}, 500
+
+      assert Repo.one(from(f in YieldAnomalyFire, where: f.user_id == ^user.id, select: count())) ==
+               0
+    end
+
+    test "collapse at 12:00 UTC (sun well above 10°) DOES fire (sanity)" do
+      # This is the regression guard for the existing fire test:
+      # the elevation gate must not over-suppress and turn the
+      # midday alert off. Berlin at noon UTC in September has
+      # elevation ≈ 45° — comfortably above the threshold.
+      Application.put_env(:dtu_app, :yield_anomaly_offset_seconds, 0)
+      Application.put_env(:dtu_app, :yield_anomaly_now, ~U[2026-09-02 12:00:00.000000Z])
+
+      user =
+        user_fixture(%{notify_yield_anomaly: true})
+        |> set_berlin_location()
+
+      dtu = device_fixture(user)
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @reading_topic,
+        {:reading, "client_1", %{dtu_id: dtu.id, mppt_index: 0, ac_power: 0.0}}
+      )
+
+      assert_receive {:notification, _}, 1_000
+    end
+  end
 end

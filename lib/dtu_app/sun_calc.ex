@@ -117,6 +117,105 @@ defmodule DtuApp.SunCalc do
     end
   end
 
+  @doc """
+  Compute the sun's geometric elevation (altitude above the horizon,
+  in degrees) at the given UTC `DateTime` from the supplied
+  geographic position.
+
+  Returns:
+    * a positive float — sun above the horizon (value in [0, 90]).
+    * a negative float — sun below the horizon.
+    * `nil` — if either coordinate is `nil`.
+
+  Why a separate function from `sunrise_sunset_utc/3`? Sunrise /
+  sunset only give the moments the sun crosses the horizon; they
+  can't tell us whether the sun is "high enough" for a panel to
+  produce meaningful power. The yield-anomaly producer needs the
+  elevation to skip alerts during the low-angle ramp just past
+  sunrise / just before sunset (e.g. panels with poor orientation
+  produce single-digit watts even when the sun is up), and the
+  elevation gates this directly without re-implementing the
+  trig inline at the call site.
+
+  Uses the same simplified NOAA formulae as
+  `sunrise_sunset_utc/3` — no atmospheric refraction correction,
+  no observer elevation, accuracy ±0.5° vs the full SPA. Same
+  `@spec` shape as `sunrise_sunset_utc/3`: accepts `Decimal`
+  coords, validates to WGS84 bounds, raises `ArgumentError` on
+  out-of-range input.
+  """
+  @spec solar_elevation_deg(
+          float() | integer() | Decimal.t() | nil,
+          float() | integer() | Decimal.t() | nil,
+          DateTime.t()
+        ) :: float() | nil
+  def solar_elevation_deg(nil, _lon, _dt), do: nil
+  def solar_elevation_deg(_lat, nil, _dt), do: nil
+
+  def solar_elevation_deg(%Decimal{} = lat, %Decimal{} = lon, %DateTime{} = dt),
+    do: solar_elevation_deg(Decimal.to_float(lat), Decimal.to_float(lon), dt)
+
+  def solar_elevation_deg(%Decimal{} = lat, lon, %DateTime{} = dt) when is_number(lon),
+    do: solar_elevation_deg(Decimal.to_float(lat), lon, dt)
+
+  def solar_elevation_deg(lat, %Decimal{} = lon, %DateTime{} = dt) when is_number(lat),
+    do: solar_elevation_deg(lat, Decimal.to_float(lon), dt)
+
+  def solar_elevation_deg(lat, lon, %DateTime{} = dt) do
+    _ = validate!(lat, lon)
+
+    # Julian-day math — same offset-to-noon trick as
+    # `sunrise_sunset_utc/3`. The fractional day gives the
+    # time-of-day: 0.5 = noon UTC, 0.25 = 06:00 UTC, etc.
+    jd = datetime_to_jd(dt)
+
+    decl_deg = solar_declination(jd)
+
+    # Local hour angle (degrees). 0 at solar noon, +15° per hour
+    # after, -15° per hour before. Longitude positive east (the
+    # standard sign convention in WGS84) — adding it advances
+    # the apparent sun-time (sun reaches its peak earlier the
+    # further east you are).
+    #
+    # The integer-only JD inside jd carries the date; the
+    # fractional part is the time-of-day in days. Split them
+    # explicitly so the hour-angle arithmetic doesn't drift due
+    # to floating-point truncation of jd itself.
+    hours_utc = (jd - trunc(jd)) * 24.0
+    hour_angle_deg = 15.0 * (hours_utc - 12.0) + lon
+
+    # sin(elevation) = sin(lat) · sin(decl) + cos(lat) · cos(decl) · cos(H)
+    sin_elev =
+      :math.sin(lat * @deg_to_rad) * :math.sin(decl_deg * @deg_to_rad) +
+        :math.cos(lat * @deg_to_rad) *
+          :math.cos(decl_deg * @deg_to_rad) *
+          :math.cos(hour_angle_deg * @deg_to_rad)
+
+    # Clamp to [-1, 1] before `asin` so floating-point overshoot
+    # at the horizon doesn't raise `:math.asin` with a domain
+    # error. At very high latitudes near the horizon the
+    # trig round-off can land at 1.0000000002.
+    sin_elev = sin_elev |> max(-1.0) |> min(1.0)
+
+    :math.asin(sin_elev) / @deg_to_rad
+  end
+
+  # Julian Day Number (midnight UTC + fractional day for time-of-
+  # day) from a UTC `DateTime`. Inverse of `jd_to_datetime/1`.
+  defp datetime_to_jd(%DateTime{} = dt) do
+    # Julian Day at midnight UTC of `dt.date`, then add the
+    # time-of-day as a fractional day. `julian_day/1` is the
+    # same function used by `sunrise_sunset_utc/3` for the
+    # date component.
+    #
+    # `dt.microsecond` is a `{value, precision}` tuple — extract
+    # just the value, divide by 1e6 to land on fractional
+    # seconds. The tuple would otherwise crash the `/` call.
+    {us, _precision} = dt.microsecond
+    secs_into_day = dt.hour * 3600 + dt.minute * 60 + dt.second + us / 1_000_000
+    julian_day(DateTime.to_date(dt)) + secs_into_day / 86_400.0
+  end
+
   # Julian Day Number at noon UTC on `date`. Standard formula from
   # the astronomical almanac; works for the entire Gregorian
   # calendar range.
