@@ -5080,6 +5080,87 @@ defmodule DtuApp.DevicesTest do
              "self-consumption must not overcount bursty Shelly uplinks " <>
                "(production 4_000 Wh, real export ~8 Wh → expect ≥90 %, got #{pct})"
     end
+
+    test "production_kwh uses each inverter's MAX(yield_day) — sundown-reset regression" do
+      # Regression: `compute_self_consumption_pct/4` previously summed
+      # the LATEST reading's `yield_day` per inverter (DISTINCT ON
+      # `desc: inserted_at`). For AhoyDTU users whose `YieldDayReset`
+      # is `sundown`, the latest reading of the day is the
+      # post-reset value (0.1 kWh), so `production_kwh` undercounted
+      # the day's true yield and the resulting self-consumption
+      # percentage was wrong (the same root cause as the SunDown
+      # email bug, applied to the stat-card stat). After the fix the
+      # production sum is per-inverter `MAX(yield_day)` `GROUP BY
+      # (dtu_id, inverter_serial)` — same shape as
+      # `max_yield_day_per_inverter/3` uses for `today_yield` —
+      # so the pre-reset peak (5.0 kWh) survives.
+      #
+      # No Shelly needed here — we assert on the production-side
+      # input directly. With a 5.0 kWh production total and a
+      # clamp at `production_kwh <= 0.0 -> 0.0`, no other inputs
+      # matter. The assertion checks that the day's MAX(yield_day)
+      # (5_000 Wh) is the value the helper sees — not the latest
+      # post-reset reading (100 Wh).
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-sundown-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Sundown"
+        })
+
+      # Anchor at noon today so all three readings fall inside the
+      # [yesterday, now] window the helper queries.
+      noon_today =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = noon_today
+
+      after_sundown =
+        noon_today |> DateTime.add(11 * 3600 + 30 * 60, :second) |> Map.put(:microsecond, {0, 6})
+
+      # Same yield_day pattern as the today_yield sundown-reset
+      # regression (line 818): climbs to 5.0 kWh, then resets at
+      # sundown to 0.1 kWh. Pre-fix: helper sums the post-reset
+      # 100 Wh → production_kwh = 0.1 → pct = 0.0 (clamps because
+      # any export >= production). Post-fix: helper sums the
+      # pre-reset MAX (5_000 Wh) → production_kwh = 5.0 → with no
+      # export, pct = 100.0.
+      for {ts, yield_day} <- [
+            {morning, 500.0},
+            {noon, 5_000.0},
+            {after_sundown, 100.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-SUNDOWN",
+            mppt_index: 0,
+            ac_power: 200.0,
+            yield_day: yield_day,
+            yield_total: 100_000.0,
+            inserted_at: ts
+          })
+      end
+
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      pct = Devices.compute_self_consumption_pct(user, dtu.id, yesterday, now)
+
+      # With MAX(yield_day) = 5_000 Wh and no Shelly export, the
+      # production_kwh = 5.0 and exported_kwh = 0.0 → 100.0.
+      # Pre-fix the latest reading (100 Wh) gave production_kwh =
+      # 0.1 and the helper clamped at 0.0 (the very thing this
+      # regression catches).
+      assert pct == 100.0,
+             "compute_self_consumption_pct must use MAX(yield_day) for sundown-reset AhoyDTU " <>
+               "(expected 100.0 from 5 kWh production / no export, got #{pct})"
+    end
   end
 
   describe "list_selectable_dates/2 (readings_5m-backed)" do

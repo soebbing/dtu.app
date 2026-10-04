@@ -645,11 +645,10 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
               r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
                 r.inverter_serial != "_fleet" and
                 r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
-            distinct: [r.dtu_id, r.inverter_serial],
-            order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
-            select: %{yield_day: r.yield_day}
+            group_by: [r.dtu_id, r.inverter_serial],
+            select: %{max_yield_day: max(r.yield_day)}
         )
-        |> Enum.map(fn row -> row.yield_day || 0.0 end)
+        |> Enum.map(fn row -> row.max_yield_day || 0.0 end)
         |> Enum.sum()
 
       exported_kwh = integrate_export_kwh(user, dtu_id, utc_start, utc_end)
