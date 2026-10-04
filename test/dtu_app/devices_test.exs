@@ -86,10 +86,10 @@ defmodule DtuApp.DevicesTest do
 
       # Two inverters with multiple readings each. Per-inverter
       # `yield_day` is monotonic Wh that resets at midnight, so the
-      # day's per-inverter total IS its last reading. Summing across
-      # inverters gives the fleet's daily total — replacing the old
-      # MAX-across-inverters semantic which conflated per-inverter
-      # totals.
+      # day's per-inverter total IS its MAX(yield_day) reading of
+      # the day. Summing across inverters gives the fleet's daily
+      # total — replacing the old MAX-across-inverters semantic
+      # which conflated per-inverter totals.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         yield_day: 1_000.0,
@@ -108,9 +108,10 @@ defmodule DtuApp.DevicesTest do
         inserted_at: DateTime.add(now, -60, :second)
       })
 
-      # Headline = INV-A's last reading (5_000 Wh) + INV-B's last
-      # reading (3_500 Wh) = 8_500 Wh = 8.5 kWh. Earlier (smaller)
-      # readings don't influence the headline.
+      # Headline = INV-A's MAX(yield_day) of the day (5_000 Wh) +
+      # INV-B's MAX(yield_day) of the day (3_500 Wh) = 8_500 Wh =
+      # 8.5 kWh. Earlier (smaller) readings don't influence the
+      # headline.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 8.5, 0.001
     end
@@ -140,12 +141,13 @@ defmodule DtuApp.DevicesTest do
 
     test "uses the latest reading of the day per inverter (multi-uplink day)" do
       # Per-inverter `yield_day` is monotonic Wh that resets at
-      # midnight, so the day's per-inverter total IS its last
-      # reading of the day. A single inverter publishing multiple
-      # readings today: the headline picks the latest, not the
-      # day's MAX (which for a monotonic counter is also the latest,
-      # but we pin the latest-reading semantic explicitly so a
-      # future refactor doesn't slip back into MAX).
+      # midnight, so the day's per-inverter total IS each inverter's
+      # MAX(yield_day) of the day (which equals the latest reading
+      # for monotonic counters). A single inverter publishing
+      # multiple readings today: the headline picks the MAX — and
+      # for a monotonic counter MAX == latest, but we pin the
+      # MAX semantic explicitly so a future refactor doesn't slip
+      # back into a naive latest-only query.
       #
       # Use UTC-midnight-anchored timestamps so the test stays
       # stable when CI happens to run a few seconds after 00:00 UTC —
@@ -175,8 +177,9 @@ defmodule DtuApp.DevicesTest do
         inserted_at: now
       })
 
-      # Headline = INV-A's last reading of the day (15_000 Wh =
-      # 15.0 kWh). Earlier reading (12_000) doesn't influence it.
+      # Headline = INV-A's MAX(yield_day) of the day (15_000 Wh =
+      # 15.0 kWh, which equals the latest reading for a monotonic
+      # counter). Earlier reading (12_000) doesn't influence it.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 15.0, 0.001
     end
@@ -615,10 +618,13 @@ defmodule DtuApp.DevicesTest do
       assert stats.per_series == []
     end
 
-    test "today_yield sums each inverter's last reading of the day (AhoyDTU multi-inverter)" do
-      # Each per-inverter `yield_day` is a monotonic Wh counter that
-      # resets at midnight and climbs through the day — the day's
-      # per-inverter total IS its last reading of the day. Summing
+    test "today_yield sums each inverter's MAX(yield_day) per day (AhoyDTU multi-inverter)" do
+      # Each per-inverter `yield_day` is a Wh counter the firmware
+      # may reset at midnight (default AhoyDTU, OpenDTU), sundown,
+      # or sunup (AhoyDTU configurable). The day's per-inverter
+      # total is its MAX(yield_day) reading of the day — which
+      # equals the latest reading for monotonic counters, and the
+      # pre-reset peak for sundown/sunup-reset fleets. Summing
       # across inverters (and across the user's DTUs) gives the
       # fleet's daily total without depending on the
       # firmware-aggregated `{base}/total` topic, which the parser
@@ -633,9 +639,9 @@ defmodule DtuApp.DevicesTest do
       now = DtuApp.Time.utc_now_usec()
 
       # Two inverters each with one reading today. Both readings are
-      # at the same instant (`now`) — either is "the last reading of
-      # the day" — and summing them gives the fleet's daily total
-      # (1000 + 2000 = 3000 Wh = 3.0 kWh).
+      # at the same instant (`now`) — either is the day's
+      # MAX(yield_day) for that inverter — and summing them gives
+      # the fleet's daily total (1000 + 2000 = 3000 Wh = 3.0 kWh).
       for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
         DevicesFixtures.reading_fixture(device, %{
           inverter_serial: serial,
@@ -653,16 +659,18 @@ defmodule DtuApp.DevicesTest do
       assert length(stats.per_series) == 2
     end
 
-    test "today_yield uses each inverter's LATEST reading, not the day's MAX (multi-uplink day)" do
+    test "today_yield uses each inverter's MAX of the day (multi-uplink day, monotonic — MAX == latest)" do
       # An inverter that published `yield_day` at 10:00 (lower) and
-      # 16:00 (higher) on the same day should contribute its 16:00
-      # value to the headline — that's the day's total for that
-      # inverter. A naive MAX-semantic across rows would also
-      # return the 16:00 value (so MAX-not-sum was an OK
-      # approximation), but the new logic explicitly uses the
-      # latest reading so the headline tracks the firmware's
-      # monotonic counter. A second inverter at a different time
-      # of day confirms the per-inverter independence.
+      # 16:00 (higher) on the same day contributes its
+      # MAX-of-the-day value (16:00, the higher of the two) to the
+      # headline — that's the day's total for that inverter. The
+      # new logic explicitly uses MAX(yield_day) of the day so the
+      # headline tracks the highest pre-reset reading, which is
+      # robust to AhoyDTU's configurable `YieldDayReset`
+      # (sundown/sunup) — for monotonic counters, MAX == latest,
+      # so the multi-uplink case still resolves to 16:00's value.
+      # A second inverter at a different time of day confirms the
+      # per-inverter independence.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -689,8 +697,9 @@ defmodule DtuApp.DevicesTest do
         inserted_at: later
       })
 
-      # Headline = 1500 (INV-1 latest) + 800 (INV-2 latest) = 2300 Wh
-      # = 2.3 kWh.
+      # Headline = 1500 (INV-1 MAX of the day, == latest for a
+      # monotonic counter) + 800 (INV-2 only reading, also MAX) =
+      # 2300 Wh = 2.3 kWh.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 2.3, 0.001
     end
@@ -769,7 +778,7 @@ defmodule DtuApp.DevicesTest do
 
     test "falls back to per-inverter ch0 last reading when no fleet row exists (OpenDTU)" do
       # The dashboard's headline `today_yield` sums each inverter's
-      # last reading of the day for the common OpenDTU install,
+      # MAX(yield_day) of the day for the common OpenDTU install,
       # which doesn't publish a fleet-total topic. Two inverters
       # each contribute their `yield_day` to the sum.
       user = DtuApp.AccountsFixtures.user_fixture()
