@@ -796,6 +796,78 @@ defmodule DtuApp.DevicesTest do
     end
   end
 
+  describe "get_daily_stats/2 — today_yield under mid-day yield_day reset (regression)" do
+    # Regression: AhoyDTU's `YieldDay` counter can be configured to
+    # reset at sundown, sunup, or midnight (firmware setting
+    # `YieldDayReset`). The pre-fix query summed each inverter's
+    # LATEST reading's `yield_day` — which returns the post-reset
+    # value (0.1 kWh or 0 kWh) for sundown/sunup-reset fleets,
+    # even though the data was flowing all day. The fix sums each
+    # inverter's MAX(yield_day) for the day, which is the pre-reset
+    # peak (and equals the latest reading for monotonic counters).
+    test "returns the pre-reset MAX when the firmware resets yield_day at sundown (AhoyDTU)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      morning = DateTime.utc_now() |> DateTime.add(-8 * 3600, :second)
+      noon = DateTime.utc_now() |> DateTime.add(-6 * 3600, :second)
+      after_sundown = DateTime.utc_now() |> DateTime.add(-30 * 60, :second)
+
+      # Firmware publishes yield_day that climbs to 5.0 kWh then
+      # resets at sundown to 0.1 kWh. The latest reading is the
+      # post-reset one; the day's MAX is 5.0 kWh.
+      for {ts, yield_day} <- [
+            # 0.5 kWh
+            {morning, 500.0},
+            # 5.0 kWh
+            {noon, 5_000.0},
+            # 0.1 kWh post-reset
+            {after_sundown, 100.0}
+          ] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_day: yield_day,
+          inserted_at: ts
+        })
+      end
+
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 5.0, 0.001
+    end
+
+    test "returns the latest reading (which equals MAX) for monotonic counters (OpenDTU-style)" do
+      # Negative control: when the firmware does NOT reset, MAX of
+      # the day == the latest reading of the day, so the headline
+      # is unchanged. Verifies the fix doesn't break the OpenDTU
+      # case (which the codebase's pre-existing tests covered).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      morning = DateTime.utc_now() |> DateTime.add(-8 * 3600, :second)
+      noon = DateTime.utc_now() |> DateTime.add(-6 * 3600, :second)
+      late = DateTime.utc_now() |> DateTime.add(-3 * 3600, :second)
+
+      for {ts, yield_day} <- [
+            {morning, 500.0},
+            {noon, 5_000.0},
+            {late, 5_500.0}
+          ] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_day: yield_day,
+          inserted_at: ts
+        })
+      end
+
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 5.5, 0.001
+    end
+  end
+
   describe "list_day_chart_data/3 — per-series bucketing" do
     test "returns one series per (dtu_id, inverter_serial, mppt_index)" do
       user = DtuApp.AccountsFixtures.user_fixture()
