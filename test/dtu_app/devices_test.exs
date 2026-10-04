@@ -5095,12 +5095,21 @@ defmodule DtuApp.DevicesTest do
       # `max_yield_day_per_inverter/3` uses for `today_yield` —
       # so the pre-reset peak (5.0 kWh) survives.
       #
-      # No Shelly needed here — we assert on the production-side
-      # input directly. With a 5.0 kWh production total and a
-      # clamp at `production_kwh <= 0.0 -> 0.0`, no other inputs
-      # matter. The assertion checks that the day's MAX(yield_day)
-      # (5_000 Wh) is the value the helper sees — not the latest
-      # post-reset reading (100 Wh).
+      # To exercise the full `cond` in `compute_self_consumption_pct/4`
+      # we also need a non-trivial export value: without a Shelly
+      # the helper short-circuits on `exported_kwh <= 0.0 -> 100.0`
+      # and the production-side bug is masked (both pre-fix and
+      # post-fix would return 100.0 in that case, so the assertion
+      # would not distinguish them). The Shelly's single -30_000 W
+      # reading × (5/60) h bucket = 2_500 Wh = 2.5 kWh exported,
+      # landing us in the
+      # `true -> Float.round((1.0 - exported_kwh / production_kwh) * 100.0, 1)`
+      # branch where the production-side MAX actually matters.
+      #
+      # Pre-fix: production_kwh = 0.1 (post-reset latest),
+      # exported_kwh = 2.5 → 2.5 >= 0.1 → clamps at 0.0.
+      # Post-fix: production_kwh = 5.0 (MAX), exported_kwh = 2.5 →
+      # (1 - 2.5/5.0) × 100 = 50.0.
       user = DtuApp.AccountsFixtures.user_fixture()
 
       dtu =
@@ -5110,26 +5119,32 @@ defmodule DtuApp.DevicesTest do
           name: "Self-Cons Sundown"
         })
 
-      # Anchor at noon today so all three readings fall inside the
-      # [yesterday, now] window the helper queries.
-      noon_today =
-        Date.utc_today()
-        |> DateTime.new!(~T[12:00:00])
-        |> Map.put(:microsecond, {0, 6})
+      _shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-sundown-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Sundown Shelly"
+        })
 
-      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
-      noon = noon_today
+      # Anchor all readings relative to `now` so they all land
+      # inside the [yesterday, now] window the helper queries
+      # regardless of when the test runs. Anchoring at noon_today
+      # (like the today_yield sundown-reset regression at line 818)
+      # would push the after-sundown reading past `now` in
+      # early-morning UTC runs and silently drop it from the
+      # window — the pre-fix code would then accidentally fall
+      # back to the noon reading (5.0 kWh) and return the same
+      # value as the post-fix code, defeating the regression.
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
 
-      after_sundown =
-        noon_today |> DateTime.add(11 * 3600 + 30 * 60, :second) |> Map.put(:microsecond, {0, 6})
+      morning = DateTime.add(now, -20 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = DateTime.add(now, -8 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      after_sundown = DateTime.add(now, -30 * 60, :second) |> Map.put(:microsecond, {0, 6})
 
       # Same yield_day pattern as the today_yield sundown-reset
       # regression (line 818): climbs to 5.0 kWh, then resets at
-      # sundown to 0.1 kWh. Pre-fix: helper sums the post-reset
-      # 100 Wh → production_kwh = 0.1 → pct = 0.0 (clamps because
-      # any export >= production). Post-fix: helper sums the
-      # pre-reset MAX (5_000 Wh) → production_kwh = 5.0 → with no
-      # export, pct = 100.0.
+      # sundown to 0.1 kWh.
       for {ts, yield_day} <- [
             {morning, 500.0},
             {noon, 5_000.0},
@@ -5147,19 +5162,18 @@ defmodule DtuApp.DevicesTest do
           })
       end
 
-      now = DateTime.utc_now()
-      yesterday = DateTime.add(now, -86_400, :second)
+      # Shelly consumption reading at noon: -30_000 W (30 kW export)
+      # × (5/60) h bucket = 2_500 Wh = 2.5 kWh exported.
+      _ = shelly_consumption_reading(user, noon, -30_000.0)
 
-      pct = Devices.compute_self_consumption_pct(user, dtu.id, yesterday, now)
+      # dtu_id=nil so `owned_dtu_ids(user, nil)` returns BOTH the
+      # OpenDTU and the Shelly — scoped to the inverter alone the
+      # helper would only see the production side.
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
 
-      # With MAX(yield_day) = 5_000 Wh and no Shelly export, the
-      # production_kwh = 5.0 and exported_kwh = 0.0 → 100.0.
-      # Pre-fix the latest reading (100 Wh) gave production_kwh =
-      # 0.1 and the helper clamped at 0.0 (the very thing this
-      # regression catches).
-      assert pct == 100.0,
-             "compute_self_consumption_pct must use MAX(yield_day) for sundown-reset AhoyDTU " <>
-               "(expected 100.0 from 5 kWh production / no export, got #{pct})"
+      # Post-fix: 5 kWh production / 2.5 kWh export → 50 % self-consumption.
+      # Pre-fix would clamp at 0 % (the regression we are guarding).
+      assert_in_delta pct, 50.0, 0.5
     end
   end
 
