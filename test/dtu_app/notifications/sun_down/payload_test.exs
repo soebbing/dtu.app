@@ -287,5 +287,45 @@ defmodule DtuApp.Notifications.SunDown.PayloadTest do
 
       assert Payload.build_payload(user, Date.utc_today(), 0) == nil
     end
+
+    test "today_yield_kwh is the pre-reset MAX when AhoyDTU resets yield_day at sundown" do
+      # Regression: when the AhoyDTU firmware is configured with
+      # `YieldDayReset = sundown`, the pre-fix query in
+      # production_stats.ex returned the post-reset value (0.1 kWh
+      # or 0 kWh) instead of the day's true total. The SunDown
+      # email would land in the user's inbox with
+      # "Today's yield: 0,1 kWh" even though the data was flowing
+      # all day and the chart (which uses ac_power, not yield_day)
+      # showed a normal curve. The fix replaces "sum of last
+      # readings" with "sum of MAX(yield_day) per inverter" — so
+      # the email's today_yield_kwh field tracks the pre-reset peak.
+      user = DtuApp.AccountsFixtures.user_fixture()
+      dtu = DtuApp.DevicesFixtures.device_fixture(user)
+
+      morning = reading_within_today_local(8 * 3600)
+      noon = reading_within_today_local(6 * 3600)
+      after_sundown = reading_within_today_local(30 * 60)
+
+      for {ts, yield_day} <- [
+            {morning, 500.0},
+            {noon, 5_000.0},
+            {after_sundown, 100.0}
+          ] do
+        {:ok, _} =
+          DtuApp.Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-1",
+            inverter_name: "INV-1",
+            mppt_index: 0,
+            yield_day: yield_day,
+            ac_power: 0.0,
+            inserted_at: ts
+          })
+      end
+
+      payload = Payload.build_payload(user, Date.utc_today(), 0)
+      assert payload != nil
+      assert_in_delta payload.today_yield_kwh, 5.0, 0.001
+    end
   end
 end
