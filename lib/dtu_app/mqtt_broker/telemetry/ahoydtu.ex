@@ -231,13 +231,12 @@ defmodule DtuApp.MqttBroker.Telemetry.AhoyDtu do
       #
       #   2. The dashboard computes today's / lifetime yield via
       #      `get_daily_stats/3`'s "sum each inverter's MAX(yield_day)
-      #      over the day" path (and the per-day historical chart via
-      #      `list_range_yield_data/4`'s equivalent). No `_fleet` rows
-      #      ever enter the DB. MAX-of-the-day is robust to AhoyDTU's
-      #      configurable `YieldDayReset` (midnight / sundown / sunup)
-      #      — the previous "sum of last readings" approach returned
-      #      the post-reset value (0 kWh) for sundown/sunup-reset
-      #      users, even though data was flowing all day.
+      #      over the day" path. No `_fleet` rows ever enter the DB.
+      #      MAX-of-the-day is robust to AhoyDTU's configurable
+      #      `YieldDayReset` (midnight / sundown / sunup) — the previous
+      #      "sum of last readings" approach returned the post-reset
+      #      value (0 kWh) for sundown/sunup-reset users, even though
+      #      data was flowing all day.
       #
       # As a defence against any legacy `_fleet` rows that were
       # persisted by older parser versions (pre-this change), the

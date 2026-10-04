@@ -94,11 +94,16 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   As a defence against any legacy `_fleet` rows that older parser
   versions persisted, the chart data paths still filter
   `inverter_serial != "_fleet"` — see
-  `list_day_readings_for_chart/4` and friends. The `today_yield` /
-  `total_yield` queries below take the per-inverter latest row
-  ordered by `inserted_at DESC LIMIT 1` per `(dtu_id,
-  inverter_serial)`, which inherently skips `_fleet` (no real
-  inverter goes by that name).
+  `list_day_readings_for_chart/4` and friends. `today_yield` and
+  `total_yield` below both take the per-inverter `MAX(yield_day)` /
+  `MAX(yield_total)` `GROUP BY (dtu_id, inverter_serial)` — same
+  shape as the chart-data paths' `MAX(...)` queries, just over
+  today's window for `today_yield` and the full lifetime for
+  `total_yield`. Both queries filter `inverter_serial != "_fleet"`
+  defensively; `_fleet` is not a real inverter name so the MAX
+  itself wouldn't surface one, but the explicit filter keeps the
+  join shape consistent across queries and matches the chart-data
+  paths.
   """
   def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
     impl_get_daily_stats(user, dtu_id, date, [])

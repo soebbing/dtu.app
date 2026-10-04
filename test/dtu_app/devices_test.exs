@@ -809,9 +809,24 @@ defmodule DtuApp.DevicesTest do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      morning = DateTime.utc_now() |> DateTime.add(-8 * 3600, :second)
-      noon = DateTime.utc_now() |> DateTime.add(-6 * 3600, :second)
-      after_sundown = DateTime.utc_now() |> DateTime.add(-30 * 60, :second)
+      # Anchor at noon today so the fixtures are guaranteed to land
+      # inside the today's-window UTC range regardless of when the
+      # test runs (CI at 00:00-08:00 UTC would otherwise push
+      # earlier offsets out of today). `inserted_at` is typed
+      # `:utc_datetime_usec`, so add microsecond precision via
+      # `Map.put(:microsecond, {0, 6})` — see the earlier
+      # "uses the latest reading of the day per inverter" test
+      # for the same pattern.
+      noon_today =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = noon_today
+
+      after_sundown =
+        noon_today |> DateTime.add(11 * 3600 + 30 * 60, :second) |> Map.put(:microsecond, {0, 6})
 
       # Firmware publishes yield_day that climbs to 5.0 kWh then
       # resets at sundown to 0.1 kWh. The latest reading is the
@@ -845,9 +860,15 @@ defmodule DtuApp.DevicesTest do
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
-      morning = DateTime.utc_now() |> DateTime.add(-8 * 3600, :second)
-      noon = DateTime.utc_now() |> DateTime.add(-6 * 3600, :second)
-      late = DateTime.utc_now() |> DateTime.add(-3 * 3600, :second)
+      # Anchor at noon today (see the previous test for rationale).
+      noon_today =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = noon_today
+      late = noon_today |> DateTime.add(3 * 3600, :second) |> Map.put(:microsecond, {0, 6})
 
       for {ts, yield_day} <- [
             {morning, 500.0},
