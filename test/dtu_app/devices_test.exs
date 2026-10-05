@@ -86,10 +86,10 @@ defmodule DtuApp.DevicesTest do
 
       # Two inverters with multiple readings each. Per-inverter
       # `yield_day` is monotonic Wh that resets at midnight, so the
-      # day's per-inverter total IS its last reading. Summing across
-      # inverters gives the fleet's daily total — replacing the old
-      # MAX-across-inverters semantic which conflated per-inverter
-      # totals.
+      # day's per-inverter total IS its MAX(yield_day) reading of
+      # the day. Summing across inverters gives the fleet's daily
+      # total — replacing the old MAX-across-inverters semantic
+      # which conflated per-inverter totals.
       DevicesFixtures.reading_fixture(device, %{
         inverter_serial: "INV-A",
         yield_day: 1_000.0,
@@ -108,9 +108,10 @@ defmodule DtuApp.DevicesTest do
         inserted_at: DateTime.add(now, -60, :second)
       })
 
-      # Headline = INV-A's last reading (5_000 Wh) + INV-B's last
-      # reading (3_500 Wh) = 8_500 Wh = 8.5 kWh. Earlier (smaller)
-      # readings don't influence the headline.
+      # Headline = INV-A's MAX(yield_day) of the day (5_000 Wh) +
+      # INV-B's MAX(yield_day) of the day (3_500 Wh) = 8_500 Wh =
+      # 8.5 kWh. Earlier (smaller) readings don't influence the
+      # headline.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 8.5, 0.001
     end
@@ -140,12 +141,13 @@ defmodule DtuApp.DevicesTest do
 
     test "uses the latest reading of the day per inverter (multi-uplink day)" do
       # Per-inverter `yield_day` is monotonic Wh that resets at
-      # midnight, so the day's per-inverter total IS its last
-      # reading of the day. A single inverter publishing multiple
-      # readings today: the headline picks the latest, not the
-      # day's MAX (which for a monotonic counter is also the latest,
-      # but we pin the latest-reading semantic explicitly so a
-      # future refactor doesn't slip back into MAX).
+      # midnight, so the day's per-inverter total IS each inverter's
+      # MAX(yield_day) of the day (which equals the latest reading
+      # for monotonic counters). A single inverter publishing
+      # multiple readings today: the headline picks the MAX — and
+      # for a monotonic counter MAX == latest, but we pin the
+      # MAX semantic explicitly so a future refactor doesn't slip
+      # back into a naive latest-only query.
       #
       # Use UTC-midnight-anchored timestamps so the test stays
       # stable when CI happens to run a few seconds after 00:00 UTC —
@@ -175,8 +177,9 @@ defmodule DtuApp.DevicesTest do
         inserted_at: now
       })
 
-      # Headline = INV-A's last reading of the day (15_000 Wh =
-      # 15.0 kWh). Earlier reading (12_000) doesn't influence it.
+      # Headline = INV-A's MAX(yield_day) of the day (15_000 Wh =
+      # 15.0 kWh, which equals the latest reading for a monotonic
+      # counter). Earlier reading (12_000) doesn't influence it.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 15.0, 0.001
     end
@@ -615,10 +618,13 @@ defmodule DtuApp.DevicesTest do
       assert stats.per_series == []
     end
 
-    test "today_yield sums each inverter's last reading of the day (AhoyDTU multi-inverter)" do
-      # Each per-inverter `yield_day` is a monotonic Wh counter that
-      # resets at midnight and climbs through the day — the day's
-      # per-inverter total IS its last reading of the day. Summing
+    test "today_yield sums each inverter's MAX(yield_day) per day (AhoyDTU multi-inverter)" do
+      # Each per-inverter `yield_day` is a Wh counter the firmware
+      # may reset at midnight (default AhoyDTU, OpenDTU), sundown,
+      # or sunup (AhoyDTU configurable). The day's per-inverter
+      # total is its MAX(yield_day) reading of the day — which
+      # equals the latest reading for monotonic counters, and the
+      # pre-reset peak for sundown/sunup-reset fleets. Summing
       # across inverters (and across the user's DTUs) gives the
       # fleet's daily total without depending on the
       # firmware-aggregated `{base}/total` topic, which the parser
@@ -633,9 +639,9 @@ defmodule DtuApp.DevicesTest do
       now = DtuApp.Time.utc_now_usec()
 
       # Two inverters each with one reading today. Both readings are
-      # at the same instant (`now`) — either is "the last reading of
-      # the day" — and summing them gives the fleet's daily total
-      # (1000 + 2000 = 3000 Wh = 3.0 kWh).
+      # at the same instant (`now`) — either is the day's
+      # MAX(yield_day) for that inverter — and summing them gives
+      # the fleet's daily total (1000 + 2000 = 3000 Wh = 3.0 kWh).
       for {serial, yield_day} <- [{"INV-1", 1000.0}, {"INV-2", 2000.0}] do
         DevicesFixtures.reading_fixture(device, %{
           inverter_serial: serial,
@@ -653,16 +659,18 @@ defmodule DtuApp.DevicesTest do
       assert length(stats.per_series) == 2
     end
 
-    test "today_yield uses each inverter's LATEST reading, not the day's MAX (multi-uplink day)" do
+    test "today_yield uses each inverter's MAX of the day (multi-uplink day, monotonic — MAX == latest)" do
       # An inverter that published `yield_day` at 10:00 (lower) and
-      # 16:00 (higher) on the same day should contribute its 16:00
-      # value to the headline — that's the day's total for that
-      # inverter. A naive MAX-semantic across rows would also
-      # return the 16:00 value (so MAX-not-sum was an OK
-      # approximation), but the new logic explicitly uses the
-      # latest reading so the headline tracks the firmware's
-      # monotonic counter. A second inverter at a different time
-      # of day confirms the per-inverter independence.
+      # 16:00 (higher) on the same day contributes its
+      # MAX-of-the-day value (16:00, the higher of the two) to the
+      # headline — that's the day's total for that inverter. The
+      # new logic explicitly uses MAX(yield_day) of the day so the
+      # headline tracks the highest pre-reset reading, which is
+      # robust to AhoyDTU's configurable `YieldDayReset`
+      # (sundown/sunup) — for monotonic counters, MAX == latest,
+      # so the multi-uplink case still resolves to 16:00's value.
+      # A second inverter at a different time of day confirms the
+      # per-inverter independence.
       user = DtuApp.AccountsFixtures.user_fixture()
       device = DevicesFixtures.device_fixture(user)
 
@@ -689,8 +697,9 @@ defmodule DtuApp.DevicesTest do
         inserted_at: later
       })
 
-      # Headline = 1500 (INV-1 latest) + 800 (INV-2 latest) = 2300 Wh
-      # = 2.3 kWh.
+      # Headline = 1500 (INV-1 MAX of the day, == latest for a
+      # monotonic counter) + 800 (INV-2 only reading, also MAX) =
+      # 2300 Wh = 2.3 kWh.
       stats = Devices.get_daily_stats(user)
       assert_in_delta stats.today_yield, 2.3, 0.001
     end
@@ -769,7 +778,7 @@ defmodule DtuApp.DevicesTest do
 
     test "falls back to per-inverter ch0 last reading when no fleet row exists (OpenDTU)" do
       # The dashboard's headline `today_yield` sums each inverter's
-      # last reading of the day for the common OpenDTU install,
+      # MAX(yield_day) of the day for the common OpenDTU install,
       # which doesn't publish a fleet-total topic. Two inverters
       # each contribute their `yield_day` to the sum.
       user = DtuApp.AccountsFixtures.user_fixture()
@@ -793,6 +802,99 @@ defmodule DtuApp.DevicesTest do
       # returned 2.0 kWh — the new semantics matches what the
       # firmware's per-inverter monotonic counters imply.)
       assert_in_delta stats.today_yield, 3.0, 0.001
+    end
+  end
+
+  describe "get_daily_stats/2 — today_yield under mid-day yield_day reset (regression)" do
+    # Regression: AhoyDTU's `YieldDay` counter can be configured to
+    # reset at sundown, sunup, or midnight (firmware setting
+    # `YieldDayReset`). The pre-fix query summed each inverter's
+    # LATEST reading's `yield_day` — which returns the post-reset
+    # value (0.1 kWh or 0 kWh) for sundown/sunup-reset fleets,
+    # even though the data was flowing all day. The fix sums each
+    # inverter's MAX(yield_day) for the day, which is the pre-reset
+    # peak (and equals the latest reading for monotonic counters).
+    test "returns the pre-reset MAX when the firmware resets yield_day at sundown (AhoyDTU)" do
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Anchor at noon today so the fixtures are guaranteed to land
+      # inside the today's-window UTC range regardless of when the
+      # test runs (CI at 00:00-08:00 UTC would otherwise push
+      # earlier offsets out of today). `inserted_at` is typed
+      # `:utc_datetime_usec`, so add microsecond precision via
+      # `Map.put(:microsecond, {0, 6})` — see the earlier
+      # "uses the latest reading of the day per inverter" test
+      # for the same pattern.
+      noon_today =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = noon_today
+
+      after_sundown =
+        noon_today |> DateTime.add(11 * 3600 + 30 * 60, :second) |> Map.put(:microsecond, {0, 6})
+
+      # Firmware publishes yield_day that climbs to 5.0 kWh then
+      # resets at sundown to 0.1 kWh. The latest reading is the
+      # post-reset one; the day's MAX is 5.0 kWh.
+      for {ts, yield_day} <- [
+            # 0.5 kWh
+            {morning, 500.0},
+            # 5.0 kWh
+            {noon, 5_000.0},
+            # 0.1 kWh post-reset
+            {after_sundown, 100.0}
+          ] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_day: yield_day,
+          inserted_at: ts
+        })
+      end
+
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 5.0, 0.001
+    end
+
+    test "returns the latest reading (which equals MAX) for monotonic counters (OpenDTU-style)" do
+      # Negative control: when the firmware does NOT reset, MAX of
+      # the day == the latest reading of the day, so the headline
+      # is unchanged. Verifies the fix doesn't break the OpenDTU
+      # case (which the codebase's pre-existing tests covered).
+      user = DtuApp.AccountsFixtures.user_fixture()
+      device = DevicesFixtures.device_fixture(user)
+
+      # Anchor at noon today (see the previous test for rationale).
+      noon_today =
+        Date.utc_today()
+        |> DateTime.new!(~T[12:00:00])
+        |> Map.put(:microsecond, {0, 6})
+
+      morning = noon_today |> DateTime.add(-6 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = noon_today
+      late = noon_today |> DateTime.add(3 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+
+      for {ts, yield_day} <- [
+            {morning, 500.0},
+            {noon, 5_000.0},
+            {late, 5_500.0}
+          ] do
+        DevicesFixtures.reading_fixture(device, %{
+          inverter_serial: "INV-1",
+          mppt_index: 0,
+          inverter_name: "INV-1",
+          yield_day: yield_day,
+          inserted_at: ts
+        })
+      end
+
+      stats = Devices.get_daily_stats(user)
+      assert_in_delta stats.today_yield, 5.5, 0.001
     end
   end
 
@@ -4977,6 +5079,101 @@ defmodule DtuApp.DevicesTest do
       assert pct >= 90.0,
              "self-consumption must not overcount bursty Shelly uplinks " <>
                "(production 4_000 Wh, real export ~8 Wh → expect ≥90 %, got #{pct})"
+    end
+
+    test "production_kwh uses each inverter's MAX(yield_day) — sundown-reset regression" do
+      # Regression: `compute_self_consumption_pct/4` previously summed
+      # the LATEST reading's `yield_day` per inverter (DISTINCT ON
+      # `desc: inserted_at`). For AhoyDTU users whose `YieldDayReset`
+      # is `sundown`, the latest reading of the day is the
+      # post-reset value (0.1 kWh), so `production_kwh` undercounted
+      # the day's true yield and the resulting self-consumption
+      # percentage was wrong (the same root cause as the SunDown
+      # email bug, applied to the stat-card stat). After the fix the
+      # production sum is per-inverter `MAX(yield_day)` `GROUP BY
+      # (dtu_id, inverter_serial)` — same shape as
+      # `max_yield_day_per_inverter/3` uses for `today_yield` —
+      # so the pre-reset peak (5.0 kWh) survives.
+      #
+      # To exercise the full `cond` in `compute_self_consumption_pct/4`
+      # we also need a non-trivial export value: without a Shelly
+      # the helper short-circuits on `exported_kwh <= 0.0 -> 100.0`
+      # and the production-side bug is masked (both pre-fix and
+      # post-fix would return 100.0 in that case, so the assertion
+      # would not distinguish them). The Shelly's single -30_000 W
+      # reading × (5/60) h bucket = 2_500 Wh = 2.5 kWh exported,
+      # landing us in the
+      # `true -> Float.round((1.0 - exported_kwh / production_kwh) * 100.0, 1)`
+      # branch where the production-side MAX actually matters.
+      #
+      # Pre-fix: production_kwh = 0.1 (post-reset latest),
+      # exported_kwh = 2.5 → 2.5 >= 0.1 → clamps at 0.0.
+      # Post-fix: production_kwh = 5.0 (MAX), exported_kwh = 2.5 →
+      # (1 - 2.5/5.0) × 100 = 50.0.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "opendtu",
+          mqtt_username: "self-cons-sundown-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Sundown"
+        })
+
+      _shelly =
+        DevicesFixtures.device_fixture(user, %{
+          kind: "shelly3em",
+          mqtt_username: "self-cons-sundown-shelly-#{System.unique_integer([:positive])}",
+          name: "Self-Cons Sundown Shelly"
+        })
+
+      # Anchor all readings relative to `now` so they all land
+      # inside the [yesterday, now] window the helper queries
+      # regardless of when the test runs. Anchoring at noon_today
+      # (like the today_yield sundown-reset regression at line 818)
+      # would push the after-sundown reading past `now` in
+      # early-morning UTC runs and silently drop it from the
+      # window — the pre-fix code would then accidentally fall
+      # back to the noon reading (5.0 kWh) and return the same
+      # value as the post-fix code, defeating the regression.
+      now = DateTime.utc_now()
+      yesterday = DateTime.add(now, -86_400, :second)
+
+      morning = DateTime.add(now, -20 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      noon = DateTime.add(now, -8 * 3600, :second) |> Map.put(:microsecond, {0, 6})
+      after_sundown = DateTime.add(now, -30 * 60, :second) |> Map.put(:microsecond, {0, 6})
+
+      # Same yield_day pattern as the today_yield sundown-reset
+      # regression (line 818): climbs to 5.0 kWh, then resets at
+      # sundown to 0.1 kWh.
+      for {ts, yield_day} <- [
+            {morning, 500.0},
+            {noon, 5_000.0},
+            {after_sundown, 100.0}
+          ] do
+        {:ok, _} =
+          Devices.create_reading(%{
+            dtu_id: dtu.id,
+            inverter_serial: "INV-SUNDOWN",
+            mppt_index: 0,
+            ac_power: 200.0,
+            yield_day: yield_day,
+            yield_total: 100_000.0,
+            inserted_at: ts
+          })
+      end
+
+      # Shelly consumption reading at noon: -30_000 W (30 kW export)
+      # × (5/60) h bucket = 2_500 Wh = 2.5 kWh exported.
+      _ = shelly_consumption_reading(user, noon, -30_000.0)
+
+      # dtu_id=nil so `owned_dtu_ids(user, nil)` returns BOTH the
+      # OpenDTU and the Shelly — scoped to the inverter alone the
+      # helper would only see the production side.
+      pct = Devices.compute_self_consumption_pct(user, nil, yesterday, now)
+
+      # Post-fix: 5 kWh production / 2.5 kWh export → 50 % self-consumption.
+      # Pre-fix would clamp at 0 % (the regression we are guarding).
+      assert_in_delta pct, 50.0, 0.5
     end
   end
 

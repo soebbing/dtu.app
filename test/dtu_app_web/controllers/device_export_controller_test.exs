@@ -56,6 +56,16 @@ defmodule DtuAppWeb.DeviceExportControllerTest do
     DateTime.from_naive!(naive, "Etc/UTC")
   end
 
+  # Build a UTC DateTime `days` before/after today, at 10:00:00.000000.
+  # Used by tests that need to anchor a fixture to the *current*
+  # 30-day default window — hardcoded dates silently slip outside
+  # that window as the calendar advances and become stale.
+  defp at_relative(days) do
+    date = Date.utc_today() |> Date.add(days)
+    naive = NaiveDateTime.new!(date, ~T[10:00:00.000000])
+    DateTime.from_naive!(naive, "Etc/UTC")
+  end
+
   describe "GET /devices/:id/export.csv" do
     setup :register_and_log_in_user
 
@@ -204,11 +214,11 @@ defmodule DtuAppWeb.DeviceExportControllerTest do
     } do
       # Inside the default 30-day window — should appear.
       _recent =
-        DevicesFixtures.reading_fixture(device, %{inserted_at: at("2026-08-25 10:00:00.000000")})
+        DevicesFixtures.reading_fixture(device, %{inserted_at: at_relative(-7)})
 
       # Way outside the window — should NOT appear.
       _ancient =
-        DevicesFixtures.reading_fixture(device, %{inserted_at: at("2026-01-01 10:00:00.000000")})
+        DevicesFixtures.reading_fixture(device, %{inserted_at: at_relative(-60)})
 
       conn = get(conn, ~p"/devices/#{device.id}/export.csv")
       assert conn.status == 200
@@ -217,7 +227,8 @@ defmodule DtuAppWeb.DeviceExportControllerTest do
       assert header == @header_columns
 
       [ts | _] = row
-      assert String.starts_with?(ts, "2026-08-25")
+      expected_day = Date.utc_today() |> Date.add(-7) |> Date.to_iso8601()
+      assert String.starts_with?(ts, expected_day)
     end
 
     test "rejects an unparseable start date with 400", %{conn: conn, device: device} do

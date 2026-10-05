@@ -69,15 +69,20 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   make sense for the live day — but `today_yield` reflects the
   requested date so we can compare day-over-day.
 
-  `today_yield` and `total_yield` are computed by **summing each
-  inverter's last reading of the day** (for `today_yield`) or its
-  max-recorded `yield_total` (for `total_yield`). Each per-inverter
-  `yield_day` counter is a monotonic Wh figure that resets at
-  midnight and climbs through the day — so the day's total per
-  inverter IS its last reading of the day. Summing that across
-  inverters (and across the user's DTUs) gives the fleet's daily
-  total without relying on the firmware-aggregated `{base}/total`
-  topic, which the parser now drops (no `_fleet` row persisted).
+  `today_yield` is computed by **summing each inverter's
+  MAX(yield_day) over today's window**. `yield_day` is a per-inverter
+  Wh counter that the firmware may reset at midnight (OpenDTU,
+  default AhoyDTU), sundown, or sunup (AhoyDTU configurable via
+  `YieldDayReset`). For a monotonic counter, MAX of the day ==
+  the latest reading; for a counter that resets mid-day, MAX is
+  the pre-reset peak — which is the day's true total. Summing
+  those across inverters (and across the user's DTUs) gives the
+  fleet's daily total without relying on the firmware-aggregated
+  `{base}/total` topic, which the parser now drops (no `_fleet`
+  row persisted). `current_power` and `peak_power` are still
+  computed against the present instant — they only make sense
+  for the live day — but `today_yield` and `total_yield` reflect
+  the day and lifetime respectively.
 
   Restricted to `mppt_index = 0` so multi-MPPT AhoyDTU inverters
   don't double-count ch0 + ch1 + ch2 yields. OpenDTU only persists
@@ -89,11 +94,16 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   As a defence against any legacy `_fleet` rows that older parser
   versions persisted, the chart data paths still filter
   `inverter_serial != "_fleet"` — see
-  `list_day_readings_for_chart/4` and friends. The `today_yield` /
-  `total_yield` queries below take the per-inverter latest row
-  ordered by `inserted_at DESC LIMIT 1` per `(dtu_id,
-  inverter_serial)`, which inherently skips `_fleet` (no real
-  inverter goes by that name).
+  `list_day_readings_for_chart/4` and friends. `today_yield` and
+  `total_yield` below both take the per-inverter `MAX(yield_day)` /
+  `MAX(yield_total)` `GROUP BY (dtu_id, inverter_serial)` — same
+  shape as the chart-data paths' `MAX(...)` queries, just over
+  today's window for `today_yield` and the full lifetime for
+  `total_yield`. Both queries filter `inverter_serial != "_fleet"`
+  defensively; `_fleet` is not a real inverter name so the MAX
+  itself wouldn't surface one, but the explicit filter keeps the
+  join shape consistent across queries and matches the chart-data
+  paths.
   """
   def get_daily_stats(%User{} = user, dtu_id, %Date{} = date) do
     impl_get_daily_stats(user, dtu_id, date, [])
@@ -225,10 +235,18 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
       # reading of the day" row (one per (dtu, serial), filtered to
       # `mppt_index = 0` so multi-MPPT inverters don't double-count
       # sub-totals). That single row carries `ac_power` (current_power
-      # input), `yield_day` (today's per-inverter yield — monotonic
-      # Wh counter so the day's total IS the last reading of the day,
-      # summing across inverters gives the fleet's daily total), and
-      # `inverter_name` (for the chart legend).
+      # input) and `inverter_name` (for the chart legend).
+      #
+      # NB: this row's `yield_day` is the latest reading of the day,
+      # not the day's MAX. For today's headline `today_yield` use
+      # `max_yield_day_per_inverter/3` (added by the sundown-yield
+      # fix), which sums `MAX(yield_day)` per inverter and is robust
+      # to AhoyDTU's `YieldDayReset` (midnight / sundown / sunup).
+      # The `yield_day` projection below is still useful for
+      # `per_series.today_yield` (the per-series legend breakdown),
+      # where the latest reading of the day is the right value —
+      # but that surface is currently unrendered (see TODO on
+      # `per_series` below).
       #
       # The `inserted_at >= ^today_start` bound turns the unbounded
       # DISTINCT ON into a single-chunk range scan via the
@@ -276,15 +294,48 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
         |> Enum.map(&(&1.ac_power || 0.0))
         |> Enum.sum()
 
-      # Today's total yield: sum each inverter's last reading of the
-      # day. Per-inverter `yield_day` is monotonic Wh that resets at
-      # midnight, so the day's per-inverter total IS its last
-      # reading — summing across inverters (and across the user's
-      # DTUs) gives the fleet's daily total without depending on the
-      # AhoyDTU `{base}/total` MQTT topic (which the parser drops).
+      # Per-inverter MAX(yield_day) over today's window. Replaces the
+      # previous "sum of last readings" path, which assumed `yield_day`
+      # is monotonic and only resets at midnight. AhoyDTU's `YieldDay`
+      # can be configured to reset at sundown, sunup, or midnight; the
+      # previous path returned the post-reset value (0 kWh or near-0)
+      # for sundown/sunup-reset users, which manifested as
+      # `today_yield == 0 kWh` in the SunDown email, dashboard Today
+      # stat card, and shared dashboard even though the chart and
+      # `current_power` (both sourced from `ac_power`) were correct.
+      #
+      # Restricted to `mppt_index = 0` (matching the DISTINCT ON above)
+      # so multi-MPPT AhoyDTU inverters don't double-count ch0 + ch1 +
+      # ch2 yields. `inverter_serial != "_fleet"` filters any legacy
+      # `_fleet` rows an older parser version persisted.
+      #
+      # The 30-day-window variant at `total_yield_per_inverter` (below)
+      # follows the same `MAX(...) GROUP BY` shape — this query extends
+      # the same approach to the daily window for `yield_day`.
+      max_yield_day_per_inverter =
+        Repo.all(
+          from r in Reading,
+            where:
+              r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
+                r.inverter_serial != "_fleet" and
+                r.inserted_at >= ^today_start and r.inserted_at <= ^today_end,
+            group_by: [r.dtu_id, r.inverter_serial],
+            select: %{max_yield_day: max(r.yield_day)}
+        )
+
+      # Today's total yield: sum each inverter's MAX(yield_day) over
+      # today's window. Per-inverter `yield_day` is a Wh counter that
+      # the firmware may reset at midnight (OpenDTU, default AhoyDTU),
+      # sundown, or sunup (AhoyDTU configurable via `YieldDayReset`).
+      # For a monotonic counter, MAX of the day == the latest reading;
+      # for a counter that resets mid-day, MAX is the pre-reset peak —
+      # which is the day's true total. Summing across inverters (and
+      # across the user's DTUs) gives the fleet's daily total without
+      # depending on the AhoyDTU `{base}/total` MQTT topic (which the
+      # parser drops).
       today_yield =
-        ac_latest_per_inverter
-        |> Enum.map(fn r -> r.yield_day || 0.0 end)
+        max_yield_day_per_inverter
+        |> Enum.map(fn row -> row.max_yield_day || 0.0 end)
         |> Enum.sum()
 
       # Lifetime total yield.
@@ -433,6 +484,12 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
         # in kWh, peak powers in W (matching the totals' units). Since the
         # aggregation is restricted to `mppt_index = 0` (the AC aggregate
         # row), each entry is per-inverter, not per-MPPT.
+        #
+        # TODO: per_series.today_yield still sources from the latest-row
+        # `yield_day` (post-reset for sundown/sunup-reset AhoyDTU). Align
+        # with `max_yield_day_per_inverter/3` before this is ever rendered
+        # to a user. As of 2026-10-04 the field is not consumed by any
+        # template — see the ac_latest_per_inverter comment above.
         per_series:
           Enum.map(ac_latest_per_inverter, fn row ->
             series = {row.dtu_id, row.inverter_serial, 0, row.inverter_name}
@@ -548,9 +605,14 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   consumption devices (Shelly) are in scope — the dashboard uses this to
   decide whether to show the self-consumption stat card at all.
 
-  `production_kwh` is the period's total yield in kWh, derived from the
-  same per-inverter last-yield query that powers `get_daily_stats/3`'s
-  `today_yield` (sum of each inverter's last `yield_day` of the window).
+  `production_kwh` is the period's total yield in kWh, derived from
+  per-inverter `MAX(yield_day)` `GROUP BY (dtu_id, inverter_serial)`
+  over the period window — same shape as `max_yield_day_per_inverter/3`
+  uses for `today_yield` and `total_yield_per_inverter/3` uses for
+  `total_yield`. Robust to AhoyDTU's `YieldDayReset` (midnight /
+  sundown / sunup) for the same reason as those queries: MAX of a
+  counter that may reset mid-day is the pre-reset peak, which is the
+  day's true total.
 
   `exported_kwh` is the positive-net-flow energy that left the home,
   computed by summing bucket-mean wattage (one mean per Shelly device
@@ -583,11 +645,10 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
               r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
                 r.inverter_serial != "_fleet" and
                 r.inserted_at >= ^utc_start and r.inserted_at <= ^utc_end,
-            distinct: [r.dtu_id, r.inverter_serial],
-            order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
-            select: %{yield_day: r.yield_day}
+            group_by: [r.dtu_id, r.inverter_serial],
+            select: %{max_yield_day: max(r.yield_day)}
         )
-        |> Enum.map(fn row -> row.yield_day || 0.0 end)
+        |> Enum.map(fn row -> row.max_yield_day || 0.0 end)
         |> Enum.sum()
 
       exported_kwh = integrate_export_kwh(user, dtu_id, utc_start, utc_end)

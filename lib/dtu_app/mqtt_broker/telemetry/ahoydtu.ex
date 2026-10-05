@@ -229,20 +229,14 @@ defmodule DtuApp.MqttBroker.Telemetry.AhoyDtu do
       #      truth. Falling back to a per-inverter aggregation is
       #      the same code path either way.
       #
-      #   2. Treating per-inverter `yield_day` counters as
-      #      monotonic Wh figures that reset at midnight and
-      #      climbing through the day, the day's total per inverter
-      #      IS its last `yield_day` reading. Summing that across
-      #      every inverter yields the fleet's daily total without
-      #      the firmware's intermediate aggregation step (and
-      #      without its rounding). Same logic, same shape, one
-      #      fewer special case.
-      #
-      # The dashboard computes today's / lifetime yield via
-      # `get_daily_stats/3`'s "sum each inverter's last reading"
-      # path (and the per-day historical chart via
-      # `list_range_yield_data/4`'s equivalent). No `_fleet` rows
-      # ever enter the DB.
+      #   2. The dashboard computes today's / lifetime yield via
+      #      `get_daily_stats/3`'s "sum each inverter's MAX(yield_day)
+      #      over the day" path. No `_fleet` rows ever enter the DB.
+      #      MAX-of-the-day is robust to AhoyDTU's configurable
+      #      `YieldDayReset` (midnight / sundown / sunup) — the previous
+      #      "sum of last readings" approach returned the post-reset
+      #      value (0 kWh) for sundown/sunup-reset users, even though
+      #      data was flowing all day.
       #
       # As a defence against any legacy `_fleet` rows that were
       # persisted by older parser versions (pre-this change), the
