@@ -40,7 +40,7 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   alias DtuApp.Repo
 
   import DtuApp.Devices.ChartHelpers,
-    only: [owned_dtu_ids: 2, bucket_max_from_chart_points: 1]
+    only: [owned_dtu_ids: 2, bucket_max_from_chart_points: 1, peak_bucket_from_chart_points: 1]
 
   @doc "Calculate aggregated daily stats for a user's DTUs (or a specific DTU)."
   def get_daily_stats(%User{} = user, dtu_id \\ nil) do
@@ -520,11 +520,21 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
   the bucket's timestamp. Returns `{0.0, nil}` when the window has no
   AC-aggregate rows (no DTU has uplinked for the period).
 
+  Powers the "Peak Power" tile on the 1D / 7D / 30D / YTD stat-card
+  rows. Restricted to `mppt_index = 0` so multi-MPPT AhoyDTU inverters
+  don't double-count — same convention as `get_daily_stats/3`.
+
+  Multi-inverter fleets: the returned peak is the **combined**
+  power across all inverters at the peak bucket (sum across series
+  per bucket, max over buckets). Two inverters each producing 600 W
+  at 13:00 report a 1_200 W peak — not 600 W (max single inverter).
+  Single-inverter behaviour is unchanged: sum-of-one equals max-of-one.
+
   Reads from the `readings_5m` continuous aggregate when the bucket is
   in the past, falls back to the live `readings` table for the most
   recent 5 minutes (matching the rest of the dashboard's tail strategy).
-  Restricted to `mppt_index = 0` so multi-MPPT AhoyDTU inverters don't
-  double-count — same convention as `get_daily_stats/3`.
+  `list_day_chart_data_for_dashboard/4` handles the split internally;
+  this helper just picks the max-sum bucket from the unioned stream.
 
   `peak_time` is the bucket's UTC `time` field; the dashboard
   formats it as HH:MM in the user's local timezone.
@@ -537,64 +547,26 @@ defmodule DtuApp.Devices.Stats.ProductionStats do
     if dtu_ids == [] do
       {0.0, nil}
     else
-      utc_tail_start = DateTime.add(utc_end, -300, :second)
-
-      # Aggregate buckets strictly before the live tail.
-      aggregate_top =
-        if DateTime.compare(utc_start, utc_tail_start) == :lt do
-          from_buckets =
-            ChartData.list_day_chart_data_for_dashboard(user, utc_start, utc_tail_start, dtu_id)
-
-          case from_buckets do
-            [] ->
-              nil
-
-            pts ->
-              top = Enum.max_by(pts, fn pt -> pt.power || 0.0 end)
-
-              %{
-                power: top.power || 0.0,
-                time: top.time
-              }
-          end
-        else
-          nil
-        end
-
-      # Live tail: latest AC-aggregate row per DTU in the tail window.
-      live_top =
-        if DateTime.compare(utc_tail_start, utc_end) in [:lt, :eq] do
-          tail_rows =
-            Repo.all(
-              from r in Reading,
-                where:
-                  r.dtu_id in ^dtu_ids and r.mppt_index == 0 and
-                    r.inserted_at >= ^utc_tail_start and r.inserted_at <= ^utc_end,
-                distinct: [r.dtu_id, r.inverter_serial],
-                order_by: [r.dtu_id, r.inverter_serial, desc: r.inserted_at],
-                select: %{power: r.ac_power, time: r.inserted_at}
-            )
-
-          case tail_rows do
-            [] ->
-              nil
-
-            rows ->
-              max_row = Enum.max_by(rows, fn r -> r.power || 0.0 end)
-              %{power: max_row.power || 0.0, time: max_row.time}
-          end
-        else
-          nil
-        end
-
-      pick_higher = aggregate_top || live_top
-
-      case pick_higher do
-        nil ->
+      # `list_day_chart_data_for_dashboard/4` reads from the
+      # `readings_5m` continuous aggregate for closed buckets and
+      # unions a 5-min live-tail bucketed read from the raw `readings`
+      # table — the same aggregate + live-tail split the dashboard's
+      # chart uses. The bucketed shape (one row per
+      # `(bucket, dtu, inverter, mppt)` series) is exactly what
+      # `peak_bucket_from_chart_points/1` needs to compute the
+      # multi-inverter combined peak.
+      case ChartData.list_day_chart_data_for_dashboard(user, utc_start, utc_end, dtu_id) do
+        [] ->
           {0.0, nil}
 
-        %{power: power, time: time} ->
-          {Float.round(power * 1.0, 1), time}
+        points ->
+          case peak_bucket_from_chart_points(points) do
+            nil ->
+              {0.0, nil}
+
+            {power, time} ->
+              {Float.round(power * 1.0, 1), time}
+          end
       end
     end
   end
