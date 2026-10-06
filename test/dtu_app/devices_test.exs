@@ -530,6 +530,61 @@ defmodule DtuApp.DevicesTest do
 
       assert Devices.bucket_max_from_chart_points(per_mppt_only) == 0.0
     end
+
+    test "sums power across inverters in the same bucket (multi-inverter fleet, regression)" do
+      # Customer-reported bug: a fleet with two inverters showed
+      # "Peak power: 580 W" on the dashboard even when both inverters
+      # were each producing 580 W at the same instant (the actual
+      # combined peak was 1_160 W). Root cause: `bucket_max_from_chart_points/1`
+      # took the max over the flat list of chart points (one per
+      # `(bucket, dtu, inverter, mppt)` series), so two inverters
+      # contributing 580 W each at the same bucket returned 580 W
+      # rather than 1_160 W. Post-fix: group by bucket, sum across
+      # series, then max over buckets.
+      dt = DateTime.utc_now()
+      dtu_id = 1
+
+      # Two inverters in the same bucket, each producing 580 W.
+      # Pre-fix: max = 580. Post-fix: sum = 1_160.
+      fleet_points = [
+        %{time: dt, series: {dtu_id, "INV-1", 0, "INV-1"}, power: 580.0},
+        %{time: dt, series: {dtu_id, "INV-2", 0, "INV-2"}, power: 580.0}
+      ]
+
+      assert Devices.bucket_max_from_chart_points(fleet_points) == 1_160.0
+
+      # Two inverters peaking at DIFFERENT buckets — the max-of-bucket-sums
+      # should pick the higher of the two combined buckets, not the
+      # higher single-inverter reading.
+      #
+      #   T=10:  INV-1 = 400, INV-2 = 100  →  bucket sum 500
+      #   T=11:  INV-1 = 800, INV-2 = 800  →  bucket sum 1600  (peak)
+      #
+      # Pre-fix would have returned 800 (max single inverter). Post-fix
+      # returns 1600.
+      spread_points = [
+        %{time: dt, series: {dtu_id, "INV-1", 0, "INV-1"}, power: 400.0},
+        %{time: dt, series: {dtu_id, "INV-2", 0, "INV-2"}, power: 100.0},
+        %{
+          time: DateTime.add(dt, 3600, :second),
+          series: {dtu_id, "INV-1", 0, "INV-1"},
+          power: 800.0
+        },
+        %{
+          time: DateTime.add(dt, 3600, :second),
+          series: {dtu_id, "INV-2", 0, "INV-2"},
+          power: 800.0
+        }
+      ]
+
+      assert Devices.bucket_max_from_chart_points(spread_points) == 1_600.0
+
+      # Sanity: single-inverter behaviour is unchanged. One row per
+      # bucket, summed = max'd.
+      assert Devices.bucket_max_from_chart_points([
+               %{time: dt, series: {dtu_id, "INV-1", 0, "INV-1"}, power: 250.0}
+             ]) == 250.0
+    end
   end
 
   describe "get_daily_stats/2 — per_series breakdown" do
@@ -2655,6 +2710,34 @@ defmodule DtuApp.DevicesTest do
       assert stats.peak_power == 800.0
     end
 
+    test "peak_power sums across inverters in the same bucket (multi-inverter fleet, regression)" do
+      # Day-view peak tile: with two inverters each producing 580 W
+      # at 12:00, the customer expects 1_160 W — the combined peak —
+      # not 580 W (max single inverter). Same shape as the
+      # `bucket_max_from_chart_points/1` and `compute_peak_watts_in_period/4`
+      # regressions — all three stat-card surfaces funnel through the
+      # same combined-bucket max path.
+      t_peak = ~U[2026-07-31 12:00:00Z]
+      t_low = ~U[2026-07-31 18:00:00Z]
+
+      points = [
+        %{time: t_peak, series: {1, "INV-1", 0, "INV-1"}, power: 580.0},
+        %{time: t_peak, series: {1, "INV-2", 0, "INV-2"}, power: 580.0},
+        # A higher single-inverter reading at a different bucket must
+        # NOT win — only combined-sum buckets are eligible.
+        %{time: t_low, series: {1, "INV-1", 0, "INV-1"}, power: 1_000.0}
+      ]
+
+      stats = Devices.compute_day_period_stats([{~D[2026-07-31], 12.3}], points)
+
+      # Combined peak: 580 + 580 = 1_160 (not 580 = max single, not
+      # 1_000 = max single at the off-peak bucket).
+      assert stats.peak_power == 1_160.0
+      # Peak time is the bucket that produced the combined peak —
+      # 12:00, not 18:00.
+      assert stats.peak_time == t_peak
+    end
+
     test "computes avg_power as the arithmetic mean of points" do
       points = [
         %{time: ~U[2026-07-31 06:00:00Z], series: {1, "S1", 0, nil}, power: 100.0},
@@ -4768,6 +4851,84 @@ defmodule DtuApp.DevicesTest do
 
       assert Devices.compute_peak_watts_in_period(user, nil, utc_start, utc_end) ==
                {0.0, nil}
+    end
+
+    test "returns the SUM of inverter powers at the peak bucket (multi-inverter fleet, regression)" do
+      # Customer-reported bug: a fleet with two inverters each producing
+      # 600 W at 13:00 showed a 7-day peak of 600 W on the dashboard's
+      # stat-card row — the actual combined peak was 1_200 W. Root cause
+      # is the same as `bucket_max_from_chart_points/1`'s (see that
+      # helper's regression test): `Enum.max_by(pts, fn pt -> pt.power end)`
+      # picked the single highest chart point (600 W) rather than summing
+      # all series contributing at the peak bucket. Same shape across
+      # 7D / 30D / YTD / custom presets — they all funnel through
+      # `compute_peak_watts_in_period/4`.
+      user = DtuApp.AccountsFixtures.user_fixture()
+
+      dtu =
+        DevicesFixtures.device_fixture(user, %{
+          name: "Multi-Inv Peak DTU",
+          kind: "opendtu",
+          mqtt_username: "multi-inv-peak"
+        })
+
+      yesterday = Date.add(Date.utc_today(), -1)
+
+      # Seed 6 buckets so the test covers: a multi-inverter same-bucket
+      # peak (10:00), a single-inverter peak that should NOT win
+      # (11:00 = INV-2 alone at 800 W, no INV-1 contributing), and
+      # another multi-inverter same-bucket peak (13:00 = 1_600 W
+      # combined, the maximum). The test should return 1_600 W, not
+      # 1_200 W (max single at 10:00) and not 800 W (max single at
+      # 11:00).
+      #
+      # bucket | INV-1  | INV-2  | combined
+      #   10:00 |   600  |   600  |   1_200
+      #   11:00 |     0  |   800  |     800
+      #   12:00 |   400  |   200  |     600
+      #   13:00 |   800  |   800  |   1_600  ← peak
+      #   14:00 |   500  |   500  |   1_000
+      #   15:00 |   100  |   100  |     200
+      buckets = [
+        {10, 600.0, 600.0},
+        {11, 0.0, 800.0},
+        {12, 400.0, 200.0},
+        {13, 800.0, 800.0},
+        {14, 500.0, 500.0},
+        {15, 100.0, 100.0}
+      ]
+
+      for {hour, inv1, inv2} <- buckets do
+        bucket_time =
+          DateTime.new!(yesterday, ~T[00:00:00], "Etc/UTC")
+          |> DateTime.add(hour * 3_600, :second)
+
+        for {serial, power} <- [{"INV-1", inv1}, {"INV-2", inv2}] do
+          DtuApp.Repo.query!(
+            """
+            INSERT INTO readings_5m
+              (bucket, dtu_id, avg_ac_power, max_ac_power, yield_day, yield_total,
+               inverter_serial, mppt_index, inverter_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            [bucket_time, dtu.id, power, power, 1.0, 100.0, serial, 0, serial]
+          )
+        end
+      end
+
+      utc_start = DateTime.new!(yesterday, ~T[00:00:00], "Etc/UTC")
+      utc_end = DateTime.new!(yesterday, ~T[23:59:59], "Etc/UTC")
+
+      {peak_w, peak_time} = Devices.compute_peak_watts_in_period(user, dtu.id, utc_start, utc_end)
+
+      # Combined peak across both inverters (1_600 W), not the max of
+      # any single inverter (800 W) — the customer's reported bug.
+      assert peak_w == 1_600.0,
+             "expected the 13:00 bucket's combined power (1_600 W), got #{peak_w} W"
+
+      assert peak_time != nil
+      assert DateTime.compare(peak_time, utc_start) in [:gt, :eq]
+      assert DateTime.compare(peak_time, utc_end) in [:lt, :eq]
     end
   end
 

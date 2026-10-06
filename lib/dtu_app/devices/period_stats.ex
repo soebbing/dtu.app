@@ -17,6 +17,8 @@ defmodule DtuApp.Devices.PeriodStats do
   existing call sites continue to work unchanged.
   """
 
+  import DtuApp.Devices.ChartHelpers, only: [peak_bucket_from_chart_points: 1]
+
   @type chart_point :: DtuApp.Devices.chart_point()
 
   @doc """
@@ -30,6 +32,12 @@ defmodule DtuApp.Devices.PeriodStats do
   Both inputs are already user-scoped (yields come from
   `list_range_yield_data/4`, points from `list_day_chart_data/4`), so this
   function is pure data-shaping with no DB access.
+
+  Multi-inverter fleets: the returned `peak_power` is the **combined**
+  power across all inverters at the peak bucket (sum across series
+  per bucket, max over buckets) — two inverters each producing 600 W
+  at 12:00 return a 1_200 W peak, not 600 W. See
+  `DtuApp.Devices.ChartHelpers.peak_bucket_from_chart_points/1`.
   """
   @spec compute_day_period_stats([{Date.t(), float()}], [chart_point()]) :: %{
           total_yield: float(),
@@ -47,23 +55,18 @@ defmodule DtuApp.Devices.PeriodStats do
     # Peak power + peak time come from the same 5-min bucket scan.
     # The `peak_time` is the bucket's `time` field (UTC). The
     # dashboard formats it as HH:MM in the user's local timezone.
-    # `peak_time == nil` when the window has no chart points — the
-    # stats card then renders a `—` placeholder instead of `00:00`.
+    # `peak_time == nil` when the window has no AC-aggregate chart
+    # points — the stats card then renders a `—` placeholder instead
+    # of `00:00`.
+    #
+    # `peak_bucket_from_chart_points/1` sums across series at each
+    # bucket (the multi-inverter peak), so two inverters each
+    # producing 600 W at 12:00 return 1_200 W, not 600 W. Per-MPPT
+    # rows (`mppt_index >= 1`) are filtered out inside the helper.
     {peak_power, peak_time} =
-      case points do
-        [] ->
-          {0.0, nil}
-
-        pts ->
-          top =
-            Enum.max_by(pts, fn pt ->
-              case pt.power do
-                nil -> 0.0
-                p -> p
-              end
-            end)
-
-          {top.power || 0.0, top.time}
+      case peak_bucket_from_chart_points(points) do
+        nil -> {0.0, nil}
+        {power, time} -> {power, time}
       end
 
     avg_power =

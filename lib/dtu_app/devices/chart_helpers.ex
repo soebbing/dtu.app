@@ -16,9 +16,16 @@ defmodule DtuApp.Devices.ChartHelpers do
       and any other mppt falls back to `dc_power`. Rows with no power
       field (AhoyDTU yield-only flushes before the AC reading lands)
       contribute 0.0 instead of crashing the chart.
-    * `bucket_max_from_chart_points/1` — the max power across a chart-point
-      bucket list. Used by `Stats.get_daily_stats/4` to size the Y axis
-      on daily-yield views.
+    * `bucket_max_from_chart_points/1` — the max *combined* power across
+      a chart-point bucket list (sum across series at each bucket, max
+      over buckets). Used by `Stats.get_daily_stats/4` to size the Y
+      axis on daily-yield views and to compute the headline `peak_power`
+      for multi-inverter fleets.
+    * `peak_bucket_from_chart_points/1` — `{power, time}` of the
+      max-sum bucket from `bucket_max_from_chart_points/1`'s input.
+      Used by `Stats.ProductionStats.compute_peak_watts_in_period/4`
+      for the 1D / 7D / 30D / YTD stat-card peak tile — needs the time
+      alongside the power to label the peak on the dashboard.
 
   Plus the per-user DTU-ownership helpers:
 
@@ -58,10 +65,40 @@ defmodule DtuApp.Devices.ChartHelpers do
   def bucket_max_from_chart_points([]), do: 0.0
 
   def bucket_max_from_chart_points(points) do
+    case peak_bucket_from_chart_points(points) do
+      {power, _time} -> power
+      nil -> 0.0
+    end
+  end
+
+  @doc """
+  Returns `{power, time}` of the chart-point bucket whose series'
+  combined power is highest across all buckets in `points`, or `nil`
+  when no AC-aggregate (`mppt_index = 0`) series are present.
+
+  Sums across series within the same bucket so multi-inverter fleets
+  see the *combined* peak (two inverters each producing 600 W at 10:00
+  return 1_200 W, not 600 W). Single-inverter behaviour is unchanged:
+  sum-of-one series equals max-of-one series. Per-MPPT rows
+  (`mppt_index >= 1`) are filtered out — the dashboard only ever
+  plots the AC aggregate as `peak_power`, and including per-MPPT
+  rows here would double-count inverters that publish both an AC
+  aggregate row and per-string sub-totals.
+
+  Time precision matches whatever the caller passed in (NaiveDateTime
+  from the `readings_5m` aggregate, `%DateTime{}` from raw rows, etc).
+  """
+  @spec peak_bucket_from_chart_points([map()]) ::
+          {float(), DateTime.t() | NaiveDateTime.t()} | nil
+  def peak_bucket_from_chart_points(points) do
     points
     |> Enum.filter(fn pt -> elem(pt.series, 2) == 0 end)
-    |> Enum.map(fn pt -> pt.power || 0.0 end)
-    |> Enum.max(fn -> 0.0 end)
+    |> Enum.group_by(fn pt -> pt.time end)
+    |> Enum.map(fn {time, bucket_pts} ->
+      power = bucket_pts |> Enum.map(fn pt -> pt.power || 0.0 end) |> Enum.sum()
+      {power, time}
+    end)
+    |> Enum.max_by(fn {power, _time} -> power end, fn -> nil end)
   end
 
   @spec owned_dtu_ids(User.t(), integer() | nil) :: [integer()]
