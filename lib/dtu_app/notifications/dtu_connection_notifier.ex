@@ -18,7 +18,8 @@ defmodule DtuApp.Notifications.DtuConnection do
   alive across every nav, deploy, and disconnected tab.
 
   Per-device state (`%{device_id => %{user_id, name, last_seen_at,
-  disconnected?, connected_at}}`) is maintained so a CONNECT that
+  disconnected?, disconnected_at, connected_at,
+  last_offline_fired_at, last_online_fired_at}}`) is maintained so a CONNECT that
   follows a DISCONNECT cleanly cancels the offline marker. The
   cache is bounded by the user's device count and is not explicitly
   GC'd today; in practice it stays small (one entry per device the
@@ -44,6 +45,18 @@ defmodule DtuApp.Notifications.DtuConnection do
   user-facing semantics of `notify_sun_up` (a single low-value ping
   that should be silent when off) and the same rationale that drove
   SunDown to a producer-level gate in the same revision.
+
+  Reconnect gating is layered (all conditions must hold):
+    * a prior `:dtu_disconnected` was observed (`disconnected?: true`)
+    * `outage_long_enough?(disconnected_at)` — the outage must have
+      lasted at least `@min_outage_seconds` (5 min). Without this,
+      every disconnect→connect transition fired "Inverter was offline
+      for 0 seconds" — most visibly when the broker closes idle
+      sockets on a ~60 s cadence.
+    * `cooldown_over?(last_online_fired_at)` — at most one recovery
+      notice per device per `@cooldown_seconds` (2 h), mirroring the
+      offline path so a longer-cycle flapper cannot spam either
+      direction.
 
   Disconnect gating is layered (all conditions must hold):
     * `recently_active?(last_seen_at)` — `last_seen_at` must be
@@ -116,6 +129,7 @@ defmodule DtuApp.Notifications.DtuConnection do
   # `@prior_uptime_seconds`, `@cooldown_seconds` live there too).
   defdelegate recently_active?(last_seen_at), to: __MODULE__.Detection
   defdelegate prior_uptime?(connected_at), to: __MODULE__.Detection
+  defdelegate outage_long_enough?(disconnected_at), to: __MODULE__.Detection
   defdelegate cooldown_over?(last_fired_at), to: __MODULE__.Detection
   defdelegate safe_lookup(device_id), to: __MODULE__.Detection
   defdelegate safe_get_user(user_id), to: __MODULE__.Detection
@@ -156,15 +170,12 @@ defmodule DtuApp.Notifications.DtuConnection do
       # `init/1` comment. The disconnect-side recency guard reads
       # `dtus.last_seen_at` fresh from the DB on every disconnect
       # anyway, so a stale cached value here would only break the
-      # connect-side recency guard. We stamp `nil` and rely on the
-      # fact that the connect-side gate requires `disconnected?:
-      # true` AND `last_seen_at: %DateTime{}` — without the
-      # latter, the connect path falls through silently (no fire).
-      # A restart that re-fires `:back_online` would only happen if
-      # the broker reconnects to a previously-disconnected DTU
-      # within 5 min of the prior disconnect; in practice that's
-      # vanishingly rare and the conservative answer (don't fire
-      # until we re-confirm) is the safer one.
+      # connect-side gate. We also do NOT stamp `disconnected_at`:
+      # the connect path requires a recorded outage start to prove
+      # the device was actually away, so a hydrated marker falls
+      # through silently (no fire). This is deliberate — the DB row
+      # knows the device was disconnected before the restart, but
+      # not when the outage began relative to the new boot.
       {id,
        %{
          user_id: nil,
@@ -178,46 +189,43 @@ defmodule DtuApp.Notifications.DtuConnection do
 
   @impl true
   def handle_info({:dtu_connected, _client_id, device_id}, state) when is_integer(device_id) do
-    # Fix A: only fire `:back_online` if the producer has previously
-    # seen a disconnect for this device. Without this gate, every
-    # MQTT re-connect (WiFi blip, broker restart, deploy) fires a
-    # notification even though the device was never offline from
-    # the user's perspective. The `disconnected?` marker was
-    # already being tracked in state — this is the first time it's
-    # actually consulted on the connect path.
+    # A reconnect only counts as "back online" when we actually
+    # observed a disconnect earlier AND the outage was long enough to
+    # be worth telling the user about. The previous version gated on
+    # `recently_active?(last_seen_at)` instead, which was meaningless:
+    # `last_seen_at` is refreshed on every uplink AND on disconnect
+    # (see `MqttBroker.Telemetry`), so it is always within the 5-min
+    # window right after a disconnect. Result: every reconnect fired
+    # "Inverter was offline for 0 seconds", one per flap cycle.
     #
-    # Fix B: mirror the existing recency guard on the connect side.
-    # If `last_seen_at` is older than @recency_seconds, the reconnect
-    # is a stale post-deploy re-attachment, not a recovery from a
-    # real outage.
+    # We also apply the same per-device re-fire cooldown as the
+    # offline path (`last_online_fired_at`), so a device that flaps
+    # every ~5+ minutes still produces at most one recovery notice
+    # per `@cooldown_seconds` window.
+    #
+    # No `disconnected_at` (hydrated marker, pre-upgrade state) means
+    # we cannot prove a real outage — stay silent.
     #
     # IMPORTANT: read the prior `disconnected?` flag BEFORE
     # `clear_disconnect_marker/2` resets it. The two operations
     # must happen in this order — calling clear first would mean
     # the case-match on `disconnected?: true` can never succeed
     # and the back-online path becomes a dead branch.
-    case Map.get(state, device_id) do
-      %{
-        disconnected?: true,
-        last_seen_at: %DateTime{} = last_seen_at,
-        disconnected_at: disconnected_at
-      } ->
-        if recently_active?(last_seen_at) do
-          fire_for_status(device_id, :back_online, since: disconnected_at)
-        end
+    state =
+      case Map.get(state, device_id) do
+        %{disconnected?: true, disconnected_at: %DateTime{} = disconnected_at} ->
+          last_fired_at = get_last_online_fired_at(state, device_id)
 
-      %{disconnected?: true, last_seen_at: %DateTime{} = last_seen_at} ->
-        # Pre-`disconnected_at` cache entry (e.g. from a hydrate
-        # path that didn't stamp it). Treat as fire with no
-        # duration diagnostic — the user still gets the back-online
-        # notification, just without the "was offline for X" line.
-        if recently_active?(last_seen_at) do
-          fire_for_status(device_id, :back_online)
-        end
+          if outage_long_enough?(disconnected_at) and cooldown_over?(last_fired_at) do
+            fire_for_status(device_id, :back_online, since: disconnected_at)
+            remember_online_fire(state, device_id)
+          else
+            state
+          end
 
-      _ ->
-        :ok
-    end
+        _ ->
+          state
+      end
 
     state = clear_disconnect_marker(state, device_id)
     {:noreply, state}
@@ -464,6 +472,30 @@ defmodule DtuApp.Notifications.DtuConnection do
 
       info ->
         Map.put(state, device_id, Map.put(info, :last_offline_fired_at, Time.utc_now()))
+    end
+  end
+
+  # Online-path twin of `get_last_offline_fired_at/2`. Kept separate
+  # so an offline fire does not suppress the following recovery (and
+  # vice versa): the two events are independently rate-limited.
+  defp get_last_online_fired_at(state, device_id) do
+    case Map.get(state, device_id) do
+      %{last_online_fired_at: %DateTime{} = at} -> at
+      _ -> nil
+    end
+  end
+
+  # Stamp `last_online_fired_at` so a second `:back_online` within
+  # `@cooldown_seconds` is gated silent. Called before
+  # `clear_disconnect_marker/2`, which merges the reset fields into
+  # the existing entry and therefore preserves this timestamp.
+  defp remember_online_fire(state, device_id) do
+    case Map.get(state, device_id) do
+      nil ->
+        state
+
+      info ->
+        Map.put(state, device_id, Map.put(info, :last_online_fired_at, Time.utc_now()))
     end
   end
 

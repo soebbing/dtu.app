@@ -185,7 +185,24 @@ defmodule DtuApp.Application do
           id: DtuApp.MqttBroker.Broker,
           start:
             {MqttX.Server, :start_link,
-             [DtuApp.MqttBroker.Broker, [], [port: port, transport_opts: transport_opts]]}
+             [
+               DtuApp.MqttBroker.Broker,
+               # MqttX reads the MQTT protocol options (keepalive
+               # override, flow control, max packet size) from the
+               # handler opts, not from the transport opts. Passing
+               # them here makes `config :dtu_app, :mqtt_broker,
+               # transport_opts: %{...}` actually take effect.
+               [transport_opts: transport_opts],
+               [
+                 port: port,
+                 transport: DtuApp.MqttBroker.Transport,
+                 # ThousandIsland's 60 s default read timeout closed
+                 # healthy DTUs whose MQTT keepalive/publish interval
+                 # was >= 60 s. MQTT keepalive already governs
+                 # liveness, so disable the transport-level timeout.
+                 read_timeout: :infinity
+               ]
+             ]}
         }
       ]
     else
