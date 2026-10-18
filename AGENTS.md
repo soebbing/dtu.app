@@ -488,9 +488,8 @@ describes *what this app is*, *why it exists*, *how it's wired*, and *how
 to ship a change*. Read this end-to-end before planning a non-trivial
 change.
 
-If anything here contradicts `docs/APP_STATE.md`, the *codebase* is the
-source of truth — APP_STATE.md is a periodic snapshot, this doc reflects
-the working tree, and the git log is the audit trail.
+The *codebase* is the source of truth — this doc reflects the working
+tree, and the git log is the audit trail.
 
 ---
 
@@ -580,7 +579,8 @@ subscribed to `Phoenix.PubSub` topic `dtu:uplink`), routes by `kind`:
   parse (used for diagnostics / dev rigs).
 
 Recognised field schemas and the `(dtu_id, inverter_serial, mppt_index)`
-keying are documented exhaustively in `docs/APP_STATE.md` §2.3. The
+keying live in the per-`kind` parser modules
+(`lib/dtu_app/mqtt_broker/telemetry/{opendtu,ahoydtu,shelly}.ex`). The
 parsers share `DtuApp.Devices.create_reading_and_touch_power_at/1`,
 which inserts the `Reading` **and** touches `dtus.last_power_at` so the
 online indicators sync with current-power display (see §11).
@@ -610,30 +610,56 @@ online indicators sync with current-power display (see §11).
 ### 2.5 Dashboard (`Phoenix.LiveView`)
 
 `DtuAppWeb.DashboardLive` mounts at `/dashboard` and carries the
-home-screen experience. Subscribes (when connected) to:
+home-screen experience. The LiveView is split across a cluster of
+helper modules under `lib/dtu_app_web/live/dashboard_live/` (data
+assembly in `dashboard_data.ex`, chart math in `chart_helpers.ex` /
+`line_chart_data.ex`, plus the cache GenServers). Subscribes (when
+connected) to:
 
 - `dtu:reading` — every parsed reading pushes an immediate re-render.
 - `dtu:status` — `:dtu_seen` re-streams the device list.
 - `dtu:presence` — CONNECT / DISCONNECT events.
 - `dtu:timezone` — colocated JS hook pushes the user's UTC offset so
-  day boundaries render in their local timezone.
+  day boundaries render in their local timezone; a sibling hook
+  captures `navigator.geolocation` lat/lon for the sun markers and
+  weather band (persisted to `users.latitude` / `users.longitude`).
 - `user:notification:<id>` — receives `:notification` events fanned
   from `DtuApp.Notifications.broadcast/2` and forwards them to the
   page's `phx-hook="Notifications"` sink.
 
-**View modes** — Today (live, auto-refreshing) and a **Historical
-stepper** (granularity day/week/month/year driven by `time_range` /
-`selected_period`). Each granularity has its own stat-card layout.
-A **DTU switcher** narrows the aggregate to one device; `nil` means
+**View modes** — a unified **preset toolbar** (`1D` / `7D` / `30D` /
+`YTD` / `Custom`). `1D` is the live, auto-refreshing today view; the
+range presets surface the historical stats; `Custom` reveals the
+historical **stepper** (granularity driven by `time_range` /
+`selected_period`). Each granularity has its own stat-card layout. A
+**DTU switcher** narrows the aggregate to one device; `nil` means
 "all devices", the literal `"total"` from the UI is mapped to `nil`.
 
+Above the chart sits a **5-up stat-card row** (yield, peak watts,
+peak time, plus period-stable tiles) that re-labels per selected
+preset. The day view also draws a dashed **"yesterday" overlay** for
+at-a-glance day-over-day comparison.
+
 **Charts are server-rendered SVG** (no Chart.js, no D3). Bucketing is
-pure Elixir in `DtuApp.Devices.list_day_chart_data/4`. Y-axis labels go
-through `format_number/2` so a German user gets `1.234,5` and a
-French user gets `1 234,5`.
+pure Elixir in `DtuApp.Devices.list_day_chart_data/4` and friends.
+Y-axis labels go through `format_number/2` so a German user gets
+`1.234,5` and a French user gets `1 234,5`. The day chart overlays an
+astronomical **sunrise/sunset guide** (computed by `DtuApp.SunCalc`
+from the user's stored lat/lon) and a **cloud-cover band** fed by
+`DtuApp.Weather` (Open-Meteo hourly cloud cover, 15-min cache) — both
+degrade to "not rendered" when the user has no captured position or
+the upstream call fails.
 
 TZ-aware stat reads: every day-window query is built from the user's
 offset using `DtuApp.Devices.local_day_utc_range/2`.
+
+Consumption / net-flow (Shelly 3EM) stats and chart series live
+alongside the production curve via `Devices.list_consumption_chart_data/4`,
+`Devices.list_net_chart_data/4` and `Devices.get_net_flow_stats/2`.
+
+Cold mounts are served by an in-memory cache layer (`DashboardMountCache`,
+`TodayDataCache`, `UserDtuIdsCache`, `SelectableDatesCache`, `Time.Cache`)
+— see the perf notes in `docs/PERF_PROFILE_*.md`.
 
 ### 2.5.1 Anonymous share links (`/s/:token`)
 
@@ -707,7 +733,7 @@ including topics the parser doesn't interpret — built from
 
 ### 2.8 Notifications
 
-The `/notifications` LiveView exposes three toggles:
+The `/notifications` LiveView exposes four toggles:
 
 - `notify_dtu_connection` — push when an inverter's online state
   changes (with `dtu_connection` deduplication; see §11).
@@ -715,6 +741,10 @@ The `/notifications` LiveView exposes three toggles:
   vs. yesterday.
 - `notify_sun_up` — playful first-power ping at sunrise when nightly
   zero-state ends.
+- `notify_yield_anomaly` — fires once per local day when the fleet
+  output collapses mid-day for longer than the configured collapse
+  window (`yield_anomaly_collapse_ms`, default 1 h), even with no
+  inverter offline.
 - `notification_channel` — segmented control (`push` / `email` /
   `both`) for the **delivery path** of every fire (see "Delivery
   paths" below). Independent of the per-event toggles above.
@@ -745,12 +775,14 @@ The `/notifications` LiveView exposes three toggles:
   Used when `notification_channel in ["push", "both"]`.
 - **Email** — `DtuApp.Notifications.Dispatcher.try_email/3` renders the
   producer's payload through one of `Emails.ConnectionEmail`,
-  `Emails.SunUpEmail`, `Emails.SunDownEmail`, or `Emails.Layout` (for
-  the synthetic `event: "test"` from the "Send test notification"
-  button) and delivers via Swoosh + the configured `Mailer`. Locale
-  resolved under `Gettext.with_locale(DtuAppWeb.Gettext, user.locale,
-  ...)`. Skipped when `confirmed_at == nil` (logged at `:warning`).
-  Used when `notification_channel in ["email", "both"]`.
+  `Emails.SunUpEmail`, `Emails.SunDownEmail` (which embeds an SVG
+  chart rendered by `Emails.SunDownChart`), `Emails.YieldAnomalyEmail`,
+  or `Emails.Layout` (for the synthetic `event: "test"` from the "Send
+  test notification" button) and delivers via Swoosh + the configured
+  `Mailer`. Locale resolved under
+  `Gettext.with_locale(DtuAppWeb.Gettext, user.locale, ...)`. Skipped
+  when `confirmed_at == nil` (logged at `:warning`). Used when
+  `notification_channel in ["email", "both"]`.
 
 Both push and email paths are best-effort (`try/rescue` + `:warning`
 log); neither failure bubbles back to the producer. A
@@ -772,7 +804,7 @@ that emits a `Notifications.broadcast/2` call MUST satisfy all three):
    entire flow: no in-page PubSub event, no native push, no
    `notifications` history row, no dedup-table insert. The
    receiver-side `Notifications.broadcast/2` already gates
-   *native push* via `native_push_enabled?/2`, but always
+   *native push* via `Push.native_enabled?/2`, but always
    publishes the in-page event and records the history row —
    that's the wrong contract for these notifications, which
    the user explicitly wants "off = silent everywhere".
@@ -821,9 +853,10 @@ that emits a `Notifications.broadcast/2` call MUST satisfy all three):
    these lines (covered by `PushTest`).
 
 Producers in scope today: `Notifications.SunUp`,
-`Notifications.SunDown`, `Notifications.DtuConnection`. Any
-new producer (e.g. a future "PV voltage warning") MUST satisfy
-the same three requirements before merging.
+`Notifications.SunDown`, `Notifications.DtuConnection`,
+`Notifications.YieldAnomaly`. Any new producer (e.g. a future "PV
+voltage warning") MUST satisfy the same three requirements before
+merging.
 
 ### 2.9 Service worker / PWA
 
@@ -863,9 +896,11 @@ sign-in. Number formatting (`format_number/3`) is locale-aware:
 | Realtime     | Embedded MQTT broker (`mqttx`) over `thousand_island`           |
 | Database     | PostgreSQL 16 + TimescaleDB (hypertables + caggs)               |
 | ORM / schema | Ecto 3.13 + Ecto SQL                                            |
-| Auth         | `phx.gen.auth` (magic link + Argon2 password)                   |
-| Mail         | Swoosh → Resend / SMTP (Mailpit) / Local                        |
+| Auth         | `phx.gen.auth` (magic link + Argon2 password) + WebAuthn passkeys (`webauthn`) |
+| Mail         | Swoosh → universal SMTP transport (SES / Mailgun / Postmark / Mailpit) |
 | Web Push     | `web_push` (VAPID/AES-128-GCM) + `finch`                        |
+| Weather      | Open-Meteo Forecast API via `Req` (cloud cover → chart band)     |
+| CSV export   | `nimble_csv` (streamed historical readings)                     |
 | Realtime UI  | LiveView streams; colocated JS hooks (`Phoenix.LiveView.ColocatedHook`) |
 | Assets       | Tailwind CSS v4 (no `tailwind.config.js`), esbuild 0.25.4, Heroicons v2 |
 | Tests        | ExUnit (server) + `@playwright/test` (E2E)                      |
@@ -873,7 +908,10 @@ sign-in. Number formatting (`format_number/3`) is locale-aware:
 
 ### 3.2 Supervision tree
 
-`DtuApp.Application` is a `:one_for_one` supervisor. Children, in
+`DtuApp.Application` is a `:one_for_one` supervisor. Before the tree
+starts it (a) creates the `:passkey_rate_limit` public ETS table and
+(b) runs `DtuApp.Push.VapidKeypairValidator.validate!/1` so a
+mismatched VAPID keypair fails boot with a clear error. Children, in
 start order:
 
 1. `DtuAppWeb.Telemetry` — BEAM telemetry supervisor + poller.
@@ -883,15 +921,25 @@ start order:
    cross-process message: uplinks, readings, status, presence,
    per-user notifications, timezones, topic snapshots.
 5. `Finch, name: DtuAppWeb.WebPushFinch` — dedicated HTTP pool for
-   web-push traffic (so a slow push service can't back up unrelated
-   HTTP work).
-6. `DtuApp.MqttBroker.Credentials` GenServer (when broker enabled).
-7. `MqttX.Server` named `DtuApp.MqttBroker.Broker`.
-8. `DtuApp.MqttBroker.Telemetry` — parser; must start *after* PubSub
+   web-push traffic, configured with `protocols: [:http1, :http2]`
+   (APNs requires HTTP/2) and a 15 s connect timeout.
+6. In-memory cache GenServers (all `:public` ETS-backed where possible):
+   `PasskeyChallengeCache`, `Weather.Cache`, `Time.Cache`,
+   `Devices.UserDtuIdsCache`, `Devices.SelectableDatesCache`,
+   `DashboardLive.TodayDataCache`, `DashboardLive.DashboardMountCache`.
+7. `DtuApp.MqttBroker.Credentials` GenServer (when broker enabled).
+8. `MqttX.Server` named `DtuApp.MqttBroker.Broker`.
+9. `DtuApp.MqttBroker.Telemetry` — parser; must start *after* PubSub
    so it can subscribe on init.
-9. `DtuApp.MqttBroker.TopicRegistry` — independent parser companion
-   that subscribes to `dtu:uplink` for the device-details page.
-10. `DtuAppWeb.Endpoint` — Bandit / Phoenix endpoint, last.
+10. `DtuApp.MqttBroker.TopicRegistry` — independent parser companion
+    that subscribes to `dtu:uplink` for the device-details page.
+11. Notification producer GenServers — `Notifications.DtuConnection`,
+    `Notifications.SunDown`, `Notifications.SunUp`,
+    `Notifications.YieldAnomaly` — started after the broker/Telemetry
+    so `dtu:presence` broadcasts are already flowing. Skipped in
+    `:test` (the Ecto sandbox only allows the checked-out test process
+    to use its connection).
+12. `DtuAppWeb.Endpoint` — Bandit / Phoenix endpoint, last.
 
 ### 3.3 Data flow for one live reading
 
@@ -928,40 +976,83 @@ lib/dtu_app/
   repo.ex                     Ecto.Repo
   release.ex                  DtuApp.Release.migrate/rollback
   time.ex                     DB-clock helpers (utc_now/utc_now_usec)
+  time/cache.ex               DB-clock TTL singleton
+  sun_calc.ex                 NOAA solar position (sunrise/sunset)
+  weather.ex                  Weather façade (cache + Open-Meteo)
+  weather/{cache,open_meteo}.ex
   accounts.ex                 Generated auth context
   accounts/{user,user_token,user_notifier,scope}.ex
-  devices.ex                  DTU/Reading contexts (all user-scoped)
-  devices/{dtu,reading,dtu_error}.ex
+  accounts/{passkey,passkey_challenge_cache,shared_link}.ex
+  devices.ex                  DTU/Reading context façade (defdelegate)
+  devices/{dtu,reading,dtu_error,dtu_errors,credentials,readings}.ex
+  devices/{chart_data,chart_helpers,consumption_chart_data}.ex
+  devices/{formatting,period_stats,reading_exports,selectable_dates}.ex
+  devices/{selectable_dates_cache,user_dtu_ids_cache}.ex
+  devices/stats.ex
+  devices/stats/{production_stats,consumption_stats,period_helpers}.ex
+  emails/{layout,connection_email,sun_up_email,sun_down_email,sun_down_chart,yield_anomaly_email}.ex
   mqtt_broker/
     broker.ex                 MqttX.Server impl, uplink broadcast
     credentials.ex            ETS-backed Argon2 cache
-    telemetry.ex              Parser GenServer (OpenDTU/AhoyDTU/Shelly)
+    telemetry.ex              Parser GenServer (routes by kind)
+    telemetry/{opendtu,ahoydtu,shelly,payload_helpers}.ex
     topic_registry.ex         Live topic snapshot (ETS + 60 s prune)
   notifications.ex            Per-user PubSub + Web Push fan-out
+  notifications/dispatcher.ex Channel fan-out (push/email/both)
+  notifications/notification.ex
+  notifications/{dtu_connection_notifier,sun_up_notifier,sun_down_notifier,yield_anomaly_notifier}.ex
+  notifications/{dtu_connection_state,sun_up_fire,sun_down_fire,yield_anomaly_fire}.ex
+  notifications/{dtu_connection,sun_down}/{detection,payload}.ex
+  notifications/yield_anomaly/payload.ex
   push.ex                     Web Push dispatcher (VAPID, AES-128-GCM)
+  push/vapid_keypair_validator.ex
   push_subscriptions.ex       PushSubscription CRUD
   push_subscriptions/push_subscription.ex
 
 lib/dtu_app_web/
   endpoint.ex                 Bandit / Phoenix endpoint
-  router.ex                   Browser + push_api + magic-link pipes
+  router.ex                   Browser + push_api + passkey + magic-link pipes
   telemetry.ex                BEAM telemetry supervisor + metrics
   user_auth.ex                fetch_current_scope / require_auth / redirect
   gettext.ex
-  components/{core_components,layouts,layouts/root,network_status_indicator,offline_banner}.ex
+  components/{core_components,layouts}.ex   (+ layouts/root*.html.heex root layouts)
+  components/{dashboard_header,dashboard_toolbar,chart_panel,line_chart_panel,bar_chart_panel,chart_title}.ex
+  components/{device_row,device_status_card,device_status_grid}.ex
+  components/{consumption_stat_cards,net_flow_stat_cards}.ex
+  components/{notification_capability_card,notification_history_card,notification_preferences_form,notification_regenerate_card}.ex
+  components/{share_panel,onboarding_panel,post_create_setup_modal}.ex
+  components/{error_expansion_panel,stale_data_badge,offline_banner,network_status_indicator,install_prompt_button}.ex
   plugs/locale.ex             Gettext locale negotiation
-  controllers/{page,user_registration,user_session,user_settings,push}_controller.ex
-  live/{dashboard_live,device_live/index,device_live/details,notifications_live}.ex
+  plugs/passkey_rate_limit.ex
+  passkeys/{kill_switch,origin,rate_limit,rp_id}.ex
+  controllers/{page,user_registration,user_session,user_settings}_controller.ex
+  controllers/{push,passkey,device_export,health}_controller.ex
+  controllers/{error_html,error_json}.ex
+  live/dashboard_live.ex
+  live/dashboard_live/components.ex
+  live/dashboard_live/components/stat_card_row.ex
+  live/dashboard_live/{dashboard_data,chart_helpers,line_chart_data}.ex
+  live/dashboard_live/{dashboard_mount_cache,today_data_cache}.ex
+  live/dashboard_live/{mount_timing,period_selectable,time_helpers,weather,share_link,chart_palette,dtu_kinds}.ex
+  live/device_live/{index,details}.ex
+  live/notifications_live.ex
+  live/notifications_live/{filter_helpers,format_helpers,history}.ex
+  live/shared_dashboard_live.ex
 
 assets/
   css/app.css                 Tailwind v4 entry
-  js/{app,notifications,push_subscribe,notification_permission,offline_banner}.js
+  js/{app,flash,notifications,notifications_format,push_subscribe}.js
+  js/{notification_permission,offline_banner,stale_data_badge,install_prompt_button}.js
+  js/hooks/  js/utils/
   vendor/{heroicons,topbar}.js
+
+priv/static/
   service-worker.js           PWA + push listener (not bundled)
+  manifest.webmanifest  offline.html  robots.txt
 
 priv/repo/
-  migrations/                 (22 migrations; see §10)
-  seeds.exs                   Demo user + 3 DTUs + sine-arc readings
+  migrations/                 (36 migrations; see §8)
+  seeds.exs                   Demo users + 3 DTUs + sine-arc readings
 
 priv/gettext/{en,de,fr}/LC_MESSAGES/default.po + default.pot + errors.pot
 rel/docker-entrypoint.sh      Run migrations, then exec the release
@@ -1006,12 +1097,12 @@ seed), `mix assets.setup` (tailwind + esbuild install if missing),
 
 ### 4.4 Capturing email locally
 
-The Docker Compose stack ships a Mailpit sidecar; the in-memory
-mailer is the default otherwise:
+The Docker Compose stack ships a Mailpit sidecar; in `:dev` the SMTP
+transport falls back to it when `SMTP_RELAY` is unset:
 
 ```sh
 docker compose up -d mailpit
-MAIL_DELIVERY=mailpit SMTP_RELAY=localhost SMTP_PORT=1025 mix phx.server
+mix phx.server                # dev mailer → localhost:1025 (Mailpit)
 # Open http://localhost:8025
 ```
 
@@ -1053,12 +1144,16 @@ A `globalSetup` (`test/e2e/_setup/global-setup.js`) re-seeds via
 `E2E_SKIP_SEED=1` to skip when iterating against an already-seeded
 DB. Specs assume the app is reachable at `http://localhost:4000` with
 seeded credentials (`test@example.com` / `password123456`), three
-DTUs, today's sine arc + historical readings from ~1 year back.
+DTUs, today's sine arc + historical readings from ~1 year back. The
+seed also creates per-locale users (`test-de@example.com` /
+`test-fr@example.com`, same password) for the localized acceptance
+specs.
 
 Spec coverage includes: login + dashboard landing, post-create setup
-dialog, the Today / Day / Week / Month / Year stepper, multi-device,
-multi-MPPT, the savings card / energy rate, settings, the
-notifications page and permission UI, and the magic-link flow.
+dialog (localized EN/DE/FR), the 1D / 7D / 30D / YTD / Custom preset
+toolbar, the yesterday overlay, the 5-up stat-card row, multi-device,
+multi-MPPT, the savings card / energy rate, settings (incl. passkeys),
+the notifications page and permission UI, and the magic-link flow.
 
 **Always run with the Phoenix server already up — the global setup
 only re-seeds, it doesn't boot the app.**
@@ -1195,27 +1290,37 @@ plus the rest that are conventional:
 | `PHX_SCHEME`              | no (default `https`) | `http` (local) / `https` (prod). Drives URL generation.     |
 | `PHX_PORT`                | no (default `443`) | Public port; only included in URLs when non-standard.         |
 | `DATABASE_URL`            | yes               | `ecto://USER:PASS@HOST/DB`.                                    |
-| `POOL_SIZE`               | no (default `15`) | DB pool size.                                                  |
+| `POOL_SIZE`               | no (default `20`) | DB pool size.                                                  |
 | `MQTT_BROKER_ENABLED`     | no (default `true`) | Toggle the embedded broker. `:test` overrides to false.     |
 | `MQTT_BROKER_PORT`        | no (default `1883`) | Broker listen port.                                          |
 | `MQTT_HOST`               | no                | DNS alias shown as broker host in device setup modal.          |
-| `RESEND_API_KEY`          | optional          | Resend transactional email when set.                           |
-| `MAIL_DELIVERY=mailpit`   | optional          | Route via Mailpit (dev/staging).                              |
-| `SMTP_RELAY/PORT/DOMAIN`  | dev               | Mailpit connection settings.                                   |
-| `MAIL_FROM`               | yes (prod)        | Must be on a Resend-verified domain in prod.                   |
+| `SMTP_RELAY`              | yes (prod)        | Hostname/IP of the SMTP relay.                                 |
+| `SMTP_PORT`               | no (default `587`) | Submission port (`465` when `SMTP_TLS=always`).                |
+| `SMTP_DOMAIN`             | no (default `PHX_HOST`) | HELO/EHLO domain.                                        |
+| `SMTP_USERNAME`           | optional          | Relay auth username (pair with `SMTP_PASSWORD`).               |
+| `SMTP_PASSWORD`           | optional          | Relay auth password.                                           |
+| `SMTP_TLS`                | no (default `if_available`) | `always` / `if_available` / `never`.                  |
+| `SMTP_AUTH_MODE`          | no (default `auto`) | `auto` / `always` / `never`.                                |
+| `MAIL_FROM`               | yes (prod)        | `Name <address>` the relay accepts (verified domain in prod).  |
 | `VAPID_PUBLIC_KEY`        | yes (prod)        | Web Push public key. `bin/gen-vapid`.                          |
 | `VAPID_PRIVATE_KEY`       | yes (prod)        | Web Push private key.                                           |
 | `VAPID_SUBJECT`           | yes (prod)        | `mailto:` or `https:` URL — RFC 8292 §2 requires it.           |
+| `WEBAUTHN_RP_ID`          | no (env-aware default) | Passkey relying-party id; `localhost` in dev, `dtu.app` in prod. |
+| `WEBAUTHN_RP_NAME`        | no (default `dtu.app`) | Human-readable RP name shown during the ceremony.          |
+| `PASSKEYS_ENABLED`        | no (off in prod by default) | Kill switch for passkey enrollment/login.               |
+| `PASSKEYS_RATE_LIMIT_ENABLED` | no (default `true`) | Toggle the 10/min/IP ceremony rate limit.                |
+| `DASHBOARD_MOUNT_TIMING_LOG` | no (default `false`) | Emit a per-stage cold-mount timing log line.             |
 | `RELEASE_VERSION`         | build-time        | Git tag baked into the image; footer renders this.              |
 | `DNS_CLUSTER_QUERY`       | optional          | DNS-based Node clustering (`<env>.internal` libcluster query).  |
 | `ECTO_IPV6`               | optional          | Use IPv6 for the DB pool.                                      |
 
-Mailer adapter is picked in order in `config/runtime.exs`:
-
-1. `RESEND_API_KEY` non-empty → `Swoosh.Adapters.Resend`.
-2. `MAIL_DELIVERY=mailpit` → `Swoosh.Adapters.SMTP` (via SMTP_RELAY).
-3. Neither → `Swoosh.Adapters.Local` (emails swallowed; magic-link
-   URL appears in server logs / IEx).
+Mail is delivered through a single universal SMTP transport
+(`Swoosh.Adapters.SMTP`), configured entirely from the `SMTP_*` env
+vars. There is no JSON-API path (Resend's JSON→MIME reconstruction
+dropped the inline PNG attachment in the SunDown chart email). In
+`:test` the adapter is `Swoosh.Adapters.Test`; in `:dev` it falls back
+to the Mailpit sidecar on `localhost:1025` when `SMTP_RELAY` is unset;
+in `:prod` boot aborts if `SMTP_RELAY` is empty.
 
 ---
 
@@ -1225,8 +1330,9 @@ Beyond the TimescaleDB-managed `readings` hypertable:
 
 - **`users`** — magic-link auth (`phx.gen.auth` shape). Notable fields:
   `cents_per_kwh` (integer-cent rate), `notify_dtu_connection`,
-  `notify_sun_down`, `notify_sun_up`, `locale`, `confirmed_at`,
-  `authenticated_at`.
+  `notify_sun_down`, `notify_sun_up`, `notify_yield_anomaly`,
+  `notification_channel` (`push`/`email`/`both`), `tz_offset_seconds`,
+  `locale`, `latitude`, `longitude`, `confirmed_at`, `authenticated_at`.
 - **`dtus`** — physical DTU records. Notable columns:
   `mqtt_username` (unique), `mqtt_password_hash` (Argon2), `kind`
   (Ecto.Enum: `:opendtu | :ahoydtu | :shelly3em | :mqtt_ro_sink`),
@@ -1235,17 +1341,25 @@ Beyond the TimescaleDB-managed `readings` hypertable:
   `last_error_at`. One row → many readings.
 - **`users_tokens`** — `phx.gen.auth` token table; contexts
   `session`, `login`, `change:email`.
+- **`passkeys`** — WebAuthn credentials (`webauthn`); `credential_id`
+  / `public_key` / `sign_count` / `transports`.
+- **`shared_links`** — anonymous share-link rows; `token_hash`
+  (SHA-256), one row per user (`user_id` unique index).
 - **`dtu_errors`** — append-only per-message error history, capped at
   200 rows per device via in-transaction FIFO prune.
-- **`notifications`** — `notify_dtu_connection` history rows (used for
-  cross-device deduplication).
+- **`notifications`** — notification history rows; `event`, `title`,
+  `body`, `tag`, `payload` (jsonb), `channel`, `delivered_at`.
 - **`push_subscriptions`** — Web Push subscription rows; the browser's
   `PushSubscription#toJSON()` payload is persisted verbatim minus
   `expirationTime`. Globally unique `endpoint` is the natural primary
-  key for upsert.
+  key for upsert; `deleted_at` soft-deletes rows.
+- **Notification dedup tables** — all `@primary_key false`, keyed by
+  `(user_id, fired_on)` (or `device_id` for connection state):
+  `sun_up_fires`, `sun_down_fires`, `yield_anomaly_fires`,
+  `dtu_connection_states`.
 
-The 22 migrations are catalogued in `docs/APP_STATE.md` §8 (chronological
-intent); read the directory directly for current state.
+The 36 migrations are the chronological record; read
+`priv/repo/migrations/` directly for the current schema.
 
 ---
 
@@ -1292,11 +1406,13 @@ These are the things the next maintainer should know before they
    - **Stale push endpoint** (`{:error, :gone}`) — auto-pruned by
      `Push.deliver/2`. Look for `:gone` in logs; the user must grant
      permission again.
-   - **VAPID key rotation** invalidates every subscription —
-     `bin/gen-vapid` requires `--force` to overwrite for this reason.
-   - **Cross-device dtu_connection dedup TTL is 5 minutes**
-     (`NOTIFICATION_DEDUP_SECONDS`) so a DTU that flaps doesn't
-     spam. Bumping this is a config change, not a code change.
+    - **VAPID key rotation** invalidates every subscription —
+      `bin/gen-vapid` requires `--force` to overwrite for this reason.
+    - **Cross-device dtu_connection dedup is DB-backed**, not
+      in-memory — `dtu_connection_states` keyed on `device_id` (see
+      §2.8 producer requirement 2). A restart no longer wipes the
+      marker, so a DTU that was already on the broker at boot won't
+      fire a duplicate "back online" push.
 4. **VAPID keys live in `.env`.** Rotating them breaks every browser
    subscription for the origin until users re-grant permission. Do
    not rotate casually.
@@ -1376,10 +1492,6 @@ These are the things the next maintainer should know before they
   wrong scope or forgot to pass `current_scope` to `<Layouts.app>` —
   fix it at the route, not in the template.
 
-- **The `date_time_parser` package is the standard dependency for
-  date/time parsing.** Don't introduce `timex` / `calendar` /
-  moment.js analogues.
-
 - **Don't assign `:layout` from a LiveView.** It's a reserved
   Phoenix assign read by `Phoenix.Controller.prepare_assigns/4`
   during the layout-resolution pipeline — anything other than
@@ -1416,7 +1528,7 @@ git clone https://github.com/soebbing/dtu.app.git
 cd dtu.app
 cp .env.example .env
 ./bin/gen-vapid                    # writes VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
-$EDITOR .env                      # fill SECRET_KEY_BASE, MAIL_FROM, RESEND_API_KEY
+$EDITOR .env                      # fill SECRET_KEY_BASE, SMTP_RELAY, MAIL_FROM
 docker compose -f docker-compose.production.yml pull
 docker compose -f docker-compose.production.yml up -d
 docker compose -f docker-compose.production.yml logs -f app
@@ -1466,10 +1578,11 @@ container) is stateless.
 
 ## 13. Where to find more
 
-- `docs/APP_STATE.md` — periodic "snapshot" doc, ~1064 lines, the
-  closest thing this repo has to an architecture decision record.
-  Read it once per quarter; trust the codebase over it.
-- `priv/repo/migrations/` — 22 migrations; the chronological record.
+- `priv/repo/migrations/` — 36 migrations; the chronological record.
+- `docs/PERF_PROFILE_*.md` — dashboard cold-mount / query performance
+  profiles (the "why the caches exist" notes).
+- `docs/debug/` — incident write-ups (e.g. the sun-down silent-skip
+  root cause).
 - `docs/superpowers/` — project-private planning notes (the
   `superpowers` skill tooling).
 - `test/e2e/README.md` — Playwright setup specifics.
