@@ -85,6 +85,34 @@ defmodule DtuApp.Notifications.DtuConnection.DetectionTest do
     end
   end
 
+  describe "outage_long_enough?/1" do
+    test "returns true for a disconnect older than @min_outage_seconds" do
+      # 10 minutes — well beyond the 5-minute window.
+      at = DateTime.add(Time.utc_now_usec(), -600, :second)
+      assert Detection.outage_long_enough?(at) == true
+    end
+
+    test "returns true for a disconnect just over @min_outage_seconds" do
+      # 5 minutes + 1 minute of buffer for the cached DB clock.
+      at = DateTime.add(Time.utc_now_usec(), -360, :second)
+      assert Detection.outage_long_enough?(at) == true
+    end
+
+    test "returns false for an imminent reconnect (the 0-second spam)" do
+      at = Time.utc_now_usec()
+      assert Detection.outage_long_enough?(at) == false
+    end
+
+    test "returns false for a disconnect inside the window" do
+      at = DateTime.add(Time.utc_now_usec(), -60, :second)
+      assert Detection.outage_long_enough?(at) == false
+    end
+
+    test "returns false for nil (no recorded disconnect timestamp)" do
+      assert Detection.outage_long_enough?(nil) == false
+    end
+  end
+
   describe "cooldown_over?/1" do
     test "returns true for nil (never fired — re-fire window is open)" do
       assert Detection.cooldown_over?(nil) == true

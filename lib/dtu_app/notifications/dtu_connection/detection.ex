@@ -53,14 +53,27 @@ defmodule DtuApp.Notifications.DtuConnection.Detection do
   # disconnect is notification-worthy.
   @prior_uptime_seconds 3600
 
-  # Per-device re-fire cooldown. After a `:went_offline` fires, the
-  # same device is suppressed for this many seconds — even across
-  # connect/disconnect cycles. See the notifier's moduledoc for the
-  # design rationale. Bumped from 30 min to 2 h to address a
-  # follow-up user report: a WiFi-fragile inverter that flapped
-  # every ~75 min produced one push per cycle under the 30-min
-  # threshold.
+  # Per-device re-fire cooldown. After a `:went_offline` OR
+  # `:back_online` fires, the same device is suppressed for this many
+  # seconds — even across connect/disconnect cycles. See the
+  # notifier's moduledoc for the design rationale. Bumped from
+  # 30 min to 2 h to address a follow-up user report: a WiFi-fragile
+  # inverter that flapped every ~75 min produced one push per cycle
+  # under the 30-min threshold.
   @cooldown_seconds 7200
+
+  # Minimum outage duration before a reconnect is notification-worthy.
+  # Without this, the connect path fired on every disconnect→connect
+  # transition because it only checked that the producer had seen a
+  # disconnect (the old `last_seen_at` recency check is always true —
+  # `last_seen_at` is refreshed on every uplink AND on disconnect).
+  # A broker that closes idle sockets (e.g. ThousandIsland's default
+  # 60 s read timeout) then produced one "Inverter was offline for
+  # 0 seconds" push per minute. 5 min matches the online/offline
+  # threshold the rest of the dashboard uses, so a recovery is only
+  # announced when the device was actually away long enough for a
+  # user to notice.
+  @min_outage_seconds 300
 
   @doc """
   Connect-side recency guard: the `last_seen_at` reading must be
@@ -96,10 +109,33 @@ defmodule DtuApp.Notifications.DtuConnection.Detection do
   def prior_uptime?(_), do: false
 
   @doc """
+  Connect-side outage gate: the device must have been disconnected
+  for at least `@min_outage_seconds` before a reconnect can be
+  called "back online".
+
+  `nil` (no recorded disconnect time — e.g. a marker re-hydrated
+  after a restart) is conservative: suppress the fire. Post-deploy
+  re-attachments are therefore silent, and a broker that closes
+  idle sockets every minute no longer produces a
+  "was offline for 0 seconds" notification per reconnect.
+  """
+  def outage_long_enough?(%DateTime{} = disconnected_at) do
+    DateTime.before?(
+      disconnected_at,
+      DateTime.add(Time.utc_now(), -@min_outage_seconds, :second)
+    )
+  end
+
+  def outage_long_enough?(_), do: false
+
+  @doc """
   Per-device re-fire cooldown gate: returns true iff the
   re-fire window is open. `nil` (never fired) is always open.
   A timestamp within `@cooldown_seconds` is closed (suppress the
   fire). A timestamp older than `@cooldown_seconds` is open.
+
+  Used by both the offline path (`last_offline_fired_at`) and the
+  online path (`last_online_fired_at`).
   """
   def cooldown_over?(nil), do: true
 

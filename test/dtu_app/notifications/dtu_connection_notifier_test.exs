@@ -82,19 +82,36 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   end
 
   # Seed the producer's local cache so it believes the given device
-  # is currently disconnected, AND was recently active. Required by
-  # fix A's gate on the :back_online path: without a prior
-  # :dtu_disconnected observed, the producer stays silent on connect.
-  # `last_seen_at` defaults to 60s ago so fix B's recency guard
-  # passes — without it, the connect-side gate pattern-matches on
-  # `last_seen_at: %DateTime{}` and falls through to the silent `_`.
-  # Tests that want to verify fix B's stale-reconnect suppression
-  # pass `last_seen_offset_seconds` (e.g. -3600 for 1 h old). We
-  # talk to the GenServer directly so the test doesn't depend on
+  # is currently disconnected. Required by the connect-side gate:
+  # without a prior `:dtu_disconnected` observed, the producer stays
+  # silent on connect.
+  #
+  # `outage_seconds` models how long ago the disconnect happened. It
+  # defaults to 10 min so the `outage_long_enough?/1` gate (5 min)
+  # passes. Pass `disconnected_at: nil` to model a marker that was
+  # re-hydrated from the DB (which intentionally does not load a
+  # disconnect timestamp) — that must stay silent.
+  #
+  # `last_seen_at` defaults to 60s ago (fresh) purely so the state
+  # shape matches production; the connect path no longer consults it.
+  # We talk to the GenServer directly so the test doesn't depend on
   # PubSub round-trip timing.
-  defp seed_disconnect!(device_id, last_seen_offset_seconds \\ -60) do
-    last_seen_at = DateTime.add(Time.utc_now_usec(), last_seen_offset_seconds, :second)
-    disconnected_at = Time.utc_now_usec()
+  defp seed_disconnect!(device_id, opts) do
+    last_seen_at =
+      DateTime.add(
+        Time.utc_now_usec(),
+        Keyword.get(opts, :last_seen_offset_seconds, -60),
+        :second
+      )
+
+    disconnected_at =
+      case Keyword.get(opts, :disconnected_at, :default) do
+        :default ->
+          DateTime.add(Time.utc_now_usec(), -Keyword.get(opts, :outage_seconds, 600), :second)
+
+        nil ->
+          nil
+      end
 
     :sys.replace_state(DtuConnection, fn state ->
       Map.put(state, device_id, %{
@@ -104,6 +121,16 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
         disconnected?: true,
         disconnected_at: disconnected_at
       })
+    end)
+  end
+
+  # Push the recorded disconnect start far enough into the past that
+  # the connect path considers the outage notification-worthy.
+  defp backdate_disconnect!(device_id) do
+    :sys.replace_state(DtuConnection, fn state ->
+      Map.update!(state, device_id, fn entry ->
+        Map.put(entry, :disconnected_at, DateTime.add(Time.utc_now_usec(), -600, :second))
+      end)
     end)
   end
 
@@ -217,19 +244,14 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
   end
 
   describe "fire on reconnect" do
-    test "a :dtu_connected broadcast produces the :back_online notification" do
+    test "a :dtu_connected broadcast after a real outage produces the :back_online notification" do
       user = user_fixture(%{notify_dtu_connection: true})
       dtu = device_fixture(user, %{name: "Back Online DTU"})
 
       # Seed the producer's local cache with a prior `:disconnected?`
-      # marker so the back-online gate has something to see — without
-      # it, the producer can't tell this reconnect from the first
-      # sight and stays silent (the gate was added to stop the
-      # server-restart N-notification storm). `last_seen_at` is set
-      # to 60s ago so fix B's recency guard passes (the connect
-      # handler reads `last_seen_at` from the producer's state, not
-      # the DB row, before clearing the disconnect marker).
-      seed_disconnect!(dtu.id)
+      # marker and a 10-minute outage so both connect-side gates
+      # (`outage_long_enough?` + cooldown) pass.
+      seed_disconnect!(dtu.id, outage_seconds: 600)
       :ok = Notifications.subscribe(user.id)
 
       Phoenix.PubSub.broadcast(
@@ -250,9 +272,8 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
     end
 
     test "a :dtu_connected broadcast WITHOUT a prior disconnect is silent (no false :back_online)" do
-      # This is the core spam-suppression gate (fix A). Without a
-      # prior `:dtu_disconnected` observed by the producer, a
-      # reconnect is just a reconnect — typically a WiFi blip or
+      # Without a prior `:dtu_disconnected` observed by the producer,
+      # a reconnect is just a reconnect — typically a WiFi blip or
       # a server-restart re-connect, neither of which the user
       # wants to be notified about. The producer's state cache
       # starts empty, so the very first :dtu_connected for any
@@ -271,26 +292,74 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       refute_receive {:notification, _payload}, 300
     end
 
-    test "a stale reconnect (last_seen_at > 5 min old) is silent (fix B)" do
-      # Mirror of the existing recency guard on the disconnect side
-      # (fix B). If the device's last_seen_at is older than
-      # @recency_seconds, the reconnect is a post-deploy
-      # re-attachment from a DTU that was already dead — not news.
+    test "a reconnect while the outage is still too short is silent (the 0-second spam)" do
+      # The reported failure mode: the broker closes an idle socket and
+      # the DTU reconnects immediately. The old connect path only
+      # checked a prior disconnect + `last_seen_at` recency (always
+      # fresh), so it fired "Inverter was offline for 0 seconds" on
+      # every cycle. The new `outage_long_enough?/1` gate suppresses
+      # anything shorter than 5 minutes.
       user = user_fixture(%{notify_dtu_connection: true})
-      dtu = device_fixture(user, %{name: "Stale Reconnect DTU"})
+      dtu = device_fixture(user, %{name: "Zero Outage DTU"})
 
-      # Seed the prior-disconnect marker so fix A's gate passes;
-      # only fix B's recency check should suppress the fire. The
-      # last_seen_at offset is passed directly into the state
-      # because the connect handler reads `last_seen_at` from state
-      # (before clearing the marker) — not from the DB row.
-      seed_disconnect!(dtu.id, -3600)
+      seed_disconnect!(dtu.id, outage_seconds: 0)
       :ok = Notifications.subscribe(user.id)
 
       Phoenix.PubSub.broadcast(
         DtuApp.PubSub,
         @presence_topic,
-        {:dtu_connected, "client_stale", dtu.id}
+        {:dtu_connected, "client_zero", dtu.id}
+      )
+
+      refute_receive {:notification, _payload}, 300
+    end
+
+    test "a reconnect without a recorded disconnect time is silent (hydrated marker)" do
+      # Markers re-hydrated from `dtu_connection_states` on init/1 do
+      # not carry `disconnected_at` (see the comment in
+      # `hydrate_persisted_markers/0`). Without a recorded outage
+      # start we cannot prove the device was actually away, so the
+      # conservative answer is silence — this is the post-deploy
+      # re-attachment path.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Hydrated Reconnect DTU"})
+
+      seed_disconnect!(dtu.id, disconnected_at: nil)
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_hydrated", dtu.id}
+      )
+
+      refute_receive {:notification, _payload}, 300
+    end
+
+    test "a second real outage within the cooldown does not fire again" do
+      # Symmetric with the offline-path cooldown: a device that flaps
+      # with a >5-minute outage in each cycle still produces at most
+      # one recovery notice per 2 h window.
+      user = user_fixture(%{notify_dtu_connection: true})
+      dtu = device_fixture(user, %{name: "Cooldown Reconnect DTU"})
+
+      :sys.replace_state(DtuConnection, fn state ->
+        Map.put(state, dtu.id, %{
+          user_id: user.id,
+          name: "Cooldown Reconnect DTU",
+          last_seen_at: Time.utc_now_usec(),
+          disconnected?: true,
+          disconnected_at: DateTime.add(Time.utc_now_usec(), -600, :second),
+          last_online_fired_at: Time.utc_now_usec()
+        })
+      end)
+
+      :ok = Notifications.subscribe(user.id)
+
+      Phoenix.PubSub.broadcast(
+        DtuApp.PubSub,
+        @presence_topic,
+        {:dtu_connected, "client_cooldown", dtu.id}
       )
 
       refute_receive {:notification, _payload}, 300
@@ -495,6 +564,19 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       assert_receive {:notification, payload1}, 1_000
       assert payload1.title =~ "offline"
 
+      # Model a real outage: the disconnect timestamp must be older
+      # than `@min_outage_seconds` for the connect path to announce
+      # the recovery.
+      :sys.replace_state(DtuConnection, fn state ->
+        Map.update!(state, dtu.id, fn entry ->
+          Map.put(
+            entry,
+            :disconnected_at,
+            DateTime.add(Time.utc_now_usec(), -600, :second)
+          )
+        end)
+      end)
+
       # Reconnect — clears the marker. The producer stamps
       # `connected_at` at the current time on connect; bump it
       # back to >1 h ago so the second disconnect's C1
@@ -630,6 +712,10 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       assert_receive {:notification, payload1}, 1_000
       assert payload1.title =~ "offline"
 
+      # Model a real outage so the recovery is announced (the
+      # connect path suppresses reconnects after <5 min).
+      backdate_disconnect!(dtu.id)
+
       # Reconnect — clears the per-offline-period marker but leaves
       # `last_offline_fired_at` stamped from the first fire.
       Phoenix.PubSub.broadcast(
@@ -689,6 +775,10 @@ defmodule DtuApp.Notifications.DtuConnectionTest do
       )
 
       assert_receive {:notification, _payload1}, 1_000
+
+      # Model a real outage so the recovery is announced (the
+      # connect path suppresses reconnects after <5 min).
+      backdate_disconnect!(dtu.id)
 
       # Reconnect — clears the marker, stamps `connected_at = now`.
       Phoenix.PubSub.broadcast(
