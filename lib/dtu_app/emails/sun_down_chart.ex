@@ -81,8 +81,17 @@ defmodule DtuApp.Emails.SunDownChart do
     if Devices.list_devices(user) == [] do
       empty_svg()
     else
-      utc_start = DateTime.new!(date, ~T[00:00:00])
-      utc_end = DateTime.new!(date, ~T[23:59:59])
+      # `date` is the user's *local* calendar date (the SunDown
+      # producer computes it from `User.tz_offset_seconds`), so the
+      # chart window must be the local-day UTC range — NOT the naive
+      # UTC `[00:00, 23:59]` of the same date. Pre-fix the chart
+      # queried a UTC midnight-to-midnight window, which shifted the
+      # curve by the user's offset and clipped the evening hours for
+      # negative-offset users (and included next-day hours for
+      # positive-offset users) while `build_payload/3`'s yield/peak
+      # figures were computed against the correct local-day window.
+      # `local_day_utc_range/2` keeps the chart and the panels aligned.
+      {utc_start, utc_end} = Devices.local_day_utc_range(date, user.tz_offset_seconds || 0)
 
       points =
         Devices.list_day_chart_data_for_dashboard(user, utc_start, utc_end)
@@ -125,10 +134,12 @@ defmodule DtuApp.Emails.SunDownChart do
   # `ArithmeticError: bad argument in arithmetic expression` and kills
   # the GenServer (PR regression — observed in prod on
   # 2026-09-16 for the sun_down regenerate handler, but the same path
-  # exists on the daily producer). Defensively filter to numeric
-  # powers, and fall back to `empty_svg/0` when nothing usable
-  # survives the filter — the email renders "No chart available"
-  # instead of crashing the dispatcher.
+  # exists on the daily producer). The input is now normalised through
+  # `fleet_totals/1` (which drops nil-power / per-MPPT / `_fleet` /
+  # `em:0` rows AND sums the surviving inverters per bucket), and
+  # falls back to `empty_svg/0` when nothing usable survives — the
+  # email renders "No chart available" instead of crashing the
+  # dispatcher.
   #
   # `yesterday_points` is an optional second list (defaults to `[]`)
   # rendered behind today's curve as a dashed gray ghost line — the
@@ -139,19 +150,19 @@ defmodule DtuApp.Emails.SunDownChart do
   @spec render_svg([map()], [map()]) :: String.t()
   def render_svg(points, yesterday_points \\ [])
       when is_list(points) and is_list(yesterday_points) do
-    case Enum.filter(points, &match?(%{power: v} when is_number(v), &1)) do
+    case fleet_totals(points) do
       [] ->
         empty_svg()
 
-      renderable ->
-        max_power = renderable |> Enum.map(& &1.power) |> Enum.max() |> max(1.0)
-        path_d = build_path(renderable, max_power)
+      totals ->
+        max_power = totals |> Enum.map(& &1.power) |> Enum.max() |> max(1.0)
+        path_d = build_path(totals, max_power)
         gridlines = y_gridlines_svg(max_power)
         y_labels = y_axis_labels_svg(max_power)
         x_labels = x_axis_labels_svg()
-        peak = peak_marker_svg(renderable, max_power)
+        peak = peak_marker_svg(totals, max_power)
         title = axis_title_svg()
-        yesterday_overlay = yesterday_overlay_svg(yesterday_points, max_power)
+        yesterday_overlay = yesterday_overlay_svg(fleet_totals(yesterday_points), max_power)
         chart_label = gettext("Today's power curve")
 
         Enum.join(
@@ -170,6 +181,38 @@ defmodule DtuApp.Emails.SunDownChart do
           "\n  "
         )
     end
+  end
+
+  # Aggregate per-series chart points into a single fleet-total series
+  # (sum of every inverter's AC-aggregate power per 5-min bucket). The
+  # input is the `%{time, series, power}` list `list_day_chart_data_for_dashboard/4`
+  # returns: one entry per `(bucket, dtu, inverter, mppt)` row. For a
+  # single inverter this collapses to the same series; for a
+  # multi-inverter fleet it sums the inverters so the email chart shows
+  # the *combined* curve instead of interleaving each inverter's line as
+  # if it were a separate time step (the pre-fix zigzag — two inverters
+  # produced one jagged `L` segment per inverter per bucket, filling the
+  # plot area and flattening the peak marker to a single inverter's max).
+  #
+  # Filters mirror the dashboard's `assign_line_chart_data/6`:
+  #   * `mppt_index == 0` — drop per-MPPT rows (their `avg_ac_power` is
+  #     NULL in `readings_5m`; only the AC aggregate is the chart line).
+  #   * `serial not in ["_fleet", "em:0"]` — drop legacy fleet rows and
+  #     the Shelly consumption series (which also has NULL `avg_ac_power`).
+  #   * numeric `power` — drop NULL buckets (same nil guard as pre-fix).
+  #
+  # Returns `[]` when nothing survives (empty → `empty_svg/0` upstream).
+  defp fleet_totals(points) do
+    points
+    |> Enum.filter(fn pt ->
+      {_dtu, serial, mppt_index, _name} = pt.series
+      mppt_index == 0 and serial not in ["_fleet", "em:0"] and is_number(pt.power)
+    end)
+    |> Enum.group_by(& &1.time)
+    |> Enum.map(fn {time, pts} ->
+      %{time: time, power: Enum.sum(Enum.map(pts, & &1.power))}
+    end)
+    |> Enum.sort_by(& &1.time)
   end
 
   # Build the `d=` attribute for the chart path. The chart runs from

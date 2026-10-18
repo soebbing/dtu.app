@@ -394,4 +394,58 @@ defmodule DtuApp.Emails.SunDownChartTest do
       refute svg =~ "No chart available"
     end
   end
+
+  # Multi-inverter / multi-device fleets. `render_svg/2` receives the
+  # per-series `%{time, series, power}` list from
+  # `list_day_chart_data_for_dashboard/4` — one entry per
+  # `(bucket, dtu, inverter, mppt)` row. Pre-fix the renderer drew ONE
+  # path through the flat list, interleaving each inverter's line as if
+  # it were a separate time step: two inverters produced a jagged zigzag
+  # (and a peak marker sized to a single inverter). The fix sums each
+  # inverter's AC-aggregate power per bucket so the chart shows the
+  # *combined* fleet curve.
+  describe "render_svg/2 — multi-inverter aggregation" do
+    test "sums two inverters at the same bucket into the fleet total" do
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-B", 0, "Roof"}, power: 200.0},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-B", 0, "Roof"}, power: 200.0}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      # The peak marker must reflect the COMBINED fleet peak (300 W),
+      # not the max single inverter (200 W).
+      assert svg =~ "Peak: 300 W"
+      refute svg =~ "Peak: 200 W"
+    end
+
+    test "drops per-MPPT rows and the Shelly consumption series from the fleet total" do
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 1, "Garage"}, power: 999.0},
+        %{time: ~U[2026-09-15 10:00:00Z], series: {2, "em:0", 0, nil}, power: nil}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      # Only INV-A's AC aggregate (100 W) survives: the per-MPPT row
+      # (mppt_index 1) and the Shelly consumption row ("em:0", nil
+      # power) are both dropped before summing.
+      assert svg =~ "Peak: 100 W"
+      refute svg =~ "Peak: 999 W"
+    end
+
+    test "single-inverter behaviour is unchanged (sum-of-one equals max-of-one)" do
+      points = [
+        %{time: ~U[2026-09-15 10:00:00Z], series: {1, "INV-A", 0, "Garage"}, power: 100.0},
+        %{time: ~U[2026-09-15 10:05:00Z], series: {1, "INV-A", 0, "Garage"}, power: 200.0}
+      ]
+
+      svg = SunDownChart.render_svg(points)
+
+      assert svg =~ "Peak: 200 W"
+    end
+  end
 end
